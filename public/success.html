@@ -1,1 +1,40 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ApexCoach - Connected</title>
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body { background: #080a0f; color: #e0e0e0; font-family: monospace; min-height: 100vh; display: flex; align-items: center; justify-content: center; padding: 40px; }
+.card { background: #0d0f16; border: 1px solid #1a1c22; border-radius: 12px; padding: 36px; max-width: 520px; width: 100%; }
+h2 { color: #22c97a; font-size: 22px; margin-bottom: 12px; }
+p { color: #888; font-size: 13px; line-height: 1.7; margin-bottom: 16px; }
+.token-box { background: #060810; border: 1px solid #22c97a33; border-radius: 8px; padding: 14px; word-break: break-all; color: #22c97a; font-size: 12px; margin-bottom: 20px; }
+ol { color: #888; font-size: 13px; line-height: 2.2; padding-left: 20px; margin-bottom: 24px; }
+a { display: inline-block; background: #22c97a; color: #040605; padding: 10px 20px; border-radius: 6px; text-decoration: none; font-weight: 700; font-size: 13px; }
+</style>
+</head>
+<body>
+<div class="card">
+  <h2>ApexCoach Connected!</h2>
+  <p>Save this refresh token in Render as <strong>FITBIT_REFRESH_TOKEN</strong> — you only need to do this once ever.</p>
+  <p style="font-size:11px;color:#555;margin-bottom:8px">REFRESH TOKEN:</p>
+  <div class="token-box" id="token">Loading...</div>
+  <ol>
+    <li>Copy the token above</li>
+    <li>Go to Render dashboard</li>
+    <li>Click your service → Environment</li>
+    <li>Set FITBIT_REFRESH_TOKEN to this value</li>
+    <li>Save and redeploy</li>
+  </ol>
+  <a href="/">Go to ApexCoach</a>
+</div>
+<script>
+  var params = new URLSearchParams(window.location.search);
+  var token = params.get('token');
+  document.getElementById('token').textContent = token || 'Token not found - check Render logs';
+</script>
+</body>
+</html>
 
