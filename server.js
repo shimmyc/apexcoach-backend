@@ -420,7 +420,8 @@ function fetchAI() {
   .then(function(r) { return r.json(); })
   .then(function(data) {
     var raw = (data.content && data.content[0]) ? data.content[0].text : '{}';
-    aiRec = JSON.parse(raw.replace(/```json|```/g, '').trim());
+    var cleaned = raw.indexOf('{') >= 0 ? raw.substring(raw.indexOf('{'), raw.lastIndexOf('}') + 1) : '{}';
+aiRec = JSON.parse(cleaned);
     var cached = JSON.parse(localStorage.getItem('ac_cache') || '{}');
     cached.aiRec = aiRec;
     localStorage.setItem('ac_cache', JSON.stringify(cached));
