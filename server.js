@@ -117,7 +117,10 @@ app.get("/api/daily", async (req, res) => {
     });
   } catch (err) { res.status(500).json({ success: false, error: err.message }); }
 });
-
+app.get("/api/token-info", (req, res) => {
+  const tokens = loadTokens();
+  res.json({ refresh_token: tokens.refresh_token, expires_at: new Date(tokens.expires_at).toISOString() });
+});
 app.post("/api/set-tokens", (req, res) => {
   const { access_token, refresh_token, secret } = req.body;
   if (secret !== process.env.ADMIN_SECRET) return res.status(401).json({ error: "Unauthorized" });
