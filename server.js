@@ -1,23 +1,33 @@
 const express = require("express");
 const fetch   = require("node-fetch");
-const fs      = require("fs");
 const path    = require("path");
 
 const app  = express();
 const PORT = process.env.PORT || 3000;
 
-const CLIENT_ID     = process.env.FITBIT_CLIENT_ID;
-const CLIENT_SECRET = process.env.FITBIT_CLIENT_SECRET;
-const REDIRECT_URI  = "https://apexcoach-backend.onrender.com/callback";
-const TOKEN_FILE    = path.join("/tmp", "tokens.json");
+const CLIENT_ID      = process.env.FITBIT_CLIENT_ID;
+const CLIENT_SECRET  = process.env.FITBIT_CLIENT_SECRET;
+const REDIRECT_URI   = "https://apexcoach-backend.onrender.com/callback";
+const SUPABASE_URL   = process.env.SUPABASE_URL;
+const SUPABASE_KEY   = process.env.SUPABASE_KEY;
 
 app.use(express.json());
 app.use(express.static(path.join(__dirname, "public")));
 
-function loadTokens() {
+// ── SUPABASE TOKEN STORAGE ─────────────────────────────────────────────────
+async function loadTokens() {
   try {
-    if (fs.existsSync(TOKEN_FILE)) return JSON.parse(fs.readFileSync(TOKEN_FILE, "utf8"));
-  } catch (e) {}
+    const res = await fetch(SUPABASE_URL + "/rest/v1/tokens?id=eq.1&select=*", {
+      headers: {
+        "apikey": SUPABASE_KEY,
+        "Authorization": "Bearer " + SUPABASE_KEY,
+      }
+    });
+    const rows = await res.json();
+    if (rows && rows.length > 0) return rows[0];
+  } catch (e) {
+    console.error("loadTokens error:", e.message);
+  }
   return {
     access_token:  process.env.FITBIT_ACCESS_TOKEN  || "",
     refresh_token: process.env.FITBIT_REFRESH_TOKEN || "",
@@ -25,19 +35,37 @@ function loadTokens() {
   };
 }
 
-function saveTokens(tokens) {
-  try { fs.writeFileSync(TOKEN_FILE, JSON.stringify(tokens)); } catch (e) {}
+async function saveTokens(tokens) {
+  try {
+    await fetch(SUPABASE_URL + "/rest/v1/tokens?id=eq.1", {
+      method: "PATCH",
+      headers: {
+        "apikey": SUPABASE_KEY,
+        "Authorization": "Bearer " + SUPABASE_KEY,
+        "Content-Type": "application/json",
+        "Prefer": "return=minimal",
+      },
+      body: JSON.stringify({
+        access_token:  tokens.access_token,
+        refresh_token: tokens.refresh_token,
+        expires_at:    tokens.expires_at,
+      }),
+    });
+    console.log("Tokens saved to Supabase.");
+  } catch (e) {
+    console.error("saveTokens error:", e.message);
+  }
 }
 
 async function refreshAccessToken() {
-  const tokens = loadTokens();
+  const tokens = await loadTokens();
   console.log("Refreshing token...");
   const creds = Buffer.from(CLIENT_ID + ":" + CLIENT_SECRET).toString("base64");
   const res = await fetch("https://api.fitbit.com/oauth2/token", {
     method: "POST",
     headers: {
       "Authorization": "Basic " + creds,
-      "Content-Type": "application/x-www-form-urlencoded"
+      "Content-Type": "application/x-www-form-urlencoded",
     },
     body: "grant_type=refresh_token&refresh_token=" + tokens.refresh_token,
   });
@@ -48,14 +76,15 @@ async function refreshAccessToken() {
     refresh_token: data.refresh_token,
     expires_at:    Date.now() + (data.expires_in * 1000) - 60000,
   };
-  saveTokens(next);
-  console.log("Token refreshed. New refresh token: " + data.refresh_token);
+  await saveTokens(next);
   return next.access_token;
 }
 
 async function getValidToken() {
-  const tokens = loadTokens();
-  if (tokens.access_token && Date.now() < tokens.expires_at) return tokens.access_token;
+  const tokens = await loadTokens();
+  if (tokens.access_token && Date.now() < Number(tokens.expires_at)) {
+    return tokens.access_token;
+  }
   return await refreshAccessToken();
 }
 
@@ -74,6 +103,7 @@ function dateStr(offsetDays) {
   return d.toISOString().split("T")[0];
 }
 
+// ── OAUTH ──────────────────────────────────────────────────────────────────
 app.get("/auth", function(req, res) {
   const url = "https://www.fitbit.com/oauth2/authorize?response_type=code&client_id=" + CLIENT_ID +
     "&redirect_uri=" + encodeURIComponent(REDIRECT_URI) +
@@ -90,24 +120,25 @@ app.get("/callback", async function(req, res) {
       method: "POST",
       headers: {
         "Authorization": "Basic " + creds,
-        "Content-Type": "application/x-www-form-urlencoded"
+        "Content-Type": "application/x-www-form-urlencoded",
       },
       body: "grant_type=authorization_code&code=" + code + "&redirect_uri=" + encodeURIComponent(REDIRECT_URI),
     });
     if (!resp.ok) return res.status(400).send("Failed: " + await resp.text());
     const data = await resp.json();
-    saveTokens({
+    await saveTokens({
       access_token:  data.access_token,
       refresh_token: data.refresh_token,
       expires_at:    Date.now() + (data.expires_in * 1000) - 60000,
     });
-    console.log("OAuth complete. Refresh token: " + data.refresh_token);
-    res.redirect("/success.html?token=" + data.refresh_token);
+    console.log("OAuth complete. Tokens saved to Supabase.");
+    res.redirect("/");
   } catch (err) {
     res.status(500).send(err.message);
   }
 });
 
+// ── FITBIT DATA ────────────────────────────────────────────────────────────
 app.get("/api/daily", async function(req, res) {
   try {
     const token     = await getValidToken();
@@ -186,30 +217,14 @@ app.get("/api/daily", async function(req, res) {
   }
 });
 
-app.get("/api/token-info", function(req, res) {
-  const tokens = loadTokens();
+app.get("/api/token-info", async function(req, res) {
+  const tokens = await loadTokens();
   res.json({
     has_refresh_token: !!tokens.refresh_token,
-    expires_at: tokens.expires_at ? new Date(tokens.expires_at).toISOString() : "none",
+    expires_at: tokens.expires_at ? new Date(Number(tokens.expires_at)).toISOString() : "none",
   });
-});
-
-app.post("/api/set-tokens", function(req, res) {
-  const body = req.body;
-  if (body.secret !== process.env.ADMIN_SECRET) return res.status(401).json({ error: "Unauthorized" });
-  saveTokens({ access_token: body.access_token, refresh_token: body.refresh_token, expires_at: Date.now() + (28800 * 1000) });
-  res.json({ success: true });
 });
 
 app.listen(PORT, function() {
   console.log("ApexCoach running on port " + PORT);
-  const existing = loadTokens();
-  if (!existing.refresh_token && process.env.FITBIT_REFRESH_TOKEN) {
-    saveTokens({
-      access_token:  process.env.FITBIT_ACCESS_TOKEN || "",
-      refresh_token: process.env.FITBIT_REFRESH_TOKEN,
-      expires_at:    0,
-    });
-    console.log("Initialized tokens from environment.");
-  }
 });
