@@ -289,7 +289,7 @@ function fetchAI() {
     'Respond ONLY with raw JSON no markdown:\n' +
     '{"headline":"6-8 word punchy recommendation","workout":"specific workout","duration":45,"intensity":"descriptor","reasoning":"2-3 sentences with specific numbers","exercises":["ex + sets/reps","ex + sets/reps","ex + sets/reps","ex + sets/reps","ex + sets/reps"],"mobility":"hip/groin/quad focus","minimum_viable":"fallback option","warning":"one caution or null"}';
 
-  fetch('https://api.anthropic.com/v1/messages', {
+  fetch('/api/ai', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ model: 'claude-sonnet-4-20250514', max_tokens: 1000, messages: [{ role: 'user', content: prompt }] })
@@ -474,4 +474,3 @@ function showTab(name, btn) {
 </script>
 </body>
 </html>
-
