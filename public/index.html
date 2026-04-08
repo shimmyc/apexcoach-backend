@@ -13,30 +13,39 @@ body{background:#080a0f;color:#e0e0e0;font-family:'DM Sans',sans-serif;min-heigh
 header{display:flex;align-items:center;justify-content:space-between;padding:13px 20px;border-bottom:1px solid #0d0f14;background:#080a0f;position:sticky;top:0;z-index:10}
 .logo{font-family:'Oswald',sans-serif;font-size:20px;font-weight:700;color:#22c97a;letter-spacing:2px}
 .logosub{font-family:'IBM Plex Mono',monospace;font-size:10px;color:#141618;letter-spacing:3px;margin-left:4px}
-nav{display:flex;gap:2px}
-.navBtn{background:transparent;border:none;color:#333;padding:6px 13px;font-size:12px;cursor:pointer;letter-spacing:2px;font-family:'IBM Plex Mono',monospace;border-radius:4px;transition:all .15s}
+nav{display:flex;gap:1px}
+.navBtn{background:transparent;border:none;color:#333;padding:6px 9px;font-size:10px;cursor:pointer;letter-spacing:2px;font-family:'IBM Plex Mono',monospace;border-radius:4px;transition:all .15s}
 .navBtn.active{color:#22c97a;background:#22c97a10}
 .syncBtn{background:transparent;border:1px solid #0e1016;color:#333;padding:5px 10px;font-size:12px;cursor:pointer;font-family:'IBM Plex Mono',monospace;border-radius:4px}
-main{max-width:620px;margin:0 auto;padding:22px 16px 80px}
+main{max-width:640px;margin:0 auto;padding:22px 16px 80px}
 .stack{display:flex;flex-direction:column;gap:14px}
 .card{background:#0d0f16;border:1px solid #0e1016;border-radius:10px;padding:18px;transition:border-color .4s}
 .clabel{font-family:'IBM Plex Mono',monospace;font-size:9px;color:#2a2c30;letter-spacing:3px;margin-bottom:12px}
 .tab{display:none}.tab.active{display:flex;flex-direction:column;gap:14px;animation:fadeUp .35s ease}
-.bar-track{flex:1;height:3px;background:#0e1016;border-radius:2px;overflow:hidden}
+.bar-track{flex:1;height:4px;background:#0e1016;border-radius:2px;overflow:hidden}
 .bar-fill{height:100%;border-radius:2px;transition:width .9s cubic-bezier(.4,0,.2,1)}
-.logBtn{background:#22c97a10;border:1px solid #22c97a25;color:#22c97a;padding:14px;font-size:11px;letter-spacing:3px;cursor:pointer;font-family:'IBM Plex Mono',monospace;border-radius:8px;width:100%;margin-top:4px}
+.logBtn{background:#22c97a10;border:1px solid #22c97a25;color:#22c97a;padding:14px;font-size:11px;letter-spacing:3px;cursor:pointer;font-family:'IBM Plex Mono',monospace;border-radius:8px;width:100%}
 .loggedPill{font-family:'IBM Plex Mono',monospace;font-size:11px;color:#22c97a;letter-spacing:2px;padding:13px;background:#22c97a08;border:1px solid #22c97a20;border-radius:8px;text-align:center}
 .overlay{position:fixed;inset:0;background:rgba(0,0,0,.92);display:flex;align-items:center;justify-content:center;z-index:100;padding:20px}
-.modal{background:#0d0f16;border:1px solid #141618;border-radius:14px;padding:24px;width:100%;max-width:400px}
+.modal{background:#0d0f16;border:1px solid #141618;border-radius:14px;padding:24px;width:100%;max-width:420px;max-height:90vh;overflow-y:auto}
 select,textarea{width:100%;background:#060810;border:1px solid #0e1016;color:#e0e0e0;padding:10px 12px;border-radius:6px;font-size:14px;margin-bottom:10px;outline:none;font-family:'DM Sans',sans-serif}
 select option{background:#0d0f16;color:#e0e0e0}
 .btnPri{background:#22c97a;color:#040605;border:none;padding:12px 22px;font-size:13px;font-weight:700;cursor:pointer;border-radius:6px}
 .btnSec{background:transparent;color:#555;border:1px solid #1a1c22;padding:12px 22px;font-size:13px;cursor:pointer;border-radius:6px}
 .weekGrid{display:grid;grid-template-columns:repeat(7,1fr);gap:5px}
 .statsGrid{display:grid;grid-template-columns:repeat(3,1fr);gap:10px}
+.goalsGrid{display:grid;grid-template-columns:1fr 1fr;gap:12px}
 input[type=checkbox]{accent-color:#22c97a;width:14px;height:14px;cursor:pointer}
+input[type=range]{width:100%;accent-color:#22c97a}
 .mono{font-family:'IBM Plex Mono',monospace}
 .oswald{font-family:'Oswald',sans-serif}
+.pill{display:inline-block;padding:2px 10px;border-radius:4px;font-family:'IBM Plex Mono',monospace;font-size:9px;letter-spacing:2px}
+.pill-green{background:#22c97a18;color:#22c97a;border:1px solid #22c97a33}
+.pill-amber{background:#f5a62318;color:#f5a623;border:1px solid #f5a62333}
+.pill-red{background:#e8454518;color:#e84545;border:1px solid #e8454533}
+.pill-blue{background:#4488bb18;color:#4488bb;border:1px solid #4488bb33}
+.injury-item{padding:12px 0;border-bottom:1px solid #0e1016;display:flex;flex-direction:column;gap:5px}
+.injury-item:last-child{border-bottom:none}
 </style>
 </head>
 <body>
@@ -49,11 +58,14 @@ input[type=checkbox]{accent-color:#22c97a;width:14px;height:14px;cursor:pointer}
     <button class="navBtn active" onclick="showTab('today',this)">today</button>
     <button class="navBtn" onclick="showTab('week',this)">week</button>
     <button class="navBtn" onclick="showTab('log',this)">log</button>
+    <button class="navBtn" onclick="showTab('profile',this)">profile</button>
   </nav>
-  <button class="syncBtn" onclick="syncFitbit()">↻ sync</button>
+  <button class="syncBtn" onclick="syncFitbit()">sync</button>
 </header>
 
 <main>
+
+  <!-- TODAY TAB -->
   <div id="tab-today" class="tab active stack">
     <div>
       <div class="oswald" id="dow" style="font-size:30px;font-weight:600;letter-spacing:1px;color:#fff"></div>
@@ -70,37 +82,303 @@ input[type=checkbox]{accent-color:#22c97a;width:14px;height:14px;cursor:pointer}
     <div id="log-area"></div>
   </div>
 
+  <!-- WEEK TAB -->
   <div id="tab-week" class="tab stack">
     <div class="statsGrid" id="week-stats"></div>
     <div id="double-skip-warn" style="display:none;background:#f5a62310;border:1px solid #f5a62325;color:#f5a623;padding:10px 14px;border-radius:6px;font-size:13px">
-      ⚡ Two misses in a row — today is non-negotiable. Even 15 min counts.
+      Two misses in a row - today is non-negotiable. Even 15 min counts.
     </div>
     <div class="weekGrid" id="week-grid"></div>
     <div class="card" id="week-breakdown"></div>
   </div>
 
+  <!-- LOG TAB -->
   <div id="tab-log" class="tab stack">
-    <p class="mono" id="log-count" style="font-size:9px;color:#333;letter-spacing:3px">HISTORY — 0 SESSIONS</p>
+    <p class="mono" id="log-count" style="font-size:9px;color:#333;letter-spacing:3px">HISTORY - 0 SESSIONS</p>
     <div id="log-entries"></div>
+  </div>
+
+  <!-- PROFILE TAB -->
+  <div id="tab-profile" class="tab stack">
+
+    <!-- ATHLETE HEADER -->
+    <div class="card" style="border-color:#22c97a33">
+      <div style="display:flex;align-items:center;gap:16px;margin-bottom:14px">
+        <div style="width:52px;height:52px;border-radius:50%;background:#22c97a18;border:1px solid #22c97a33;display:flex;align-items:center;justify-content:center;font-family:'Oswald',sans-serif;font-size:20px;font-weight:700;color:#22c97a">S</div>
+        <div>
+          <div style="font-family:'Oswald',sans-serif;font-size:22px;font-weight:600;color:#fff">Shimmy Castle</div>
+          <div class="mono" style="font-size:10px;color:#555;letter-spacing:2px">MMA ATHLETE - MUSICIAN - DAD</div>
+        </div>
+      </div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap">
+        <span class="pill pill-green">BLUE BELT</span>
+        <span class="pill pill-amber">PUBIC OSTEITIS</span>
+        <span class="pill pill-blue">4.5 YRS MMA</span>
+        <span class="pill pill-blue">HOFFMAN ESTATES IL</span>
+      </div>
+    </div>
+
+    <!-- BELT PROGRESS -->
+    <div class="card">
+      <p class="clabel">belt journey to black</p>
+      <div style="display:flex;align-items:center;gap:6px;margin-bottom:14px;flex-wrap:wrap">
+        <div style="text-align:center">
+          <div style="width:28px;height:28px;border-radius:50%;background:#5c4a1e;border:2px solid #8B6914;display:flex;align-items:center;justify-content:center;font-size:9px;color:#c9a227;font-family:'IBM Plex Mono',monospace">B1</div>
+          <div style="font-size:8px;color:#444;margin-top:3px">blue</div>
+        </div>
+        <div style="height:2px;width:14px;background:#22c97a;border-radius:1px"></div>
+        <div style="text-align:center;position:relative">
+          <div style="width:28px;height:28px;border-radius:50%;background:#22c97a18;border:2px solid #22c97a;display:flex;align-items:center;justify-content:center;font-size:9px;color:#22c97a;font-family:'IBM Plex Mono',monospace">B2</div>
+          <div style="font-size:8px;color:#22c97a;margin-top:3px">YOU</div>
+        </div>
+        <div style="height:2px;width:14px;background:#1a1c22;border-radius:1px"></div>
+        <div style="text-align:center">
+          <div style="width:28px;height:28px;border-radius:50%;background:#160a1a;border:2px solid #2a1c2e;display:flex;align-items:center;justify-content:center;font-size:9px;color:#444;font-family:'IBM Plex Mono',monospace">PU</div>
+          <div style="font-size:8px;color:#333;margin-top:3px">purple</div>
+        </div>
+        <div style="height:2px;width:14px;background:#1a1c22;border-radius:1px"></div>
+        <div style="text-align:center">
+          <div style="width:28px;height:28px;border-radius:50%;background:#0f0a06;border:2px solid #2a1c10;display:flex;align-items:center;justify-content:center;font-size:9px;color:#444;font-family:'IBM Plex Mono',monospace">BR</div>
+          <div style="font-size:8px;color:#333;margin-top:3px">brown</div>
+        </div>
+        <div style="height:2px;width:14px;background:#1a1c22;border-radius:1px"></div>
+        <div style="text-align:center">
+          <div style="width:28px;height:28px;border-radius:50%;background:#080a0f;border:2px solid #1a1c22;display:flex;align-items:center;justify-content:center;font-size:9px;color:#333;font-family:'IBM Plex Mono',monospace">BK</div>
+          <div style="font-size:8px;color:#333;margin-top:3px">black</div>
+        </div>
+      </div>
+      <div class="bar-track" style="margin-bottom:6px">
+        <div class="bar-fill" style="width:30%;background:linear-gradient(90deg,#22c97a,#f5a623)"></div>
+      </div>
+      <div style="display:flex;justify-content:space-between;font-family:'IBM Plex Mono',monospace;font-size:9px;color:#444">
+        <span>start</span><span style="color:#22c97a">~30% complete</span><span>black belt</span>
+      </div>
+    </div>
+
+    <!-- BIG GOALS -->
+    <div class="card">
+      <p class="clabel">goals and milestones</p>
+      <div class="goalsGrid">
+
+        <div style="background:#060810;border:1px solid #0e1016;border-radius:8px;padding:14px">
+          <div style="font-size:18px;margin-bottom:6px">🏔</div>
+          <div style="font-size:13px;font-weight:500;color:#ddd;margin-bottom:4px">Mountain Hike</div>
+          <div style="font-size:12px;color:#555;line-height:1.6;margin-bottom:10px">6-8 miles with Noam on back. No stopping.</div>
+          <div class="mono" style="font-size:9px;color:#f5a623;letter-spacing:1px">IN PROGRESS</div>
+        </div>
+
+        <div style="background:#060810;border:1px solid #0e1016;border-radius:8px;padding:14px">
+          <div style="font-size:18px;margin-bottom:6px">🥋</div>
+          <div style="font-size:13px;font-weight:500;color:#ddd;margin-bottom:4px">Black Belt</div>
+          <div style="font-size:12px;color:#555;line-height:1.6;margin-bottom:10px">Blue belt now. Purple, 3x brown, then black.</div>
+          <div class="mono" style="font-size:9px;color:#f5a623;letter-spacing:1px">LONG GAME</div>
+        </div>
+
+        <div style="background:#060810;border:1px solid #0e1016;border-radius:8px;padding:14px">
+          <div style="font-size:18px;margin-bottom:6px">💪</div>
+          <div style="font-size:13px;font-weight:500;color:#ddd;margin-bottom:4px">Build Muscle</div>
+          <div style="font-size:12px;color:#555;line-height:1.6;margin-bottom:10px">Look stronger. Functional size, not bulk.</div>
+          <div class="mono" style="font-size:9px;color:#f5a623;letter-spacing:1px">IN PROGRESS</div>
+        </div>
+
+        <div style="background:#060810;border:1px solid #0e1016;border-radius:8px;padding:14px">
+          <div style="font-size:18px;margin-bottom:6px">🧍</div>
+          <div style="font-size:13px;font-weight:500;color:#ddd;margin-bottom:4px">Fix Posture</div>
+          <div style="font-size:12px;color:#555;line-height:1.6;margin-bottom:10px">Fix anterior pelvic tilt, rounded shoulders, forward head.</div>
+          <div class="mono" style="font-size:9px;color:#f5a623;letter-spacing:1px">IN PROGRESS</div>
+        </div>
+
+        <div style="background:#060810;border:1px solid #0e1016;border-radius:8px;padding:14px">
+          <div style="font-size:18px;margin-bottom:6px">🧘</div>
+          <div style="font-size:13px;font-weight:500;color:#ddd;margin-bottom:4px">Daily Meditation</div>
+          <div style="font-size:12px;color:#555;line-height:1.6;margin-bottom:10px">Build the habit. Even 5 minutes counts.</div>
+          <div id="med-status" class="mono" style="font-size:9px;color:#555;letter-spacing:1px;cursor:pointer" onclick="toggleMeditation()">TAP TO LOG TODAY</div>
+        </div>
+
+        <div style="background:#060810;border:1px solid #0e1016;border-radius:8px;padding:14px">
+          <div style="font-size:18px;margin-bottom:6px">❤</div>
+          <div style="font-size:13px;font-weight:500;color:#ddd;margin-bottom:4px">Stamina</div>
+          <div style="font-size:12px;color:#555;line-height:1.6;margin-bottom:10px">Full MMA rounds without gassing. Better cardio baseline.</div>
+          <div class="mono" style="font-size:9px;color:#f5a623;letter-spacing:1px">IN PROGRESS</div>
+        </div>
+
+      </div>
+    </div>
+
+    <!-- INJURY STATUS -->
+    <div class="card">
+      <p class="clabel">injury and health status</p>
+
+      <div class="injury-item">
+        <div style="display:flex;align-items:center;justify-content:space-between">
+          <div style="font-size:14px;font-weight:500;color:#ddd">Pubic Osteitis</div>
+          <span class="pill pill-amber">MANAGING</span>
+        </div>
+        <div style="font-size:12px;color:#555;line-height:1.65">Onset Oct 2024 during a wedding gig. XR/MRI clear but inflamed pubic symphysis. Flares with dynamic hip movements, heavy loads, long days on feet. Right side historically worse, occasional left-side flares.</div>
+        <div style="font-size:11px;color:#333;font-style:italic;margin-top:3px">Key triggers: high kicks, sprinting, carrying heavy bags, long standing days</div>
+      </div>
+
+      <div class="injury-item">
+        <div style="display:flex;align-items:center;justify-content:space-between">
+          <div style="font-size:14px;font-weight:500;color:#ddd">Right Quad / IT Band</div>
+          <span class="pill pill-amber">CHRONIC</span>
+        </div>
+        <div style="font-size:12px;color:#555;line-height:1.65">Several years of burning/tearing sensation, especially during big stretches or sitting. Likely from quad dominance and glute inhibition. Right side significantly tighter than left.</div>
+      </div>
+
+      <div class="injury-item">
+        <div style="display:flex;align-items:center;justify-content:space-between">
+          <div style="font-size:14px;font-weight:500;color:#ddd">Concussion History</div>
+          <span class="pill pill-amber">MONITOR</span>
+        </div>
+        <div style="font-size:12px;color:#555;line-height:1.65">Car accident Dec 2022. Dizziness and nausea with spins and rotational movements in MMA. Avoid head-spin drills. Eased back into MMA after 4-6 month break.</div>
+        <div style="font-size:11px;color:#333;font-style:italic;margin-top:3px">Always flag if dizziness increases</div>
+      </div>
+
+      <div class="injury-item">
+        <div style="display:flex;align-items:center;justify-content:space-between">
+          <div style="font-size:14px;font-weight:500;color:#ddd">Upper Trap / Neck / Upper Back</div>
+          <span class="pill pill-amber">CHRONIC</span>
+        </div>
+        <div style="font-size:12px;color:#555;line-height:1.65">Tightness from accident + heavy gig bag carrying. Did PT and improved significantly but never fully resolved. Aggravated by poor bag strap position.</div>
+      </div>
+
+      <div class="injury-item">
+        <div style="display:flex;align-items:center;justify-content:space-between">
+          <div style="font-size:14px;font-weight:500;color:#ddd">Anterior Pelvic Tilt</div>
+          <span class="pill pill-amber">REHABBING</span>
+        </div>
+        <div style="font-size:12px;color:#555;line-height:1.65">Glute underactivation, quad dominance, adductors compensating. Core and rib cage control improving. Right foot pronation being addressed with new Saucony + Mizuno shoes.</div>
+      </div>
+
+    </div>
+
+    <!-- MOVEMENT PROFILE -->
+    <div class="card">
+      <p class="clabel">movement profile</p>
+      <div style="display:flex;flex-direction:column;gap:10px">
+        <div>
+          <div style="display:flex;justify-content:space-between;margin-bottom:5px">
+            <span style="font-size:12px;color:#888">Glute activation</span>
+            <span class="mono" style="font-size:10px;color:#f5a623">improving</span>
+          </div>
+          <div class="bar-track"><div class="bar-fill" style="width:40%;background:#f5a623"></div></div>
+        </div>
+        <div>
+          <div style="display:flex;justify-content:space-between;margin-bottom:5px">
+            <span style="font-size:12px;color:#888">Hip mobility</span>
+            <span class="mono" style="font-size:10px;color:#f5a623">moderate</span>
+          </div>
+          <div class="bar-track"><div class="bar-fill" style="width:50%;background:#f5a623"></div></div>
+        </div>
+        <div>
+          <div style="display:flex;justify-content:space-between;margin-bottom:5px">
+            <span style="font-size:12px;color:#888">Core stability</span>
+            <span class="mono" style="font-size:10px;color:#f5a623">building</span>
+          </div>
+          <div class="bar-track"><div class="bar-fill" style="width:45%;background:#f5a623"></div></div>
+        </div>
+        <div>
+          <div style="display:flex;justify-content:space-between;margin-bottom:5px">
+            <span style="font-size:12px;color:#888">Pubic osteitis status</span>
+            <span class="mono" style="font-size:10px;color:#22c97a">managed</span>
+          </div>
+          <div class="bar-track"><div class="bar-fill" style="width:70%;background:#22c97a"></div></div>
+        </div>
+        <div>
+          <div style="display:flex;justify-content:space-between;margin-bottom:5px">
+            <span style="font-size:12px;color:#888">Upper back / neck</span>
+            <span class="mono" style="font-size:10px;color:#f5a623">tight but functional</span>
+          </div>
+          <div class="bar-track"><div class="bar-fill" style="width:55%;background:#f5a623"></div></div>
+        </div>
+        <div>
+          <div style="display:flex;justify-content:space-between;margin-bottom:5px">
+            <span style="font-size:12px;color:#888">MMA conditioning</span>
+            <span class="mono" style="font-size:10px;color:#f5a623">rebuilding</span>
+          </div>
+          <div class="bar-track"><div class="bar-fill" style="width:35%;background:#f5a623"></div></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- TRAINING PHILOSOPHY -->
+    <div class="card">
+      <p class="clabel">training philosophy</p>
+      <div style="display:flex;flex-direction:column;gap:8px">
+        <div style="display:flex;gap:10px;align-items:flex-start">
+          <span style="color:#22c97a;flex-shrink:0;font-size:13px">—</span>
+          <span style="font-size:13px;color:#888;line-height:1.65">Consistency beats intensity. Always. A 10-minute session beats skipping.</span>
+        </div>
+        <div style="display:flex;gap:10px;align-items:flex-start">
+          <span style="color:#22c97a;flex-shrink:0;font-size:13px">—</span>
+          <span style="font-size:13px;color:#888;line-height:1.65">Never miss twice in a row.</span>
+        </div>
+        <div style="display:flex;gap:10px;align-items:flex-start">
+          <span style="color:#22c97a;flex-shrink:0;font-size:13px">—</span>
+          <span style="font-size:13px;color:#888;line-height:1.65">Train movement patterns, not random exercises. Posture is the foundation.</span>
+        </div>
+        <div style="display:flex;gap:10px;align-items:flex-start">
+          <span style="color:#22c97a;flex-shrink:0;font-size:13px">—</span>
+          <span style="font-size:13px;color:#888;line-height:1.65">Always have a minimum viable option. Something is infinitely better than nothing.</span>
+        </div>
+        <div style="display:flex;gap:10px;align-items:flex-start">
+          <span style="color:#22c97a;flex-shrink:0;font-size:13px">—</span>
+          <span style="font-size:13px;color:#888;line-height:1.65">Pain is information. Sharp pubic or quad pain means back off. Soreness is okay.</span>
+        </div>
+        <div style="display:flex;gap:10px;align-items:flex-start">
+          <span style="color:#22c97a;flex-shrink:0;font-size:13px">—</span>
+          <span style="font-size:13px;color:#888;line-height:1.65">Life happens. Baby, gigs, weddings, illness. Adapt. Never quit.</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- LIFE CONTEXT -->
+    <div class="card">
+      <p class="clabel">life context</p>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
+        <div style="background:#060810;border-radius:6px;padding:12px">
+          <div class="mono" style="font-size:9px;color:#444;letter-spacing:2px;margin-bottom:5px">FAMILY</div>
+          <div style="font-size:13px;color:#888">New dad - Noam. Sleep disrupted regularly. Partner's schedule varies.</div>
+        </div>
+        <div style="background:#060810;border-radius:6px;padding:12px">
+          <div class="mono" style="font-size:9px;color:#444;letter-spacing:2px;margin-bottom:5px">WORK</div>
+          <div style="font-size:13px;color:#888">Wedding musician. Gigs = long standing days, heavy equipment, late nights.</div>
+        </div>
+        <div style="background:#060810;border-radius:6px;padding:12px">
+          <div class="mono" style="font-size:9px;color:#444;letter-spacing:2px;margin-bottom:5px">MMA</div>
+          <div style="font-size:13px;color:#888">Blue belt. 2x/week target. On the calendar = gets done.</div>
+        </div>
+        <div style="background:#060810;border-radius:6px;padding:12px">
+          <div class="mono" style="font-size:9px;color:#444;letter-spacing:2px;margin-bottom:5px">OBSTACLES</div>
+          <div style="font-size:13px;color:#888">Consistency and time. Motivation follows action, not the other way around.</div>
+        </div>
+      </div>
+    </div>
+
   </div>
 </main>
 
+<!-- LOG MODAL -->
 <div class="overlay" id="log-modal" style="display:none" onclick="closeModal()">
   <div class="modal" onclick="event.stopPropagation()">
     <p class="mono" style="font-size:10px;color:#555;letter-spacing:3px;margin-bottom:14px">LOG TODAY'S WORKOUT</p>
     <select id="wtype">
       <option value="">Choose type...</option>
+      <option>Mixed Training</option>
+      <option>Mixed Training</option>
       <option>MMA / Sparring</option>
       <option>Strength - Upper</option>
       <option>Strength - Lower</option>
       <option>Strength - Full Body</option>
       <option>Conditioning / HIIT</option>
       <option>Yoga / Mobility</option>
+      <option>PT / Rehab</option>
       <option>Active Recovery</option>
       <option>Walking</option>
       <option>Rest Day</option>
     </select>
-    <textarea id="wnotes" rows="3" placeholder="Notes (optional)..."></textarea>
+    <textarea id="wnotes" rows="3" placeholder="Notes — how did it feel, any pain, energy level..."></textarea>
     <div style="display:flex;gap:20px;margin-bottom:16px">
       <label style="display:flex;align-items:center;cursor:pointer">
         <input type="checkbox" id="wdone" checked>
@@ -109,6 +387,10 @@ input[type=checkbox]{accent-color:#22c97a;width:14px;height:14px;cursor:pointer}
       <label style="display:flex;align-items:center;cursor:pointer">
         <input type="checkbox" id="wmob">
         <span style="margin-left:6px;font-size:13px;color:#888">Mobility done</span>
+      </label>
+      <label style="display:flex;align-items:center;cursor:pointer">
+        <input type="checkbox" id="wmed">
+        <span style="margin-left:6px;font-size:13px;color:#888">Meditated</span>
       </label>
     </div>
     <div style="display:flex;gap:8px;justify-content:flex-end">
@@ -122,7 +404,8 @@ input[type=checkbox]{accent-color:#22c97a;width:14px;height:14px;cursor:pointer}
 var fitData = null;
 var readiness = null;
 var aiRec = null;
-var workoutLog = JSON.parse(localStorage.getItem('ac_log') || '[]');
+var workoutLog = [];
+var medLog = [];
 
 var TIERS = {
   hard:     { label:'HARD TRAINING',  color:'#22c97a', range:'86-100' },
@@ -131,12 +414,49 @@ var TIERS = {
   recovery: { label:'RECOVERY ONLY',  color:'#e84545', range:'0-45'   }
 };
 
+var FULL_PROFILE = 'ATHLETE: Shimmy Castle, Hoffman Estates IL. New dad (baby Noam). Wedding musician - gigs mean long standing days, heavy bag carrying, late nights, unpredictable schedule.\n\n' +
+'MMA BACKGROUND: Blue belt (level 2 of 2). Training 4.5 years on/off. 10-month break for pubic osteitis + new baby. Goes 1-2x/week when consistent. Goal: black belt (purple, 3x brown, then black - roughly 30% of the journey complete).\n\n' +
+'GOALS:\n' +
+'1. Mountain hike 6-8 miles with baby Noam on back - no stopping\n' +
+'2. Black belt in MMA\n' +
+'3. Build visible muscle - look stronger, functional size not bulk\n' +
+'4. Fix posture permanently - anterior pelvic tilt, forward head, rounded shoulders\n' +
+'5. Better stamina - full MMA rounds without gassing\n' +
+'6. Daily meditation habit\n\n' +
+'INJURIES AND HEALTH:\n' +
+'1. PUBIC OSTEITIS (primary, active): Onset Oct 2024 wedding gig. XR/MRI clear but inflamed pubic symphysis. Right side historically worse, occasional left flares. Triggers: dynamic hip movements, high kicks, heavy loads, long standing days, weddings. Currently managed - minimal discomfort most days after 13+ weeks of PT. NEVER push into sharp pubic pain.\n' +
+'2. RIGHT QUAD/IT BAND (chronic): Several years. Burning/tearing sensation with big stretches or sitting. Caused by quad dominance and glute inhibition. Quads fire before glutes. Right side much tighter than left.\n' +
+'3. CONCUSSION HISTORY (Dec 2022 car accident): Dizziness and nausea with spins and rotational movements. AVOID spin drills. Flag if dizziness increases.\n' +
+'4. UPPER TRAP/NECK/UPPER BACK (chronic): Tightness from car accident + heavy pedalboard bag carrying. Did PT, improved but never fully resolved. Aggravated by poor bag strap positioning.\n' +
+'5. ANTERIOR PELVIC TILT: Glutes underactive (right worse), adductors compensating, quads overused. Core rib-cage control improving. Right foot pronation - now wearing Saucony and Mizuno shoes.\n\n' +
+'REHAB HISTORY: 13+ weeks of structured PT. Key exercises that work: glute bridges, dead bugs, clamshells, 90/90 hip rotations, figure-4 stretch, cat-cow, quadruped rock-backs, dead hangs. Exercises to be careful with: side planks (modify to knees if groin irritated), split squats (tight/pinchy), Frankenstein kicks (avoid - causes quad burning).\n\n' +
+'TRAINING PHILOSOPHY: Consistency over intensity. Never miss twice. Always have a minimum viable option (10 min counts). Train movement patterns. Pain is information - sharp pubic or quad pain = back off. Life happens with baby, gigs, illness - adapt and return.\n\n' +
+'BIGGEST OBSTACLE: Consistency and finding time. When MMA is on the calendar it gets done. Baby disrupts sleep regularly.';
+
 document.getElementById('dow').textContent = new Date().toLocaleDateString('en-US', {weekday:'long'});
 document.getElementById('dom').textContent = new Date().toLocaleDateString('en-US', {month:'long', day:'numeric'});
 
-renderWeek();
-renderLog();
-syncFitbit();
+loadWorkouts().then(function() {
+  renderWeek();
+  renderLog();
+  renderMeditationStatus();
+  syncFitbit();
+});
+
+function loadWorkouts() {
+  return fetch('/api/workouts?limit=60')
+    .then(function(r) { return r.json(); })
+    .then(function(data) {
+      if (data.success) {
+        workoutLog = data.workouts || [];
+        medLog = workoutLog.filter(function(w) { return w.med; }).map(function(w) { return w.date; });
+      }
+    })
+    .catch(function() {
+      workoutLog = JSON.parse(localStorage.getItem('ac_log') || '[]');
+      medLog = JSON.parse(localStorage.getItem('ac_med') || '[]');
+    });
+}
 
 function ds(offset) {
   offset = offset || 0;
@@ -145,10 +465,45 @@ function ds(offset) {
   return d.toISOString().split('T')[0];
 }
 
+function toggleMeditation() {
+  var today = ds(0);
+  var idx = medLog.indexOf(today);
+  if (idx >= 0) {
+    medLog.splice(idx, 1);
+  } else {
+    medLog.push(today);
+    var existing = workoutLog.find(function(w) { return w.date === today; });
+    if (!existing) {
+      saveWorkoutToSupabase({ date: today, type: 'Meditation', notes: '', done: true, mobility: false, med: true, ts: Date.now() });
+    }
+  }
+  renderMeditationStatus();
+}
+
+function renderMeditationStatus() {
+  var el = document.getElementById('med-status');
+  if (!el) return;
+  var today = ds(0);
+  var done = medLog.indexOf(today) >= 0;
+  var streak = 0;
+  var d = new Date();
+  while (true) {
+    var str = d.toISOString().split('T')[0];
+    if (medLog.indexOf(str) >= 0) { streak++; d.setDate(d.getDate() - 1); }
+    else break;
+  }
+  if (done) {
+    el.textContent = 'DONE TODAY' + (streak > 1 ? ' - ' + streak + ' DAY STREAK' : '');
+    el.style.color = '#22c97a';
+  } else {
+    el.textContent = streak > 0 ? 'TAP TO LOG - ' + streak + ' DAY STREAK' : 'TAP TO LOG TODAY';
+    el.style.color = '#555';
+  }
+}
+
 function syncFitbit() {
   document.getElementById('status-box').style.display = 'block';
   document.getElementById('status-box').innerHTML = '<p class="mono" style="font-size:11px;color:#22c97a;letter-spacing:3px;animation:pulse 1.6s infinite">FETCHING FITBIT DATA...</p>';
-
   var cached = localStorage.getItem('ac_cache');
   if (cached) {
     var c = JSON.parse(cached);
@@ -162,7 +517,6 @@ function syncFitbit() {
       return;
     }
   }
-
   fetch('/api/daily')
     .then(function(r) { return r.json(); })
     .then(function(json) {
@@ -175,7 +529,7 @@ function syncFitbit() {
       fetchAI();
     })
     .catch(function(e) {
-      document.getElementById('status-box').innerHTML = '<p style="color:#e87;font-size:13px">Error: ' + e.message + '</p><button onclick="syncFitbit()" style="background:transparent;border:1px solid #333;color:#666;padding:4px 10px;cursor:pointer;border-radius:4px;font-size:11px;margin-top:8px">Retry</button>';
+      document.getElementById('status-box').innerHTML = '<p style="color:#e87;font-size:13px">Error: ' + e.message + '</p><br><button onclick="syncFitbit()" style="background:transparent;border:1px solid #333;color:#666;padding:4px 10px;cursor:pointer;border-radius:4px;font-size:11px;margin-top:8px">Retry</button><br><br><a href="/auth" style="color:#22c97a;font-size:11px;font-family:monospace">Re-authorize Fitbit</a>';
     });
 }
 
@@ -199,56 +553,25 @@ function computeReadiness(d) {
   else if (hours < 6) total = Math.min(total, 80);
   var score = Math.round(Math.max(0, Math.min(100, total)));
   var tier  = score >= 86 ? 'hard' : score >= 66 ? 'moderate' : score >= 46 ? 'light' : 'recovery';
-  return {
-    score: score, tier: tier, hours: hours,
-    breakdown: {
-      sleepQuality:  Math.round(sq),
-      sleepCliff:    Math.round(sc),
-      nervousSystem: Math.round(ns),
-      recovery:      Math.round(rec)
-    }
-  };
+  return { score: score, tier: tier, hours: hours, breakdown: { sleepQuality: Math.round(sq), sleepCliff: Math.round(sc), nervousSystem: Math.round(ns), recovery: Math.round(rec) } };
 }
 
 function renderReadiness() {
-  var t    = TIERS[readiness.tier];
+  var t = TIERS[readiness.tier];
   var card = document.getElementById('readiness-card');
   card.style.display = 'block';
   card.style.borderColor = t.color + '44';
-  var bars = [
-    ['Sleep Quality',  readiness.breakdown.sleepQuality,  25],
-    ['Sleep Cliff',    readiness.breakdown.sleepCliff,     25],
-    ['Nervous System', readiness.breakdown.nervousSystem,  30],
-    ['Recovery',       readiness.breakdown.recovery,       20]
-  ];
+  var bars = [['Sleep Quality', readiness.breakdown.sleepQuality, 25], ['Sleep Cliff', readiness.breakdown.sleepCliff, 25], ['Nervous System', readiness.breakdown.nervousSystem, 30], ['Recovery', readiness.breakdown.recovery, 20]];
   var barsHTML = '';
   for (var i = 0; i < bars.length; i++) {
-    var lbl = bars[i][0], val = bars[i][1], max = bars[i][2];
-    barsHTML += '<div style="display:flex;align-items:center;gap:8px;margin-bottom:9px">' +
-      '<span class="mono" style="font-size:9px;color:#444;width:110px;flex-shrink:0">' + lbl + '</span>' +
-      '<div class="bar-track"><div class="bar-fill" style="width:' + ((val/max)*100) + '%;background:' + t.color + '"></div></div>' +
-      '<span class="mono" style="font-size:9px;color:#333;width:34px;text-align:right">' + val + '/' + max + '</span>' +
-      '</div>';
+    barsHTML += '<div style="display:flex;align-items:center;gap:8px;margin-bottom:9px"><span class="mono" style="font-size:9px;color:#444;width:110px;flex-shrink:0">' + bars[i][0] + '</span><div class="bar-track"><div class="bar-fill" style="width:' + ((bars[i][1]/bars[i][2])*100) + '%;background:' + t.color + '"></div></div><span class="mono" style="font-size:9px;color:#333;width:34px;text-align:right">' + bars[i][1] + '/' + bars[i][2] + '</span></div>';
   }
-  var vitals = '<span>sleep ' + (fitData.sleep && fitData.sleep.hours ? fitData.sleep.hours.toFixed(1) : '?') + 'h</span>';
-  if (fitData.rhr)  vitals += '<span>heart ' + fitData.rhr + 'bpm</span>';
-  if (fitData.hrv)  vitals += '<span>HRV ' + Math.round(fitData.hrv) + '</span>';
+  var vitals = '';
+  if (fitData.sleep && fitData.sleep.hours) vitals += '<span>sleep ' + fitData.sleep.hours.toFixed(1) + 'h</span> ';
+  if (fitData.rhr)   vitals += '<span>heart ' + fitData.rhr + 'bpm</span> ';
+  if (fitData.hrv)   vitals += '<span>HRV ' + Math.round(fitData.hrv) + '</span> ';
   if (fitData.steps) vitals += '<span>' + fitData.steps.toLocaleString() + ' steps</span>';
-
-  card.innerHTML =
-    '<p class="clabel">readiness score</p>' +
-    '<div style="display:flex;align-items:baseline;gap:6px;margin-bottom:10px">' +
-      '<span class="oswald" style="font-size:76px;font-weight:700;line-height:1;color:' + t.color + '">' + readiness.score + '</span>' +
-      '<span style="color:#2a2c30;font-size:22px">/100</span>' +
-    '</div>' +
-    '<div style="display:inline-block;border:1px solid ' + t.color + '44;background:' + t.color + '15;color:' + t.color + ';padding:3px 12px;border-radius:4px;font-family:IBM Plex Mono,monospace;font-size:10px;letter-spacing:3px;margin-bottom:18px">' +
-      t.label + ' ' + t.range +
-    '</div>' +
-    barsHTML +
-    '<div style="display:flex;gap:16px;margin-top:14px;padding-top:14px;border-top:1px solid #0e1016;font-family:IBM Plex Mono,monospace;font-size:11px;color:#444;flex-wrap:wrap">' +
-      vitals +
-    '</div>';
-
+  card.innerHTML = '<p class="clabel">readiness score</p><div style="display:flex;align-items:baseline;gap:6px;margin-bottom:10px"><span class="oswald" style="font-size:76px;font-weight:700;line-height:1;color:' + t.color + '">' + readiness.score + '</span><span style="color:#2a2c30;font-size:22px">/100</span></div><div style="display:inline-block;border:1px solid ' + t.color + '44;background:' + t.color + '15;color:' + t.color + ';padding:3px 12px;border-radius:4px;font-family:IBM Plex Mono,monospace;font-size:10px;letter-spacing:3px;margin-bottom:18px">' + t.label + ' ' + t.range + '</div>' + barsHTML + '<div style="display:flex;gap:16px;margin-top:14px;padding-top:14px;border-top:1px solid #0e1016;font-family:IBM Plex Mono,monospace;font-size:11px;color:#444;flex-wrap:wrap">' + vitals + '</div>';
   document.getElementById('ai-card').style.display = 'block';
   renderLogArea();
 }
@@ -256,10 +579,10 @@ function renderReadiness() {
 function fetchAI() {
   document.getElementById('ai-content').innerHTML = '<p class="mono" style="font-size:11px;color:#22c97a;letter-spacing:3px;animation:pulse 1.6s infinite">ANALYZING YOUR DATA...</p>';
   var recent = '';
-  var slice = workoutLog.slice(-7);
+  var slice = workoutLog.slice(-10);
   for (var i = 0; i < slice.length; i++) {
     var w = slice[i];
-    recent += '- ' + w.date + ': ' + w.type + (w.done ? ' done' : ' skipped') + (w.mobility ? ' + mobility' : '') + (w.notes ? ' (' + w.notes + ')' : '') + '\n';
+    recent += '- ' + w.date + ': ' + w.type + (w.done ? ' done' : ' skipped') + (w.mobility ? ' + mobility' : '') + (w.med ? ' + meditation' : '') + (w.notes ? ' (' + w.notes + ')' : '') + '\n';
   }
   if (!recent) recent = 'No recent workouts logged yet.';
   var today = new Date().toLocaleDateString('en-US', {weekday:'long', month:'long', day:'numeric'});
@@ -270,34 +593,39 @@ function fetchAI() {
   var pz = fitData.prevZones || {};
   var r7 = fitData.rolling7 || {};
 
-  var prompt = 'You are an elite combat sports coach AI for Shimmy. Give a specific data-driven workout recommendation.\n\n' +
+  var prompt = 'You are ApexCoach, an elite personal AI coach for Shimmy. You know everything about him. Give a highly specific, data-driven workout recommendation for today.\n\n' +
     'TODAY: ' + today + '\n' +
     'READINESS: ' + readiness.score + '/100 - ' + readiness.tier.toUpperCase() + '\n' +
-    'Sleep Quality: ' + readiness.breakdown.sleepQuality + '/25, Sleep Cliff: ' + readiness.breakdown.sleepCliff + '/25 (' + readiness.hours.toFixed(1) + 'h), Nervous System: ' + readiness.breakdown.nervousSystem + '/30, Recovery: ' + readiness.breakdown.recovery + '/20\n\n' +
+    'BREAKDOWN: Sleep Quality ' + readiness.breakdown.sleepQuality + '/25, Sleep Cliff ' + readiness.breakdown.sleepCliff + '/25 (' + readiness.hours.toFixed(1) + 'h), Nervous System ' + readiness.breakdown.nervousSystem + '/30, Recovery ' + readiness.breakdown.recovery + '/20\n\n' +
     'LIVE FITBIT DATA:\n' +
     '- Sleep: ' + (sleep.hours ? sleep.hours.toFixed(1) : '?') + 'h, ' + (sleep.efficiency || '?') + '% efficiency, ' + (sleep.minutesAwake || '?') + 'min awake\n' +
-    '- Deep: ' + (deep.minutes || '?') + 'min (avg ' + (deep.thirtyDayAvgMinutes || '?') + '), REM: ' + (rem.minutes || '?') + 'min (avg ' + (rem.thirtyDayAvgMinutes || '?') + ')\n' +
+    '- Deep: ' + (deep.minutes || '?') + 'min (30d avg ' + (deep.thirtyDayAvgMinutes || '?') + '), REM: ' + (rem.minutes || '?') + 'min (30d avg ' + (rem.thirtyDayAvgMinutes || '?') + ')\n' +
     '- RHR: ' + (fitData.rhr || '?') + 'bpm (7d avg ' + (r7.rhr || '?') + '), HRV: ' + (fitData.hrv || '?') + ' (7d avg ' + (r7.hrv || '?') + ')\n' +
-    '- Yesterday zones - Peak: ' + (pz.peak || 0) + 'min, Cardio: ' + (pz.cardio || 0) + 'min, Fat Burn: ' + (pz.fatBurn || 0) + 'min\n' +
+    '- Yesterday zones: Peak ' + (pz.peak || 0) + 'min, Cardio ' + (pz.cardio || 0) + 'min, Fat Burn ' + (pz.fatBurn || 0) + 'min\n' +
     '- Steps yesterday: ' + (fitData.steps ? fitData.steps.toLocaleString() : '?') + '\n\n' +
-    'RECENT 7-DAY LOG:\n' + recent + '\n' +
-    'ATHLETE PROFILE - SHIMMY:\n' +
-    '- Primary: MMA / combat sports\n' +
-    '- Goals: strength, stamina, fixing chronic hip/quad/groin tightness\n' +
-    '- Rule: never miss twice, minimum viable option always available\n' +
-    '- Phase: building consistency 3-4x/week\n\n' +
-    'Respond ONLY with raw JSON no markdown:\n' +
-    '{"headline":"6-8 word punchy recommendation","workout":"specific workout","duration":45,"intensity":"descriptor","reasoning":"2-3 sentences with specific numbers","exercises":["ex + sets/reps","ex + sets/reps","ex + sets/reps","ex + sets/reps","ex + sets/reps"],"mobility":"hip/groin/quad focus","minimum_viable":"fallback option","warning":"one caution or null"}';
+    'RECENT 10-DAY LOG:\n' + recent + '\n\n' +
+    'FULL ATHLETE PROFILE:\n' + FULL_PROFILE + '\n\n' +
+    'IMPORTANT RULES FOR YOUR RECOMMENDATION:\n' +
+    '- NEVER suggest exercises that cause sharp pubic pain\n' +
+    '- AVOID spin drills (concussion history causes dizziness)\n' +
+    '- ALWAYS include a mobility/posture component - this is non-negotiable\n' +
+    '- If readiness under 60: recovery-focused session only, no heavy loading\n' +
+    '- Always account for whether a gig day happened recently (fatigue from standing)\n' +
+    '- Reference actual HRV vs 7-day average in your reasoning\n' +
+    '- Minimum viable option must be genuinely doable in 10-15 min\n\n' +
+    'Respond ONLY with raw JSON, no markdown:\n' +
+    '{"headline":"6-8 word punchy headline","workout":"specific workout name","duration":45,"intensity":"descriptor","reasoning":"2-3 sentences referencing specific numbers from today and recent pattern","exercises":["exercise + sets/reps/time","exercise + sets/reps/time","exercise + sets/reps/time","exercise + sets/reps/time","exercise + sets/reps/time"],"mobility":"specific hip/posture/groin focus for today","minimum_viable":"genuine 10-15 min fallback","warning":"one specific caution based on the data, or null"}';
 
   fetch('/api/ai', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ model: 'claude-sonnet-4-20250514', max_tokens: 1000, messages: [{ role: 'user', content: prompt }] })
+    body: JSON.stringify({ model: 'claude-sonnet-4-20250514', max_tokens: 1200, messages: [{ role: 'user', content: prompt }] })
   })
   .then(function(r) { return r.json(); })
   .then(function(data) {
     var raw = (data.content && data.content[0]) ? data.content[0].text : '{}';
-    aiRec = JSON.parse(raw.replace(/```json|```/g, '').trim());
+    var cleaned = raw.indexOf('{') >= 0 ? raw.substring(raw.indexOf('{'), raw.lastIndexOf('}') + 1) : '{}';
+    aiRec = JSON.parse(cleaned);
     var cached = JSON.parse(localStorage.getItem('ac_cache') || '{}');
     cached.aiRec = aiRec;
     localStorage.setItem('ac_cache', JSON.stringify(cached));
@@ -314,20 +642,15 @@ function renderAI() {
   var exHTML = '';
   var exes = aiRec.exercises || [];
   for (var i = 0; i < exes.length; i++) {
-    exHTML += '<div style="display:flex;gap:12px;padding:7px 0;border-bottom:1px solid #0a0c12;font-size:13px;align-items:flex-start">' +
-      '<span class="mono" style="font-size:9px;color:#1e2028;width:20px;flex-shrink:0;padding-top:2px">0' + (i+1) + '</span>' +
-      '<span style="color:#ccc;line-height:1.5">' + exes[i] + '</span>' +
-      '</div>';
+    var num = i < 9 ? '0' + (i+1) : '' + (i+1);
+    exHTML += '<div style="display:flex;gap:12px;padding:7px 0;border-bottom:1px solid #0a0c12;font-size:13px;align-items:flex-start"><span class="mono" style="font-size:9px;color:#1e2028;width:20px;flex-shrink:0;padding-top:2px">' + num + '</span><span style="color:#ccc;line-height:1.5">' + exes[i] + '</span></div>';
   }
   document.getElementById('ai-content').innerHTML =
     '<div class="oswald" style="font-size:22px;font-weight:600;color:#fff;margin-bottom:3px">' + aiRec.headline + '</div>' +
     '<div class="mono" style="font-size:11px;color:#22c97a;margin-bottom:14px">' + aiRec.workout + ' - ' + aiRec.duration + 'min - ' + aiRec.intensity + '</div>' +
     '<p style="font-size:14px;color:#888;line-height:1.75;margin-bottom:14px">' + aiRec.reasoning + '</p>' +
     (aiRec.warning ? '<div style="background:#e8454512;border:1px solid #e8454528;color:#e87;padding:8px 12px;border-radius:6px;font-size:12px;margin-bottom:14px">Warning: ' + aiRec.warning + '</div>' : '') +
-    '<div style="background:#060810;border-radius:8px;padding:14px;margin-bottom:14px">' +
-      '<p class="mono" style="font-size:9px;color:#2a2c30;letter-spacing:3px;margin-bottom:10px">TODAY\'S PLAN</p>' +
-      exHTML +
-    '</div>' +
+    '<div style="background:#060810;border-radius:8px;padding:14px;margin-bottom:14px"><p class="mono" style="font-size:9px;color:#2a2c30;letter-spacing:3px;margin-bottom:10px">TODAY\'S PLAN</p>' + exHTML + '</div>' +
     (aiRec.mobility ? '<p style="font-size:13px;color:#4488bb;margin-bottom:12px;font-style:italic">Mobility: ' + aiRec.mobility + '</p>' : '') +
     (aiRec.minimum_viable ? '<div style="background:#f5a62310;border:1px solid #f5a62322;padding:10px 14px;border-radius:6px"><p class="mono" style="font-size:9px;color:#f5a623;letter-spacing:2px;margin-bottom:6px">MINIMUM VIABLE</p><p style="font-size:13px;color:#c8a060;line-height:1.65">' + aiRec.minimum_viable + '</p></div>' : '');
 }
@@ -340,7 +663,7 @@ function renderLogArea() {
   }
   var el = document.getElementById('log-area');
   if (todayEntry) {
-    el.innerHTML = '<div class="loggedPill">done: ' + todayEntry.type + (todayEntry.mobility ? ' + mobility' : '') + '</div>';
+    el.innerHTML = '<div class="loggedPill">done: ' + todayEntry.type + (todayEntry.mobility ? ' + mobility' : '') + (todayEntry.med ? ' + meditation' : '') + '</div>';
   } else {
     el.innerHTML = '<button class="logBtn" onclick="openModal()">+ log today\'s workout</button>';
   }
@@ -349,23 +672,39 @@ function renderLogArea() {
 function openModal()  { document.getElementById('log-modal').style.display = 'flex'; }
 function closeModal() { document.getElementById('log-modal').style.display = 'none'; }
 
+function saveWorkoutToSupabase(entry) {
+  fetch('/api/workouts', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(entry)
+  }).catch(function(e) { console.error('Save error:', e); });
+}
+
 function saveWorkout() {
   var type = document.getElementById('wtype').value;
   if (!type) return;
+  var medDone = document.getElementById('wmed').checked;
   var entry = {
     date: ds(0), type: type,
     notes: document.getElementById('wnotes').value,
     done: document.getElementById('wdone').checked,
     mobility: document.getElementById('wmob').checked,
+    med: medDone,
     ts: Date.now()
   };
-  workoutLog.push(entry);
+  workoutLog.unshift(entry);
   localStorage.setItem('ac_log', JSON.stringify(workoutLog));
+  saveWorkoutToSupabase(entry);
+  if (medDone && medLog.indexOf(ds(0)) < 0) {
+    medLog.push(ds(0));
+    renderMeditationStatus();
+  }
   closeModal();
   document.getElementById('wtype').value = '';
   document.getElementById('wnotes').value = '';
   document.getElementById('wdone').checked = true;
   document.getElementById('wmob').checked = false;
+  document.getElementById('wmed').checked = false;
   renderLogArea();
   renderWeek();
   renderLog();
@@ -375,92 +714,55 @@ function saveWorkout() {
 function renderWeek() {
   var days = [];
   for (var i = 0; i < 7; i++) {
-    var d = new Date();
-    d.setDate(d.getDate() - (6 - i));
-    var str   = d.toISOString().split('T')[0];
+    var d = new Date(); d.setDate(d.getDate() - (6 - i));
+    var str = d.toISOString().split('T')[0];
     var entry = null;
-    for (var j = 0; j < workoutLog.length; j++) {
-      if (workoutLog[j].date === str) { entry = workoutLog[j]; break; }
-    }
+    for (var j = 0; j < workoutLog.length; j++) { if (workoutLog[j].date === str) { entry = workoutLog[j]; break; } }
     days.push({ str: str, dow: d.toLocaleDateString('en-US',{weekday:'short'}), dom: d.getDate(), entry: entry, today: i === 6 });
   }
-
-  var done = 0, mob = 0;
+  var done = 0, mob = 0, med = 0;
   for (var i = 0; i < days.length; i++) {
     if (days[i].entry && days[i].entry.done) done++;
     if (days[i].entry && days[i].entry.mobility) mob++;
+    if (medLog.indexOf(days[i].str) >= 0) med++;
   }
-  var pct   = Math.round((done / 7) * 100);
+  var pct = Math.round((done / 7) * 100);
   var color = pct >= 57 ? '#22c97a' : pct >= 43 ? '#f5a623' : '#e84545';
-
   var statsHTML = '';
-  var stats = [[done,'workouts'],[mob,'mobility'],[pct+'%','consistency']];
-  for (var i = 0; i < stats.length; i++) {
-    statsHTML += '<div class="card" style="text-align:center;padding:14px">' +
-      '<div class="oswald" style="font-size:34px;font-weight:700;color:' + color + '">' + stats[i][0] + '</div>' +
-      '<div class="mono" style="font-size:9px;color:#444;letter-spacing:2px;margin-top:4px">' + stats[i][1].toUpperCase() + '</div>' +
-      '</div>';
-  }
+  var stats = [[done,'workouts'],[mob,'mobility'],[med,'meditations']];
+  for (var i = 0; i < stats.length; i++) { statsHTML += '<div class="card" style="text-align:center;padding:14px"><div class="oswald" style="font-size:34px;font-weight:700;color:' + color + '">' + stats[i][0] + '</div><div class="mono" style="font-size:9px;color:#444;letter-spacing:2px;margin-top:4px">' + stats[i][1].toUpperCase() + '</div></div>'; }
   document.getElementById('week-stats').innerHTML = statsHTML;
-
   var lastTwo = days.slice(-2);
   var doubleSkip = (!lastTwo[0].entry || !lastTwo[0].entry.done) && (!lastTwo[1].entry || !lastTwo[1].entry.done);
   document.getElementById('double-skip-warn').style.display = doubleSkip ? 'block' : 'none';
-
   var gridHTML = '';
   for (var i = 0; i < days.length; i++) {
     var d = days[i];
-    var cls = 'dayCard' + (d.today ? ' today' : '') + (d.entry && d.entry.done ? ' done' : '');
-    gridHTML += '<div class="' + cls + '" style="background:' + (d.today?'#0e1018':'#080a0f') + ';border:1px solid ' + (d.entry&&d.entry.done?'#22c97a33':d.today?'#1a1c22':'#0a0c10') + ';border-radius:10px;padding:10px 4px;text-align:center">' +
-      '<div class="mono" style="font-size:9px;color:#333;margin-bottom:3px">' + d.dow + '</div>' +
-      '<div class="oswald" style="font-size:19px;color:' + (d.today?'#fff':'#555') + ';margin-bottom:3px">' + d.dom + '</div>';
+    gridHTML += '<div style="background:' + (d.today?'#0e1018':'#080a0f') + ';border:1px solid ' + (d.entry&&d.entry.done?'#22c97a33':d.today?'#1a1c22':'#0a0c10') + ';border-radius:10px;padding:10px 4px;text-align:center"><div class="mono" style="font-size:9px;color:#333;margin-bottom:3px">' + d.dow + '</div><div class="oswald" style="font-size:19px;color:' + (d.today?'#fff':'#555') + ';margin-bottom:3px">' + d.dom + '</div>';
     if (d.entry) {
-      gridHTML += '<div style="font-size:8px;color:#333;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;margin-bottom:2px">' + d.entry.type.split(' ')[0] + '</div>' +
-        '<div style="font-size:11px">' + (d.entry.done ? '<span style="color:#22c97a">done</span>' : '<span style="color:#e84545">skip</span>') + (d.entry.mobility ? ' M' : '') + '</div>';
-    } else {
-      gridHTML += '<div style="color:#111;font-size:14px">-</div>';
-    }
+      gridHTML += '<div style="font-size:8px;color:#333;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;margin-bottom:2px">' + d.entry.type.split(' ')[0] + '</div><div style="font-size:11px">' + (d.entry.done ? '<span style="color:#22c97a">done</span>' : '<span style="color:#e84545">skip</span>') + (d.entry.mobility ? '<span style="font-size:8px;color:#4488bb"> M</span>' : '') + (d.entry.med ? '<span style="font-size:8px;color:#9966cc"> Z</span>' : '') + '</div>';
+    } else { gridHTML += '<div style="color:#111;font-size:14px">-</div>'; }
     gridHTML += '</div>';
   }
   document.getElementById('week-grid').innerHTML = gridHTML;
-
   var cutoff = new Date(); cutoff.setDate(cutoff.getDate() - 6);
   var types = {};
-  for (var i = 0; i < workoutLog.length; i++) {
-    var w = workoutLog[i];
-    if (new Date(w.date) >= cutoff) {
-      var cat = w.type.split(' ')[0];
-      types[cat] = (types[cat] || 0) + 1;
-    }
-  }
+  for (var i = 0; i < workoutLog.length; i++) { var w = workoutLog[i]; if (new Date(w.date) >= cutoff) { var cat = w.type.split(' ')[0]; types[cat] = (types[cat] || 0) + 1; } }
   var entries = Object.keys(types);
   var bdHTML = '<p class="clabel">this week</p>';
-  if (entries.length) {
-    for (var i = 0; i < entries.length; i++) {
-      bdHTML += '<div style="display:flex;justify-content:space-between;padding:6px 0;border-bottom:1px solid #0a0c10;font-size:13px;color:#999"><span>' + entries[i] + '</span><span class="mono" style="font-size:11px;color:#22c97a">' + types[entries[i]] + 'x</span></div>';
-    }
-  } else {
-    bdHTML += '<p style="color:#2a2c30;font-size:13px;font-style:italic">No sessions logged.</p>';
-  }
+  if (entries.length) { for (var i = 0; i < entries.length; i++) { bdHTML += '<div style="display:flex;justify-content:space-between;padding:6px 0;border-bottom:1px solid #0a0c10;font-size:13px;color:#999"><span>' + entries[i] + '</span><span class="mono" style="font-size:11px;color:#22c97a">' + types[entries[i]] + 'x</span></div>'; } }
+  else { bdHTML += '<p style="color:#2a2c30;font-size:13px;font-style:italic">No sessions logged.</p>'; }
   document.getElementById('week-breakdown').innerHTML = bdHTML;
 }
 
 function renderLog() {
   var sorted = workoutLog.slice().reverse().slice(0, 60);
   document.getElementById('log-count').textContent = 'HISTORY - ' + workoutLog.length + ' SESSIONS';
-  if (!sorted.length) {
-    document.getElementById('log-entries').innerHTML = '<p style="color:#2a2c30;font-style:italic;text-align:center;padding:40px 0;font-size:14px">No sessions yet.</p>';
-    return;
-  }
+  if (!sorted.length) { document.getElementById('log-entries').innerHTML = '<p style="color:#2a2c30;font-style:italic;text-align:center;padding:40px 0;font-size:14px">No sessions yet. Start with today!</p>'; return; }
   var html = '';
   for (var i = 0; i < sorted.length; i++) {
     var w = sorted[i];
-    html += '<div class="card" style="padding:12px 16px;margin-bottom:10px">' +
-      '<div class="mono" style="font-size:10px;color:#333;margin-bottom:4px">' + w.date + '</div>' +
-      '<div style="font-weight:500;font-size:15px;margin-bottom:4px;color:#ddd">' + w.type + '</div>' +
-      '<div class="mono" style="font-size:11px">' + (w.done ? '<span style="color:#22c97a">completed</span>' : '<span style="color:#e84545">skipped</span>') + (w.mobility ? '<span style="color:#4488bb"> + mobility</span>' : '') + '</div>' +
-      (w.notes ? '<p style="font-size:12px;color:#333;margin-top:5px;font-style:italic">' + w.notes + '</p>' : '') +
-      '</div>';
+    html += '<div class="card" style="padding:12px 16px;margin-bottom:10px"><div class="mono" style="font-size:10px;color:#333;margin-bottom:4px">' + w.date + '</div><div style="font-weight:500;font-size:15px;margin-bottom:4px;color:#ddd">' + w.type + '</div><div class="mono" style="font-size:11px">' + (w.done ? '<span style="color:#22c97a">completed</span>' : '<span style="color:#e84545">skipped</span>') + (w.mobility ? '<span style="color:#4488bb"> + mobility</span>' : '') + (w.med ? '<span style="color:#9966cc"> + meditation</span>' : '') + '</div>' + (w.notes ? '<p style="font-size:12px;color:#444;margin-top:5px;font-style:italic">' + w.notes + '</p>' : '') + '</div>';
   }
   document.getElementById('log-entries').innerHTML = html;
 }
