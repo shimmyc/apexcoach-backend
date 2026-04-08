@@ -242,6 +242,22 @@ app.post("/api/workouts", async function(req, res) {
 });
 
 // ── MEDITATION LOG ─────────────────────────────────────────────────────────
+
+app.patch("/api/workouts/:id", async function(req, res) {
+  try {
+    var id = req.params.id;
+    var r = await fetch(SUPABASE_URL + "/rest/v1/workouts?id=eq." + id, {
+      method: "PATCH",
+      headers: sbHeaders("return=representation"),
+      body: JSON.stringify(req.body),
+    });
+    var data = await r.json();
+    res.json({ success: true, workout: data });
+  } catch (e) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
 app.get("/api/meditations", async function(req, res) {
   try {
     var r = await fetch(SUPABASE_URL + "/rest/v1/workouts?select=date&med=eq.true&order=date.desc&limit=30", {
