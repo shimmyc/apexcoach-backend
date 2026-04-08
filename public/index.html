@@ -436,6 +436,19 @@ var FULL_PROFILE = 'ATHLETE: Shimmy Castle, Hoffman Estates IL. New dad (baby No
 document.getElementById('dow').textContent = new Date().toLocaleDateString('en-US', {weekday:'long'});
 document.getElementById('dom').textContent = new Date().toLocaleDateString('en-US', {month:'long', day:'numeric'});
 
+var todayLocal = (function() {
+  var d = new Date();
+  var year = d.getFullYear();
+  var month = String(d.getMonth() + 1).padStart(2, '0');
+  var day = String(d.getDate()).padStart(2, '0');
+  return year + '-' + month + '-' + day;
+})();
+var cachedDate = localStorage.getItem('ac_cache_date');
+if (cachedDate !== todayLocal) {
+  localStorage.removeItem('ac_cache');
+  localStorage.setItem('ac_cache_date', todayLocal);
+}
+
 loadWorkouts().then(function() {
   renderWeek();
   renderLog();
@@ -462,7 +475,10 @@ function ds(offset) {
   offset = offset || 0;
   var d = new Date();
   d.setDate(d.getDate() + offset);
-  return d.toISOString().split('T')[0];
+  var year = d.getFullYear();
+  var month = String(d.getMonth() + 1).padStart(2, '0');
+  var day = String(d.getDate()).padStart(2, '0');
+  return year + '-' + month + '-' + day;
 }
 
 function toggleMeditation() {
