@@ -7,7 +7,7 @@
 <link href="https://fonts.googleapis.com/css2?family=Oswald:wght@400;600;700&family=IBM+Plex+Mono:wght@400;500&family=DM+Sans:ital,wght@0,400;0,500;0,600;1,400&display=swap" rel="stylesheet">
 <style>
 *{box-sizing:border-box;margin:0;padding:0}
-body{background:#080a0f;color:#e0e0e0;font-family:'DM Sans',sans-serif;min-height:100vh}
+body{background:#080a0f;color:#e0e0e0;font-family:'DM Sans',sans-serif;min-height:100vh;font-size:16px;line-height:1.6}
 @keyframes pulse{0%,100%{opacity:.2}50%{opacity:1}}
 @keyframes fadeUp{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:translateY(0)}}
 header{display:flex;align-items:center;justify-content:space-between;padding:14px 40px;border-bottom:1px solid #0d0f14;background:#080a0f;position:sticky;top:0;z-index:10;max-width:100%}
@@ -21,7 +21,7 @@ main{max-width:860px;margin:0 auto;padding:32px 40px 80px}
 @media(max-width:700px){header{padding:13px 16px}main{padding:22px 16px 80px}.navBtn{padding:6px 8px;font-size:10px}}
 .stack{display:flex;flex-direction:column;gap:14px}
 .card{background:#0d0f16;border:1px solid #0e1016;border-radius:12px;padding:22px;transition:border-color .4s}
-.clabel{font-family:'IBM Plex Mono',monospace;font-size:10px;color:#2a2c30;letter-spacing:3px;margin-bottom:14px}
+.clabel{font-family:'IBM Plex Mono',monospace;font-size:11px;color:#3a3c40;letter-spacing:3px;margin-bottom:14px;text-transform:uppercase}
 .tab{display:none}.tab.active{display:flex;flex-direction:column;gap:14px;animation:fadeUp .35s ease}
 .bar-track{flex:1;height:4px;background:#0e1016;border-radius:2px;overflow:hidden}
 .bar-fill{height:100%;border-radius:2px;transition:width .9s cubic-bezier(.4,0,.2,1)}
@@ -38,7 +38,7 @@ select option{background:#0d0f16;color:#e0e0e0}
 .goalsGrid{display:grid;grid-template-columns:repeat(3,1fr);gap:14px}
 input[type=checkbox]{accent-color:#22c97a;width:14px;height:14px;cursor:pointer}
 input[type=range]{width:100%;accent-color:#22c97a}
-.mono{font-family:'IBM Plex Mono',monospace}
+.mono{font-family:'IBM Plex Mono',monospace;font-size:13px}
 .oswald{font-family:'Oswald',sans-serif}
 .pill{display:inline-block;padding:2px 10px;border-radius:4px;font-family:'IBM Plex Mono',monospace;font-size:9px;letter-spacing:2px}
 .pill-green{background:#22c97a18;color:#22c97a;border:1px solid #22c97a33}
@@ -364,6 +364,11 @@ input[type=range]{width:100%;accent-color:#22c97a}
 <div class="overlay" id="log-modal" style="display:none" onclick="closeModal()">
   <div class="modal" onclick="event.stopPropagation()">
     <p class="mono" style="font-size:10px;color:#555;letter-spacing:3px;margin-bottom:14px">LOG TODAY'S WORKOUT</p>
+    <p class="mono" style="font-size:10px;color:#555;letter-spacing:2px;margin-bottom:6px">LOG FOR</p>
+    <select id="wdate" style="margin-bottom:14px">
+      <option value="today">Today</option>
+      <option value="yesterday">Yesterday</option>
+    </select>
     <select id="wtype">
       <option value="">Choose type...</option>
       <option>Mixed Training</option>
@@ -378,7 +383,12 @@ input[type=range]{width:100%;accent-color:#22c97a}
       <option>Walking</option>
       <option>Rest Day</option>
     </select>
-    <textarea id="wnotes" rows="3" placeholder="Notes — how did it feel, any pain, energy level..."></textarea>
+    <div style="position:relative">
+      <textarea id="wnotes" rows="4" placeholder="Notes — how did it feel, any pain, energy level... or use the mic button" style="padding-right:44px"></textarea>
+      <button onclick="startVoice()" id="mic-btn" title="Voice input" style="position:absolute;right:10px;top:10px;background:#22c97a18;border:1px solid #22c97a33;color:#22c97a;border-radius:6px;padding:6px 10px;cursor:pointer;font-size:14px">🎙</button>
+    </div>
+    <div id="voice-status" style="font-size:11px;color:#555;font-family:'IBM Plex Mono',monospace;margin-bottom:8px;min-height:16px"></div>
+    <button onclick="formatNotesWithAI()" style="background:#4488bb18;border:1px solid #4488bb33;color:#4488bb;padding:6px 14px;border-radius:6px;font-size:11px;font-family:'IBM Plex Mono',monospace;cursor:pointer;margin-bottom:10px;letter-spacing:1px">✦ AI FORMAT NOTES</button>
     <div style="display:flex;gap:20px;margin-bottom:16px">
       <label style="display:flex;align-items:center;cursor:pointer">
         <input type="checkbox" id="wdone" checked>
@@ -577,19 +587,94 @@ function renderReadiness() {
   var card = document.getElementById('readiness-card');
   card.style.display = 'block';
   card.style.borderColor = t.color + '44';
+
   var bars = [['Sleep Quality', readiness.breakdown.sleepQuality, 25], ['Sleep Cliff', readiness.breakdown.sleepCliff, 25], ['Nervous System', readiness.breakdown.nervousSystem, 30], ['Recovery', readiness.breakdown.recovery, 20]];
   var barsHTML = '';
   for (var i = 0; i < bars.length; i++) {
-    barsHTML += '<div style="display:flex;align-items:center;gap:8px;margin-bottom:9px"><span class="mono" style="font-size:9px;color:#444;width:110px;flex-shrink:0">' + bars[i][0] + '</span><div class="bar-track"><div class="bar-fill" style="width:' + ((bars[i][1]/bars[i][2])*100) + '%;background:' + t.color + '"></div></div><span class="mono" style="font-size:9px;color:#333;width:34px;text-align:right">' + bars[i][1] + '/' + bars[i][2] + '</span></div>';
+    barsHTML += '<div style="display:flex;align-items:center;gap:8px;margin-bottom:10px"><span class="mono" style="font-size:11px;color:#555;width:130px;flex-shrink:0">' + bars[i][0] + '</span><div class="bar-track"><div class="bar-fill" style="width:' + ((bars[i][1]/bars[i][2])*100) + '%;background:' + t.color + '"></div></div><span class="mono" style="font-size:11px;color:#555;width:38px;text-align:right">' + bars[i][1] + '/' + bars[i][2] + '</span></div>';
   }
-  var vitals = '';
-  if (fitData.sleep && fitData.sleep.hours) vitals += '<span>sleep ' + fitData.sleep.hours.toFixed(1) + 'h</span> ';
-  if (fitData.rhr)   vitals += '<span>heart ' + fitData.rhr + 'bpm</span> ';
-  if (fitData.hrv)   vitals += '<span>HRV ' + Math.round(fitData.hrv) + '</span> ';
-  if (fitData.steps) vitals += '<span>' + fitData.steps.toLocaleString() + ' steps</span>';
-  card.innerHTML = '<p class="clabel">readiness score</p><div style="display:flex;align-items:baseline;gap:6px;margin-bottom:10px"><span class="oswald" style="font-size:96px;font-weight:700;line-height:1;color:' + t.color + '">' + readiness.score + '</span><span style="color:#2a2c30;font-size:22px",font-size:28px">/100</span></div><div style="display:inline-block;border:1px solid ' + t.color + '44;background:' + t.color + '15;color:' + t.color + ';padding:3px 12px;border-radius:4px;font-family:IBM Plex Mono,monospace;font-size:10px;letter-spacing:3px;margin-bottom:18px">' + t.label + ' ' + t.range + '</div>' + barsHTML + '<div style="display:flex;gap:16px;margin-top:14px;padding-top:14px;border-top:1px solid #0e1016;font-family:IBM Plex Mono,monospace;font-size:11px;color:#444;flex-wrap:wrap">' + vitals + '</div>';
+
+  var stages = (fitData.sleep && fitData.sleep.stages) || {};
+  var deep = stages.deep || {}; var light = stages.light || {}; var rem = stages.rem || {}; var wake = stages.wake || {};
+  var sleepStagesHTML = '';
+  if (deep.minutes || rem.minutes) {
+    sleepStagesHTML = '<div style="margin-top:16px;padding-top:16px;border-top:1px solid #0e1016">' +
+      '<p class="clabel" style="margin-bottom:10px">sleep stages</p>' +
+      '<div style="display:grid;grid-template-columns:repeat(4,1fr);gap:10px">' +
+      stagePill("Deep", deep.minutes, deep.thirtyDayAvgMinutes, "#4488bb") +
+      stagePill("REM", rem.minutes, rem.thirtyDayAvgMinutes, "#9966cc") +
+      stagePill("Light", light.minutes, light.thirtyDayAvgMinutes, "#22c97a") +
+      stagePill("Awake", wake.minutes, wake.thirtyDayAvgMinutes, "#e84545") +
+      '</div></div>';
+  }
+
+  var pz = fitData.prevZones || {};
+  var totalZones = (pz.peak||0) + (pz.cardio||0) + (pz.fatBurn||0);
+  var zonesHTML = '<div style="margin-top:16px;padding-top:16px;border-top:1px solid #0e1016">' +
+    '<p class="clabel" style="margin-bottom:10px">yesterday zone minutes</p>' +
+    '<div style="display:flex;align-items:baseline;gap:8px;margin-bottom:12px">' +
+    '<span class="oswald" style="font-size:36px;font-weight:700;color:#f5a623">' + totalZones + '</span>' +
+    '<span class="mono" style="font-size:12px;color:#555">total active min</span></div>' +
+    '<div style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px">' +
+    zonePill("Peak", pz.peak||0, "#e84545") +
+    zonePill("Cardio", pz.cardio||0, "#f5a623") +
+    zonePill("Fat Burn", pz.fatBurn||0, "#22c97a") +
+    '</div></div>';
+
+  var r7 = fitData.rolling7 || {};
+  var hrvDiff = fitData.hrv ? (fitData.hrv - (r7.hrv || fitData.hrv)) : 0;
+  var hrvColor = hrvDiff >= 0 ? '#22c97a' : '#e84545';
+  var hrvArrow = hrvDiff >= 0 ? '+ ' : '- ';
+  var hrvHTML = fitData.hrv ? '<div style="margin-top:16px;padding-top:16px;border-top:1px solid #0e1016">' +
+    '<p class="clabel" style="margin-bottom:10px">heart rate variability</p>' +
+    '<div style="display:grid;grid-template-columns:repeat(3,1fr);gap:10px">' +
+    statCard("HRV Today", Math.round(fitData.hrv * 10)/10, "rmssd") +
+    statCard("7-Day Avg", r7.hrv || "-", "rmssd") +
+    '<div style="background:#060810;border-radius:8px;padding:12px;text-align:center"><div class="mono" style="font-size:10px;color:#555;margin-bottom:4px">VS AVG</div><div class="oswald" style="font-size:24px;font-weight:700;color:' + hrvColor + '">' + hrvArrow + Math.abs(Math.round(hrvDiff*10)/10) + '</div></div>' +
+    '</div></div>' : '';
+
+  var vitalsHTML = '<div style="display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-top:16px;padding-top:16px;border-top:1px solid #0e1016">' +
+    statCard("Sleep", fitData.sleep && fitData.sleep.hours ? fitData.sleep.hours.toFixed(1) + "h" : "-", fitData.sleep && fitData.sleep.efficiency ? fitData.sleep.efficiency + "% eff" : "") +
+    statCard("Resting HR", fitData.rhr ? fitData.rhr + " bpm" : "-", r7.rhr ? "7d avg " + r7.rhr : "") +
+    statCard("Steps", fitData.steps ? fitData.steps.toLocaleString() : "-", "yesterday") +
+    statCard("Awake", fitData.sleep && fitData.sleep.minutesAwake ? fitData.sleep.minutesAwake + " min" : "-", "during sleep") +
+    '</div>';
+
+  card.innerHTML =
+    '<p class="clabel">readiness score</p>' +
+    '<div style="display:flex;align-items:baseline;gap:8px;margin-bottom:10px">' +
+    '<span class="oswald" style="font-size:96px;font-weight:700;line-height:1;color:' + t.color + '">' + readiness.score + '</span>' +
+    '<span style="color:#333;font-size:28px">/100</span></div>' +
+    '<div style="display:inline-block;border:1px solid ' + t.color + '44;background:' + t.color + '15;color:' + t.color + ';padding:4px 14px;border-radius:4px;font-family:IBM Plex Mono,monospace;font-size:11px;letter-spacing:3px;margin-bottom:18px">' + t.label + ' ' + t.range + '</div>' +
+    barsHTML + vitalsHTML + sleepStagesHTML + zonesHTML + hrvHTML;
+
   document.getElementById('ai-card').style.display = 'block';
   renderLogArea();
+}
+
+function stagePill(name, mins, avg, color) {
+  return '<div style="background:#060810;border-radius:8px;padding:12px;text-align:center">' +
+    '<div class="mono" style="font-size:10px;color:#555;margin-bottom:4px">' + name + '</div>' +
+    '<div class="oswald" style="font-size:26px;font-weight:700;color:' + color + '">' + (mins||0) + '</div>' +
+    '<div class="mono" style="font-size:10px;color:#333">min</div>' +
+    (avg ? '<div class="mono" style="font-size:9px;color:#2a2c30">avg ' + avg + '</div>' : '') +
+    '</div>';
+}
+
+function zonePill(name, mins, color) {
+  return '<div style="background:#060810;border-radius:8px;padding:12px;text-align:center">' +
+    '<div class="mono" style="font-size:10px;color:#555;margin-bottom:4px">' + name + '</div>' +
+    '<div class="oswald" style="font-size:26px;font-weight:700;color:' + color + '">' + (mins||0) + '</div>' +
+    '<div class="mono" style="font-size:10px;color:#333">min</div>' +
+    '</div>';
+}
+
+function statCard(label, value, sub) {
+  return '<div style="background:#060810;border-radius:8px;padding:12px;text-align:center">' +
+    '<div class="mono" style="font-size:10px;color:#555;margin-bottom:4px">' + label + '</div>' +
+    '<div class="oswald" style="font-size:20px;font-weight:700;color:#ddd">' + value + '</div>' +
+    (sub ? '<div class="mono" style="font-size:9px;color:#333">' + sub + '</div>' : '') +
+    '</div>';
 }
 
 function fetchAI() {
@@ -700,8 +785,10 @@ function saveWorkout() {
   var type = document.getElementById('wtype').value;
   if (!type) return;
   var medDone = document.getElementById('wmed').checked;
+  var dateEl = document.getElementById('wdate');
+  var entryDate = dateEl && dateEl.value === 'yesterday' ? ds(-1) : ds(0);
   var entry = {
-    date: ds(0), type: type,
+    date: entryDate, type: type,
     notes: document.getElementById('wnotes').value,
     done: document.getElementById('wdone').checked,
     mobility: document.getElementById('wmob').checked,
@@ -721,6 +808,8 @@ function saveWorkout() {
   document.getElementById('wdone').checked = true;
   document.getElementById('wmob').checked = false;
   document.getElementById('wmed').checked = false;
+  var dateEl = document.getElementById('wdate'); if(dateEl) dateEl.value='today';
+  document.getElementById('voice-status').textContent = '';
   renderLogArea();
   renderWeek();
   renderLog();
@@ -779,6 +868,106 @@ function renderLog() {
   for (var i = 0; i < sorted.length; i++) {
     var w = sorted[i];
     html += '<div class="card" style="padding:12px 16px;margin-bottom:10px"><div class="mono" style="font-size:10px;color:#333;margin-bottom:4px">' + w.date + '</div><div style="font-weight:500;font-size:15px;margin-bottom:4px;color:#ddd">' + w.type + '</div><div class="mono" style="font-size:11px">' + (w.done ? '<span style="color:#22c97a">completed</span>' : '<span style="color:#e84545">skipped</span>') + (w.mobility ? '<span style="color:#4488bb"> + mobility</span>' : '') + (w.med ? '<span style="color:#9966cc"> + meditation</span>' : '') + '</div>' + (w.notes ? '<p style="font-size:12px;color:#444;margin-top:5px;font-style:italic">' + w.notes + '</p>' : '') + '</div>';
+  }
+  document.getElementById('log-entries').innerHTML = html;
+}
+
+// ── VOICE INPUT ───────────────────────────────────────────────────────────
+var recognition = null;
+function startVoice() {
+  var SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+  if (!SpeechRecognition) {
+    document.getElementById('voice-status').textContent = 'Voice not supported in this browser. Use Chrome.';
+    return;
+  }
+  if (recognition) { recognition.stop(); recognition = null; document.getElementById('mic-btn').textContent = '🎙'; return; }
+  recognition = new SpeechRecognition();
+  recognition.continuous = true;
+  recognition.interimResults = true;
+  recognition.lang = 'en-US';
+  var existing = document.getElementById('wnotes').value;
+  document.getElementById('mic-btn').textContent = '⏹';
+  document.getElementById('voice-status').textContent = 'Listening...';
+  recognition.onresult = function(e) {
+    var interim = '';
+    var final = '';
+    for (var i = e.resultIndex; i < e.results.length; i++) {
+      if (e.results[i].isFinal) final += e.results[i][0].transcript;
+      else interim += e.results[i][0].transcript;
+    }
+    document.getElementById('wnotes').value = existing + (existing ? ' ' : '') + final;
+    document.getElementById('voice-status').textContent = interim ? 'Hearing: ' + interim : 'Listening...';
+  };
+  recognition.onerror = function(e) {
+    document.getElementById('voice-status').textContent = 'Error: ' + e.error;
+    document.getElementById('mic-btn').textContent = '🎙';
+    recognition = null;
+  };
+  recognition.onend = function() {
+    document.getElementById('mic-btn').textContent = '🎙';
+    document.getElementById('voice-status').textContent = 'Done. Click AI Format to clean it up.';
+    recognition = null;
+  };
+  recognition.start();
+}
+
+function formatNotesWithAI() {
+  var notes = document.getElementById('wnotes').value;
+  if (!notes.trim()) return;
+  var type = document.getElementById('wtype').value;
+  document.getElementById('voice-status').textContent = 'Formatting with AI...';
+  fetch('/api/ai', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      model: 'claude-sonnet-4-20250514',
+      max_tokens: 600,
+      messages: [{ role: 'user', content: 'Format these workout notes into a clean structured list. Each exercise or activity on its own line. Expand abbreviations. Add reps/sets formatting where mentioned. Keep it concise. Return ONLY the formatted text, no JSON, no explanation:
+
+' + notes }]
+    })
+  })
+  .then(function(r) { return r.json(); })
+  .then(function(data) {
+    var formatted = (data.content && data.content[0]) ? data.content[0].text.trim() : notes;
+    document.getElementById('wnotes').value = formatted;
+    document.getElementById('voice-status').textContent = 'Formatted!';
+    setTimeout(function() { document.getElementById('voice-status').textContent = ''; }, 2000);
+  })
+  .catch(function() { document.getElementById('voice-status').textContent = 'Format failed - notes unchanged'; });
+}
+
+// ── RENDER LOG - with formatted notes display ──────────────────────────────
+function renderLog() {
+  var sorted = workoutLog.slice(0, 60);
+  document.getElementById('log-count').textContent = 'HISTORY - ' + workoutLog.length + ' SESSIONS';
+  if (!sorted.length) { document.getElementById('log-entries').innerHTML = '<p style="color:#2a2c30;font-style:italic;text-align:center;padding:40px 0;font-size:15px">No sessions yet. Start with today!</p>'; return; }
+  var html = '';
+  for (var i = 0; i < sorted.length; i++) {
+    var w = sorted[i];
+    var notesHTML = '';
+    if (w.notes) {
+      var lines = w.notes.split(/\n/).filter(function(l) { return l.trim(); });
+      if (lines.length > 1) {
+        notesHTML = '<ul style="margin-top:8px;padding-left:18px;list-style:disc">' +
+          lines.map(function(l) { return '<li style="font-size:13px;color:#666;line-height:1.8;padding:1px 0">' + l.trim() + '</li>'; }).join('') +
+          '</ul>';
+      } else {
+        notesHTML = '<p style="font-size:13px;color:#555;margin-top:6px;font-style:italic;line-height:1.65">' + w.notes + '</p>';
+      }
+    }
+    html += '<div class="card" style="padding:16px 20px;margin-bottom:10px">' +
+      '<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px">' +
+        '<div class="mono" style="font-size:11px;color:#444">' + w.date + '</div>' +
+        '<div style="display:flex;gap:6px">' +
+          (w.done ? '<span style="font-family:IBM Plex Mono,monospace;font-size:10px;color:#22c97a;background:#22c97a12;padding:2px 8px;border-radius:4px">done</span>' : '<span style="font-family:IBM Plex Mono,monospace;font-size:10px;color:#e84545;background:#e8454512;padding:2px 8px;border-radius:4px">skip</span>') +
+          (w.mobility ? '<span style="font-family:IBM Plex Mono,monospace;font-size:10px;color:#4488bb;background:#4488bb12;padding:2px 8px;border-radius:4px">mobility</span>' : '') +
+          (w.med ? '<span style="font-family:IBM Plex Mono,monospace;font-size:10px;color:#9966cc;background:#9966cc12;padding:2px 8px;border-radius:4px">meditated</span>' : '') +
+        '</div>' +
+      '</div>' +
+      '<div style="font-weight:600;font-size:17px;color:#fff;margin-bottom:2px">' + w.type + '</div>' +
+      notesHTML +
+      '</div>';
   }
   document.getElementById('log-entries').innerHTML = html;
 }
