@@ -922,9 +922,7 @@ function formatNotesWithAI() {
     body: JSON.stringify({
       model: 'claude-sonnet-4-20250514',
       max_tokens: 600,
-      messages: [{ role: 'user', content: 'Format these workout notes into a clean structured list. Each exercise or activity on its own line. Expand abbreviations. Add reps/sets formatting where mentioned. Keep it concise. Return ONLY the formatted text, no JSON, no explanation:
-
-' + notes }]
+      messages: [{ role: 'user', content: 'Format these workout notes into a clean structured list. Each exercise or activity on its own line. Expand abbreviations. Add reps/sets formatting where mentioned. Keep it concise. Return ONLY the formatted text, no JSON, no explanation: ' + notes }]
     })
   })
   .then(function(r) { return r.json(); })
