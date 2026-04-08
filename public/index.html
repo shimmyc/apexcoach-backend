@@ -10,17 +10,18 @@
 body{background:#080a0f;color:#e0e0e0;font-family:'DM Sans',sans-serif;min-height:100vh}
 @keyframes pulse{0%,100%{opacity:.2}50%{opacity:1}}
 @keyframes fadeUp{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:translateY(0)}}
-header{display:flex;align-items:center;justify-content:space-between;padding:13px 20px;border-bottom:1px solid #0d0f14;background:#080a0f;position:sticky;top:0;z-index:10}
-.logo{font-family:'Oswald',sans-serif;font-size:20px;font-weight:700;color:#22c97a;letter-spacing:2px}
-.logosub{font-family:'IBM Plex Mono',monospace;font-size:10px;color:#141618;letter-spacing:3px;margin-left:4px}
-nav{display:flex;gap:1px}
-.navBtn{background:transparent;border:none;color:#333;padding:6px 9px;font-size:10px;cursor:pointer;letter-spacing:2px;font-family:'IBM Plex Mono',monospace;border-radius:4px;transition:all .15s}
+header{display:flex;align-items:center;justify-content:space-between;padding:14px 40px;border-bottom:1px solid #0d0f14;background:#080a0f;position:sticky;top:0;z-index:10;max-width:100%}
+.logo{font-family:'Oswald',sans-serif;font-size:22px;font-weight:700;color:#22c97a;letter-spacing:2px}
+.logosub{font-family:'IBM Plex Mono',monospace;font-size:11px;color:#141618;letter-spacing:3px;margin-left:4px}
+nav{display:flex;gap:4px}
+.navBtn{background:transparent;border:none;color:#444;padding:8px 16px;font-size:11px;cursor:pointer;letter-spacing:2px;font-family:'IBM Plex Mono',monospace;border-radius:4px;transition:all .15s}
 .navBtn.active{color:#22c97a;background:#22c97a10}
-.syncBtn{background:transparent;border:1px solid #0e1016;color:#333;padding:5px 10px;font-size:12px;cursor:pointer;font-family:'IBM Plex Mono',monospace;border-radius:4px}
-main{max-width:640px;margin:0 auto;padding:22px 16px 80px}
+.syncBtn{background:transparent;border:1px solid #1a1c22;color:#444;padding:7px 14px;font-size:11px;cursor:pointer;font-family:'IBM Plex Mono',monospace;border-radius:4px}
+main{max-width:860px;margin:0 auto;padding:32px 40px 80px}
+@media(max-width:700px){header{padding:13px 16px}main{padding:22px 16px 80px}.navBtn{padding:6px 8px;font-size:10px}}
 .stack{display:flex;flex-direction:column;gap:14px}
-.card{background:#0d0f16;border:1px solid #0e1016;border-radius:10px;padding:18px;transition:border-color .4s}
-.clabel{font-family:'IBM Plex Mono',monospace;font-size:9px;color:#2a2c30;letter-spacing:3px;margin-bottom:12px}
+.card{background:#0d0f16;border:1px solid #0e1016;border-radius:12px;padding:22px;transition:border-color .4s}
+.clabel{font-family:'IBM Plex Mono',monospace;font-size:10px;color:#2a2c30;letter-spacing:3px;margin-bottom:14px}
 .tab{display:none}.tab.active{display:flex;flex-direction:column;gap:14px;animation:fadeUp .35s ease}
 .bar-track{flex:1;height:4px;background:#0e1016;border-radius:2px;overflow:hidden}
 .bar-fill{height:100%;border-radius:2px;transition:width .9s cubic-bezier(.4,0,.2,1)}
@@ -33,8 +34,8 @@ select option{background:#0d0f16;color:#e0e0e0}
 .btnPri{background:#22c97a;color:#040605;border:none;padding:12px 22px;font-size:13px;font-weight:700;cursor:pointer;border-radius:6px}
 .btnSec{background:transparent;color:#555;border:1px solid #1a1c22;padding:12px 22px;font-size:13px;cursor:pointer;border-radius:6px}
 .weekGrid{display:grid;grid-template-columns:repeat(7,1fr);gap:5px}
-.statsGrid{display:grid;grid-template-columns:repeat(3,1fr);gap:10px}
-.goalsGrid{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+.statsGrid{display:grid;grid-template-columns:repeat(3,1fr);gap:14px}
+.goalsGrid{display:grid;grid-template-columns:repeat(3,1fr);gap:14px}
 input[type=checkbox]{accent-color:#22c97a;width:14px;height:14px;cursor:pointer}
 input[type=range]{width:100%;accent-color:#22c97a}
 .mono{font-family:'IBM Plex Mono',monospace}
@@ -68,8 +69,8 @@ input[type=range]{width:100%;accent-color:#22c97a}
   <!-- TODAY TAB -->
   <div id="tab-today" class="tab active stack">
     <div>
-      <div class="oswald" id="dow" style="font-size:30px;font-weight:600;letter-spacing:1px;color:#fff"></div>
-      <div class="mono" id="dom" style="font-size:11px;color:#444;letter-spacing:2px"></div>
+      <div class="oswald" id="dow" style="font-size:42px;font-weight:600;letter-spacing:1px;color:#fff"></div>
+      <div class="mono" id="dom" style="font-size:13px;color:#444;letter-spacing:2px"></div>
     </div>
     <div id="status-box" class="card" style="border-color:#22c97a22">
       <p class="mono" style="font-size:11px;color:#22c97a;letter-spacing:3px;animation:pulse 1.6s infinite">FETCHING FITBIT DATA...</p>
@@ -366,7 +367,6 @@ input[type=range]{width:100%;accent-color:#22c97a}
     <select id="wtype">
       <option value="">Choose type...</option>
       <option>Mixed Training</option>
-      <option>Mixed Training</option>
       <option>MMA / Sparring</option>
       <option>Strength - Upper</option>
       <option>Strength - Lower</option>
@@ -571,7 +571,7 @@ function renderReadiness() {
   if (fitData.rhr)   vitals += '<span>heart ' + fitData.rhr + 'bpm</span> ';
   if (fitData.hrv)   vitals += '<span>HRV ' + Math.round(fitData.hrv) + '</span> ';
   if (fitData.steps) vitals += '<span>' + fitData.steps.toLocaleString() + ' steps</span>';
-  card.innerHTML = '<p class="clabel">readiness score</p><div style="display:flex;align-items:baseline;gap:6px;margin-bottom:10px"><span class="oswald" style="font-size:76px;font-weight:700;line-height:1;color:' + t.color + '">' + readiness.score + '</span><span style="color:#2a2c30;font-size:22px">/100</span></div><div style="display:inline-block;border:1px solid ' + t.color + '44;background:' + t.color + '15;color:' + t.color + ';padding:3px 12px;border-radius:4px;font-family:IBM Plex Mono,monospace;font-size:10px;letter-spacing:3px;margin-bottom:18px">' + t.label + ' ' + t.range + '</div>' + barsHTML + '<div style="display:flex;gap:16px;margin-top:14px;padding-top:14px;border-top:1px solid #0e1016;font-family:IBM Plex Mono,monospace;font-size:11px;color:#444;flex-wrap:wrap">' + vitals + '</div>';
+  card.innerHTML = '<p class="clabel">readiness score</p><div style="display:flex;align-items:baseline;gap:6px;margin-bottom:10px"><span class="oswald" style="font-size:96px;font-weight:700;line-height:1;color:' + t.color + '">' + readiness.score + '</span><span style="color:#2a2c30;font-size:22px",font-size:28px">/100</span></div><div style="display:inline-block;border:1px solid ' + t.color + '44;background:' + t.color + '15;color:' + t.color + ';padding:3px 12px;border-radius:4px;font-family:IBM Plex Mono,monospace;font-size:10px;letter-spacing:3px;margin-bottom:18px">' + t.label + ' ' + t.range + '</div>' + barsHTML + '<div style="display:flex;gap:16px;margin-top:14px;padding-top:14px;border-top:1px solid #0e1016;font-family:IBM Plex Mono,monospace;font-size:11px;color:#444;flex-wrap:wrap">' + vitals + '</div>';
   document.getElementById('ai-card').style.display = 'block';
   renderLogArea();
 }
