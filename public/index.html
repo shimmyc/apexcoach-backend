@@ -820,7 +820,7 @@ function renderWeek() {
   var days = [];
   for (var i = 0; i < 7; i++) {
     var d = new Date(); d.setDate(d.getDate() - (6 - i));
-    var str = d.toISOString().split('T')[0];
+    var str = d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
     var entry = null;
     for (var j = 0; j < workoutLog.length; j++) { if (workoutLog[j].date === str) { entry = workoutLog[j]; break; } }
     days.push({ str: str, dow: d.toLocaleDateString('en-US',{weekday:'short'}), dom: d.getDate(), entry: entry, today: i === 6 });
