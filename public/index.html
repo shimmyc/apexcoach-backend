@@ -1017,7 +1017,7 @@ function renderBelt() {
   for (var i = 0; i < BELTS.length; i++) {
     var b = BELTS[i];
     var sel = b.id === currentBeltId;
-    selHTML += '<button onclick="selectBelt('' + b.id + '')" style="background:' + b.bg + ';border:2px solid ' + b.color + (sel ? ';box-shadow:0 0 6px ' + b.color : '') + ';color:' + b.color + ';padding:6px 12px;border-radius:6px;cursor:pointer;font-size:13px;font-family:DM Sans,sans-serif">' + b.label + '</button>';
+    selHTML += '<button onclick="selectBelt(\'' + b.id + '\')" style="background:' + b.bg + ';border:2px solid ' + b.color + (sel ? ';box-shadow:0 0 6px ' + b.color : '') + ';color:' + b.color + ';padding:6px 12px;border-radius:6px;cursor:pointer;font-size:13px;font-family:DM Sans,sans-serif">' + b.label + '</button>';
   }
   document.getElementById('belt-selector').innerHTML = selHTML;
 }
