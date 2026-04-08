@@ -7,21 +7,21 @@
 <link href="https://fonts.googleapis.com/css2?family=Oswald:wght@400;600;700&family=IBM+Plex+Mono:wght@400;500&family=DM+Sans:ital,wght@0,400;0,500;0,600;1,400&display=swap" rel="stylesheet">
 <style>
 *{box-sizing:border-box;margin:0;padding:0}
-body{background:#080a0f;color:#e0e0e0;font-family:'DM Sans',sans-serif;min-height:100vh;font-size:16px;line-height:1.6}
+body{background:#080a0f;color:#e0e0e0;font-family:'DM Sans',sans-serif;min-height:100vh;font-size:17px;line-height:1.7}
 @keyframes pulse{0%,100%{opacity:.2}50%{opacity:1}}
 @keyframes fadeUp{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:translateY(0)}}
 header{display:flex;align-items:center;justify-content:space-between;padding:14px 40px;border-bottom:1px solid #0d0f14;background:#080a0f;position:sticky;top:0;z-index:10;max-width:100%}
-.logo{font-family:'Oswald',sans-serif;font-size:22px;font-weight:700;color:#22c97a;letter-spacing:2px}
+.logo{font-family:'Oswald',sans-serif;font-size:26px;font-weight:700;color:#22c97a;letter-spacing:2px}
 .logosub{font-family:'IBM Plex Mono',monospace;font-size:11px;color:#141618;letter-spacing:3px;margin-left:4px}
 nav{display:flex;gap:4px}
-.navBtn{background:transparent;border:none;color:#444;padding:8px 16px;font-size:11px;cursor:pointer;letter-spacing:2px;font-family:'IBM Plex Mono',monospace;border-radius:4px;transition:all .15s}
+.navBtn{background:transparent;border:none;color:#555;padding:10px 20px;font-size:15px;cursor:pointer;font-family:'DM Sans',sans-serif;font-weight:500;border-radius:4px;transition:all .15s}
 .navBtn.active{color:#22c97a;background:#22c97a10}
-.syncBtn{background:transparent;border:1px solid #1a1c22;color:#444;padding:7px 14px;font-size:11px;cursor:pointer;font-family:'IBM Plex Mono',monospace;border-radius:4px}
+.syncBtn{background:transparent;border:1px solid #1a1c22;color:#555;padding:8px 16px;font-size:14px;cursor:pointer;font-family:'DM Sans',sans-serif;border-radius:4px}
 main{max-width:860px;margin:0 auto;padding:32px 40px 80px}
 @media(max-width:700px){header{padding:13px 16px}main{padding:22px 16px 80px}.navBtn{padding:6px 8px;font-size:10px}}
 .stack{display:flex;flex-direction:column;gap:14px}
 .card{background:#0d0f16;border:1px solid #0e1016;border-radius:12px;padding:22px;transition:border-color .4s}
-.clabel{font-family:'IBM Plex Mono',monospace;font-size:11px;color:#3a3c40;letter-spacing:3px;margin-bottom:14px;text-transform:uppercase}
+.clabel{font-family:'IBM Plex Mono',monospace;font-size:12px;color:#4a4c50;letter-spacing:3px;margin-bottom:16px;text-transform:uppercase}
 .tab{display:none}.tab.active{display:flex;flex-direction:column;gap:14px;animation:fadeUp .35s ease}
 .bar-track{flex:1;height:4px;background:#0e1016;border-radius:2px;overflow:hidden}
 .bar-fill{height:100%;border-radius:2px;transition:width .9s cubic-bezier(.4,0,.2,1)}
@@ -29,7 +29,7 @@ main{max-width:860px;margin:0 auto;padding:32px 40px 80px}
 .loggedPill{font-family:'IBM Plex Mono',monospace;font-size:11px;color:#22c97a;letter-spacing:2px;padding:13px;background:#22c97a08;border:1px solid #22c97a20;border-radius:8px;text-align:center}
 .overlay{position:fixed;inset:0;background:rgba(0,0,0,.92);display:flex;align-items:center;justify-content:center;z-index:100;padding:20px}
 .modal{background:#0d0f16;border:1px solid #141618;border-radius:14px;padding:24px;width:100%;max-width:420px;max-height:90vh;overflow-y:auto}
-select,textarea{width:100%;background:#060810;border:1px solid #0e1016;color:#e0e0e0;padding:10px 12px;border-radius:6px;font-size:14px;margin-bottom:10px;outline:none;font-family:'DM Sans',sans-serif}
+select,textarea{width:100%;background:#060810;border:1px solid #0e1016;color:#e0e0e0;padding:11px 14px;border-radius:6px;font-size:15px;margin-bottom:10px;outline:none;font-family:'DM Sans',sans-serif}
 select option{background:#0d0f16;color:#e0e0e0}
 .btnPri{background:#22c97a;color:#040605;border:none;padding:12px 22px;font-size:13px;font-weight:700;cursor:pointer;border-radius:6px}
 .btnSec{background:transparent;color:#555;border:1px solid #1a1c22;padding:12px 22px;font-size:13px;cursor:pointer;border-radius:6px}
@@ -38,7 +38,7 @@ select option{background:#0d0f16;color:#e0e0e0}
 .goalsGrid{display:grid;grid-template-columns:repeat(3,1fr);gap:14px}
 input[type=checkbox]{accent-color:#22c97a;width:14px;height:14px;cursor:pointer}
 input[type=range]{width:100%;accent-color:#22c97a}
-.mono{font-family:'IBM Plex Mono',monospace;font-size:13px}
+.mono{font-family:'IBM Plex Mono',monospace;font-size:14px}
 .oswald{font-family:'Oswald',sans-serif}
 .pill{display:inline-block;padding:2px 10px;border-radius:4px;font-family:'IBM Plex Mono',monospace;font-size:9px;letter-spacing:2px}
 .pill-green{background:#22c97a18;color:#22c97a;border:1px solid #22c97a33}
@@ -56,10 +56,10 @@ input[type=range]{width:100%;accent-color:#22c97a}
     <span class="logo">APEX</span><span class="logosub">COACH</span>
   </div>
   <nav>
-    <button class="navBtn active" onclick="showTab('today',this)">today</button>
-    <button class="navBtn" onclick="showTab('week',this)">week</button>
-    <button class="navBtn" onclick="showTab('log',this)">log</button>
-    <button class="navBtn" onclick="showTab('profile',this)">profile</button>
+    <button class="navBtn active" onclick="showTab('today',this)">Today</button>
+    <button class="navBtn" onclick="showTab('week',this)">Week</button>
+    <button class="navBtn" onclick="showTab('log',this)">Log</button>
+    <button class="navBtn" onclick="showTab('profile',this)">Profile</button>
   </nav>
   <button class="syncBtn" onclick="syncFitbit()">sync</button>
 </header>
@@ -69,7 +69,7 @@ input[type=range]{width:100%;accent-color:#22c97a}
   <!-- TODAY TAB -->
   <div id="tab-today" class="tab active stack">
     <div>
-      <div class="oswald" id="dow" style="font-size:42px;font-weight:600;letter-spacing:1px;color:#fff"></div>
+      <div class="oswald" id="dow" style="font-size:52px;font-weight:600;letter-spacing:1px;color:#fff"></div>
       <div class="mono" id="dom" style="font-size:13px;color:#444;letter-spacing:2px"></div>
     </div>
     <div id="status-box" class="card" style="border-color:#22c97a22">
@@ -120,89 +120,33 @@ input[type=range]{width:100%;accent-color:#22c97a}
     </div>
 
     <!-- BELT PROGRESS -->
-    <div class="card">
-      <p class="clabel">belt journey to black</p>
-      <div style="display:flex;align-items:center;gap:6px;margin-bottom:14px;flex-wrap:wrap">
-        <div style="text-align:center">
-          <div style="width:28px;height:28px;border-radius:50%;background:#5c4a1e;border:2px solid #8B6914;display:flex;align-items:center;justify-content:center;font-size:9px;color:#c9a227;font-family:'IBM Plex Mono',monospace">B1</div>
-          <div style="font-size:8px;color:#444;margin-top:3px">blue</div>
-        </div>
-        <div style="height:2px;width:14px;background:#22c97a;border-radius:1px"></div>
-        <div style="text-align:center;position:relative">
-          <div style="width:28px;height:28px;border-radius:50%;background:#22c97a18;border:2px solid #22c97a;display:flex;align-items:center;justify-content:center;font-size:9px;color:#22c97a;font-family:'IBM Plex Mono',monospace">B2</div>
-          <div style="font-size:8px;color:#22c97a;margin-top:3px">YOU</div>
-        </div>
-        <div style="height:2px;width:14px;background:#1a1c22;border-radius:1px"></div>
-        <div style="text-align:center">
-          <div style="width:28px;height:28px;border-radius:50%;background:#160a1a;border:2px solid #2a1c2e;display:flex;align-items:center;justify-content:center;font-size:9px;color:#444;font-family:'IBM Plex Mono',monospace">PU</div>
-          <div style="font-size:8px;color:#333;margin-top:3px">purple</div>
-        </div>
-        <div style="height:2px;width:14px;background:#1a1c22;border-radius:1px"></div>
-        <div style="text-align:center">
-          <div style="width:28px;height:28px;border-radius:50%;background:#0f0a06;border:2px solid #2a1c10;display:flex;align-items:center;justify-content:center;font-size:9px;color:#444;font-family:'IBM Plex Mono',monospace">BR</div>
-          <div style="font-size:8px;color:#333;margin-top:3px">brown</div>
-        </div>
-        <div style="height:2px;width:14px;background:#1a1c22;border-radius:1px"></div>
-        <div style="text-align:center">
-          <div style="width:28px;height:28px;border-radius:50%;background:#080a0f;border:2px solid #1a1c22;display:flex;align-items:center;justify-content:center;font-size:9px;color:#333;font-family:'IBM Plex Mono',monospace">BK</div>
-          <div style="font-size:8px;color:#333;margin-top:3px">black</div>
-        </div>
+    <div class="card" id="belt-card">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">
+        <p class="clabel" style="margin-bottom:0">Belt Journey to Black</p>
+        <button onclick="toggleBeltEdit()" id="belt-edit-btn" style="background:transparent;border:1px solid #1a1c22;color:#666;padding:5px 12px;border-radius:6px;cursor:pointer;font-size:13px">Edit</button>
       </div>
-      <div class="bar-track" style="margin-bottom:6px">
-        <div class="bar-fill" style="width:30%;background:linear-gradient(90deg,#22c97a,#f5a623)"></div>
-      </div>
-      <div style="display:flex;justify-content:space-between;font-family:'IBM Plex Mono',monospace;font-size:9px;color:#444">
-        <span>start</span><span style="color:#22c97a">~30% complete</span><span>black belt</span>
+      <div id="belt-display"></div>
+      <div id="belt-editor" style="display:none">
+        <p style="font-size:14px;color:#888;margin-bottom:12px">Select your current belt:</p>
+        <div id="belt-selector" style="display:flex;flex-wrap:wrap;gap:8px;margin-bottom:16px"></div>
+        <button onclick="saveBelt()" class="btnPri" style="font-size:14px">Save</button>
       </div>
     </div>
 
     <!-- BIG GOALS -->
     <div class="card">
-      <p class="clabel">goals and milestones</p>
-      <div class="goalsGrid">
-
-        <div style="background:#060810;border:1px solid #0e1016;border-radius:8px;padding:14px">
-          <div style="font-size:18px;margin-bottom:6px">🏔</div>
-          <div style="font-size:13px;font-weight:500;color:#ddd;margin-bottom:4px">Mountain Hike</div>
-          <div style="font-size:12px;color:#555;line-height:1.6;margin-bottom:10px">6-8 miles with Noam on back. No stopping.</div>
-          <div class="mono" style="font-size:9px;color:#f5a623;letter-spacing:1px">IN PROGRESS</div>
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">
+        <p class="clabel" style="margin-bottom:0">Goals &amp; Milestones</p>
+        <button onclick="toggleGoalEdit()" style="background:transparent;border:1px solid #1a1c22;color:#666;padding:5px 12px;border-radius:6px;cursor:pointer;font-size:13px">Edit</button>
+      </div>
+      <div id="goals-display" class="goalsGrid"></div>
+      <div id="goals-editor" style="display:none;margin-top:12px">
+        <div id="goals-list"></div>
+        <button onclick="addGoal()" style="background:#22c97a12;border:1px solid #22c97a25;color:#22c97a;padding:8px 16px;border-radius:6px;cursor:pointer;font-size:14px;width:100%;margin-top:8px">+ Add Goal</button>
+        <div style="display:flex;gap:8px;margin-top:12px;justify-content:flex-end">
+          <button onclick="toggleGoalEdit()" class="btnSec" style="font-size:14px">Cancel</button>
+          <button onclick="saveGoals()" class="btnPri" style="font-size:14px">Save Goals</button>
         </div>
-
-        <div style="background:#060810;border:1px solid #0e1016;border-radius:8px;padding:14px">
-          <div style="font-size:18px;margin-bottom:6px">🥋</div>
-          <div style="font-size:13px;font-weight:500;color:#ddd;margin-bottom:4px">Black Belt</div>
-          <div style="font-size:12px;color:#555;line-height:1.6;margin-bottom:10px">Blue belt now. Purple, 3x brown, then black.</div>
-          <div class="mono" style="font-size:9px;color:#f5a623;letter-spacing:1px">LONG GAME</div>
-        </div>
-
-        <div style="background:#060810;border:1px solid #0e1016;border-radius:8px;padding:14px">
-          <div style="font-size:18px;margin-bottom:6px">💪</div>
-          <div style="font-size:13px;font-weight:500;color:#ddd;margin-bottom:4px">Build Muscle</div>
-          <div style="font-size:12px;color:#555;line-height:1.6;margin-bottom:10px">Look stronger. Functional size, not bulk.</div>
-          <div class="mono" style="font-size:9px;color:#f5a623;letter-spacing:1px">IN PROGRESS</div>
-        </div>
-
-        <div style="background:#060810;border:1px solid #0e1016;border-radius:8px;padding:14px">
-          <div style="font-size:18px;margin-bottom:6px">🧍</div>
-          <div style="font-size:13px;font-weight:500;color:#ddd;margin-bottom:4px">Fix Posture</div>
-          <div style="font-size:12px;color:#555;line-height:1.6;margin-bottom:10px">Fix anterior pelvic tilt, rounded shoulders, forward head.</div>
-          <div class="mono" style="font-size:9px;color:#f5a623;letter-spacing:1px">IN PROGRESS</div>
-        </div>
-
-        <div style="background:#060810;border:1px solid #0e1016;border-radius:8px;padding:14px">
-          <div style="font-size:18px;margin-bottom:6px">🧘</div>
-          <div style="font-size:13px;font-weight:500;color:#ddd;margin-bottom:4px">Daily Meditation</div>
-          <div style="font-size:12px;color:#555;line-height:1.6;margin-bottom:10px">Build the habit. Even 5 minutes counts.</div>
-          <div id="med-status" class="mono" style="font-size:9px;color:#555;letter-spacing:1px;cursor:pointer" onclick="toggleMeditation()">TAP TO LOG TODAY</div>
-        </div>
-
-        <div style="background:#060810;border:1px solid #0e1016;border-radius:8px;padding:14px">
-          <div style="font-size:18px;margin-bottom:6px">❤</div>
-          <div style="font-size:13px;font-weight:500;color:#ddd;margin-bottom:4px">Stamina</div>
-          <div style="font-size:12px;color:#555;line-height:1.6;margin-bottom:10px">Full MMA rounds without gassing. Better cardio baseline.</div>
-          <div class="mono" style="font-size:9px;color:#f5a623;letter-spacing:1px">IN PROGRESS</div>
-        </div>
-
       </div>
     </div>
 
@@ -491,6 +435,23 @@ function ds(offset) {
   return year + '-' + month + '-' + day;
 }
 
+function fmtMins(mins) {
+  if (!mins && mins !== 0) return '-';
+  mins = Math.round(mins);
+  var h = Math.floor(mins / 60);
+  var m = mins % 60;
+  if (h === 0) return m + 'm';
+  return h + 'h ' + (m > 0 ? m + 'm' : '');
+}
+
+function fmtHours(hours) {
+  if (!hours) return '-';
+  var totalMins = Math.round(hours * 60);
+  var h = Math.floor(totalMins / 60);
+  var m = totalMins % 60;
+  return h + 'h ' + (m > 0 ? m + 'm' : '');
+}
+
 function toggleMeditation() {
   var today = ds(0);
   var idx = medLog.indexOf(today);
@@ -601,20 +562,20 @@ function renderReadiness() {
     sleepStagesHTML = '<div style="margin-top:16px;padding-top:16px;border-top:1px solid #0e1016">' +
       '<p class="clabel" style="margin-bottom:10px">sleep stages</p>' +
       '<div style="display:grid;grid-template-columns:repeat(4,1fr);gap:10px">' +
-      stagePill("Deep", deep.minutes, deep.thirtyDayAvgMinutes, "#4488bb") +
-      stagePill("REM", rem.minutes, rem.thirtyDayAvgMinutes, "#9966cc") +
-      stagePill("Light", light.minutes, light.thirtyDayAvgMinutes, "#22c97a") +
-      stagePill("Awake", wake.minutes, wake.thirtyDayAvgMinutes, "#e84545") +
+      stagePill("Deep", deep.minutes, deep.thirtyDayAvgMinutes, "#4488bb", (deep.minutes||0)+(rem.minutes||0)+(light.minutes||0)+(wake.minutes||0)) +
+      stagePill("REM", rem.minutes, rem.thirtyDayAvgMinutes, "#9966cc", (deep.minutes||0)+(rem.minutes||0)+(light.minutes||0)+(wake.minutes||0)) +
+      stagePill("Light", light.minutes, light.thirtyDayAvgMinutes, "#22c97a", (deep.minutes||0)+(rem.minutes||0)+(light.minutes||0)+(wake.minutes||0)) +
+      stagePill("Awake", wake.minutes, wake.thirtyDayAvgMinutes, "#e84545", (deep.minutes||0)+(rem.minutes||0)+(light.minutes||0)+(wake.minutes||0)) +
       '</div></div>';
   }
 
   var pz = fitData.prevZones || {};
   var totalZones = (pz.peak||0) + (pz.cardio||0) + (pz.fatBurn||0);
   var zonesHTML = '<div style="margin-top:16px;padding-top:16px;border-top:1px solid #0e1016">' +
-    '<p class="clabel" style="margin-bottom:10px">yesterday zone minutes</p>' +
-    '<div style="display:flex;align-items:baseline;gap:8px;margin-bottom:12px">' +
-    '<span class="oswald" style="font-size:36px;font-weight:700;color:#f5a623">' + totalZones + '</span>' +
-    '<span class="mono" style="font-size:12px;color:#555">total active min</span></div>' +
+    '<p class="clabel" style="margin-bottom:10px">zone minutes</p>' +
+    '<div style="text-align:center;margin-bottom:14px">' +
+    '<div class="oswald" style="font-size:52px;font-weight:700;color:#f5a623;line-height:1">' + totalZones + '</div>' +
+    '<div class="mono" style="font-size:12px;color:#666;margin-top:4px">total zone minutes</div></div>' +
     '<div style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px">' +
     zonePill("Peak", pz.peak||0, "#e84545") +
     zonePill("Cardio", pz.cardio||0, "#f5a623") +
@@ -634,7 +595,7 @@ function renderReadiness() {
     '</div></div>' : '';
 
   var vitalsHTML = '<div style="display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-top:16px;padding-top:16px;border-top:1px solid #0e1016">' +
-    statCard("Sleep", fitData.sleep && fitData.sleep.hours ? fitData.sleep.hours.toFixed(1) + "h" : "-", fitData.sleep && fitData.sleep.efficiency ? fitData.sleep.efficiency + "% eff" : "") +
+    statCard("Sleep", fitData.sleep && fitData.sleep.hours ? fmtHours(fitData.sleep.hours) : "-", fitData.sleep && fitData.sleep.efficiency ? fitData.sleep.efficiency + "% efficient" : "") +
     statCard("Resting HR", fitData.rhr ? fitData.rhr + " bpm" : "-", r7.rhr ? "7d avg " + r7.rhr : "") +
     statCard("Steps", fitData.steps ? fitData.steps.toLocaleString() : "-", "yesterday") +
     statCard("Awake", fitData.sleep && fitData.sleep.minutesAwake ? fitData.sleep.minutesAwake + " min" : "-", "during sleep") +
@@ -652,12 +613,13 @@ function renderReadiness() {
   renderLogArea();
 }
 
-function stagePill(name, mins, avg, color) {
+function stagePill(name, mins, avg, color, totalMins) {
+  var pct = (totalMins && mins) ? Math.round((mins / totalMins) * 100) : null;
   return '<div style="background:#060810;border-radius:8px;padding:12px;text-align:center">' +
-    '<div class="mono" style="font-size:10px;color:#555;margin-bottom:4px">' + name + '</div>' +
-    '<div class="oswald" style="font-size:26px;font-weight:700;color:' + color + '">' + (mins||0) + '</div>' +
-    '<div class="mono" style="font-size:10px;color:#333">min</div>' +
-    (avg ? '<div class="mono" style="font-size:9px;color:#2a2c30">avg ' + avg + '</div>' : '') +
+    '<div class="mono" style="font-size:11px;color:#666;margin-bottom:6px">' + name + '</div>' +
+    '<div class="oswald" style="font-size:22px;font-weight:700;color:' + color + ';line-height:1.2">' + fmtMins(mins||0) + '</div>' +
+    (pct ? '<div class="mono" style="font-size:12px;color:' + color + ';opacity:0.7;margin-top:2px">' + pct + '%</div>' : '') +
+    (avg ? '<div class="mono" style="font-size:10px;color:#333;margin-top:3px">avg ' + fmtMins(avg) + '</div>' : '') +
     '</div>';
 }
 
@@ -770,7 +732,26 @@ function renderLogArea() {
   }
 }
 
-function openModal()  { document.getElementById('log-modal').style.display = 'flex'; }
+var editingWorkoutId = null;
+
+function editWorkout(entry) {
+  editingWorkoutId = entry.id || null;
+  document.getElementById('wtype').value = entry.type || '';
+  document.getElementById('wnotes').value = entry.notes || '';
+  document.getElementById('wdone').checked = entry.done !== false;
+  document.getElementById('wmob').checked = !!entry.mobility;
+  document.getElementById('wmed').checked = !!entry.med;
+  var dateEl = document.getElementById('wdate');
+  if (dateEl) dateEl.value = entry.date === ds(-1) ? 'yesterday' : 'today';
+  document.querySelector('.modal p.mono').textContent = editingWorkoutId ? 'EDIT WORKOUT' : "LOG TODAY'S WORKOUT";
+  document.getElementById('log-modal').style.display = 'flex';
+}
+
+function openModal() {
+  editingWorkoutId = null;
+  document.querySelector('.modal p.mono').textContent = "LOG TODAY'S WORKOUT";
+  document.getElementById('log-modal').style.display = 'flex';
+}
 function closeModal() { document.getElementById('log-modal').style.display = 'none'; }
 
 function saveWorkoutToSupabase(entry) {
@@ -779,6 +760,14 @@ function saveWorkoutToSupabase(entry) {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(entry)
   }).catch(function(e) { console.error('Save error:', e); });
+}
+
+function updateWorkoutInSupabase(id, entry) {
+  fetch('/api/workouts/' + id, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(entry)
+  }).catch(function(e) { console.error('Update error:', e); });
 }
 
 function saveWorkout() {
@@ -795,21 +784,32 @@ function saveWorkout() {
     med: medDone,
     ts: Date.now()
   };
-  workoutLog.unshift(entry);
-  localStorage.setItem('ac_log', JSON.stringify(workoutLog));
-  saveWorkoutToSupabase(entry);
-  if (medDone && medLog.indexOf(ds(0)) < 0) {
-    medLog.push(ds(0));
-    renderMeditationStatus();
+
+  if (editingWorkoutId) {
+    // Update existing
+    for (var i = 0; i < workoutLog.length; i++) {
+      if (workoutLog[i].id === editingWorkoutId) {
+        workoutLog[i] = Object.assign(workoutLog[i], entry);
+        break;
+      }
+    }
+    updateWorkoutInSupabase(editingWorkoutId, entry);
+  } else {
+    workoutLog.unshift(entry);
+    saveWorkoutToSupabase(entry);
   }
+
+  localStorage.setItem('ac_log', JSON.stringify(workoutLog));
+  if (medDone && medLog.indexOf(ds(0)) < 0) { medLog.push(ds(0)); renderMeditationStatus(); }
   closeModal();
   document.getElementById('wtype').value = '';
   document.getElementById('wnotes').value = '';
   document.getElementById('wdone').checked = true;
   document.getElementById('wmob').checked = false;
   document.getElementById('wmed').checked = false;
-  var dateEl = document.getElementById('wdate'); if(dateEl) dateEl.value='today';
+  if(dateEl) dateEl.value='today';
   document.getElementById('voice-status').textContent = '';
+  editingWorkoutId = null;
   renderLogArea();
   renderWeek();
   renderLog();
@@ -954,21 +954,186 @@ function renderLog() {
         notesHTML = '<p style="font-size:13px;color:#555;margin-top:6px;font-style:italic;line-height:1.65">' + w.notes + '</p>';
       }
     }
+    var editData = JSON.stringify({id:w.id,date:w.date,type:w.type,notes:w.notes||'',done:w.done,mobility:w.mobility,med:w.med}).replace(/"/g,"'");
     html += '<div class="card" style="padding:16px 20px;margin-bottom:10px">' +
       '<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px">' +
-        '<div class="mono" style="font-size:11px;color:#444">' + w.date + '</div>' +
-        '<div style="display:flex;gap:6px">' +
-          (w.done ? '<span style="font-family:IBM Plex Mono,monospace;font-size:10px;color:#22c97a;background:#22c97a12;padding:2px 8px;border-radius:4px">done</span>' : '<span style="font-family:IBM Plex Mono,monospace;font-size:10px;color:#e84545;background:#e8454512;padding:2px 8px;border-radius:4px">skip</span>') +
-          (w.mobility ? '<span style="font-family:IBM Plex Mono,monospace;font-size:10px;color:#4488bb;background:#4488bb12;padding:2px 8px;border-radius:4px">mobility</span>' : '') +
-          (w.med ? '<span style="font-family:IBM Plex Mono,monospace;font-size:10px;color:#9966cc;background:#9966cc12;padding:2px 8px;border-radius:4px">meditated</span>' : '') +
+        '<div class="mono" style="font-size:12px;color:#555">' + w.date + '</div>' +
+        '<div style="display:flex;gap:6px;align-items:center">' +
+          (w.done ? '<span style="font-family:IBM Plex Mono,monospace;font-size:11px;color:#22c97a;background:#22c97a12;padding:3px 10px;border-radius:4px">Done</span>' : '<span style="font-family:IBM Plex Mono,monospace;font-size:11px;color:#e84545;background:#e8454512;padding:3px 10px;border-radius:4px">Skipped</span>') +
+          (w.mobility ? '<span style="font-family:IBM Plex Mono,monospace;font-size:11px;color:#4488bb;background:#4488bb12;padding:3px 10px;border-radius:4px">Mobility</span>' : '') +
+          (w.med ? '<span style="font-family:IBM Plex Mono,monospace;font-size:11px;color:#9966cc;background:#9966cc12;padding:3px 10px;border-radius:4px">Meditated</span>' : '') +
+          '<button onclick="editWorkout(' + editData + ')" style="background:transparent;border:1px solid #1a1c22;color:#666;padding:3px 12px;border-radius:4px;cursor:pointer;font-size:12px;margin-left:4px">Edit</button>' +
         '</div>' +
       '</div>' +
-      '<div style="font-weight:600;font-size:17px;color:#fff;margin-bottom:2px">' + w.type + '</div>' +
+      '<div style="font-weight:600;font-size:18px;color:#fff;margin-bottom:6px">' + w.type + '</div>' +
       notesHTML +
       '</div>';
   }
   document.getElementById('log-entries').innerHTML = html;
 }
+
+// ── BELT SYSTEM ───────────────────────────────────────────────────────────
+var BELTS = [
+  {id:'white',   label:'White',      color:'#e0e0e0', bg:'#1a1c22'},
+  {id:'yellow',  label:'Yellow',     color:'#f5d020', bg:'#1a1800'},
+  {id:'orange',  label:'Orange',     color:'#f5a020', bg:'#1a1000'},
+  {id:'red',     label:'Red',        color:'#e84545', bg:'#1a0808'},
+  {id:'green1',  label:'Lo Green',   color:'#22c97a', bg:'#081a10'},
+  {id:'green2',  label:'Hi Green',   color:'#18e06a', bg:'#081a10'},
+  {id:'blue1',   label:'Lo Blue',    color:'#4488bb', bg:'#081018'},
+  {id:'blue2',   label:'Hi Blue ✓',  color:'#22aaff', bg:'#081828', current:true},
+  {id:'purple',  label:'Purple',     color:'#9966cc', bg:'#100818'},
+  {id:'brown1',  label:'Brown 1',    color:'#c97a22', bg:'#180e08'},
+  {id:'brown2',  label:'Brown 2',    color:'#a06018', bg:'#180e08'},
+  {id:'brown3',  label:'Brown 3',    color:'#804808', bg:'#180e08'},
+  {id:'black',   label:'Black Belt', color:'#ffffff', bg:'#080a0f'},
+];
+var currentBeltId = localStorage.getItem('ac_belt') || 'blue2';
+
+function renderBelt() {
+  var currentIdx = 0; for(var bi=0;bi<BELTS.length;bi++){if(BELTS[bi].id===currentBeltId){currentIdx=bi;break;}}
+  var pct = Math.round(((currentIdx + 1) / BELTS.length) * 100);
+  var current = BELTS[currentIdx] || BELTS[7];
+
+  var beltHTML = '<div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:16px">';
+  for (var i = 0; i < BELTS.length; i++) {
+    var b = BELTS[i];
+    var isCurrent = b.id === currentBeltId;
+    var isPast = i < currentIdx;
+    beltHTML += '<div style="text-align:center;opacity:' + (isPast || isCurrent ? '1' : '0.35') + '">' +
+      '<div style="width:36px;height:36px;border-radius:50%;background:' + b.bg + ';border:2px solid ' + b.color + (isCurrent ? ';box-shadow:0 0 8px ' + b.color + '66' : '') + ';display:flex;align-items:center;justify-content:center">' +
+      (isCurrent ? '<div style="width:10px;height:10px;border-radius:50%;background:' + b.color + '"></div>' : '') +
+      '</div>' +
+      '<div style="font-size:9px;color:' + (isCurrent ? b.color : '#444') + ';margin-top:3px;font-family:IBM Plex Mono,monospace;width:36px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + b.label + '</div>' +
+      '</div>';
+  }
+  beltHTML += '</div>';
+  beltHTML += '<div style="background:#060810;border-radius:6px;overflow:hidden;height:8px;margin-bottom:8px"><div style="height:100%;width:' + pct + '%;background:linear-gradient(90deg,' + current.color + ',#f5a623);transition:width .9s ease"></div></div>';
+  beltHTML += '<div style="display:flex;justify-content:space-between;font-family:IBM Plex Mono,monospace;font-size:11px;color:#555"><span>White</span><span style="color:' + current.color + '">' + current.label + ' — ' + pct + '%</span><span>Black Belt</span></div>';
+  document.getElementById('belt-display').innerHTML = beltHTML;
+
+  // Render selector
+  var selHTML = '';
+  for (var i = 0; i < BELTS.length; i++) {
+    var b = BELTS[i];
+    var sel = b.id === currentBeltId;
+    selHTML += '<button onclick="selectBelt('' + b.id + '')" style="background:' + b.bg + ';border:2px solid ' + b.color + (sel ? ';box-shadow:0 0 6px ' + b.color : '') + ';color:' + b.color + ';padding:6px 12px;border-radius:6px;cursor:pointer;font-size:13px;font-family:DM Sans,sans-serif">' + b.label + '</button>';
+  }
+  document.getElementById('belt-selector').innerHTML = selHTML;
+}
+
+function selectBelt(id) { currentBeltId = id; renderBelt(); }
+
+function saveBelt() {
+  localStorage.setItem('ac_belt', currentBeltId);
+  toggleBeltEdit();
+  renderBelt();
+}
+
+function toggleBeltEdit() {
+  var ed = document.getElementById('belt-editor');
+  var disp = document.getElementById('belt-display');
+  var btn = document.getElementById('belt-edit-btn');
+  if (ed.style.display === 'none') {
+    ed.style.display = 'block'; disp.style.display = 'none'; btn.textContent = 'Cancel';
+  } else {
+    ed.style.display = 'none'; disp.style.display = 'block'; btn.textContent = 'Edit';
+  }
+}
+
+// ── GOALS SYSTEM ───────────────────────────────────────────────────────────
+var DEFAULT_GOALS = [
+  {emoji:'🏔', title:'Mountain Hike', desc:'6-8 miles with Noam on back. No stopping.', status:'IN PROGRESS'},
+  {emoji:'🥋', title:'Black Belt', desc:'Blue belt now. Purple, 3x brown, then black.', status:'LONG GAME'},
+  {emoji:'💪', title:'Build Muscle', desc:'Look stronger. Functional size, not bulk.', status:'IN PROGRESS'},
+  {emoji:'🧍', title:'Fix Posture', desc:'Anterior pelvic tilt, rounded shoulders, forward head.', status:'IN PROGRESS'},
+  {emoji:'🧘', title:'Daily Meditation', desc:'Build the habit. Even 5 minutes counts.', status:'HABIT'},
+  {emoji:'❤', title:'Stamina', desc:'Full MMA rounds without gassing.', status:'IN PROGRESS'},
+];
+var goals = JSON.parse(localStorage.getItem('ac_goals') || 'null') || DEFAULT_GOALS;
+var statusColors = {'IN PROGRESS':'#f5a623','LONG GAME':'#4488bb','DONE':'#22c97a','HABIT':'#9966cc','PAUSED':'#555'};
+
+function renderGoals() {
+  var html = '';
+  for (var i = 0; i < goals.length; i++) {
+    var g = goals[i];
+    var sc = statusColors[g.status] || '#f5a623';
+    var isMed = g.title === 'Daily Meditation';
+    html += '<div style="background:#060810;border:1px solid #0e1016;border-radius:8px;padding:16px">' +
+      '<div style="font-size:22px;margin-bottom:8px">' + g.emoji + '</div>' +
+      '<div style="font-size:15px;font-weight:600;color:#fff;margin-bottom:5px">' + g.title + '</div>' +
+      '<div style="font-size:13px;color:#666;line-height:1.6;margin-bottom:10px">' + g.desc + '</div>' +
+      (isMed ? '<div id="med-status" class="mono" style="font-size:11px;color:#555;letter-spacing:1px;cursor:pointer" onclick="toggleMeditation()">TAP TO LOG TODAY</div>' :
+               '<div class="mono" style="font-size:10px;color:' + sc + ';letter-spacing:1px">' + g.status + '</div>') +
+      '</div>';
+  }
+  document.getElementById('goals-display').innerHTML = html;
+  renderMeditationStatus();
+}
+
+function toggleGoalEdit() {
+  var ed = document.getElementById('goals-editor');
+  var disp = document.getElementById('goals-display');
+  if (ed.style.display === 'none') {
+    ed.style.display = 'block';
+    disp.style.display = 'none';
+    renderGoalEditor();
+  } else {
+    ed.style.display = 'none';
+    disp.style.display = '';
+  }
+}
+
+function renderGoalEditor() {
+  var html = '';
+  for (var i = 0; i < goals.length; i++) {
+    var g = goals[i];
+    html += '<div style="background:#060810;border:1px solid #0e1016;border-radius:8px;padding:14px;margin-bottom:8px">' +
+      '<div style="display:flex;gap:8px;margin-bottom:6px">' +
+        '<input type="text" value="' + g.emoji + '" id="ge-emoji-' + i + '" style="width:50px;text-align:center;font-size:18px;padding:6px;background:#0d0f16;border:1px solid #1a1c22;color:#e0e0e0;border-radius:6px">' +
+        '<input type="text" value="' + g.title + '" id="ge-title-' + i + '" style="flex:1;font-size:14px;font-weight:600;padding:6px 10px;background:#0d0f16;border:1px solid #1a1c22;color:#fff;border-radius:6px">' +
+        '<button onclick="removeGoal(' + i + ')" style="background:transparent;border:1px solid #e8454533;color:#e84545;padding:6px 10px;border-radius:6px;cursor:pointer;font-size:12px">✕</button>' +
+      '</div>' +
+      '<textarea id="ge-desc-' + i + '" rows="2" style="font-size:13px;margin-bottom:6px">' + g.desc + '</textarea>' +
+      '<select id="ge-status-' + i + '" style="font-size:13px">' +
+        ['IN PROGRESS','LONG GAME','DONE','HABIT','PAUSED'].map(function(s) {
+          return '<option value="' + s + '"' + (s === g.status ? ' selected' : '') + '>' + s + '</option>';
+        }).join('') +
+      '</select>' +
+    '</div>';
+  }
+  document.getElementById('goals-list').innerHTML = html;
+}
+
+function addGoal() {
+  goals.push({emoji:'⭐', title:'New Goal', desc:'Describe your goal...', status:'IN PROGRESS'});
+  renderGoalEditor();
+}
+
+function removeGoal(idx) {
+  goals.splice(idx, 1);
+  renderGoalEditor();
+}
+
+function saveGoals() {
+  for (var i = 0; i < goals.length; i++) {
+    var e = document.getElementById('ge-emoji-' + i);
+    var t = document.getElementById('ge-title-' + i);
+    var d = document.getElementById('ge-desc-' + i);
+    var s = document.getElementById('ge-status-' + i);
+    if (e) goals[i].emoji = e.value;
+    if (t) goals[i].title = t.value;
+    if (d) goals[i].desc = d.value;
+    if (s) goals[i].status = s.value;
+  }
+  localStorage.setItem('ac_goals', JSON.stringify(goals));
+  toggleGoalEdit();
+  renderGoals();
+}
+
+// Init profile dynamic sections
+renderBelt();
+renderGoals();
 
 function showTab(name, btn) {
   document.querySelectorAll('.tab').forEach(function(t) { t.classList.remove('active'); });
