@@ -51,8 +51,46 @@ input[type=range]{width:100%;accent-color:#22c97a}
 </head>
 <body>
 
+<!-- PROFILE SELECTOR -->
+<div id="profile-screen" style="display:none;min-height:100vh;flex-direction:column;align-items:center;justify-content:center;padding:40px 20px">
+  <div style="text-align:center;margin-bottom:40px">
+    <span class="logo" style="font-size:36px">APEX</span><span class="logosub" style="font-size:13px;color:#22c97a44">COACH</span>
+    <p class="mono" style="font-size:12px;color:#444;letter-spacing:2px;margin-top:10px">SELECT PROFILE</p>
+  </div>
+  <div id="profile-list" style="display:flex;flex-wrap:wrap;gap:16px;justify-content:center;max-width:600px;margin-bottom:30px"></div>
+  <div id="pin-entry" style="display:none;text-align:center;margin-top:20px">
+    <p id="pin-label" class="mono" style="font-size:12px;color:#888;letter-spacing:2px;margin-bottom:12px">ENTER 4-DIGIT PIN</p>
+    <div style="display:flex;gap:8px;justify-content:center;margin-bottom:12px">
+      <input id="pin-input" type="password" maxlength="4" inputmode="numeric" pattern="[0-9]*" style="width:140px;background:#060810;border:2px solid #1a1c22;color:#fff;padding:14px;border-radius:8px;font-size:24px;text-align:center;font-family:'IBM Plex Mono',monospace;letter-spacing:8px;outline:none" onkeyup="if(event.key==='Enter')verifyPin()">
+    </div>
+    <p id="pin-error" style="color:#e84545;font-size:13px;min-height:20px;margin-bottom:10px"></p>
+    <button onclick="verifyPin()" class="btnPri" style="font-size:15px;padding:10px 30px">Unlock</button>
+    <button onclick="cancelPin()" class="btnSec" style="font-size:13px;padding:8px 20px;margin-left:8px">Back</button>
+  </div>
+</div>
+
+<!-- ONBOARDING -->
+<div id="onboard-screen" style="display:none;min-height:100vh;padding:40px 20px;max-width:600px;margin:0 auto">
+  <div style="text-align:center;margin-bottom:30px">
+    <span class="logo" style="font-size:28px">APEX</span><span class="logosub" style="font-size:11px;color:#22c97a44">COACH</span>
+    <p class="mono" style="font-size:12px;color:#444;letter-spacing:2px;margin-top:8px">NEW PROFILE SETUP</p>
+  </div>
+  <div id="onboard-chat" style="display:flex;flex-direction:column;gap:12px;margin-bottom:20px"></div>
+  <div id="onboard-input-area" style="display:flex;gap:8px">
+    <div style="flex:1;position:relative">
+      <input id="onboard-input" type="text" placeholder="Type your answer..." style="width:100%;background:#060810;border:1px solid #1a1c22;color:#e0e0e0;padding:14px 44px 14px 14px;border-radius:8px;font-size:15px;outline:none;font-family:'DM Sans',sans-serif" onkeyup="if(event.key==='Enter')submitOnboardAnswer()">
+      <button onclick="startOnboardVoice()" id="onboard-mic" style="position:absolute;right:8px;top:8px;background:#22c97a18;border:1px solid #22c97a33;color:#22c97a;border-radius:6px;padding:6px 10px;cursor:pointer;font-size:14px">🎙</button>
+    </div>
+    <button onclick="submitOnboardAnswer()" class="btnPri" style="padding:14px 20px;font-size:15px">Send</button>
+  </div>
+  <div id="onboard-status" class="mono" style="font-size:11px;color:#555;margin-top:8px;min-height:18px"></div>
+</div>
+
+<!-- APP SHELL -->
+<div id="app-shell" style="display:none">
+
 <header>
-  <div style="display:flex;align-items:baseline">
+  <div style="display:flex;align-items:baseline" id="logo-area">
     <span class="logo">APEX</span><span class="logosub">COACH</span>
   </div>
   <nav>
@@ -61,7 +99,10 @@ input[type=range]{width:100%;accent-color:#22c97a}
     <button class="navBtn" onclick="showTab('log',this)">Log</button>
     <button class="navBtn" onclick="showTab('profile',this)">Profile</button>
   </nav>
-  <button class="syncBtn" onclick="syncFitbit()">sync</button>
+  <div style="display:flex;gap:8px;align-items:center">
+    <button class="syncBtn" onclick="syncFitbit()">sync</button>
+    <button id="profile-icon-btn" onclick="switchProfile()" style="width:34px;height:34px;border-radius:50%;border:1px solid #1a1c22;background:#22c97a18;color:#22c97a;font-family:'Oswald',sans-serif;font-size:15px;font-weight:700;cursor:pointer" title="Switch profile">S</button>
+  </div>
 </header>
 
 <main>
@@ -331,8 +372,24 @@ input[type=range]{width:100%;accent-color:#22c97a}
       </div>
     </div>
 
+    <!-- DEV ROADMAP (hidden, long-press logo to reveal) -->
+    <div id="dev-roadmap" class="card" style="display:none;border-color:#22c97a11">
+      <p class="clabel">roadmap</p>
+      <div style="display:flex;flex-direction:column;gap:8px">
+        <label style="display:flex;align-items:center;gap:8px;font-size:14px;color:#555"><input type="checkbox" disabled> Google OAuth login</label>
+        <label style="display:flex;align-items:center;gap:8px;font-size:14px;color:#555"><input type="checkbox" disabled> WhatsApp / Telegram bot integration</label>
+        <label style="display:flex;align-items:center;gap:8px;font-size:14px;color:#555"><input type="checkbox" disabled> Wall display mode</label>
+        <label style="display:flex;align-items:center;gap:8px;font-size:14px;color:#555"><input type="checkbox" disabled> Fitbit historical data import</label>
+        <label style="display:flex;align-items:center;gap:8px;font-size:14px;color:#555"><input type="checkbox" disabled> Workout plan generator</label>
+        <label style="display:flex;align-items:center;gap:8px;font-size:14px;color:#555"><input type="checkbox" disabled> Progress photos</label>
+        <label style="display:flex;align-items:center;gap:8px;font-size:14px;color:#555"><input type="checkbox" disabled> Export data to PDF</label>
+      </div>
+    </div>
+
   </div>
 </main>
+
+</div><!-- /app-shell -->
 
 <!-- LOG MODAL -->
 <div class="overlay" id="log-modal" style="display:none" onclick="closeModal()">
@@ -424,34 +481,313 @@ var FULL_PROFILE = 'ATHLETE: Shimmy Castle, Hoffman Estates IL. New dad (baby No
 'TRAINING PHILOSOPHY: Consistency over intensity. Never miss twice. Always have a minimum viable option (10 min counts). Train movement patterns. Pain is information - sharp pubic or quad pain = back off. Life happens with baby, gigs, illness - adapt and return.\n\n' +
 'BIGGEST OBSTACLE: Consistency and finding time. When MMA is on the calendar it gets done. Baby disrupts sleep regularly.';
 
-document.getElementById('dow').textContent = new Date().toLocaleDateString('en-US', {weekday:'long'});
-document.getElementById('dom').textContent = new Date().toLocaleDateString('en-US', {month:'long', day:'numeric'});
+// ── PROFILE SYSTEM ────────────────────────────────────────────────────────
+var currentProfileId = null;
+var currentProfileName = '';
+var currentProfileColor = '#22c97a';
+var pendingPinProfileId = null;
 
-var todayLocal = (function() {
-  var d = new Date();
-  var year = d.getFullYear();
-  var month = String(d.getMonth() + 1).padStart(2, '0');
-  var day = String(d.getDate()).padStart(2, '0');
-  return year + '-' + month + '-' + day;
-})();
-var cachedDate = localStorage.getItem('ac_cache_date');
-if (cachedDate !== todayLocal) {
-  localStorage.removeItem('ac_cache');
-  localStorage.setItem('ac_cache_date', todayLocal);
+var AVATAR_COLORS = ['#22c97a','#4488bb','#f5a623','#9966cc','#e84545','#f07020','#44bbaa','#cc6699'];
+
+function showScreen(name) {
+  document.getElementById('profile-screen').style.display = name === 'profiles' ? 'flex' : 'none';
+  document.getElementById('onboard-screen').style.display = name === 'onboard' ? 'block' : 'none';
+  document.getElementById('app-shell').style.display = name === 'app' ? '' : 'none';
 }
 
-loadSchedule();
-renderSchedule();
+function loadProfileSelector() {
+  showScreen('profiles');
+  document.getElementById('pin-entry').style.display = 'none';
+  document.getElementById('pin-error').textContent = '';
+  fetch('/api/profiles').then(function(r) { return r.json(); }).then(function(data) {
+    var profiles = (data.success && data.profiles) ? data.profiles : [];
+    var html = '';
+    for (var i = 0; i < profiles.length; i++) {
+      var p = profiles[i];
+      var initial = (p.name || '?').charAt(0).toUpperCase();
+      var c = p.avatar_color || '#22c97a';
+      html += '<div onclick="selectProfile(' + p.id + ',\'' + initial + '\')" style="background:#0d0f16;border:1px solid #0e1016;border-radius:12px;padding:24px 20px;text-align:center;cursor:pointer;width:140px;transition:border-color .2s" onmouseover="this.style.borderColor=\'' + c + '44\'" onmouseout="this.style.borderColor=\'#0e1016\'">';
+      html += '<div style="width:56px;height:56px;border-radius:50%;background:' + c + '18;border:2px solid ' + c + '44;display:flex;align-items:center;justify-content:center;margin:0 auto 12px;font-family:Oswald,sans-serif;font-size:24px;font-weight:700;color:' + c + '">' + initial + '</div>';
+      html += '<div style="font-size:16px;font-weight:600;color:#fff">' + p.name + '</div>';
+      html += '</div>';
+    }
+    // Add New Profile card
+    html += '<div onclick="startOnboarding()" style="background:#0d0f16;border:2px dashed #1a1c22;border-radius:12px;padding:24px 20px;text-align:center;cursor:pointer;width:140px;transition:border-color .2s" onmouseover="this.style.borderColor=\'#22c97a44\'" onmouseout="this.style.borderColor=\'#1a1c22\'">';
+    html += '<div style="width:56px;height:56px;border-radius:50%;background:#22c97a08;border:2px dashed #22c97a33;display:flex;align-items:center;justify-content:center;margin:0 auto 12px;font-size:28px;color:#22c97a33">+</div>';
+    html += '<div style="font-size:14px;color:#555">New Profile</div>';
+    html += '</div>';
+    document.getElementById('profile-list').innerHTML = html;
+  });
+}
 
-loadWorkouts().then(function() {
-  renderWeek();
-  renderLog();
-  renderMeditationStatus();
-  syncFitbit();
+function selectProfile(id) {
+  pendingPinProfileId = id;
+  document.getElementById('pin-entry').style.display = 'block';
+  document.getElementById('pin-input').value = '';
+  document.getElementById('pin-error').textContent = '';
+  setTimeout(function() { document.getElementById('pin-input').focus(); }, 100);
+}
+
+function cancelPin() {
+  pendingPinProfileId = null;
+  document.getElementById('pin-entry').style.display = 'none';
+  document.getElementById('pin-error').textContent = '';
+}
+
+function verifyPin() {
+  var pin = document.getElementById('pin-input').value;
+  if (pin.length !== 4) { document.getElementById('pin-error').textContent = 'Enter 4 digits'; return; }
+  document.getElementById('pin-error').textContent = '';
+  fetch('/api/profiles/verify', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ id: pendingPinProfileId, pin: pin })
+  }).then(function(r) { return r.json(); }).then(function(data) {
+    if (data.success) {
+      currentProfileId = data.profile.id;
+      currentProfileName = data.profile.name;
+      currentProfileColor = data.profile.avatar_color || '#22c97a';
+      localStorage.setItem('ac_profile_id', currentProfileId);
+      localStorage.setItem('ac_profile_name', currentProfileName);
+      localStorage.setItem('ac_profile_color', currentProfileColor);
+      if (data.profile.profile_data && data.profile.profile_data.full_profile) {
+        FULL_PROFILE = data.profile.profile_data.full_profile;
+      }
+      bootApp();
+    } else {
+      document.getElementById('pin-error').textContent = data.error || 'Incorrect PIN';
+      document.getElementById('pin-input').value = '';
+      document.getElementById('pin-input').focus();
+    }
+  });
+}
+
+function switchProfile() {
+  localStorage.removeItem('ac_profile_id');
+  localStorage.removeItem('ac_profile_name');
+  localStorage.removeItem('ac_profile_color');
+  localStorage.removeItem('ac_cache');
+  localStorage.removeItem('ac_cache_date');
+  currentProfileId = null;
+  loadProfileSelector();
+}
+
+function updateProfileIcon() {
+  var btn = document.getElementById('profile-icon-btn');
+  if (!btn) return;
+  var initial = (currentProfileName || '?').charAt(0).toUpperCase();
+  btn.textContent = initial;
+  btn.style.borderColor = currentProfileColor + '44';
+  btn.style.background = currentProfileColor + '18';
+  btn.style.color = currentProfileColor;
+  btn.title = currentProfileName + ' — click to switch';
+}
+
+// ── ONBOARDING ────────────────────────────────────────────────────────────
+var onboardStep = 0;
+var onboardAnswers = {};
+var onboardRecognition = null;
+var ONBOARD_QUESTIONS = [
+  { key: 'name', q: "What's your name?" },
+  { key: 'goals', q: "What are your fitness goals? (e.g., build muscle, run a marathon, lose weight, get better at MMA)" },
+  { key: 'injuries', q: "Do you have any injuries or health conditions I should know about? (say 'none' if clear)" },
+  { key: 'preferences', q: "What types of workouts do you enjoy or prefer? (e.g., strength training, yoga, MMA, running, HIIT)" },
+  { key: 'schedule', q: "What days do you typically train? Any fixed schedule?" },
+  { key: 'experience', q: "What's your experience level? (beginner, intermediate, advanced)" },
+  { key: 'obstacles', q: "What are your biggest obstacles to staying consistent?" },
+  { key: 'fitbit', q: "Do you use a Fitbit? (yes or no)" },
+];
+
+function startOnboarding() {
+  showScreen('onboard');
+  onboardStep = 0;
+  onboardAnswers = {};
+  document.getElementById('onboard-chat').innerHTML = '';
+  document.getElementById('onboard-status').textContent = '';
+  askOnboardQuestion();
+}
+
+function askOnboardQuestion() {
+  if (onboardStep >= ONBOARD_QUESTIONS.length) {
+    finishOnboarding();
+    return;
+  }
+  var q = ONBOARD_QUESTIONS[onboardStep];
+  var chat = document.getElementById('onboard-chat');
+  chat.innerHTML += '<div style="background:#22c97a10;border:1px solid #22c97a22;border-radius:10px;padding:12px 16px;max-width:80%;align-self:flex-start"><p style="font-size:15px;color:#22c97a;line-height:1.6">' + q.q + '</p></div>';
+  chat.scrollTop = chat.scrollHeight;
+  document.getElementById('onboard-input').value = '';
+  document.getElementById('onboard-input').focus();
+}
+
+function submitOnboardAnswer() {
+  var input = document.getElementById('onboard-input');
+  var answer = input.value.trim();
+  if (!answer) return;
+  var q = ONBOARD_QUESTIONS[onboardStep];
+  onboardAnswers[q.key] = answer;
+
+  var chat = document.getElementById('onboard-chat');
+  chat.innerHTML += '<div style="background:#0d0f16;border:1px solid #0e1016;border-radius:10px;padding:12px 16px;max-width:80%;align-self:flex-end"><p style="font-size:15px;color:#ddd;line-height:1.6">' + answer + '</p></div>';
+  input.value = '';
+  onboardStep++;
+  setTimeout(askOnboardQuestion, 400);
+}
+
+function startOnboardVoice() {
+  var SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+  if (!SR) { document.getElementById('onboard-status').textContent = 'Voice not supported — use Chrome.'; return; }
+  if (onboardRecognition) { onboardRecognition.stop(); onboardRecognition = null; document.getElementById('onboard-mic').textContent = '🎙'; return; }
+  onboardRecognition = new SR();
+  onboardRecognition.continuous = false;
+  onboardRecognition.interimResults = true;
+  onboardRecognition.lang = 'en-US';
+  document.getElementById('onboard-mic').textContent = '⏹';
+  document.getElementById('onboard-status').textContent = 'Listening...';
+  onboardRecognition.onresult = function(e) {
+    var transcript = '';
+    for (var i = 0; i < e.results.length; i++) { transcript = e.results[i][0].transcript; }
+    document.getElementById('onboard-input').value = transcript;
+    if (e.results[0].isFinal) document.getElementById('onboard-status').textContent = 'Got it — press Send or keep talking.';
+  };
+  onboardRecognition.onerror = function() { document.getElementById('onboard-status').textContent = ''; document.getElementById('onboard-mic').textContent = '🎙'; onboardRecognition = null; };
+  onboardRecognition.onend = function() { document.getElementById('onboard-mic').textContent = '🎙'; onboardRecognition = null; };
+  onboardRecognition.start();
+}
+
+function finishOnboarding() {
+  var chat = document.getElementById('onboard-chat');
+  chat.innerHTML += '<div style="background:#22c97a10;border:1px solid #22c97a22;border-radius:10px;padding:12px 16px;max-width:80%;align-self:flex-start"><p class="mono" style="font-size:12px;color:#22c97a;letter-spacing:2px;animation:pulse 1.6s infinite">BUILDING YOUR PROFILE...</p></div>';
+  document.getElementById('onboard-input-area').style.display = 'none';
+
+  // Ask AI to build profile_data from answers
+  var prompt = 'Generate a structured athlete profile JSON from these onboarding answers. Return ONLY raw JSON.\n\n' +
+    'Name: ' + (onboardAnswers.name || '') + '\n' +
+    'Goals: ' + (onboardAnswers.goals || '') + '\n' +
+    'Injuries: ' + (onboardAnswers.injuries || 'none') + '\n' +
+    'Preferences: ' + (onboardAnswers.preferences || '') + '\n' +
+    'Schedule: ' + (onboardAnswers.schedule || '') + '\n' +
+    'Experience: ' + (onboardAnswers.experience || '') + '\n' +
+    'Obstacles: ' + (onboardAnswers.obstacles || '') + '\n' +
+    'Fitbit: ' + (onboardAnswers.fitbit || 'no') + '\n\n' +
+    'Return: {"full_profile":"one big string for AI coaching context — include all athlete details, goals, injuries, constraints, philosophy","schedule_defaults":{"mon":"type","tue":"type",...},"has_fitbit":true/false}';
+
+  fetch('/api/ai', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ model: 'claude-sonnet-4-20250514', max_tokens: 1000, messages: [{ role: 'user', content: prompt }] })
+  }).then(function(r) { return r.json(); }).then(function(data) {
+    var raw = (data.content && data.content[0]) ? data.content[0].text : '{}';
+    var cleaned = raw.indexOf('{') >= 0 ? raw.substring(raw.indexOf('{'), raw.lastIndexOf('}') + 1) : '{}';
+    var profileData = JSON.parse(cleaned);
+
+    // Now ask for PIN
+    chat.innerHTML += '<div style="background:#22c97a10;border:1px solid #22c97a22;border-radius:10px;padding:12px 16px;max-width:80%;align-self:flex-start"><p style="font-size:15px;color:#22c97a;line-height:1.6">Profile ready! Choose a 4-digit PIN to secure it:</p></div>';
+    document.getElementById('onboard-input-area').style.display = 'flex';
+    document.getElementById('onboard-input').type = 'password';
+    document.getElementById('onboard-input').maxLength = 4;
+    document.getElementById('onboard-input').inputMode = 'numeric';
+    document.getElementById('onboard-input').placeholder = '4-digit PIN';
+
+    // Replace submit handler for PIN
+    document.getElementById('onboard-input').onkeyup = function(e) { if (e.key === 'Enter') saveNewProfile(profileData); };
+    document.querySelector('#onboard-input-area .btnPri').onclick = function() { saveNewProfile(profileData); };
+  }).catch(function() {
+    chat.innerHTML += '<div style="background:#e8454510;border:1px solid #e8454522;border-radius:10px;padding:12px 16px"><p style="color:#e87;font-size:14px">Error generating profile. Please try again.</p></div>';
+    document.getElementById('onboard-input-area').style.display = 'flex';
+  });
+}
+
+function saveNewProfile(profileData) {
+  var pin = document.getElementById('onboard-input').value;
+  if (pin.length !== 4 || !/^\d{4}$/.test(pin)) {
+    document.getElementById('onboard-status').textContent = 'PIN must be exactly 4 digits.';
+    return;
+  }
+  document.getElementById('onboard-status').textContent = 'Saving...';
+  var color = AVATAR_COLORS[Math.floor(Math.random() * AVATAR_COLORS.length)];
+
+  fetch('/api/profiles', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      name: onboardAnswers.name || 'Athlete',
+      pin: pin,
+      avatar_color: color,
+      profile_data: profileData,
+    })
+  }).then(function(r) { return r.json(); }).then(function(data) {
+    if (data.success && data.profile) {
+      currentProfileId = data.profile.id;
+      currentProfileName = data.profile.name;
+      currentProfileColor = color;
+      localStorage.setItem('ac_profile_id', currentProfileId);
+      localStorage.setItem('ac_profile_name', currentProfileName);
+      localStorage.setItem('ac_profile_color', color);
+      if (profileData.full_profile) FULL_PROFILE = profileData.full_profile;
+      if (profileData.schedule_defaults) {
+        schedule = profileData.schedule_defaults;
+        localStorage.setItem('ac_schedule', JSON.stringify(schedule));
+      }
+      bootApp();
+    } else {
+      document.getElementById('onboard-status').textContent = data.error || 'Error saving profile.';
+    }
+  });
+}
+
+// ── DEV ROADMAP (long-press logo) ─────────────────────────────────────────
+var logoTimer = null;
+document.addEventListener('DOMContentLoaded', function() {
+  var logo = document.getElementById('logo-area');
+  if (!logo) return;
+  logo.addEventListener('mousedown', function() { logoTimer = setTimeout(function() { var rd = document.getElementById('dev-roadmap'); if (rd) rd.style.display = rd.style.display === 'none' ? 'block' : 'none'; }, 3000); });
+  logo.addEventListener('mouseup', function() { clearTimeout(logoTimer); });
+  logo.addEventListener('mouseleave', function() { clearTimeout(logoTimer); });
+  logo.addEventListener('touchstart', function() { logoTimer = setTimeout(function() { var rd = document.getElementById('dev-roadmap'); if (rd) rd.style.display = rd.style.display === 'none' ? 'block' : 'none'; }, 3000); });
+  logo.addEventListener('touchend', function() { clearTimeout(logoTimer); });
 });
 
+// ── APP BOOT ──────────────────────────────────────────────────────────────
+function bootApp() {
+  showScreen('app');
+  updateProfileIcon();
+  document.getElementById('dow').textContent = new Date().toLocaleDateString('en-US', {weekday:'long'});
+  document.getElementById('dom').textContent = new Date().toLocaleDateString('en-US', {month:'long', day:'numeric'});
+
+  var todayLocal = ds(0);
+  var cachedDate = localStorage.getItem('ac_cache_date');
+  if (cachedDate !== todayLocal) {
+    localStorage.removeItem('ac_cache');
+    localStorage.setItem('ac_cache_date', todayLocal);
+  }
+
+  loadSchedule();
+  renderSchedule();
+
+  loadWorkouts().then(function() {
+    renderWeek();
+    renderLog();
+    renderMeditationStatus();
+    syncFitbit();
+  });
+}
+
+// ── STARTUP ───────────────────────────────────────────────────────────────
+var savedProfileId = localStorage.getItem('ac_profile_id');
+if (savedProfileId) {
+  currentProfileId = parseInt(savedProfileId);
+  currentProfileName = localStorage.getItem('ac_profile_name') || '';
+  currentProfileColor = localStorage.getItem('ac_profile_color') || '#22c97a';
+  bootApp();
+} else {
+  loadProfileSelector();
+}
+
 function loadWorkouts() {
-  return fetch('/api/workouts?limit=60')
+  var url = '/api/workouts?limit=60';
+  if (currentProfileId) url += '&profile_id=' + currentProfileId;
+  return fetch(url)
     .then(function(r) { return r.json(); })
     .then(function(data) {
       if (data.success) {
@@ -544,7 +880,7 @@ function syncFitbit() {
       return;
     }
   }
-  fetch('/api/daily')
+  fetch(currentProfileId ? '/api/profiles/' + currentProfileId + '/daily' : '/api/daily')
     .then(function(r) { return r.json(); })
     .then(function(json) {
       if (!json.success) throw new Error(json.error);
@@ -557,7 +893,7 @@ function syncFitbit() {
       fetchAI();
     })
     .catch(function(e) {
-      document.getElementById('status-box').innerHTML = '<p style="color:#e87;font-size:13px">Error: ' + e.message + '</p><br><button onclick="syncFitbit()" style="background:transparent;border:1px solid #333;color:#666;padding:4px 10px;cursor:pointer;border-radius:4px;font-size:11px;margin-top:8px">Retry</button><br><br><a href="/auth" style="color:#22c97a;font-size:11px;font-family:monospace">Re-authorize Fitbit</a>';
+      document.getElementById('status-box').innerHTML = '<p style="color:#e87;font-size:13px">Error: ' + e.message + '</p><br><button onclick="syncFitbit()" style="background:transparent;border:1px solid #333;color:#666;padding:4px 10px;cursor:pointer;border-radius:4px;font-size:11px;margin-top:8px">Retry</button><br><br><a href="/auth' + (currentProfileId ? '?profile_id=' + currentProfileId : '') + '" style="color:#22c97a;font-size:11px;font-family:monospace">Re-authorize Fitbit</a>';
     });
 }
 
@@ -955,10 +1291,12 @@ function openModal() {
 function closeModal() { document.getElementById('log-modal').style.display = 'none'; }
 
 function saveWorkoutToSupabase(entry) {
+  var payload = Object.assign({}, entry);
+  if (currentProfileId) payload.profile_id = currentProfileId;
   fetch('/api/workouts', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(entry)
+    body: JSON.stringify(payload)
   }).catch(function(e) { console.error('Save error:', e); });
 }
 
@@ -1518,7 +1856,7 @@ renderGoals();
 
 function showTab(name, btn) {
   document.querySelectorAll('.tab').forEach(function(t) { t.classList.remove('active'); });
-  document.querySelectorAll('.navBtn').forEach(function(b) { b.classList.remove('active'); });
+  document.querySelectorAll('header nav .navBtn').forEach(function(b) { b.classList.remove('active'); });
   document.getElementById('tab-' + name).classList.add('active');
   btn.classList.add('active');
 }

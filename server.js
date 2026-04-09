@@ -1,6 +1,7 @@
 const express = require("express");
 const fetch   = require("node-fetch");
 const path    = require("path");
+const crypto  = require("crypto");
 
 const app  = express();
 const PORT = process.env.PORT || 3000;
@@ -23,7 +24,11 @@ function sbHeaders(prefer) {
   };
 }
 
-// ── TOKEN STORAGE ──────────────────────────────────────────────────────────
+function hashPin(pin) {
+  return crypto.createHash("sha256").update(String(pin)).digest("hex");
+}
+
+// ── TOKEN STORAGE (legacy — used by /api/daily fallback) ──────────────────
 async function loadTokens() {
   try {
     const res = await fetch(SUPABASE_URL + "/rest/v1/tokens?id=eq.1&select=*", {
@@ -52,7 +57,6 @@ async function saveTokens(tokens) {
         expires_at:    tokens.expires_at,
       }),
     });
-    console.log("Tokens saved to Supabase.");
   } catch (e) {
     console.error("saveTokens error:", e.message);
   }
@@ -60,7 +64,6 @@ async function saveTokens(tokens) {
 
 async function refreshAccessToken() {
   const tokens = await loadTokens();
-  console.log("Refreshing token...");
   const creds = Buffer.from(CLIENT_ID + ":" + CLIENT_SECRET).toString("base64");
   const res = await fetch("https://api.fitbit.com/oauth2/token", {
     method: "POST",
@@ -89,6 +92,74 @@ async function getValidToken() {
   return await refreshAccessToken();
 }
 
+// ── PROFILE TOKEN STORAGE ─────────────────────────────────────────────────
+async function loadProfileTokens(profileId) {
+  try {
+    const res = await fetch(SUPABASE_URL + "/rest/v1/profiles?id=eq." + profileId + "&select=fitbit_access_token,fitbit_refresh_token,fitbit_expires_at", {
+      headers: sbHeaders(),
+    });
+    const rows = await res.json();
+    if (rows && rows.length > 0) {
+      return {
+        access_token:  rows[0].fitbit_access_token  || "",
+        refresh_token: rows[0].fitbit_refresh_token || "",
+        expires_at:    rows[0].fitbit_expires_at    || 0,
+      };
+    }
+  } catch (e) {
+    console.error("loadProfileTokens error:", e.message);
+  }
+  return { access_token: "", refresh_token: "", expires_at: 0 };
+}
+
+async function saveProfileTokens(profileId, tokens) {
+  try {
+    await fetch(SUPABASE_URL + "/rest/v1/profiles?id=eq." + profileId, {
+      method: "PATCH",
+      headers: sbHeaders("return=minimal"),
+      body: JSON.stringify({
+        fitbit_access_token:  tokens.access_token,
+        fitbit_refresh_token: tokens.refresh_token,
+        fitbit_expires_at:    tokens.expires_at,
+      }),
+    });
+  } catch (e) {
+    console.error("saveProfileTokens error:", e.message);
+  }
+}
+
+async function refreshProfileToken(profileId) {
+  const tokens = await loadProfileTokens(profileId);
+  if (!tokens.refresh_token) throw new Error("No Fitbit refresh token for this profile. Please re-authorize.");
+  const creds = Buffer.from(CLIENT_ID + ":" + CLIENT_SECRET).toString("base64");
+  const res = await fetch("https://api.fitbit.com/oauth2/token", {
+    method: "POST",
+    headers: {
+      "Authorization": "Basic " + creds,
+      "Content-Type": "application/x-www-form-urlencoded",
+    },
+    body: "grant_type=refresh_token&refresh_token=" + tokens.refresh_token,
+  });
+  if (!res.ok) throw new Error("Refresh failed: " + await res.text());
+  const data = await res.json();
+  const next = {
+    access_token:  data.access_token,
+    refresh_token: data.refresh_token,
+    expires_at:    Date.now() + (data.expires_in * 1000) - 60000,
+  };
+  await saveProfileTokens(profileId, next);
+  return next.access_token;
+}
+
+async function getValidProfileToken(profileId) {
+  const tokens = await loadProfileTokens(profileId);
+  if (tokens.access_token && Date.now() < Number(tokens.expires_at)) {
+    return tokens.access_token;
+  }
+  return await refreshProfileToken(profileId);
+}
+
+// ── FITBIT HELPERS ────────────────────────────────────────────────────────
 async function fitGet(endpoint, token) {
   const res = await fetch("https://api.fitbit.com" + endpoint, {
     headers: { "Authorization": "Bearer " + token },
@@ -104,16 +175,85 @@ function dateStr(offsetDays) {
   return d.toISOString().split("T")[0];
 }
 
+async function buildDailyData(token) {
+  const today     = dateStr(0);
+  const yesterday = dateStr(-1);
+  const weekAgo   = dateStr(-7);
+
+  const results = await Promise.all([
+    fitGet("/1.2/user/-/sleep/date/" + today + ".json", token),
+    fitGet("/1/user/-/activities/heart/date/" + today + "/1d.json", token),
+    fitGet("/1/user/-/activities/heart/date/" + yesterday + "/1d.json", token),
+    fitGet("/1/user/-/hrv/date/" + today + ".json", token),
+    fitGet("/1/user/-/activities/date/" + yesterday + ".json", token),
+    fitGet("/1/user/-/hrv/date/" + weekAgo + "/" + today + ".json", token).catch(function() { return { hrv: [] }; }),
+    fitGet("/1/user/-/activities/heart/date/" + weekAgo + "/" + today + ".json", token).catch(function() { return { "activities-heart": [] }; }),
+  ]);
+
+  const sleep      = results[0];
+  const heartToday = results[1];
+  const heartYest  = results[2];
+  const hrvToday   = results[3];
+  const actYest    = results[4];
+  const hrvWeek    = results[5];
+  const heartWeek  = results[6];
+
+  const sleepArr    = sleep && sleep.sleep ? sleep.sleep : [];
+  const sleepRecord = sleepArr.find(function(s) { return s.isMainSleep; }) || sleepArr[0] || null;
+  const heartYestArr = heartYest && heartYest["activities-heart"] ? heartYest["activities-heart"] : [];
+  const zones = heartYestArr[0] && heartYestArr[0].value ? heartYestArr[0].value.heartRateZones || [] : [];
+  const heartTodayArr = heartToday && heartToday["activities-heart"] ? heartToday["activities-heart"] : [];
+  const rhr = heartTodayArr[0] && heartTodayArr[0].value ? heartTodayArr[0].value.restingHeartRate || null : null;
+  const hrvTodayArr = hrvToday && hrvToday.hrv ? hrvToday.hrv : [];
+  const hrv = hrvTodayArr[0] && hrvTodayArr[0].value ? hrvTodayArr[0].value.dailyRmssd || null : null;
+  const heartWeekArr = heartWeek && heartWeek["activities-heart"] ? heartWeek["activities-heart"] : [];
+  const rhrVals = heartWeekArr.map(function(d) { return d.value && d.value.restingHeartRate; }).filter(Boolean);
+  const hrvWeekArr = hrvWeek && hrvWeek.hrv ? hrvWeek.hrv : [];
+  const hrvVals = hrvWeekArr.map(function(d) { return d.value && d.value.dailyRmssd; }).filter(Boolean);
+
+  function findZone(name) {
+    const z = zones.find(function(z) { return z.name === name; });
+    return z ? z.minutes || 0 : 0;
+  }
+
+  return {
+    date: today,
+    data: {
+      sleep: {
+        hours:        sleepRecord ? +(sleepRecord.minutesAsleep / 60).toFixed(2) : null,
+        efficiency:   sleepRecord ? sleepRecord.efficiency : null,
+        minutesAwake: sleepRecord ? sleepRecord.minutesAwake : null,
+        stages:       sleepRecord && sleepRecord.levels ? sleepRecord.levels.summary : null,
+      },
+      rhr: rhr,
+      hrv: hrv,
+      prevZones: {
+        peak:    findZone("Peak"),
+        cardio:  findZone("Cardio"),
+        fatBurn: findZone("Fat Burn"),
+      },
+      steps: actYest && actYest.summary ? actYest.summary.steps : null,
+      rolling7: {
+        rhr: rhrVals.length ? Math.round(rhrVals.reduce(function(a,b){return a+b;},0) / rhrVals.length) : null,
+        hrv: hrvVals.length ? +(hrvVals.reduce(function(a,b){return a+b;},0) / hrvVals.length).toFixed(1) : null,
+      },
+    },
+  };
+}
+
 // ── OAUTH ──────────────────────────────────────────────────────────────────
 app.get("/auth", function(req, res) {
+  var profileId = req.query.profile_id || "";
   const url = "https://www.fitbit.com/oauth2/authorize?response_type=code&client_id=" + CLIENT_ID +
     "&redirect_uri=" + encodeURIComponent(REDIRECT_URI) +
-    "&scope=" + encodeURIComponent("sleep heartrate activity profile");
+    "&scope=" + encodeURIComponent("sleep heartrate activity profile") +
+    "&state=" + profileId;
   res.redirect(url);
 });
 
 app.get("/callback", async function(req, res) {
   const code = req.query.code;
+  const profileId = req.query.state || "";
   if (!code) return res.status(400).send("No code.");
   try {
     const creds = Buffer.from(CLIENT_ID + ":" + CLIENT_SECRET).toString("base64");
@@ -127,86 +267,108 @@ app.get("/callback", async function(req, res) {
     });
     if (!resp.ok) return res.status(400).send("Failed: " + await resp.text());
     const data = await resp.json();
-    await saveTokens({
+    const tokenData = {
       access_token:  data.access_token,
       refresh_token: data.refresh_token,
       expires_at:    Date.now() + (data.expires_in * 1000) - 60000,
-    });
-    console.log("OAuth complete. Tokens saved to Supabase.");
+    };
+    // Save to profile if profileId provided, otherwise legacy tokens table
+    if (profileId) {
+      await saveProfileTokens(profileId, tokenData);
+      console.log("OAuth complete. Tokens saved to profile " + profileId);
+    } else {
+      await saveTokens(tokenData);
+      console.log("OAuth complete. Tokens saved to legacy tokens table.");
+    }
     res.redirect("/");
   } catch (err) {
     res.status(500).send(err.message);
   }
 });
 
-// ── FITBIT DATA ────────────────────────────────────────────────────────────
-app.get("/api/daily", async function(req, res) {
+// ── PROFILES ──────────────────────────────────────────────────────────────
+app.get("/api/profiles", async function(req, res) {
   try {
-    const token     = await getValidToken();
-    const today     = dateStr(0);
-    const yesterday = dateStr(-1);
-    const weekAgo   = dateStr(-7);
+    var r = await fetch(SUPABASE_URL + "/rest/v1/profiles?select=id,name,avatar_color&order=created_at.asc", {
+      headers: sbHeaders(),
+    });
+    var data = await r.json();
+    res.json({ success: true, profiles: Array.isArray(data) ? data : [] });
+  } catch (e) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
 
-    const results = await Promise.all([
-      fitGet("/1.2/user/-/sleep/date/" + today + ".json", token),
-      fitGet("/1/user/-/activities/heart/date/" + today + "/1d.json", token),
-      fitGet("/1/user/-/activities/heart/date/" + yesterday + "/1d.json", token),
-      fitGet("/1/user/-/hrv/date/" + today + ".json", token),
-      fitGet("/1/user/-/activities/date/" + yesterday + ".json", token),
-      fitGet("/1/user/-/hrv/date/" + weekAgo + "/" + today + ".json", token).catch(function() { return { hrv: [] }; }),
-      fitGet("/1/user/-/activities/heart/date/" + weekAgo + "/" + today + ".json", token).catch(function() { return { "activities-heart": [] }; }),
-    ]);
-
-    const sleep      = results[0];
-    const heartToday = results[1];
-    const heartYest  = results[2];
-    const hrvToday   = results[3];
-    const actYest    = results[4];
-    const hrvWeek    = results[5];
-    const heartWeek  = results[6];
-
-    const sleepArr    = sleep && sleep.sleep ? sleep.sleep : [];
-    const sleepRecord = sleepArr.find(function(s) { return s.isMainSleep; }) || sleepArr[0] || null;
-    const heartYestArr = heartYest && heartYest["activities-heart"] ? heartYest["activities-heart"] : [];
-    const zones = heartYestArr[0] && heartYestArr[0].value ? heartYestArr[0].value.heartRateZones || [] : [];
-    const heartTodayArr = heartToday && heartToday["activities-heart"] ? heartToday["activities-heart"] : [];
-    const rhr = heartTodayArr[0] && heartTodayArr[0].value ? heartTodayArr[0].value.restingHeartRate || null : null;
-    const hrvTodayArr = hrvToday && hrvToday.hrv ? hrvToday.hrv : [];
-    const hrv = hrvTodayArr[0] && hrvTodayArr[0].value ? hrvTodayArr[0].value.dailyRmssd || null : null;
-    const heartWeekArr = heartWeek && heartWeek["activities-heart"] ? heartWeek["activities-heart"] : [];
-    const rhrVals = heartWeekArr.map(function(d) { return d.value && d.value.restingHeartRate; }).filter(Boolean);
-    const hrvWeekArr = hrvWeek && hrvWeek.hrv ? hrvWeek.hrv : [];
-    const hrvVals = hrvWeekArr.map(function(d) { return d.value && d.value.dailyRmssd; }).filter(Boolean);
-
-    function findZone(name) {
-      const z = zones.find(function(z) { return z.name === name; });
-      return z ? z.minutes || 0 : 0;
+app.post("/api/profiles", async function(req, res) {
+  try {
+    var body = req.body;
+    if (!body.name || !body.pin || String(body.pin).length !== 4) {
+      return res.status(400).json({ success: false, error: "Name and 4-digit PIN required." });
     }
+    var r = await fetch(SUPABASE_URL + "/rest/v1/profiles", {
+      method: "POST",
+      headers: sbHeaders(),
+      body: JSON.stringify({
+        name: body.name,
+        pin: hashPin(body.pin),
+        avatar_color: body.avatar_color || "#22c97a",
+        profile_data: body.profile_data || {},
+      }),
+    });
+    var data = await r.json();
+    var profile = Array.isArray(data) ? data[0] : data;
+    res.json({ success: true, profile: { id: profile.id, name: profile.name, avatar_color: profile.avatar_color } });
+  } catch (e) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
 
+app.post("/api/profiles/verify", async function(req, res) {
+  try {
+    var body = req.body;
+    if (!body.id || !body.pin) {
+      return res.status(400).json({ success: false, error: "Profile ID and PIN required." });
+    }
+    var r = await fetch(SUPABASE_URL + "/rest/v1/profiles?id=eq." + body.id + "&select=id,name,avatar_color,pin,profile_data", {
+      headers: sbHeaders(),
+    });
+    var rows = await r.json();
+    if (!rows || !rows.length) return res.json({ success: false, error: "Profile not found." });
+    var profile = rows[0];
+    if (profile.pin !== hashPin(body.pin)) return res.json({ success: false, error: "Incorrect PIN." });
     res.json({
       success: true,
-      date: today,
-      data: {
-        sleep: {
-          hours:        sleepRecord ? +(sleepRecord.minutesAsleep / 60).toFixed(2) : null,
-          efficiency:   sleepRecord ? sleepRecord.efficiency : null,
-          minutesAwake: sleepRecord ? sleepRecord.minutesAwake : null,
-          stages:       sleepRecord && sleepRecord.levels ? sleepRecord.levels.summary : null,
-        },
-        rhr: rhr,
-        hrv: hrv,
-        prevZones: {
-          peak:    findZone("Peak"),
-          cardio:  findZone("Cardio"),
-          fatBurn: findZone("Fat Burn"),
-        },
-        steps: actYest && actYest.summary ? actYest.summary.steps : null,
-        rolling7: {
-          rhr: rhrVals.length ? Math.round(rhrVals.reduce(function(a,b){return a+b;},0) / rhrVals.length) : null,
-          hrv: hrvVals.length ? +(hrvVals.reduce(function(a,b){return a+b;},0) / hrvVals.length).toFixed(1) : null,
-        },
+      profile: {
+        id: profile.id,
+        name: profile.name,
+        avatar_color: profile.avatar_color,
+        profile_data: profile.profile_data,
       },
     });
+  } catch (e) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+// ── FITBIT DATA ────────────────────────────────────────────────────────────
+// Legacy endpoint (uses tokens table)
+app.get("/api/daily", async function(req, res) {
+  try {
+    const token = await getValidToken();
+    const result = await buildDailyData(token);
+    res.json({ success: true, date: result.date, data: result.data });
+  } catch (err) {
+    console.error("Error:", err.message);
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// Per-profile endpoint (uses profile's fitbit tokens)
+app.get("/api/profiles/:id/daily", async function(req, res) {
+  try {
+    const token = await getValidProfileToken(req.params.id);
+    const result = await buildDailyData(token);
+    res.json({ success: true, date: result.date, data: result.data });
   } catch (err) {
     console.error("Error:", err.message);
     res.status(500).json({ success: false, error: err.message });
@@ -217,9 +379,10 @@ app.get("/api/daily", async function(req, res) {
 app.get("/api/workouts", async function(req, res) {
   try {
     var limit = req.query.limit || 60;
-    var r = await fetch(SUPABASE_URL + "/rest/v1/workouts?select=*&order=ts.desc&limit=" + limit, {
-      headers: sbHeaders(),
-    });
+    var profileId = req.query.profile_id;
+    var url = SUPABASE_URL + "/rest/v1/workouts?select=*&order=ts.desc&limit=" + limit;
+    if (profileId) url += "&profile_id=eq." + profileId;
+    var r = await fetch(url, { headers: sbHeaders() });
     var data = await r.json();
     res.json({ success: true, workouts: Array.isArray(data) ? data : [] });
   } catch (e) {
@@ -241,8 +404,6 @@ app.post("/api/workouts", async function(req, res) {
   }
 });
 
-// ── MEDITATION LOG ─────────────────────────────────────────────────────────
-
 app.patch("/api/workouts/:id", async function(req, res) {
   try {
     var id = req.params.id;
@@ -258,11 +419,13 @@ app.patch("/api/workouts/:id", async function(req, res) {
   }
 });
 
+// ── MEDITATION LOG ─────────────────────────────────────────────────────────
 app.get("/api/meditations", async function(req, res) {
   try {
-    var r = await fetch(SUPABASE_URL + "/rest/v1/workouts?select=date&med=eq.true&order=date.desc&limit=30", {
-      headers: sbHeaders(),
-    });
+    var profileId = req.query.profile_id;
+    var url = SUPABASE_URL + "/rest/v1/workouts?select=date&med=eq.true&order=date.desc&limit=30";
+    if (profileId) url += "&profile_id=eq." + profileId;
+    var r = await fetch(url, { headers: sbHeaders() });
     var data = await r.json();
     var dates = Array.isArray(data) ? data.map(function(w) { return w.date; }) : [];
     res.json({ success: true, dates: dates });
