@@ -21,11 +21,11 @@ main{max-width:860px;margin:0 auto;padding:32px 40px 80px}
 @media(max-width:700px){header{padding:13px 16px}main{padding:22px 16px 80px}.navBtn{padding:6px 8px;font-size:10px}}
 .stack{display:flex;flex-direction:column;gap:14px}
 .card{background:#0d0f16;border:1px solid #0e1016;border-radius:12px;padding:22px;transition:border-color .4s}
-.clabel{font-family:'IBM Plex Mono',monospace;font-size:12px;color:#4a4c50;letter-spacing:3px;margin-bottom:16px;text-transform:uppercase}
+.clabel{font-family:'IBM Plex Mono',monospace;font-size:13px;color:#4a4c50;letter-spacing:3px;margin-bottom:16px;text-transform:uppercase}
 .tab{display:none}.tab.active{display:flex;flex-direction:column;gap:14px;animation:fadeUp .35s ease}
 .bar-track{flex:1;height:4px;background:#0e1016;border-radius:2px;overflow:hidden}
 .bar-fill{height:100%;border-radius:2px;transition:width .9s cubic-bezier(.4,0,.2,1)}
-.logBtn{background:#22c97a10;border:1px solid #22c97a25;color:#22c97a;padding:14px;font-size:11px;letter-spacing:3px;cursor:pointer;font-family:'IBM Plex Mono',monospace;border-radius:8px;width:100%}
+.logBtn{background:#22c97a15;border:2px solid #22c97a40;color:#22c97a;padding:20px;font-size:16px;letter-spacing:3px;cursor:pointer;font-family:'IBM Plex Mono',monospace;border-radius:10px;width:100%;font-weight:600;transition:all .15s}.logBtn:hover{background:#22c97a22;border-color:#22c97a66}
 .loggedPill{font-family:'IBM Plex Mono',monospace;font-size:11px;color:#22c97a;letter-spacing:2px;padding:13px;background:#22c97a08;border:1px solid #22c97a20;border-radius:8px;text-align:center}
 .overlay{position:fixed;inset:0;background:rgba(0,0,0,.92);display:flex;align-items:center;justify-content:center;z-index:100;padding:20px}
 .modal{background:#0d0f16;border:1px solid #141618;border-radius:14px;padding:24px;width:100%;max-width:420px;max-height:90vh;overflow-y:auto}
@@ -40,7 +40,7 @@ input[type=checkbox]{accent-color:#22c97a;width:14px;height:14px;cursor:pointer}
 input[type=range]{width:100%;accent-color:#22c97a}
 .mono{font-family:'IBM Plex Mono',monospace;font-size:14px}
 .oswald{font-family:'Oswald',sans-serif}
-.pill{display:inline-block;padding:2px 10px;border-radius:4px;font-family:'IBM Plex Mono',monospace;font-size:9px;letter-spacing:2px}
+.pill{display:inline-block;padding:3px 12px;border-radius:4px;font-family:'IBM Plex Mono',monospace;font-size:11px;letter-spacing:2px}
 .pill-green{background:#22c97a18;color:#22c97a;border:1px solid #22c97a33}
 .pill-amber{background:#f5a62318;color:#f5a623;border:1px solid #f5a62333}
 .pill-red{background:#e8454518;color:#e84545;border:1px solid #e8454533}
@@ -57,7 +57,7 @@ input[type=range]{width:100%;accent-color:#22c97a}
   </div>
   <nav>
     <button class="navBtn active" onclick="showTab('today',this)">Today</button>
-    <button class="navBtn" onclick="showTab('week',this)">Week</button>
+    <button class="navBtn" onclick="showTab('calendar',this)">Calendar</button>
     <button class="navBtn" onclick="showTab('log',this)">Log</button>
     <button class="navBtn" onclick="showTab('profile',this)">Profile</button>
   </nav>
@@ -87,13 +87,29 @@ input[type=range]{width:100%;accent-color:#22c97a}
     <div id="log-area"></div>
   </div>
 
-  <!-- WEEK TAB -->
-  <div id="tab-week" class="tab stack">
+  <!-- CALENDAR TAB -->
+  <div id="tab-calendar" class="tab stack">
     <div class="statsGrid" id="week-stats"></div>
-    <div id="double-skip-warn" style="display:none;background:#f5a62310;border:1px solid #f5a62325;color:#f5a623;padding:10px 14px;border-radius:6px;font-size:13px">
+    <div id="double-skip-warn" style="display:none;background:#f5a62310;border:1px solid #f5a62325;color:#f5a623;padding:12px 16px;border-radius:6px;font-size:15px">
       Two misses in a row - today is non-negotiable. Even 15 min counts.
     </div>
-    <div class="weekGrid" id="week-grid"></div>
+    <div class="card">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px">
+        <button onclick="calNav(-1)" style="background:transparent;border:1px solid #1a1c22;color:#666;padding:6px 14px;border-radius:6px;cursor:pointer;font-size:15px">&larr; Prev</button>
+        <span id="cal-title" class="oswald" style="font-size:22px;font-weight:600;color:#fff"></span>
+        <button onclick="calNav(1)" style="background:transparent;border:1px solid #1a1c22;color:#666;padding:6px 14px;border-radius:6px;cursor:pointer;font-size:15px">Next &rarr;</button>
+      </div>
+      <div style="display:grid;grid-template-columns:repeat(7,1fr);gap:4px;margin-bottom:8px">
+        <div class="mono" style="font-size:11px;color:#444;text-align:center;padding:4px">MON</div>
+        <div class="mono" style="font-size:11px;color:#444;text-align:center;padding:4px">TUE</div>
+        <div class="mono" style="font-size:11px;color:#444;text-align:center;padding:4px">WED</div>
+        <div class="mono" style="font-size:11px;color:#444;text-align:center;padding:4px">THU</div>
+        <div class="mono" style="font-size:11px;color:#444;text-align:center;padding:4px">FRI</div>
+        <div class="mono" style="font-size:11px;color:#444;text-align:center;padding:4px">SAT</div>
+        <div class="mono" style="font-size:11px;color:#444;text-align:center;padding:4px">SUN</div>
+      </div>
+      <div id="cal-grid" style="display:grid;grid-template-columns:repeat(7,1fr);gap:4px"></div>
+    </div>
     <div class="card" id="week-breakdown"></div>
   </div>
 
@@ -119,7 +135,6 @@ input[type=range]{width:100%;accent-color:#22c97a}
         <span class="pill pill-green">BLUE BELT</span>
         <span class="pill pill-amber">PUBIC OSTEITIS</span>
         <span class="pill pill-blue">4.5 YRS MMA</span>
-        <span class="pill pill-blue">HOFFMAN ESTATES IL</span>
       </div>
     </div>
 
@@ -166,44 +181,44 @@ input[type=range]{width:100%;accent-color:#22c97a}
 
       <div class="injury-item">
         <div style="display:flex;align-items:center;justify-content:space-between">
-          <div style="font-size:14px;font-weight:500;color:#ddd">Pubic Osteitis</div>
+          <div style="font-size:16px;font-weight:500;color:#ddd">Pubic Osteitis</div>
           <span class="pill pill-amber">MANAGING</span>
         </div>
-        <div style="font-size:12px;color:#555;line-height:1.65">Onset Oct 2024 during a wedding gig. XR/MRI clear but inflamed pubic symphysis. Flares with dynamic hip movements, heavy loads, long days on feet. Right side historically worse, occasional left-side flares.</div>
-        <div style="font-size:11px;color:#333;font-style:italic;margin-top:3px">Key triggers: high kicks, sprinting, carrying heavy bags, long standing days</div>
+        <div style="font-size:15px;color:#555;line-height:1.65">Onset Oct 2024 during a wedding gig. XR/MRI clear but inflamed pubic symphysis. Flares with dynamic hip movements, heavy loads, long days on feet. Right side historically worse, occasional left-side flares.</div>
+        <div style="font-size:13px;color:#333;font-style:italic;margin-top:3px">Key triggers: high kicks, sprinting, carrying heavy bags, long standing days</div>
       </div>
 
       <div class="injury-item">
         <div style="display:flex;align-items:center;justify-content:space-between">
-          <div style="font-size:14px;font-weight:500;color:#ddd">Right Quad / IT Band</div>
+          <div style="font-size:16px;font-weight:500;color:#ddd">Right Quad / IT Band</div>
           <span class="pill pill-amber">CHRONIC</span>
         </div>
-        <div style="font-size:12px;color:#555;line-height:1.65">Several years of burning/tearing sensation, especially during big stretches or sitting. Likely from quad dominance and glute inhibition. Right side significantly tighter than left.</div>
+        <div style="font-size:15px;color:#555;line-height:1.65">Several years of burning/tearing sensation, especially during big stretches or sitting. Likely from quad dominance and glute inhibition. Right side significantly tighter than left.</div>
       </div>
 
       <div class="injury-item">
         <div style="display:flex;align-items:center;justify-content:space-between">
-          <div style="font-size:14px;font-weight:500;color:#ddd">Concussion History</div>
+          <div style="font-size:16px;font-weight:500;color:#ddd">Concussion History</div>
           <span class="pill pill-amber">MONITOR</span>
         </div>
-        <div style="font-size:12px;color:#555;line-height:1.65">Car accident Dec 2022. Dizziness and nausea with spins and rotational movements in MMA. Avoid head-spin drills. Eased back into MMA after 4-6 month break.</div>
-        <div style="font-size:11px;color:#333;font-style:italic;margin-top:3px">Always flag if dizziness increases</div>
+        <div style="font-size:15px;color:#555;line-height:1.65">Car accident Dec 2022. Dizziness and nausea with spins and rotational movements in MMA. Avoid head-spin drills. Eased back into MMA after 4-6 month break.</div>
+        <div style="font-size:13px;color:#333;font-style:italic;margin-top:3px">Always flag if dizziness increases</div>
       </div>
 
       <div class="injury-item">
         <div style="display:flex;align-items:center;justify-content:space-between">
-          <div style="font-size:14px;font-weight:500;color:#ddd">Upper Trap / Neck / Upper Back</div>
+          <div style="font-size:16px;font-weight:500;color:#ddd">Upper Trap / Neck / Upper Back</div>
           <span class="pill pill-amber">CHRONIC</span>
         </div>
-        <div style="font-size:12px;color:#555;line-height:1.65">Tightness from accident + heavy gig bag carrying. Did PT and improved significantly but never fully resolved. Aggravated by poor bag strap position.</div>
+        <div style="font-size:15px;color:#555;line-height:1.65">Tightness from accident + heavy gig bag carrying. Did PT and improved significantly but never fully resolved. Aggravated by poor bag strap position.</div>
       </div>
 
       <div class="injury-item">
         <div style="display:flex;align-items:center;justify-content:space-between">
-          <div style="font-size:14px;font-weight:500;color:#ddd">Anterior Pelvic Tilt</div>
+          <div style="font-size:16px;font-weight:500;color:#ddd">Anterior Pelvic Tilt</div>
           <span class="pill pill-amber">REHABBING</span>
         </div>
-        <div style="font-size:12px;color:#555;line-height:1.65">Glute underactivation, quad dominance, adductors compensating. Core and rib cage control improving. Right foot pronation being addressed with new Saucony + Mizuno shoes.</div>
+        <div style="font-size:15px;color:#555;line-height:1.65">Glute underactivation, quad dominance, adductors compensating. Core and rib cage control improving. Right foot pronation being addressed with new Saucony + Mizuno shoes.</div>
       </div>
 
     </div>
@@ -214,43 +229,43 @@ input[type=range]{width:100%;accent-color:#22c97a}
       <div style="display:flex;flex-direction:column;gap:10px">
         <div>
           <div style="display:flex;justify-content:space-between;margin-bottom:5px">
-            <span style="font-size:12px;color:#888">Glute activation</span>
-            <span class="mono" style="font-size:10px;color:#f5a623">improving</span>
+            <span style="font-size:15px;color:#888">Glute activation</span>
+            <span class="mono" style="font-size:12px;color:#f5a623">improving</span>
           </div>
           <div class="bar-track"><div class="bar-fill" style="width:40%;background:#f5a623"></div></div>
         </div>
         <div>
           <div style="display:flex;justify-content:space-between;margin-bottom:5px">
-            <span style="font-size:12px;color:#888">Hip mobility</span>
-            <span class="mono" style="font-size:10px;color:#f5a623">moderate</span>
+            <span style="font-size:15px;color:#888">Hip mobility</span>
+            <span class="mono" style="font-size:12px;color:#f5a623">moderate</span>
           </div>
           <div class="bar-track"><div class="bar-fill" style="width:50%;background:#f5a623"></div></div>
         </div>
         <div>
           <div style="display:flex;justify-content:space-between;margin-bottom:5px">
-            <span style="font-size:12px;color:#888">Core stability</span>
-            <span class="mono" style="font-size:10px;color:#f5a623">building</span>
+            <span style="font-size:15px;color:#888">Core stability</span>
+            <span class="mono" style="font-size:12px;color:#f5a623">building</span>
           </div>
           <div class="bar-track"><div class="bar-fill" style="width:45%;background:#f5a623"></div></div>
         </div>
         <div>
           <div style="display:flex;justify-content:space-between;margin-bottom:5px">
-            <span style="font-size:12px;color:#888">Pubic osteitis status</span>
-            <span class="mono" style="font-size:10px;color:#22c97a">managed</span>
+            <span style="font-size:15px;color:#888">Pubic osteitis status</span>
+            <span class="mono" style="font-size:12px;color:#22c97a">managed</span>
           </div>
           <div class="bar-track"><div class="bar-fill" style="width:70%;background:#22c97a"></div></div>
         </div>
         <div>
           <div style="display:flex;justify-content:space-between;margin-bottom:5px">
-            <span style="font-size:12px;color:#888">Upper back / neck</span>
-            <span class="mono" style="font-size:10px;color:#f5a623">tight but functional</span>
+            <span style="font-size:15px;color:#888">Upper back / neck</span>
+            <span class="mono" style="font-size:12px;color:#f5a623">tight but functional</span>
           </div>
           <div class="bar-track"><div class="bar-fill" style="width:55%;background:#f5a623"></div></div>
         </div>
         <div>
           <div style="display:flex;justify-content:space-between;margin-bottom:5px">
-            <span style="font-size:12px;color:#888">MMA conditioning</span>
-            <span class="mono" style="font-size:10px;color:#f5a623">rebuilding</span>
+            <span style="font-size:15px;color:#888">MMA conditioning</span>
+            <span class="mono" style="font-size:12px;color:#f5a623">rebuilding</span>
           </div>
           <div class="bar-track"><div class="bar-fill" style="width:35%;background:#f5a623"></div></div>
         </div>
@@ -262,28 +277,28 @@ input[type=range]{width:100%;accent-color:#22c97a}
       <p class="clabel">training philosophy</p>
       <div style="display:flex;flex-direction:column;gap:8px">
         <div style="display:flex;gap:10px;align-items:flex-start">
-          <span style="color:#22c97a;flex-shrink:0;font-size:13px">—</span>
-          <span style="font-size:13px;color:#888;line-height:1.65">Consistency beats intensity. Always. A 10-minute session beats skipping.</span>
+          <span style="color:#22c97a;flex-shrink:0;font-size:15px">—</span>
+          <span style="font-size:15px;color:#888;line-height:1.65">Consistency beats intensity. Always. A 10-minute session beats skipping.</span>
         </div>
         <div style="display:flex;gap:10px;align-items:flex-start">
-          <span style="color:#22c97a;flex-shrink:0;font-size:13px">—</span>
-          <span style="font-size:13px;color:#888;line-height:1.65">Never miss twice in a row.</span>
+          <span style="color:#22c97a;flex-shrink:0;font-size:15px">—</span>
+          <span style="font-size:15px;color:#888;line-height:1.65">Never miss twice in a row.</span>
         </div>
         <div style="display:flex;gap:10px;align-items:flex-start">
-          <span style="color:#22c97a;flex-shrink:0;font-size:13px">—</span>
-          <span style="font-size:13px;color:#888;line-height:1.65">Train movement patterns, not random exercises. Posture is the foundation.</span>
+          <span style="color:#22c97a;flex-shrink:0;font-size:15px">—</span>
+          <span style="font-size:15px;color:#888;line-height:1.65">Train movement patterns, not random exercises. Posture is the foundation.</span>
         </div>
         <div style="display:flex;gap:10px;align-items:flex-start">
-          <span style="color:#22c97a;flex-shrink:0;font-size:13px">—</span>
-          <span style="font-size:13px;color:#888;line-height:1.65">Always have a minimum viable option. Something is infinitely better than nothing.</span>
+          <span style="color:#22c97a;flex-shrink:0;font-size:15px">—</span>
+          <span style="font-size:15px;color:#888;line-height:1.65">Always have a minimum viable option. Something is infinitely better than nothing.</span>
         </div>
         <div style="display:flex;gap:10px;align-items:flex-start">
-          <span style="color:#22c97a;flex-shrink:0;font-size:13px">—</span>
-          <span style="font-size:13px;color:#888;line-height:1.65">Pain is information. Sharp pubic or quad pain means back off. Soreness is okay.</span>
+          <span style="color:#22c97a;flex-shrink:0;font-size:15px">—</span>
+          <span style="font-size:15px;color:#888;line-height:1.65">Pain is information. Sharp pubic or quad pain means back off. Soreness is okay.</span>
         </div>
         <div style="display:flex;gap:10px;align-items:flex-start">
-          <span style="color:#22c97a;flex-shrink:0;font-size:13px">—</span>
-          <span style="font-size:13px;color:#888;line-height:1.65">Life happens. Baby, gigs, weddings, illness. Adapt. Never quit.</span>
+          <span style="color:#22c97a;flex-shrink:0;font-size:15px">—</span>
+          <span style="font-size:15px;color:#888;line-height:1.65">Life happens. Baby, gigs, weddings, illness. Adapt. Never quit.</span>
         </div>
       </div>
     </div>
@@ -293,20 +308,20 @@ input[type=range]{width:100%;accent-color:#22c97a}
       <p class="clabel">life context</p>
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
         <div style="background:#060810;border-radius:6px;padding:12px">
-          <div class="mono" style="font-size:9px;color:#444;letter-spacing:2px;margin-bottom:5px">FAMILY</div>
-          <div style="font-size:13px;color:#888">New dad - Noam. Sleep disrupted regularly. Partner's schedule varies.</div>
+          <div class="mono" style="font-size:11px;color:#444;letter-spacing:2px;margin-bottom:5px">FAMILY</div>
+          <div style="font-size:15px;color:#888">New dad - Noam. Sleep disrupted regularly. Partner's schedule varies.</div>
         </div>
         <div style="background:#060810;border-radius:6px;padding:12px">
-          <div class="mono" style="font-size:9px;color:#444;letter-spacing:2px;margin-bottom:5px">WORK</div>
-          <div style="font-size:13px;color:#888">Wedding musician. Gigs = long standing days, heavy equipment, late nights.</div>
+          <div class="mono" style="font-size:11px;color:#444;letter-spacing:2px;margin-bottom:5px">WORK</div>
+          <div style="font-size:15px;color:#888">Wedding musician. Gigs = long standing days, heavy equipment, late nights.</div>
         </div>
         <div style="background:#060810;border-radius:6px;padding:12px">
-          <div class="mono" style="font-size:9px;color:#444;letter-spacing:2px;margin-bottom:5px">MMA</div>
-          <div style="font-size:13px;color:#888">Blue belt. 2x/week target. On the calendar = gets done.</div>
+          <div class="mono" style="font-size:11px;color:#444;letter-spacing:2px;margin-bottom:5px">MMA</div>
+          <div style="font-size:15px;color:#888">Blue belt. 2x/week target. On the calendar = gets done.</div>
         </div>
         <div style="background:#060810;border-radius:6px;padding:12px">
-          <div class="mono" style="font-size:9px;color:#444;letter-spacing:2px;margin-bottom:5px">OBSTACLES</div>
-          <div style="font-size:13px;color:#888">Consistency and time. Motivation follows action, not the other way around.</div>
+          <div class="mono" style="font-size:11px;color:#444;letter-spacing:2px;margin-bottom:5px">OBSTACLES</div>
+          <div style="font-size:15px;color:#888">Consistency and time. Motivation follows action, not the other way around.</div>
         </div>
       </div>
     </div>
@@ -663,7 +678,7 @@ function statCard(label, value, sub) {
 }
 
 function fetchAI() {
-  document.getElementById('ai-content').innerHTML = '<p class="mono" style="font-size:11px;color:#22c97a;letter-spacing:3px;animation:pulse 1.6s infinite">ANALYZING YOUR DATA...</p>';
+  document.getElementById('ai-content').innerHTML = '<p class="mono" style="font-size:12px;color:#22c97a;letter-spacing:3px;animation:pulse 1.6s infinite">ANALYZING YOUR DATA...</p>';
   var recent = '';
   var slice = workoutLog.slice(-10);
   for (var i = 0; i < slice.length; i++) {
@@ -679,7 +694,7 @@ function fetchAI() {
   var pz = fitData.prevZones || {};
   var r7 = fitData.rolling7 || {};
 
-  var prompt = 'You are ApexCoach, an elite personal AI coach for Shimmy. You know everything about him. Give a highly specific, data-driven workout recommendation for today.\n\n' +
+  var prompt = 'You are ApexCoach, an elite personal AI coach for Shimmy. You know everything about him. Give 3 specific, data-driven workout options for today, ordered by best fit first.\n\n' +
     'TODAY: ' + today + '\n' +
     'READINESS: ' + readiness.score + '/100 - ' + readiness.tier.toUpperCase() + '\n' +
     'BREAKDOWN: Sleep Quality ' + readiness.breakdown.sleepQuality + '/25, Sleep Cliff ' + readiness.breakdown.sleepCliff + '/25 (' + readiness.hours.toFixed(1) + 'h), Nervous System ' + readiness.breakdown.nervousSystem + '/30, Recovery ' + readiness.breakdown.recovery + '/20\n\n' +
@@ -692,21 +707,21 @@ function fetchAI() {
     'RECENT 10-DAY LOG:\n' + recent + '\n\n' +
     'FULL ATHLETE PROFILE:\n' + FULL_PROFILE + '\n\n' +
     'WEEKLY SCHEDULE DEFAULTS:\n' + getScheduleText() + '\n\n' +
-    'IMPORTANT RULES FOR YOUR RECOMMENDATION:\n' +
+    'IMPORTANT RULES:\n' +
     '- NEVER suggest exercises that cause sharp pubic pain\n' +
     '- AVOID spin drills (concussion history causes dizziness)\n' +
-    '- ALWAYS include a mobility/posture component - this is non-negotiable\n' +
-    '- If readiness under 60: recovery-focused session only, no heavy loading\n' +
-    '- Always account for whether a gig day happened recently (fatigue from standing)\n' +
-    '- Reference actual HRV vs 7-day average in your reasoning\n' +
-    '- Minimum viable option must be genuinely doable in 10-15 min\n\n' +
+    '- ALWAYS include a mobility/posture component in each option\n' +
+    '- If readiness under 60: recovery-focused options only, no heavy loading\n' +
+    '- Always account for whether a gig day happened recently\n' +
+    '- Reference actual HRV vs 7-day average in reasoning\n' +
+    '- Provide 3 distinct options: best fit, alternative, and a shorter option\n\n' +
     'Respond ONLY with raw JSON, no markdown:\n' +
-    '{"headline":"6-8 word punchy headline","workout":"specific workout name","duration":45,"intensity":"descriptor","reasoning":"2-3 sentences referencing specific numbers from today and recent pattern","exercises":["exercise + sets/reps/time","exercise + sets/reps/time","exercise + sets/reps/time","exercise + sets/reps/time","exercise + sets/reps/time"],"mobility":"specific hip/posture/groin focus for today","minimum_viable":"genuine 10-15 min fallback","warning":"one specific caution based on the data, or null"}';
+    '{"brief":"one sentence overall context for today","options":[{"type":"workout category","headline":"punchy 6-8 word name","duration":45,"intensity":"descriptor","reasoning":"why this fits today, reference numbers","exercises":["exercise + sets/reps","exercise + sets/reps","exercise + sets/reps"],"mobility":"specific focus"},{"type":"category","headline":"name","duration":30,"intensity":"descriptor","reasoning":"why this alternative","exercises":["ex","ex","ex"],"mobility":"focus"},{"type":"category","headline":"name","duration":20,"intensity":"descriptor","reasoning":"why this shorter option","exercises":["ex","ex"],"mobility":"focus"}],"minimum_viable":"genuine 10-15 min fallback","warning":"one specific caution based on the data, or null"}';
 
   fetch('/api/ai', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ model: 'claude-sonnet-4-20250514', max_tokens: 1200, messages: [{ role: 'user', content: prompt }] })
+    body: JSON.stringify({ model: 'claude-sonnet-4-20250514', max_tokens: 1800, messages: [{ role: 'user', content: prompt }] })
   })
   .then(function(r) { return r.json(); })
   .then(function(data) {
@@ -719,27 +734,63 @@ function fetchAI() {
     renderAI();
   })
   .catch(function(e) {
-    document.getElementById('ai-content').innerHTML = '<p style="color:#e87;font-size:13px">AI error - <button onclick="fetchAI()" style="background:transparent;border:1px solid #333;color:#666;padding:4px 10px;cursor:pointer;border-radius:4px;font-size:11px">Retry</button></p>';
+    document.getElementById('ai-content').innerHTML = '<p style="color:#e87;font-size:15px">AI error - <button onclick="fetchAI()" style="background:transparent;border:1px solid #333;color:#666;padding:6px 14px;cursor:pointer;border-radius:4px;font-size:13px">Retry</button></p>';
   });
 }
+
+var expandedOption = 0;
+function toggleOption(idx) { expandedOption = (expandedOption === idx) ? -1 : idx; renderAI(); }
 
 function renderAI() {
   if (!aiRec) return;
   var t = TIERS[readiness.tier];
-  var exHTML = '';
-  var exes = aiRec.exercises || [];
-  for (var i = 0; i < exes.length; i++) {
-    var num = i < 9 ? '0' + (i+1) : '' + (i+1);
-    exHTML += '<div style="display:flex;gap:12px;padding:7px 0;border-bottom:1px solid #0a0c12;font-size:13px;align-items:flex-start"><span class="mono" style="font-size:9px;color:#1e2028;width:20px;flex-shrink:0;padding-top:2px">' + num + '</span><span style="color:#ccc;line-height:1.5">' + exes[i] + '</span></div>';
+  var opts = aiRec.options || [];
+  if (!opts.length) return;
+
+  var html = '';
+  if (aiRec.brief) {
+    html += '<p style="font-size:15px;color:#888;line-height:1.75;margin-bottom:14px">' + aiRec.brief + '</p>';
   }
-  document.getElementById('ai-content').innerHTML =
-    '<div class="oswald" style="font-size:22px;font-weight:600;color:#fff;margin-bottom:3px">' + aiRec.headline + '</div>' +
-    '<div class="mono" style="font-size:11px;color:#22c97a;margin-bottom:14px">' + aiRec.workout + ' - ' + aiRec.duration + 'min - ' + aiRec.intensity + '</div>' +
-    '<p style="font-size:14px;color:#888;line-height:1.75;margin-bottom:14px">' + aiRec.reasoning + '</p>' +
-    (aiRec.warning ? '<div style="background:#e8454512;border:1px solid #e8454528;color:#e87;padding:8px 12px;border-radius:6px;font-size:12px;margin-bottom:14px">Warning: ' + aiRec.warning + '</div>' : '') +
-    '<div style="background:#060810;border-radius:8px;padding:14px;margin-bottom:14px"><p class="mono" style="font-size:9px;color:#2a2c30;letter-spacing:3px;margin-bottom:10px">TODAY\'S PLAN</p>' + exHTML + '</div>' +
-    (aiRec.mobility ? '<p style="font-size:13px;color:#4488bb;margin-bottom:12px;font-style:italic">Mobility: ' + aiRec.mobility + '</p>' : '') +
-    (aiRec.minimum_viable ? '<div style="background:#f5a62310;border:1px solid #f5a62322;padding:10px 14px;border-radius:6px"><p class="mono" style="font-size:9px;color:#f5a623;letter-spacing:2px;margin-bottom:6px">MINIMUM VIABLE</p><p style="font-size:13px;color:#c8a060;line-height:1.65">' + aiRec.minimum_viable + '</p></div>' : '');
+  if (aiRec.warning) {
+    html += '<div style="background:#e8454512;border:1px solid #e8454528;color:#e87;padding:10px 14px;border-radius:6px;font-size:14px;margin-bottom:14px">Warning: ' + aiRec.warning + '</div>';
+  }
+
+  var optColors = [t.color, '#4488bb', '#f5a623'];
+  for (var i = 0; i < opts.length; i++) {
+    var o = opts[i];
+    var c = optColors[i] || '#555';
+    var isExpanded = expandedOption === i;
+    var badge = i === 0 ? 'BEST FIT' : i === 1 ? 'ALTERNATIVE' : 'QUICK';
+
+    html += '<div onclick="toggleOption(' + i + ')" style="background:#060810;border:1px solid ' + (isExpanded ? c + '44' : '#0e1016') + ';border-radius:10px;padding:16px;margin-bottom:10px;cursor:pointer;transition:border-color .2s">';
+    html += '<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">';
+    html += '<span style="font-family:IBM Plex Mono,monospace;font-size:10px;color:' + c + ';letter-spacing:2px;background:' + c + '15;padding:2px 10px;border-radius:4px;border:1px solid ' + c + '33">' + badge + '</span>';
+    html += '<span class="mono" style="font-size:12px;color:#555">' + o.duration + 'min - ' + o.intensity + '</span>';
+    html += '</div>';
+    html += '<div class="oswald" style="font-size:20px;font-weight:600;color:#fff;margin-bottom:4px">' + o.headline + '</div>';
+    html += '<div class="mono" style="font-size:12px;color:#555;margin-bottom:' + (isExpanded ? '12' : '0') + 'px">' + o.type + '</div>';
+
+    if (isExpanded) {
+      html += '<p style="font-size:14px;color:#888;line-height:1.75;margin-bottom:12px">' + o.reasoning + '</p>';
+      var exes = o.exercises || [];
+      html += '<div style="margin-bottom:10px">';
+      for (var j = 0; j < exes.length; j++) {
+        var num = j < 9 ? '0' + (j+1) : '' + (j+1);
+        html += '<div style="display:flex;gap:12px;padding:8px 0;border-bottom:1px solid #0a0c12;font-size:14px;align-items:flex-start"><span class="mono" style="font-size:10px;color:#1e2028;width:20px;flex-shrink:0;padding-top:2px">' + num + '</span><span style="color:#ccc;line-height:1.5">' + exes[j] + '</span></div>';
+      }
+      html += '</div>';
+      if (o.mobility) {
+        html += '<p style="font-size:14px;color:#4488bb;font-style:italic">Mobility: ' + o.mobility + '</p>';
+      }
+    }
+    html += '</div>';
+  }
+
+  if (aiRec.minimum_viable) {
+    html += '<div style="background:#f5a62310;border:1px solid #f5a62322;padding:12px 16px;border-radius:6px;margin-top:4px"><p class="mono" style="font-size:10px;color:#f5a623;letter-spacing:2px;margin-bottom:6px">MINIMUM VIABLE</p><p style="font-size:14px;color:#c8a060;line-height:1.65">' + aiRec.minimum_viable + '</p></div>';
+  }
+
+  document.getElementById('ai-content').innerHTML = html;
 }
 
 // ── SCHEDULE ──────────────────────────────────────────────────────────────
@@ -960,49 +1011,102 @@ function saveWorkout() {
   if (readiness && fitData) fetchAI();
 }
 
-function renderWeek() {
-  var days = [];
-  for (var i = 0; i < 7; i++) {
-    var d = new Date(); d.setDate(d.getDate() - (6 - i));
-    var str = d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
+var calOffset = 0;
+function calNav(dir) { calOffset += dir; renderCalendar(); }
+
+function renderCalendar() {
+  var todayStr = ds(0);
+  // Build the month to display
+  var ref = new Date(); ref.setMonth(ref.getMonth() + calOffset); ref.setDate(1);
+  var year = ref.getFullYear();
+  var month = ref.getMonth();
+  var monthName = ref.toLocaleDateString('en-US', { month: 'long', year: 'numeric' });
+  document.getElementById('cal-title').textContent = monthName;
+
+  // First day of month (0=Sun) → shift to Mon-start: Mon=0 ... Sun=6
+  var firstDow = ref.getDay();
+  var startPad = (firstDow === 0) ? 6 : firstDow - 1;
+  var daysInMonth = new Date(year, month + 1, 0).getDate();
+
+  // Build grid
+  var gridHTML = '';
+  // Empty cells before first day
+  for (var p = 0; p < startPad; p++) {
+    gridHTML += '<div style="padding:6px;text-align:center"></div>';
+  }
+  for (var day = 1; day <= daysInMonth; day++) {
+    var str = year + '-' + String(month + 1).padStart(2, '0') + '-' + String(day).padStart(2, '0');
+    var isToday = str === todayStr;
     var entry = null;
     for (var j = 0; j < workoutLog.length; j++) { if (workoutLog[j].date === str) { entry = workoutLog[j]; break; } }
-    days.push({ str: str, dow: d.toLocaleDateString('en-US',{weekday:'short'}), dom: d.getDate(), entry: entry, today: i === 6 });
-  }
-  var done = 0, mob = 0, med = 0;
-  for (var i = 0; i < days.length; i++) {
-    if (days[i].entry && days[i].entry.done) done++;
-    if (days[i].entry && days[i].entry.mobility) mob++;
-    if (medLog.indexOf(days[i].str) >= 0) med++;
-  }
-  var pct = Math.round((done / 7) * 100);
-  var color = pct >= 57 ? '#22c97a' : pct >= 43 ? '#f5a623' : '#e84545';
-  var statsHTML = '';
-  var stats = [[done,'workouts'],[mob,'mobility'],[med,'meditations']];
-  for (var i = 0; i < stats.length; i++) { statsHTML += '<div class="card" style="text-align:center;padding:14px"><div class="oswald" style="font-size:34px;font-weight:700;color:' + color + '">' + stats[i][0] + '</div><div class="mono" style="font-size:9px;color:#444;letter-spacing:2px;margin-top:4px">' + stats[i][1].toUpperCase() + '</div></div>'; }
-  document.getElementById('week-stats').innerHTML = statsHTML;
-  var lastTwo = days.slice(-2);
-  var doubleSkip = (!lastTwo[0].entry || !lastTwo[0].entry.done) && (!lastTwo[1].entry || !lastTwo[1].entry.done);
-  document.getElementById('double-skip-warn').style.display = doubleSkip ? 'block' : 'none';
-  var gridHTML = '';
-  for (var i = 0; i < days.length; i++) {
-    var d = days[i];
-    gridHTML += '<div style="background:' + (d.today?'#0e1018':'#080a0f') + ';border:1px solid ' + (d.entry&&d.entry.done?'#22c97a33':d.today?'#1a1c22':'#0a0c10') + ';border-radius:10px;padding:10px 4px;text-align:center"><div class="mono" style="font-size:9px;color:#333;margin-bottom:3px">' + d.dow + '</div><div class="oswald" style="font-size:19px;color:' + (d.today?'#fff':'#555') + ';margin-bottom:3px">' + d.dom + '</div>';
-    if (d.entry) {
-      gridHTML += '<div style="font-size:8px;color:#333;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;margin-bottom:2px">' + d.entry.type.split(' ')[0] + '</div><div style="font-size:11px">' + (d.entry.done ? '<span style="color:#22c97a">done</span>' : '<span style="color:#e84545">skip</span>') + (d.entry.mobility ? '<span style="font-size:8px;color:#4488bb"> M</span>' : '') + (d.entry.med ? '<span style="font-size:8px;color:#9966cc"> Z</span>' : '') + '</div>';
-    } else { gridHTML += '<div style="color:#111;font-size:14px">-</div>'; }
+    var bg = isToday ? '#0e1018' : '#080a0f';
+    var border = entry && entry.done ? '#22c97a33' : isToday ? '#1a1c22' : '#0a0c10';
+    gridHTML += '<div style="background:' + bg + ';border:1px solid ' + border + ';border-radius:8px;padding:6px 2px;text-align:center;min-height:52px">';
+    gridHTML += '<div class="oswald" style="font-size:16px;color:' + (isToday ? '#fff' : '#555') + ';margin-bottom:2px">' + day + '</div>';
+    if (entry) {
+      gridHTML += '<div style="font-size:9px;color:#444;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + entry.type.split(' ')[0] + '</div>';
+      gridHTML += '<div style="font-size:10px">' + (entry.done ? '<span style="color:#22c97a">&#10003;</span>' : '<span style="color:#e84545">&#10007;</span>') + '</div>';
+    }
     gridHTML += '</div>';
   }
-  document.getElementById('week-grid').innerHTML = gridHTML;
-  var cutoff = new Date(); cutoff.setDate(cutoff.getDate() - 6);
+  document.getElementById('cal-grid').innerHTML = gridHTML;
+
+  // Stats: last 7 days (always current, regardless of month viewed)
+  var done7 = 0, mob7 = 0, med7 = 0;
+  for (var i = 0; i < 7; i++) {
+    var dStr = ds(-i);
+    for (var j = 0; j < workoutLog.length; j++) {
+      if (workoutLog[j].date === dStr) {
+        if (workoutLog[j].done) done7++;
+        if (workoutLog[j].mobility) mob7++;
+        break;
+      }
+    }
+    if (medLog.indexOf(dStr) >= 0) med7++;
+  }
+  var pct = Math.round((done7 / 7) * 100);
+  var color = pct >= 57 ? '#22c97a' : pct >= 43 ? '#f5a623' : '#e84545';
+  var statsHTML = '';
+  var stats = [[done7,'workouts'],[mob7,'mobility'],[med7,'meditations']];
+  for (var i = 0; i < stats.length; i++) {
+    statsHTML += '<div class="card" style="text-align:center;padding:14px"><div class="oswald" style="font-size:34px;font-weight:700;color:' + color + '">' + stats[i][0] + '</div><div class="mono" style="font-size:11px;color:#444;letter-spacing:2px;margin-top:4px">' + stats[i][1].toUpperCase() + '</div></div>';
+  }
+  document.getElementById('week-stats').innerHTML = statsHTML;
+
+  // Double-skip warning
+  var y0 = null, y1 = null;
+  var s0 = ds(0), s1 = ds(-1);
+  for (var j = 0; j < workoutLog.length; j++) {
+    if (workoutLog[j].date === s0) y0 = workoutLog[j];
+    if (workoutLog[j].date === s1) y1 = workoutLog[j];
+  }
+  var doubleSkip = (!y0 || !y0.done) && (!y1 || !y1.done);
+  document.getElementById('double-skip-warn').style.display = doubleSkip ? 'block' : 'none';
+
+  // Breakdown: this month's types
   var types = {};
-  for (var i = 0; i < workoutLog.length; i++) { var w = workoutLog[i]; if (new Date(w.date) >= cutoff) { var cat = w.type.split(' ')[0]; types[cat] = (types[cat] || 0) + 1; } }
+  for (var i = 0; i < workoutLog.length; i++) {
+    var w = workoutLog[i];
+    var wd = new Date(w.date + 'T12:00:00');
+    if (wd.getFullYear() === year && wd.getMonth() === month && w.done) {
+      var cat = w.type.split(' ')[0];
+      types[cat] = (types[cat] || 0) + 1;
+    }
+  }
   var entries = Object.keys(types);
-  var bdHTML = '<p class="clabel">this week</p>';
-  if (entries.length) { for (var i = 0; i < entries.length; i++) { bdHTML += '<div style="display:flex;justify-content:space-between;padding:6px 0;border-bottom:1px solid #0a0c10;font-size:13px;color:#999"><span>' + entries[i] + '</span><span class="mono" style="font-size:11px;color:#22c97a">' + types[entries[i]] + 'x</span></div>'; } }
-  else { bdHTML += '<p style="color:#2a2c30;font-size:13px;font-style:italic">No sessions logged.</p>'; }
+  var bdHTML = '<p class="clabel">this month</p>';
+  if (entries.length) {
+    for (var i = 0; i < entries.length; i++) {
+      bdHTML += '<div style="display:flex;justify-content:space-between;padding:6px 0;border-bottom:1px solid #0a0c10;font-size:15px;color:#999"><span>' + entries[i] + '</span><span class="mono" style="font-size:13px;color:#22c97a">' + types[entries[i]] + 'x</span></div>';
+    }
+  } else {
+    bdHTML += '<p style="color:#2a2c30;font-size:15px;font-style:italic">No sessions logged.</p>';
+  }
   document.getElementById('week-breakdown').innerHTML = bdHTML;
 }
+
+// Keep old name as alias for any callers
+function renderWeek() { renderCalendar(); }
 
 function renderLog() {
   var sorted = workoutLog.slice().reverse().slice(0, 60);
@@ -1206,7 +1310,7 @@ function renderGoals() {
     html += '<div style="background:#060810;border:1px solid #0e1016;border-radius:8px;padding:16px">' +
       '<div style="font-size:22px;margin-bottom:8px">' + g.emoji + '</div>' +
       '<div style="font-size:15px;font-weight:600;color:#fff;margin-bottom:5px">' + g.title + '</div>' +
-      '<div style="font-size:13px;color:#666;line-height:1.6;margin-bottom:10px">' + g.desc + '</div>' +
+      '<div style="font-size:15px;color:#666;line-height:1.6;margin-bottom:10px">' + g.desc + '</div>' +
       (isMed ? '<div id="med-status" class="mono" style="font-size:11px;color:#555;letter-spacing:1px;cursor:pointer" onclick="toggleMeditation()">TAP TO LOG TODAY</div>' :
                '<div class="mono" style="font-size:10px;color:' + sc + ';letter-spacing:1px">' + g.status + '</div>') +
       '</div>';
