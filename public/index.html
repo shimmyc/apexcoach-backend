@@ -174,36 +174,7 @@ input[type=range]{width:100%;accent-color:#22c97a}
 
   <!-- PROFILE TAB -->
   <div id="tab-profile" class="tab stack">
-
-    <!-- ATHLETE HEADER -->
-    <div class="card" style="border-color:#22c97a33">
-      <div style="display:flex;align-items:center;gap:16px;margin-bottom:14px">
-        <div style="width:52px;height:52px;border-radius:50%;background:#22c97a18;border:1px solid #22c97a33;display:flex;align-items:center;justify-content:center;font-family:'Oswald',sans-serif;font-size:20px;font-weight:700;color:#22c97a">S</div>
-        <div>
-          <div style="font-family:'Oswald',sans-serif;font-size:22px;font-weight:600;color:#fff">Shimmy Castle</div>
-          <div class="mono" style="font-size:10px;color:#555;letter-spacing:2px">MMA ATHLETE - MUSICIAN - DAD</div>
-        </div>
-      </div>
-      <div style="display:flex;gap:8px;flex-wrap:wrap">
-        <span class="pill pill-green">BLUE BELT</span>
-        <span class="pill pill-amber">PUBIC OSTEITIS</span>
-        <span class="pill pill-blue">4.5 YRS MMA</span>
-      </div>
-    </div>
-
-    <!-- BELT PROGRESS -->
-    <div class="card" id="belt-card">
-      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">
-        <p class="clabel" style="margin-bottom:0">Belt Journey to Black</p>
-        <button onclick="toggleBeltEdit()" id="belt-edit-btn" style="background:transparent;border:1px solid #1a1c22;color:#666;padding:5px 12px;border-radius:6px;cursor:pointer;font-size:13px">Edit</button>
-      </div>
-      <div id="belt-display"></div>
-      <div id="belt-editor" style="display:none">
-        <p style="font-size:14px;color:#888;margin-bottom:12px">Select your current belt:</p>
-        <div id="belt-selector" style="display:flex;flex-wrap:wrap;gap:8px;margin-bottom:16px"></div>
-        <button onclick="saveBelt()" class="btnPri" style="font-size:14px">Save</button>
-      </div>
-    </div>
+    <div id="profile-dynamic"></div>
 
     <!-- WEEKLY SCHEDULE -->
     <div class="card">
@@ -211,173 +182,15 @@ input[type=range]{width:100%;accent-color:#22c97a}
       <div id="schedule-grid" style="display:grid;grid-template-columns:repeat(7,1fr);gap:8px"></div>
     </div>
 
-    <!-- BIG GOALS -->
+    <!-- GOALS -->
     <div class="card">
-      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">
-        <p class="clabel" style="margin-bottom:0">Goals &amp; Milestones</p>
-        <button onclick="toggleGoalEdit()" style="background:transparent;border:1px solid #1a1c22;color:#666;padding:5px 12px;border-radius:6px;cursor:pointer;font-size:13px">Edit</button>
-      </div>
+      <p class="clabel">goals &amp; milestones</p>
       <div id="goals-display" class="goalsGrid"></div>
-      <div id="goals-editor" style="display:none;margin-top:12px">
-        <div id="goals-list"></div>
-        <button onclick="addGoal()" style="background:#22c97a12;border:1px solid #22c97a25;color:#22c97a;padding:8px 16px;border-radius:6px;cursor:pointer;font-size:14px;width:100%;margin-top:8px">+ Add Goal</button>
-        <div style="display:flex;gap:8px;margin-top:12px;justify-content:flex-end">
-          <button onclick="toggleGoalEdit()" class="btnSec" style="font-size:14px">Cancel</button>
-          <button onclick="saveGoals()" class="btnPri" style="font-size:14px">Save Goals</button>
-        </div>
-      </div>
     </div>
 
-    <!-- INJURY STATUS -->
-    <div class="card">
-      <p class="clabel">injury and health status</p>
-
-      <div class="injury-item">
-        <div style="display:flex;align-items:center;justify-content:space-between">
-          <div style="font-size:16px;font-weight:500;color:#ddd">Pubic Osteitis</div>
-          <span class="pill pill-amber">MANAGING</span>
-        </div>
-        <div style="font-size:15px;color:#555;line-height:1.65">Onset Oct 2024 during a wedding gig. XR/MRI clear but inflamed pubic symphysis. Flares with dynamic hip movements, heavy loads, long days on feet. Right side historically worse, occasional left-side flares.</div>
-        <div style="font-size:13px;color:#333;font-style:italic;margin-top:3px">Key triggers: high kicks, sprinting, carrying heavy bags, long standing days</div>
-      </div>
-
-      <div class="injury-item">
-        <div style="display:flex;align-items:center;justify-content:space-between">
-          <div style="font-size:16px;font-weight:500;color:#ddd">Right Quad / IT Band</div>
-          <span class="pill pill-amber">CHRONIC</span>
-        </div>
-        <div style="font-size:15px;color:#555;line-height:1.65">Several years of burning/tearing sensation, especially during big stretches or sitting. Likely from quad dominance and glute inhibition. Right side significantly tighter than left.</div>
-      </div>
-
-      <div class="injury-item">
-        <div style="display:flex;align-items:center;justify-content:space-between">
-          <div style="font-size:16px;font-weight:500;color:#ddd">Concussion History</div>
-          <span class="pill pill-amber">MONITOR</span>
-        </div>
-        <div style="font-size:15px;color:#555;line-height:1.65">Car accident Dec 2022. Dizziness and nausea with spins and rotational movements in MMA. Avoid head-spin drills. Eased back into MMA after 4-6 month break.</div>
-        <div style="font-size:13px;color:#333;font-style:italic;margin-top:3px">Always flag if dizziness increases</div>
-      </div>
-
-      <div class="injury-item">
-        <div style="display:flex;align-items:center;justify-content:space-between">
-          <div style="font-size:16px;font-weight:500;color:#ddd">Upper Trap / Neck / Upper Back</div>
-          <span class="pill pill-amber">CHRONIC</span>
-        </div>
-        <div style="font-size:15px;color:#555;line-height:1.65">Tightness from accident + heavy gig bag carrying. Did PT and improved significantly but never fully resolved. Aggravated by poor bag strap position.</div>
-      </div>
-
-      <div class="injury-item">
-        <div style="display:flex;align-items:center;justify-content:space-between">
-          <div style="font-size:16px;font-weight:500;color:#ddd">Anterior Pelvic Tilt</div>
-          <span class="pill pill-amber">REHABBING</span>
-        </div>
-        <div style="font-size:15px;color:#555;line-height:1.65">Glute underactivation, quad dominance, adductors compensating. Core and rib cage control improving. Right foot pronation being addressed with new Saucony + Mizuno shoes.</div>
-      </div>
-
-    </div>
-
-    <!-- MOVEMENT PROFILE -->
-    <div class="card">
-      <p class="clabel">movement profile</p>
-      <div style="display:flex;flex-direction:column;gap:10px">
-        <div>
-          <div style="display:flex;justify-content:space-between;margin-bottom:5px">
-            <span style="font-size:15px;color:#888">Glute activation</span>
-            <span class="mono" style="font-size:12px;color:#f5a623">improving</span>
-          </div>
-          <div class="bar-track"><div class="bar-fill" style="width:40%;background:#f5a623"></div></div>
-        </div>
-        <div>
-          <div style="display:flex;justify-content:space-between;margin-bottom:5px">
-            <span style="font-size:15px;color:#888">Hip mobility</span>
-            <span class="mono" style="font-size:12px;color:#f5a623">moderate</span>
-          </div>
-          <div class="bar-track"><div class="bar-fill" style="width:50%;background:#f5a623"></div></div>
-        </div>
-        <div>
-          <div style="display:flex;justify-content:space-between;margin-bottom:5px">
-            <span style="font-size:15px;color:#888">Core stability</span>
-            <span class="mono" style="font-size:12px;color:#f5a623">building</span>
-          </div>
-          <div class="bar-track"><div class="bar-fill" style="width:45%;background:#f5a623"></div></div>
-        </div>
-        <div>
-          <div style="display:flex;justify-content:space-between;margin-bottom:5px">
-            <span style="font-size:15px;color:#888">Pubic osteitis status</span>
-            <span class="mono" style="font-size:12px;color:#22c97a">managed</span>
-          </div>
-          <div class="bar-track"><div class="bar-fill" style="width:70%;background:#22c97a"></div></div>
-        </div>
-        <div>
-          <div style="display:flex;justify-content:space-between;margin-bottom:5px">
-            <span style="font-size:15px;color:#888">Upper back / neck</span>
-            <span class="mono" style="font-size:12px;color:#f5a623">tight but functional</span>
-          </div>
-          <div class="bar-track"><div class="bar-fill" style="width:55%;background:#f5a623"></div></div>
-        </div>
-        <div>
-          <div style="display:flex;justify-content:space-between;margin-bottom:5px">
-            <span style="font-size:15px;color:#888">MMA conditioning</span>
-            <span class="mono" style="font-size:12px;color:#f5a623">rebuilding</span>
-          </div>
-          <div class="bar-track"><div class="bar-fill" style="width:35%;background:#f5a623"></div></div>
-        </div>
-      </div>
-    </div>
-
-    <!-- TRAINING PHILOSOPHY -->
-    <div class="card">
-      <p class="clabel">training philosophy</p>
-      <div style="display:flex;flex-direction:column;gap:8px">
-        <div style="display:flex;gap:10px;align-items:flex-start">
-          <span style="color:#22c97a;flex-shrink:0;font-size:15px">—</span>
-          <span style="font-size:15px;color:#888;line-height:1.65">Consistency beats intensity. Always. A 10-minute session beats skipping.</span>
-        </div>
-        <div style="display:flex;gap:10px;align-items:flex-start">
-          <span style="color:#22c97a;flex-shrink:0;font-size:15px">—</span>
-          <span style="font-size:15px;color:#888;line-height:1.65">Never miss twice in a row.</span>
-        </div>
-        <div style="display:flex;gap:10px;align-items:flex-start">
-          <span style="color:#22c97a;flex-shrink:0;font-size:15px">—</span>
-          <span style="font-size:15px;color:#888;line-height:1.65">Train movement patterns, not random exercises. Posture is the foundation.</span>
-        </div>
-        <div style="display:flex;gap:10px;align-items:flex-start">
-          <span style="color:#22c97a;flex-shrink:0;font-size:15px">—</span>
-          <span style="font-size:15px;color:#888;line-height:1.65">Always have a minimum viable option. Something is infinitely better than nothing.</span>
-        </div>
-        <div style="display:flex;gap:10px;align-items:flex-start">
-          <span style="color:#22c97a;flex-shrink:0;font-size:15px">—</span>
-          <span style="font-size:15px;color:#888;line-height:1.65">Pain is information. Sharp pubic or quad pain means back off. Soreness is okay.</span>
-        </div>
-        <div style="display:flex;gap:10px;align-items:flex-start">
-          <span style="color:#22c97a;flex-shrink:0;font-size:15px">—</span>
-          <span style="font-size:15px;color:#888;line-height:1.65">Life happens. Baby, gigs, weddings, illness. Adapt. Never quit.</span>
-        </div>
-      </div>
-    </div>
-
-    <!-- LIFE CONTEXT -->
-    <div class="card">
-      <p class="clabel">life context</p>
-      <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
-        <div style="background:#060810;border-radius:6px;padding:12px">
-          <div class="mono" style="font-size:11px;color:#444;letter-spacing:2px;margin-bottom:5px">FAMILY</div>
-          <div style="font-size:15px;color:#888">New dad - Noam. Sleep disrupted regularly. Partner's schedule varies.</div>
-        </div>
-        <div style="background:#060810;border-radius:6px;padding:12px">
-          <div class="mono" style="font-size:11px;color:#444;letter-spacing:2px;margin-bottom:5px">WORK</div>
-          <div style="font-size:15px;color:#888">Wedding musician. Gigs = long standing days, heavy equipment, late nights.</div>
-        </div>
-        <div style="background:#060810;border-radius:6px;padding:12px">
-          <div class="mono" style="font-size:11px;color:#444;letter-spacing:2px;margin-bottom:5px">MMA</div>
-          <div style="font-size:15px;color:#888">Blue belt. 2x/week target. On the calendar = gets done.</div>
-        </div>
-        <div style="background:#060810;border-radius:6px;padding:12px">
-          <div class="mono" style="font-size:11px;color:#444;letter-spacing:2px;margin-bottom:5px">OBSTACLES</div>
-          <div style="font-size:15px;color:#888">Consistency and time. Motivation follows action, not the other way around.</div>
-        </div>
-      </div>
-    </div>
+    <div id="profile-injuries"></div>
+    <div id="profile-philosophy"></div>
+    <div id="profile-context"></div>
 
     <!-- ACCOUNT -->
     <div class="card">
@@ -399,6 +212,11 @@ input[type=range]{width:100%;accent-color:#22c97a}
         <label style="display:flex;align-items:center;gap:8px;font-size:14px;color:#555"><input type="checkbox" disabled> Workout plan generator</label>
         <label style="display:flex;align-items:center;gap:8px;font-size:14px;color:#555"><input type="checkbox" disabled> Progress photos</label>
         <label style="display:flex;align-items:center;gap:8px;font-size:14px;color:#555"><input type="checkbox" disabled> Export data to PDF</label>
+        <label style="display:flex;align-items:center;gap:8px;font-size:14px;color:#555"><input type="checkbox" disabled> Non-Fitbit manual check-in mode (energy/sleep/pain sliders)</label>
+        <label style="display:flex;align-items:center;gap:8px;font-size:14px;color:#555"><input type="checkbox" disabled> Apple Watch integration</label>
+        <label style="display:flex;align-items:center;gap:8px;font-size:14px;color:#555"><input type="checkbox" disabled> Whoop integration</label>
+        <label style="display:flex;align-items:center;gap:8px;font-size:14px;color:#555"><input type="checkbox" disabled> Samsung Health integration</label>
+        <label style="display:flex;align-items:center;gap:8px;font-size:14px;color:#555"><input type="checkbox" disabled> Other wearables support</label>
       </div>
     </div>
 
@@ -519,6 +337,7 @@ var FULL_PROFILE = 'ATHLETE: Shimmy Castle, Hoffman Estates IL. New dad (baby No
 var currentProfileId = null;
 var currentProfileName = '';
 var currentProfileColor = '#22c97a';
+var currentProfileData = null;
 var pendingPinProfileId = null;
 
 var AVATAR_COLORS = ['#22c97a','#4488bb','#f5a623','#9966cc','#e84545','#f07020','#44bbaa','#cc6699'];
@@ -581,11 +400,15 @@ function verifyPin() {
       currentProfileId = data.profile.id;
       currentProfileName = data.profile.name;
       currentProfileColor = data.profile.avatar_color || '#22c97a';
+      currentProfileData = data.profile.profile_data || {};
       localStorage.setItem('ac_profile_id', currentProfileId);
       localStorage.setItem('ac_profile_name', currentProfileName);
       localStorage.setItem('ac_profile_color', currentProfileColor);
-      if (data.profile.profile_data && data.profile.profile_data.full_profile) {
-        FULL_PROFILE = data.profile.profile_data.full_profile;
+      localStorage.setItem('ac_profile_data', JSON.stringify(currentProfileData));
+      if (currentProfileData.ai_prompt_context) {
+        FULL_PROFILE = currentProfileData.ai_prompt_context;
+      } else if (currentProfileData.full_profile) {
+        FULL_PROFILE = currentProfileData.full_profile;
       }
       bootApp();
     } else {
@@ -665,9 +488,11 @@ function switchProfile() {
   localStorage.removeItem('ac_profile_id');
   localStorage.removeItem('ac_profile_name');
   localStorage.removeItem('ac_profile_color');
+  localStorage.removeItem('ac_profile_data');
   localStorage.removeItem('ac_cache');
   localStorage.removeItem('ac_cache_date');
   currentProfileId = null;
+  currentProfileData = null;
   loadProfileSelector();
 }
 
@@ -760,7 +585,7 @@ function finishOnboarding() {
   document.getElementById('onboard-input-area').style.display = 'none';
 
   // Ask AI to build profile_data from answers
-  var prompt = 'Generate a structured athlete profile JSON from these onboarding answers. Return ONLY raw JSON.\n\n' +
+  var prompt = 'Generate a structured athlete profile JSON from these onboarding answers. Return ONLY raw JSON, no markdown.\n\n' +
     'Name: ' + (onboardAnswers.name || '') + '\n' +
     'Goals: ' + (onboardAnswers.goals || '') + '\n' +
     'Injuries: ' + (onboardAnswers.injuries || 'none') + '\n' +
@@ -769,12 +594,13 @@ function finishOnboarding() {
     'Experience: ' + (onboardAnswers.experience || '') + '\n' +
     'Obstacles: ' + (onboardAnswers.obstacles || '') + '\n' +
     'Fitbit: ' + (onboardAnswers.fitbit || 'no') + '\n\n' +
-    'Return: {"full_profile":"one big string for AI coaching context — include all athlete details, goals, injuries, constraints, philosophy","schedule_defaults":{"mon":"type","tue":"type",...},"has_fitbit":true/false}';
+    'Return this EXACT structure (fill in all fields from the answers, infer sensible defaults for anything not mentioned):\n' +
+    '{"name":"their name","tagline":"2-3 word role e.g. Runner & Yogi","avatar_color":"#hex based on personality","sports":["list"],"martial_arts":true/false,"martial_arts_style":"MMA/BJJ/etc or null","current_belt":"white/blue/etc or null","goals":[{"type":"strength|distance|consistency|habit|skill|general","emoji":"emoji","title":"name","description":"brief","status":"IN PROGRESS|LONG GAME|DONE|HABIT|PAUSED","target_value":null,"current_value":null,"unit":"lbs|miles|days|sessions or null","tracker":false}],"injuries":[{"name":"name","status":"MANAGING|CHRONIC|REHABBING|MONITOR","description":"brief","triggers":"what worsens it or null"}],"experience_level":"beginner|intermediate|athletic|advanced","schedule":{"mon":"Flexible","tue":"...","wed":"...","thu":"...","fri":"...","sat":"...","sun":"..."},"weekly_target":3,"biggest_obstacle":"string","life_context":{"family":"or null","work":"or null","other":"or null"},"philosophy":["principle 1","principle 2","principle 3","principle 4"],"fitbit":true/false,"ai_prompt_context":"2-3 paragraph summary of this person for the AI coach to use"}';
 
   fetch('/api/ai', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ model: 'claude-sonnet-4-20250514', max_tokens: 1000, messages: [{ role: 'user', content: prompt }] })
+    body: JSON.stringify({ model: 'claude-sonnet-4-20250514', max_tokens: 2000, messages: [{ role: 'user', content: prompt }] })
   }).then(function(r) { return r.json(); }).then(function(data) {
     var raw = (data.content && data.content[0]) ? data.content[0].text : '{}';
     var cleaned = raw.indexOf('{') >= 0 ? raw.substring(raw.indexOf('{'), raw.lastIndexOf('}') + 1) : '{}';
@@ -819,12 +645,17 @@ function saveNewProfile(profileData) {
     if (data.success && data.profile) {
       currentProfileId = data.profile.id;
       currentProfileName = data.profile.name;
-      currentProfileColor = color;
+      currentProfileColor = profileData.avatar_color || color;
+      currentProfileData = profileData;
       localStorage.setItem('ac_profile_id', currentProfileId);
       localStorage.setItem('ac_profile_name', currentProfileName);
-      localStorage.setItem('ac_profile_color', color);
-      if (profileData.full_profile) FULL_PROFILE = profileData.full_profile;
-      if (profileData.schedule_defaults) {
+      localStorage.setItem('ac_profile_color', currentProfileColor);
+      localStorage.setItem('ac_profile_data', JSON.stringify(profileData));
+      if (profileData.ai_prompt_context) FULL_PROFILE = profileData.ai_prompt_context;
+      if (profileData.schedule) {
+        schedule = profileData.schedule;
+        localStorage.setItem('ac_schedule', JSON.stringify(schedule));
+      } else if (profileData.schedule_defaults) {
         schedule = profileData.schedule_defaults;
         localStorage.setItem('ac_schedule', JSON.stringify(schedule));
       }
@@ -863,6 +694,7 @@ function bootApp() {
 
   loadSchedule();
   renderSchedule();
+  renderProfileTab();
 
   loadWorkouts().then(function() {
     renderWeek();
@@ -878,6 +710,11 @@ if (savedProfileId) {
   currentProfileId = parseInt(savedProfileId);
   currentProfileName = localStorage.getItem('ac_profile_name') || '';
   currentProfileColor = localStorage.getItem('ac_profile_color') || '#22c97a';
+  try { currentProfileData = JSON.parse(localStorage.getItem('ac_profile_data') || 'null'); } catch(e) { currentProfileData = null; }
+  if (currentProfileData) {
+    if (currentProfileData.ai_prompt_context) FULL_PROFILE = currentProfileData.ai_prompt_context;
+    else if (currentProfileData.full_profile) FULL_PROFILE = currentProfileData.full_profile;
+  }
   bootApp();
 } else {
   loadProfileSelector();
@@ -1134,7 +971,8 @@ function fetchAI() {
   var pz = fitData.prevZones || {};
   var r7 = fitData.rolling7 || {};
 
-  var prompt = 'You are ApexCoach, an elite personal AI coach for Shimmy. You know everything about him. Give 3 specific, data-driven workout options for today, ordered by best fit first.\n\n' +
+  var athleteName = (currentProfileData && currentProfileData.name) || currentProfileName || 'this athlete';
+  var prompt = 'You are ApexCoach, an elite personal AI coach for ' + athleteName + '. You know everything about them. Give 3 specific, data-driven workout options for today, ordered by best fit first.\n\n' +
     'TODAY: ' + today + '\n' +
     'READINESS: ' + readiness.score + '/100 - ' + readiness.tier.toUpperCase() + '\n' +
     'BREAKDOWN: Sleep Quality ' + readiness.breakdown.sleepQuality + '/25, Sleep Cliff ' + readiness.breakdown.sleepCliff + '/25 (' + readiness.hours.toFixed(1) + 'h), Nervous System ' + readiness.breakdown.nervousSystem + '/30, Recovery ' + readiness.breakdown.recovery + '/20\n\n' +
@@ -1231,6 +1069,132 @@ function renderAI() {
   }
 
   document.getElementById('ai-content').innerHTML = html;
+}
+
+// ── DYNAMIC PROFILE TAB ───────────────────────────────────────────────────
+
+function renderProfileTab() {
+  var pd = currentProfileData || {};
+  var c = currentProfileColor || '#22c97a';
+  var name = pd.name || currentProfileName || 'Athlete';
+  var initial = name.charAt(0).toUpperCase();
+  var tagline = pd.tagline || '';
+
+  // ── ATHLETE HEADER ──
+  var h = '<div class="card" style="border-color:' + c + '33">';
+  h += '<div style="display:flex;align-items:center;gap:16px;margin-bottom:14px">';
+  h += '<div style="width:52px;height:52px;border-radius:50%;background:' + c + '18;border:1px solid ' + c + '33;display:flex;align-items:center;justify-content:center;font-family:Oswald,sans-serif;font-size:20px;font-weight:700;color:' + c + '">' + initial + '</div>';
+  h += '<div><div style="font-family:Oswald,sans-serif;font-size:22px;font-weight:600;color:#fff">' + name + '</div>';
+  if (tagline) h += '<div class="mono" style="font-size:10px;color:#555;letter-spacing:2px">' + tagline.toUpperCase() + '</div>';
+  h += '</div></div>';
+  // Sport/status pills
+  var pills = [];
+  var sports = pd.sports || [];
+  for (var i = 0; i < sports.length; i++) pills.push('<span class="pill pill-blue">' + sports[i].toUpperCase() + '</span>');
+  if (pd.current_belt) pills.push('<span class="pill pill-green">' + pd.current_belt.toUpperCase() + ' BELT</span>');
+  if (pd.experience_level) pills.push('<span class="pill pill-blue">' + pd.experience_level.toUpperCase() + '</span>');
+  var injuries = pd.injuries || [];
+  for (var i = 0; i < injuries.length; i++) {
+    if (injuries[i].status === 'MANAGING' || injuries[i].status === 'CHRONIC') {
+      pills.push('<span class="pill pill-amber">' + injuries[i].name.toUpperCase() + '</span>');
+    }
+  }
+  if (pills.length) h += '<div style="display:flex;gap:8px;flex-wrap:wrap">' + pills.join('') + '</div>';
+  h += '</div>';
+
+  // ── BELT JOURNEY (only if martial arts) ──
+  if (pd.martial_arts && pd.current_belt) {
+    h += '<div class="card" id="belt-card"><div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px"><p class="clabel" style="margin-bottom:0">Belt Journey</p><button onclick="toggleBeltEdit()" id="belt-edit-btn" style="background:transparent;border:1px solid #1a1c22;color:#666;padding:5px 12px;border-radius:6px;cursor:pointer;font-size:13px">Edit</button></div><div id="belt-display"></div><div id="belt-editor" style="display:none"><p style="font-size:14px;color:#888;margin-bottom:12px">Select your current belt:</p><div id="belt-selector" style="display:flex;flex-wrap:wrap;gap:8px;margin-bottom:16px"></div><button onclick="saveBelt()" class="btnPri" style="font-size:14px">Save</button></div></div>';
+  }
+
+  document.getElementById('profile-dynamic').innerHTML = h;
+
+  // Re-render belt if martial arts
+  if (pd.martial_arts && pd.current_belt && typeof renderBelt === 'function') renderBelt();
+
+  // ── GOALS ──
+  renderProfileGoals();
+
+  // ── INJURIES ──
+  var injHTML = '';
+  if (injuries.length) {
+    injHTML = '<div class="card"><p class="clabel">injury and health status</p>';
+    for (var i = 0; i < injuries.length; i++) {
+      var inj = injuries[i];
+      var statusPill = { MANAGING:'pill-amber', CHRONIC:'pill-amber', REHABBING:'pill-amber', MONITOR:'pill-amber' };
+      injHTML += '<div class="injury-item"><div style="display:flex;align-items:center;justify-content:space-between"><div style="font-size:16px;font-weight:500;color:#ddd">' + inj.name + '</div><span class="pill ' + (statusPill[inj.status] || 'pill-amber') + '">' + (inj.status || 'MONITOR') + '</span></div>';
+      if (inj.description) injHTML += '<div style="font-size:15px;color:#555;line-height:1.65">' + inj.description + '</div>';
+      if (inj.triggers) injHTML += '<div style="font-size:13px;color:#333;font-style:italic;margin-top:3px">Triggers: ' + inj.triggers + '</div>';
+      injHTML += '</div>';
+    }
+    injHTML += '</div>';
+  }
+  document.getElementById('profile-injuries').innerHTML = injHTML;
+
+  // ── PHILOSOPHY ──
+  var phils = pd.philosophy || [];
+  var philHTML = '';
+  if (phils.length) {
+    philHTML = '<div class="card"><p class="clabel">training philosophy</p><div style="display:flex;flex-direction:column;gap:8px">';
+    for (var i = 0; i < phils.length; i++) {
+      philHTML += '<div style="display:flex;gap:10px;align-items:flex-start"><span style="color:' + c + ';flex-shrink:0;font-size:15px">—</span><span style="font-size:15px;color:#888;line-height:1.65">' + phils[i] + '</span></div>';
+    }
+    philHTML += '</div></div>';
+  }
+  document.getElementById('profile-philosophy').innerHTML = philHTML;
+
+  // ── LIFE CONTEXT ──
+  var ctx = pd.life_context || {};
+  var obstacle = pd.biggest_obstacle || '';
+  var ctxParts = [];
+  if (ctx.family) ctxParts.push({ label: 'FAMILY', text: ctx.family });
+  if (ctx.work) ctxParts.push({ label: 'WORK', text: ctx.work });
+  if (ctx.other) ctxParts.push({ label: 'OTHER', text: ctx.other });
+  if (obstacle) ctxParts.push({ label: 'OBSTACLES', text: obstacle });
+  var ctxHTML = '';
+  if (ctxParts.length) {
+    var cols = ctxParts.length > 1 ? '1fr 1fr' : '1fr';
+    ctxHTML = '<div class="card"><p class="clabel">life context</p><div style="display:grid;grid-template-columns:' + cols + ';gap:10px">';
+    for (var i = 0; i < ctxParts.length; i++) {
+      ctxHTML += '<div style="background:#060810;border-radius:6px;padding:12px"><div class="mono" style="font-size:11px;color:#444;letter-spacing:2px;margin-bottom:5px">' + ctxParts[i].label + '</div><div style="font-size:15px;color:#888">' + ctxParts[i].text + '</div></div>';
+    }
+    ctxHTML += '</div></div>';
+  }
+  document.getElementById('profile-context').innerHTML = ctxHTML;
+}
+
+function renderProfileGoals() {
+  var pd = currentProfileData || {};
+  var pGoals = pd.goals || [];
+  if (!pGoals.length) {
+    document.getElementById('goals-display').innerHTML = '<p style="color:#2a2c30;font-size:15px;font-style:italic">No goals set yet.</p>';
+    return;
+  }
+  var statusColors = { 'IN PROGRESS': '#f5a623', 'LONG GAME': '#4488bb', 'DONE': '#22c97a', 'HABIT': '#9966cc', 'PAUSED': '#555' };
+  var html = '';
+  for (var i = 0; i < pGoals.length; i++) {
+    var g = pGoals[i];
+    var sc = statusColors[g.status] || '#f5a623';
+    var isMed = g.type === 'habit' && g.title && g.title.toLowerCase().indexOf('meditat') >= 0;
+    html += '<div style="background:#060810;border:1px solid #0e1016;border-radius:8px;padding:16px">';
+    html += '<div style="font-size:22px;margin-bottom:8px">' + (g.emoji || '🎯') + '</div>';
+    html += '<div style="font-size:15px;font-weight:600;color:#fff;margin-bottom:5px">' + (g.title || '') + '</div>';
+    html += '<div style="font-size:15px;color:#666;line-height:1.6;margin-bottom:10px">' + (g.description || '') + '</div>';
+    // Tracker bar for goals with target/current values
+    if (g.tracker && g.target_value && g.current_value != null) {
+      var pct = Math.min(100, Math.round((g.current_value / g.target_value) * 100));
+      html += '<div style="margin-bottom:8px"><div class="bar-track"><div class="bar-fill" style="width:' + pct + '%;background:' + sc + '"></div></div>';
+      html += '<div class="mono" style="font-size:10px;color:#555;margin-top:3px">' + g.current_value + ' / ' + g.target_value + (g.unit ? ' ' + g.unit : '') + ' (' + pct + '%)</div></div>';
+    }
+    if (isMed) {
+      html += '<div id="med-status" class="mono" style="font-size:11px;color:#555;letter-spacing:1px;cursor:pointer" onclick="toggleMeditation()">TAP TO LOG TODAY</div>';
+    } else {
+      html += '<div class="mono" style="font-size:10px;color:' + sc + ';letter-spacing:1px">' + (g.status || 'IN PROGRESS') + '</div>';
+    }
+    html += '</div>';
+  }
+  document.getElementById('goals-display').innerHTML = html;
+  if (typeof renderMeditationStatus === 'function') renderMeditationStatus();
 }
 
 // ── SCHEDULE ──────────────────────────────────────────────────────────────
@@ -1859,99 +1823,9 @@ function toggleBeltEdit() {
   }
 }
 
-// ── GOALS SYSTEM ───────────────────────────────────────────────────────────
-var DEFAULT_GOALS = [
-  {emoji:'🏔', title:'Mountain Hike', desc:'6-8 miles with Noam on back. No stopping.', status:'IN PROGRESS'},
-  {emoji:'🥋', title:'Black Belt', desc:'Blue belt now. Purple, 3x brown, then black.', status:'LONG GAME'},
-  {emoji:'💪', title:'Build Muscle', desc:'Look stronger. Functional size, not bulk.', status:'IN PROGRESS'},
-  {emoji:'🧍', title:'Fix Posture', desc:'Anterior pelvic tilt, rounded shoulders, forward head.', status:'IN PROGRESS'},
-  {emoji:'🧘', title:'Daily Meditation', desc:'Build the habit. Even 5 minutes counts.', status:'HABIT'},
-  {emoji:'❤', title:'Stamina', desc:'Full MMA rounds without gassing.', status:'IN PROGRESS'},
-];
-var goals = JSON.parse(localStorage.getItem('ac_goals') || 'null') || DEFAULT_GOALS;
-var statusColors = {'IN PROGRESS':'#f5a623','LONG GAME':'#4488bb','DONE':'#22c97a','HABIT':'#9966cc','PAUSED':'#555'};
-
-function renderGoals() {
-  var html = '';
-  for (var i = 0; i < goals.length; i++) {
-    var g = goals[i];
-    var sc = statusColors[g.status] || '#f5a623';
-    var isMed = g.title === 'Daily Meditation';
-    html += '<div style="background:#060810;border:1px solid #0e1016;border-radius:8px;padding:16px">' +
-      '<div style="font-size:22px;margin-bottom:8px">' + g.emoji + '</div>' +
-      '<div style="font-size:15px;font-weight:600;color:#fff;margin-bottom:5px">' + g.title + '</div>' +
-      '<div style="font-size:15px;color:#666;line-height:1.6;margin-bottom:10px">' + g.desc + '</div>' +
-      (isMed ? '<div id="med-status" class="mono" style="font-size:11px;color:#555;letter-spacing:1px;cursor:pointer" onclick="toggleMeditation()">TAP TO LOG TODAY</div>' :
-               '<div class="mono" style="font-size:10px;color:' + sc + ';letter-spacing:1px">' + g.status + '</div>') +
-      '</div>';
-  }
-  document.getElementById('goals-display').innerHTML = html;
-  renderMeditationStatus();
-}
-
-function toggleGoalEdit() {
-  var ed = document.getElementById('goals-editor');
-  var disp = document.getElementById('goals-display');
-  if (ed.style.display === 'none') {
-    ed.style.display = 'block';
-    disp.style.display = 'none';
-    renderGoalEditor();
-  } else {
-    ed.style.display = 'none';
-    disp.style.display = '';
-  }
-}
-
-function renderGoalEditor() {
-  var html = '';
-  for (var i = 0; i < goals.length; i++) {
-    var g = goals[i];
-    html += '<div style="background:#060810;border:1px solid #0e1016;border-radius:8px;padding:14px;margin-bottom:8px">' +
-      '<div style="display:flex;gap:8px;margin-bottom:6px">' +
-        '<input type="text" value="' + g.emoji + '" id="ge-emoji-' + i + '" style="width:50px;text-align:center;font-size:18px;padding:6px;background:#0d0f16;border:1px solid #1a1c22;color:#e0e0e0;border-radius:6px">' +
-        '<input type="text" value="' + g.title + '" id="ge-title-' + i + '" style="flex:1;font-size:14px;font-weight:600;padding:6px 10px;background:#0d0f16;border:1px solid #1a1c22;color:#fff;border-radius:6px">' +
-        '<button onclick="removeGoal(' + i + ')" style="background:transparent;border:1px solid #e8454533;color:#e84545;padding:6px 10px;border-radius:6px;cursor:pointer;font-size:12px">✕</button>' +
-      '</div>' +
-      '<textarea id="ge-desc-' + i + '" rows="2" style="font-size:13px;margin-bottom:6px">' + g.desc + '</textarea>' +
-      '<select id="ge-status-' + i + '" style="font-size:13px">' +
-        ['IN PROGRESS','LONG GAME','DONE','HABIT','PAUSED'].map(function(s) {
-          return '<option value="' + s + '"' + (s === g.status ? ' selected' : '') + '>' + s + '</option>';
-        }).join('') +
-      '</select>' +
-    '</div>';
-  }
-  document.getElementById('goals-list').innerHTML = html;
-}
-
-function addGoal() {
-  goals.push({emoji:'⭐', title:'New Goal', desc:'Describe your goal...', status:'IN PROGRESS'});
-  renderGoalEditor();
-}
-
-function removeGoal(idx) {
-  goals.splice(idx, 1);
-  renderGoalEditor();
-}
-
-function saveGoals() {
-  for (var i = 0; i < goals.length; i++) {
-    var e = document.getElementById('ge-emoji-' + i);
-    var t = document.getElementById('ge-title-' + i);
-    var d = document.getElementById('ge-desc-' + i);
-    var s = document.getElementById('ge-status-' + i);
-    if (e) goals[i].emoji = e.value;
-    if (t) goals[i].title = t.value;
-    if (d) goals[i].desc = d.value;
-    if (s) goals[i].status = s.value;
-  }
-  localStorage.setItem('ac_goals', JSON.stringify(goals));
-  toggleGoalEdit();
-  renderGoals();
-}
-
-// Init profile dynamic sections
-renderBelt();
-renderGoals();
+// Old goal/belt rendering now handled by renderProfileTab()
+// renderGoals is an alias for the dynamic version
+function renderGoals() { renderProfileGoals(); }
 
 function showTab(name, btn) {
   document.querySelectorAll('.tab').forEach(function(t) { t.classList.remove('active'); });
