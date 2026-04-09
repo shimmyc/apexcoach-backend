@@ -1026,12 +1026,10 @@ function renderReadiness() {
 
   var fScoreVital = fitbitScore !== null ? fitbitScore : '-';
   var fScoreVSub = fitbitScore !== null ? (fitbitScore >= 80 ? 'Excellent' : fitbitScore >= 60 ? 'Good' : fitbitScore >= 40 ? 'Fair' : 'Poor') : 'n/a';
-  var vitalsHTML = '<div style="display:grid;grid-template-columns:repeat(5,1fr);gap:10px;margin-top:16px;padding-top:16px;border-top:1px solid #0e1016">' +
+  var vitalsHTML = '<div style="display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-top:16px;padding-top:16px;border-top:1px solid #0e1016">' +
     statCard("Sleep", fitData.sleep && fitData.sleep.hours ? fmtHours(fitData.sleep.hours) : "-", fitData.sleep && fitData.sleep.efficiency ? fitData.sleep.efficiency + "% efficient" : "") +
-    statCard("Sleep Score", fScoreVital, fScoreVSub) +
     statCard("Resting HR", fitData.rhr ? fitData.rhr + " bpm" : "-", r7.rhr ? "7d avg " + r7.rhr : "") +
     statCard("Steps", fitData.steps ? fitData.steps.toLocaleString() : "-", "yesterday") +
-    statCard("Awake", fitData.sleep && fitData.sleep.minutesAwake ? fitData.sleep.minutesAwake + " min" : "-", "during sleep") +
     '</div>';
 
   card.innerHTML =
