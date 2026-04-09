@@ -33,7 +33,7 @@
 
 ---
 
-## V2 (Current)
+## V2 (Deprecated)
 
 **Total: 100 pts across 6 pillars**
 
@@ -78,6 +78,49 @@
 - < 6h sleep: max score 75
 - < 5h sleep: max score 55
 - < 4h sleep: max score 35
+
+### Tiers (unchanged)
+- 86-100: HARD TRAINING
+- 66-85: MODERATE
+- 46-65: LIGHT
+- 0-45: RECOVERY ONLY
+
+---
+
+## V3 (Current) — Data-Driven Regression
+
+**Fitted on 36 days of real Fitbit data (Mar 5 – Apr 9, 2026)**
+
+### Model Performance
+- **R² = 0.885** (explains 88.5% of variance in perceived readiness)
+- **MAE = 4.78** (average error under 5 points)
+- **Method:** Multiple linear regression on HRV, deep sleep minutes, and RHR deviation from 7-day baseline
+
+### Formula
+
+```
+raw = (1.2077 × HRV) + (0.1100 × deep_sleep_minutes) - (3.3834 × RHR_deviation) - 10.8400
+score = clamp(round(raw), 1, 100)
+```
+
+### Variables
+
+| Variable | Coefficient | Description |
+|----------|-------------|-------------|
+| HRV (rmssd) | +1.2077 | Today's heart rate variability — dominant predictor |
+| Deep Sleep (min) | +0.1100 | Deep sleep stage minutes from last night |
+| RHR Deviation | -3.3834 | Today's RHR minus 7-day baseline (positive = elevated = bad) |
+| Intercept | -10.8400 | Constant offset |
+
+### RHR Baseline Calculation
+- Uses actual 7-day daily RHR history array (`rhrHistory7Day`) when available
+- Falls back to constructing a proxy array: `[today_rhr, 7d_avg, 7d_avg, ...]`
+- Last resort: `[today_rhr]` (baseline = today, deviation = 0)
+
+### Breakdown Display (for UI bars)
+- **HRV contribution:** `clamp(1.2077 × HRV, 0, 40)`
+- **Deep Sleep contribution:** `clamp(0.1100 × deep_sleep_min, 0, 20)`
+- **RHR deviation contribution:** `clamp(-3.3834 × deviation, -30, 10)`
 
 ### Tiers (unchanged)
 - 86-100: HARD TRAINING

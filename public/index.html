@@ -874,78 +874,39 @@ function syncFitbit() {
 }
 
 function computeReadiness(d) {
-  var hours = (d.sleep && d.sleep.hours) ? d.sleep.hours : 7;
-  var eff   = (d.sleep && d.sleep.efficiency) ? d.sleep.efficiency : 85;
-  var fitbitScore = (d.sleep && d.sleep.fitbit_score != null) ? d.sleep.fitbit_score : null;
+  var hrv = d.hrv || 0;
+  var deepSleepMinutes = (d.sleep && d.sleep.stages && d.sleep.stages.deep) ? (d.sleep.stages.deep.minutes || 0) : 0;
+  var rhr = d.rhr || 0;
+  var rhrHistory = [];
 
-  // HRV vs 7-day baseline (25 pts)
-  var baseHRV = (d.rolling7 && d.rolling7.hrv) ? d.rolling7.hrv : (d.hrv || 40);
-  var currentHRV = d.hrv || baseHRV;
-  var hrvDiff = currentHRV - baseHRV;
-  var hrvPts = hrvDiff >= 0 ? 25 : Math.max(0, 25 + (hrvDiff * 2));
-
-  // RHR vs 7-day baseline (20 pts)
-  var baseRHR = (d.rolling7 && d.rolling7.rhr) ? d.rolling7.rhr : (d.rhr || 60);
-  var currentRHR = d.rhr || baseRHR;
-  var rhrDiff = currentRHR - baseRHR;
-  var rhrPts = rhrDiff <= 0 ? 20 : Math.max(0, 20 - (rhrDiff * 3));
-
-  // Sleep Hours (20 pts)
-  var sleepHoursPts;
-  if (hours >= 8) sleepHoursPts = 20;
-  else if (hours >= 7) sleepHoursPts = 17;
-  else if (hours >= 6) sleepHoursPts = 12;
-  else if (hours >= 5) sleepHoursPts = 6;
-  else sleepHoursPts = 2;
-
-  // Sleep Quality (15 pts) - blended with Fitbit score
-  var sleepQualityPts;
-  var hasFitbitScore = fitbitScore !== null;
-  if (hasFitbitScore) {
-    sleepQualityPts = (eff / 100) * 10 + (fitbitScore / 100) * 5;
+  // Build 7-day RHR history - use rolling7 avg as proxy if we only have today
+  if (d.rhrHistory7Day && d.rhrHistory7Day.length > 0) {
+    rhrHistory = d.rhrHistory7Day;
+  } else if (d.rolling7 && d.rolling7.rhr) {
+    // Fill array with 7-day average as best proxy
+    rhrHistory = [rhr, d.rolling7.rhr, d.rolling7.rhr, d.rolling7.rhr, d.rolling7.rhr, d.rolling7.rhr, d.rolling7.rhr];
   } else {
-    sleepQualityPts = (eff / 100) * 15;
-  }
-  sleepQualityPts = Math.max(0, Math.min(15, sleepQualityPts));
-
-  // Deep/REM vs 30-day average (10 pts)
-  var stages = (d.sleep && d.sleep.stages) || {};
-  var deepS = stages.deep || {}; var remS = stages.rem || {};
-  var deepRemPts;
-  if (!deepS.minutes && !remS.minutes) {
-    deepRemPts = 5; // neutral
-  } else {
-    var deepBelow = deepS.thirtyDayAvgMinutes && deepS.minutes < deepS.thirtyDayAvgMinutes;
-    var remBelow  = remS.thirtyDayAvgMinutes && remS.minutes < remS.thirtyDayAvgMinutes;
-    if (!deepBelow && !remBelow) deepRemPts = 10;
-    else if (deepBelow && remBelow) deepRemPts = 2;
-    else deepRemPts = 5;
+    rhrHistory = [rhr];
   }
 
-  // Recent 3-night sleep pattern proxy (10 pts)
-  var patternPts;
-  if (hours >= 7 && eff >= 85) patternPts = 10;
-  else if (hours >= 6 && eff >= 75) patternPts = 6;
-  else patternPts = 3;
+  var baseline = rhrHistory.reduce(function(sum, val) { return sum + val; }, 0) / rhrHistory.length;
+  var rhrDeviation = rhr - baseline;
 
-  var total = hrvPts + rhrPts + sleepHoursPts + sleepQualityPts + deepRemPts + patternPts;
+  var raw = (1.2077 * hrv) + (0.1100 * deepSleepMinutes) - (3.3834 * rhrDeviation) - 10.8400;
+  var score = Math.max(1, Math.min(100, Math.round(raw)));
 
-  // Hard caps
-  if (hours < 4) total = Math.min(total, 35);
-  else if (hours < 5) total = Math.min(total, 55);
-  else if (hours < 6) total = Math.min(total, 75);
+  var tier = score >= 86 ? 'hard' : score >= 66 ? 'moderate' : score >= 46 ? 'light' : 'recovery';
 
-  var score = Math.round(Math.max(0, Math.min(100, total)));
-  var tier  = score >= 86 ? 'hard' : score >= 66 ? 'moderate' : score >= 46 ? 'light' : 'recovery';
+  // Keep breakdown for display but reflect new formula inputs
   return {
-    score: score, tier: tier, hours: hours, hasFitbitScore: hasFitbitScore,
+    score: score,
+    tier: tier,
+    hours: d.sleep ? d.sleep.hours : 0,
     breakdown: {
-      hrv: Math.round(hrvPts),
-      rhr: Math.round(rhrPts),
-      sleepHours: Math.round(sleepHoursPts),
-      sleepQuality: Math.round(sleepQualityPts * 10) / 10,
-      deepRem: Math.round(deepRemPts),
-      pattern: Math.round(patternPts)
+      hrv: Math.round(Math.max(0, Math.min(40, 1.2077 * hrv))),
+      deepSleep: Math.round(Math.max(0, Math.min(20, 0.1100 * deepSleepMinutes))),
+      rhrDeviation: Math.round(Math.max(-30, Math.min(10, -3.3834 * rhrDeviation))),
+      baseline: Math.round(baseline * 10) / 10
     }
   };
 }
@@ -956,15 +917,21 @@ function renderReadiness() {
   card.style.display = 'block';
   card.style.borderColor = t.color + '44';
 
-  var sqLabel = 'Sleep Quality' + (readiness.hasFitbitScore ? ' *' : '');
-  var bars = [['HRV', readiness.breakdown.hrv, 25], ['RHR', readiness.breakdown.rhr, 20], ['Sleep Hours', readiness.breakdown.sleepHours, 20], [sqLabel, readiness.breakdown.sleepQuality, 15], ['Deep/REM', readiness.breakdown.deepRem, 10], ['Sleep Pattern', readiness.breakdown.pattern, 10]];
+  var r7 = fitData.rolling7 || {};
+  var hrvVal = fitData.hrv ? Math.round(fitData.hrv * 10) / 10 : 0;
+  var hrvAvg = r7.hrv || hrvVal;
+  var deepMin = (fitData.sleep && fitData.sleep.stages && fitData.sleep.stages.deep) ? (fitData.sleep.stages.deep.minutes || 0) : 0;
+  var rhrDev = readiness.breakdown.rhrDeviation;
+  var rhrDevColor = rhrDev >= 0 ? '#22c97a' : '#e84545';
+
   var barsHTML = '';
-  for (var i = 0; i < bars.length; i++) {
-    barsHTML += '<div style="display:flex;align-items:center;gap:8px;margin-bottom:10px"><span class="mono" style="font-size:11px;color:#555;width:130px;flex-shrink:0">' + bars[i][0] + '</span><div class="bar-track"><div class="bar-fill" style="width:' + ((bars[i][1]/bars[i][2])*100) + '%;background:' + t.color + '"></div></div><span class="mono" style="font-size:11px;color:#555;width:38px;text-align:right">' + bars[i][1] + '/' + bars[i][2] + '</span></div>';
-  }
-  if (readiness.hasFitbitScore) {
-    barsHTML += '<div class="mono" style="font-size:9px;color:#444;margin-top:-4px;margin-bottom:6px">* includes Fitbit sleep score</div>';
-  }
+  // HRV bar
+  barsHTML += '<div style="display:flex;align-items:center;gap:8px;margin-bottom:10px"><span class="mono" style="font-size:11px;color:#555;width:130px;flex-shrink:0">HRV</span><div class="bar-track"><div class="bar-fill" style="width:' + ((readiness.breakdown.hrv / 40) * 100) + '%;background:' + t.color + '"></div></div><span class="mono" style="font-size:11px;color:#555;width:80px;text-align:right">' + hrvVal + ' / avg ' + hrvAvg + '</span></div>';
+  // Deep Sleep bar
+  barsHTML += '<div style="display:flex;align-items:center;gap:8px;margin-bottom:10px"><span class="mono" style="font-size:11px;color:#555;width:130px;flex-shrink:0">Deep Sleep</span><div class="bar-track"><div class="bar-fill" style="width:' + ((readiness.breakdown.deepSleep / 20) * 100) + '%;background:' + t.color + '"></div></div><span class="mono" style="font-size:11px;color:#555;width:80px;text-align:right">' + deepMin + ' min</span></div>';
+  // RHR vs Baseline bar
+  var rhrDevLabel = (rhrDev >= 0 ? '+' : '') + rhrDev + ' vs ' + readiness.breakdown.baseline;
+  barsHTML += '<div style="display:flex;align-items:center;gap:8px;margin-bottom:10px"><span class="mono" style="font-size:11px;color:#555;width:130px;flex-shrink:0">RHR vs Baseline</span><div class="bar-track"><div class="bar-fill" style="width:' + (Math.max(0, (rhrDev + 30) / 40) * 100) + '%;background:' + rhrDevColor + '"></div></div><span class="mono" style="font-size:11px;color:' + rhrDevColor + ';width:80px;text-align:right">' + rhrDevLabel + '</span></div>';
 
   var stages = (fitData.sleep && fitData.sleep.stages) || {};
   var deep = stages.deep || {}; var light = stages.light || {}; var rem = stages.rem || {}; var wake = stages.wake || {};
@@ -1093,7 +1060,7 @@ function fetchAI() {
   var prompt = 'You are ApexCoach, an elite personal AI coach for ' + athleteName + '. You know everything about them. Give 3 specific, data-driven workout options for today, ordered by best fit first.\n\n' +
     'TODAY: ' + today + '\n' +
     'READINESS: ' + readiness.score + '/100 - ' + readiness.tier.toUpperCase() + '\n' +
-    'BREAKDOWN: HRV ' + readiness.breakdown.hrv + '/25, RHR ' + readiness.breakdown.rhr + '/20, Sleep Hours ' + readiness.breakdown.sleepHours + '/20 (' + readiness.hours.toFixed(1) + 'h), Sleep Quality ' + readiness.breakdown.sleepQuality + '/15' + (readiness.hasFitbitScore ? ' (incl Fitbit score)' : '') + ', Deep/REM ' + readiness.breakdown.deepRem + '/10, Pattern ' + readiness.breakdown.pattern + '/10\n\n' +
+    'BREAKDOWN (V3 regression): HRV contrib ' + readiness.breakdown.hrv + ', Deep Sleep contrib ' + readiness.breakdown.deepSleep + ', RHR deviation ' + readiness.breakdown.rhrDeviation + ' (baseline ' + readiness.breakdown.baseline + ' bpm), Sleep ' + (readiness.hours ? readiness.hours.toFixed(1) : '?') + 'h\n\n' +
     'LIVE FITBIT DATA:\n' +
     '- Sleep: ' + (sleep.hours ? sleep.hours.toFixed(1) : '?') + 'h, ' + (sleep.efficiency || '?') + '% efficiency, ' + (sleep.minutesAwake || '?') + 'min awake\n' +
     '- Deep: ' + (deep.minutes || '?') + 'min (30d avg ' + (deep.thirtyDayAvgMinutes || '?') + '), REM: ' + (rem.minutes || '?') + 'min (30d avg ' + (rem.thirtyDayAvgMinutes || '?') + ')\n' +
