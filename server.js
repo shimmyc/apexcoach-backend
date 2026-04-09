@@ -350,6 +350,33 @@ app.post("/api/profiles/verify", async function(req, res) {
   }
 });
 
+app.patch("/api/profiles/:id/pin", async function(req, res) {
+  try {
+    var body = req.body;
+    if (!body.old_pin || !body.new_pin || String(body.new_pin).length !== 4) {
+      return res.status(400).json({ success: false, error: "Old PIN and new 4-digit PIN required." });
+    }
+    // Fetch current profile to verify old PIN
+    var r = await fetch(SUPABASE_URL + "/rest/v1/profiles?id=eq." + req.params.id + "&select=pin", {
+      headers: sbHeaders(),
+    });
+    var rows = await r.json();
+    if (!rows || !rows.length) return res.json({ success: false, error: "Profile not found." });
+    if (rows[0].pin !== hashPin(body.old_pin)) {
+      return res.json({ success: false, error: "Current PIN is incorrect." });
+    }
+    // Update to new PIN
+    await fetch(SUPABASE_URL + "/rest/v1/profiles?id=eq." + req.params.id, {
+      method: "PATCH",
+      headers: sbHeaders("return=minimal"),
+      body: JSON.stringify({ pin: hashPin(body.new_pin) }),
+    });
+    res.json({ success: true });
+  } catch (e) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
 // ── FITBIT DATA ────────────────────────────────────────────────────────────
 // Legacy endpoint (uses tokens table)
 app.get("/api/daily", async function(req, res) {

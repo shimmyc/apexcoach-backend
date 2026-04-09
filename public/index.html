@@ -101,7 +101,14 @@ input[type=range]{width:100%;accent-color:#22c97a}
   </nav>
   <div style="display:flex;gap:8px;align-items:center">
     <button class="syncBtn" onclick="syncFitbit()">sync</button>
-    <button id="profile-icon-btn" onclick="switchProfile()" style="width:34px;height:34px;border-radius:50%;border:1px solid #1a1c22;background:#22c97a18;color:#22c97a;font-family:'Oswald',sans-serif;font-size:15px;font-weight:700;cursor:pointer" title="Switch profile">S</button>
+    <div style="position:relative">
+      <button id="profile-icon-btn" onclick="toggleProfileMenu()" style="width:34px;height:34px;border-radius:50%;border:1px solid #1a1c22;background:#22c97a18;color:#22c97a;font-family:'Oswald',sans-serif;font-size:15px;font-weight:700;cursor:pointer" title="Profile menu">S</button>
+      <div id="profile-menu" style="display:none;position:absolute;right:0;top:40px;background:#0d0f16;border:1px solid #1a1c22;border-radius:8px;padding:6px 0;min-width:160px;z-index:20;box-shadow:0 8px 24px rgba(0,0,0,.5)">
+        <div id="profile-menu-name" style="padding:8px 16px;font-size:13px;color:#888;border-bottom:1px solid #0e1016;font-family:'IBM Plex Mono',monospace"></div>
+        <button onclick="openChangePinModal();toggleProfileMenu()" style="display:block;width:100%;text-align:left;background:transparent;border:none;color:#ccc;padding:10px 16px;font-size:14px;cursor:pointer;font-family:'DM Sans',sans-serif">Change PIN</button>
+        <button onclick="switchProfile()" style="display:block;width:100%;text-align:left;background:transparent;border:none;color:#e84545;padding:10px 16px;font-size:14px;cursor:pointer;font-family:'DM Sans',sans-serif">Switch Profile</button>
+      </div>
+    </div>
   </div>
 </header>
 
@@ -372,6 +379,15 @@ input[type=range]{width:100%;accent-color:#22c97a}
       </div>
     </div>
 
+    <!-- ACCOUNT -->
+    <div class="card">
+      <p class="clabel">account</p>
+      <div style="display:flex;gap:10px;flex-wrap:wrap">
+        <button onclick="openChangePinModal()" style="background:transparent;border:1px solid #1a1c22;color:#888;padding:10px 18px;border-radius:6px;cursor:pointer;font-size:14px">Change PIN</button>
+        <button onclick="switchProfile()" style="background:transparent;border:1px solid #1a1c22;color:#888;padding:10px 18px;border-radius:6px;cursor:pointer;font-size:14px">Switch Profile</button>
+      </div>
+    </div>
+
     <!-- DEV ROADMAP (hidden, long-press logo to reveal) -->
     <div id="dev-roadmap" class="card" style="display:none;border-color:#22c97a11">
       <p class="clabel">roadmap</p>
@@ -437,6 +453,24 @@ input[type=range]{width:100%;accent-color:#22c97a}
     <div style="display:flex;gap:8px;justify-content:flex-end">
       <button class="btnSec" onclick="closeModal()">Cancel</button>
       <button class="btnPri" onclick="saveWorkout()">Save</button>
+    </div>
+  </div>
+</div>
+
+<!-- CHANGE PIN MODAL -->
+<div class="overlay" id="pin-modal" style="display:none" onclick="closeChangePinModal()">
+  <div class="modal" onclick="event.stopPropagation()" style="max-width:360px">
+    <p class="mono" style="font-size:12px;color:#555;letter-spacing:3px;margin-bottom:18px">CHANGE PIN</p>
+    <label style="font-size:13px;color:#888;display:block;margin-bottom:4px">Current PIN</label>
+    <input id="cp-old" type="password" maxlength="4" inputmode="numeric" pattern="[0-9]*" style="width:100%;background:#060810;border:1px solid #0e1016;color:#e0e0e0;padding:12px;border-radius:6px;font-size:18px;text-align:center;font-family:'IBM Plex Mono',monospace;letter-spacing:6px;margin-bottom:12px;outline:none">
+    <label style="font-size:13px;color:#888;display:block;margin-bottom:4px">New PIN (4 digits)</label>
+    <input id="cp-new" type="password" maxlength="4" inputmode="numeric" pattern="[0-9]*" style="width:100%;background:#060810;border:1px solid #0e1016;color:#e0e0e0;padding:12px;border-radius:6px;font-size:18px;text-align:center;font-family:'IBM Plex Mono',monospace;letter-spacing:6px;margin-bottom:12px;outline:none">
+    <label style="font-size:13px;color:#888;display:block;margin-bottom:4px">Confirm New PIN</label>
+    <input id="cp-confirm" type="password" maxlength="4" inputmode="numeric" pattern="[0-9]*" style="width:100%;background:#060810;border:1px solid #0e1016;color:#e0e0e0;padding:12px;border-radius:6px;font-size:18px;text-align:center;font-family:'IBM Plex Mono',monospace;letter-spacing:6px;margin-bottom:8px;outline:none" onkeyup="if(event.key==='Enter')submitChangePin()">
+    <p id="cp-error" style="color:#e84545;font-size:13px;min-height:20px;margin-bottom:10px"></p>
+    <div style="display:flex;gap:8px;justify-content:flex-end">
+      <button class="btnSec" onclick="closeChangePinModal()">Cancel</button>
+      <button class="btnPri" onclick="submitChangePin()">Save</button>
     </div>
   </div>
 </div>
@@ -559,6 +593,71 @@ function verifyPin() {
       document.getElementById('pin-input').value = '';
       document.getElementById('pin-input').focus();
     }
+  });
+}
+
+function toggleProfileMenu() {
+  var menu = document.getElementById('profile-menu');
+  if (menu.style.display === 'none') {
+    document.getElementById('profile-menu-name').textContent = currentProfileName || 'Profile';
+    menu.style.display = 'block';
+    // Close on outside click
+    setTimeout(function() {
+      document.addEventListener('click', closeProfileMenuOutside);
+    }, 0);
+  } else {
+    menu.style.display = 'none';
+    document.removeEventListener('click', closeProfileMenuOutside);
+  }
+}
+
+function closeProfileMenuOutside(e) {
+  var menu = document.getElementById('profile-menu');
+  var btn = document.getElementById('profile-icon-btn');
+  if (!menu.contains(e.target) && e.target !== btn) {
+    menu.style.display = 'none';
+    document.removeEventListener('click', closeProfileMenuOutside);
+  }
+}
+
+function openChangePinModal() {
+  document.getElementById('pin-modal').style.display = 'flex';
+  document.getElementById('cp-old').value = '';
+  document.getElementById('cp-new').value = '';
+  document.getElementById('cp-confirm').value = '';
+  document.getElementById('cp-error').textContent = '';
+  setTimeout(function() { document.getElementById('cp-old').focus(); }, 100);
+}
+
+function closeChangePinModal() {
+  document.getElementById('pin-modal').style.display = 'none';
+}
+
+function submitChangePin() {
+  var oldPin = document.getElementById('cp-old').value;
+  var newPin = document.getElementById('cp-new').value;
+  var confirm = document.getElementById('cp-confirm').value;
+  var errEl = document.getElementById('cp-error');
+
+  if (oldPin.length !== 4) { errEl.textContent = 'Enter your current 4-digit PIN.'; return; }
+  if (newPin.length !== 4 || !/^\d{4}$/.test(newPin)) { errEl.textContent = 'New PIN must be exactly 4 digits.'; return; }
+  if (newPin !== confirm) { errEl.textContent = 'New PINs do not match.'; return; }
+  errEl.textContent = '';
+
+  fetch('/api/profiles/' + currentProfileId + '/pin', {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ old_pin: oldPin, new_pin: newPin })
+  }).then(function(r) { return r.json(); }).then(function(data) {
+    if (data.success) {
+      closeChangePinModal();
+    } else {
+      errEl.textContent = data.error || 'Failed to change PIN.';
+      document.getElementById('cp-old').value = '';
+      document.getElementById('cp-old').focus();
+    }
+  }).catch(function() {
+    errEl.textContent = 'Network error. Try again.';
   });
 }
 
