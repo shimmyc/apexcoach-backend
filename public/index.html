@@ -858,24 +858,78 @@ function syncFitbit() {
 function computeReadiness(d) {
   var hours = (d.sleep && d.sleep.hours) ? d.sleep.hours : 7;
   var eff   = (d.sleep && d.sleep.efficiency) ? d.sleep.efficiency : 85;
-  var sq    = Math.max(0, (eff / 100) * 25);
-  var sc    = Math.min(25, 25 * Math.pow(Math.min(hours, 8) / 8, 4));
-  var baseRHR = (d.rolling7 && d.rolling7.rhr) ? d.rolling7.rhr : (d.rhr || 60);
+  var fitbitScore = (d.sleep && d.sleep.fitbit_score != null) ? d.sleep.fitbit_score : null;
+
+  // HRV vs 7-day baseline (25 pts)
   var baseHRV = (d.rolling7 && d.rolling7.hrv) ? d.rolling7.hrv : (d.hrv || 40);
-  var rhrPts  = Math.max(0, Math.min(15, 15 - (((d.rhr || baseRHR) - baseRHR) * 1.5)));
-  var hrvPts  = Math.max(0, Math.min(15, 15 + (((d.hrv || baseHRV) - baseHRV) * 0.4)));
-  var ns      = rhrPts + hrvPts;
-  var peak    = (d.prevZones && d.prevZones.peak)    ? d.prevZones.peak    : 0;
-  var cardio  = (d.prevZones && d.prevZones.cardio)  ? d.prevZones.cardio  : 0;
-  var fatBurn = (d.prevZones && d.prevZones.fatBurn) ? d.prevZones.fatBurn : 0;
-  var rec     = Math.max(0, 20 - (peak * 1.5 + cardio * 0.8 + fatBurn * 0.2));
-  var total   = sq + sc + ns + rec;
-  if (hours < 4) total = Math.min(total, 40);
-  else if (hours < 5) total = Math.min(total, 60);
-  else if (hours < 6) total = Math.min(total, 80);
+  var currentHRV = d.hrv || baseHRV;
+  var hrvDiff = currentHRV - baseHRV;
+  var hrvPts = hrvDiff >= 0 ? 25 : Math.max(0, 25 + (hrvDiff * 2));
+
+  // RHR vs 7-day baseline (20 pts)
+  var baseRHR = (d.rolling7 && d.rolling7.rhr) ? d.rolling7.rhr : (d.rhr || 60);
+  var currentRHR = d.rhr || baseRHR;
+  var rhrDiff = currentRHR - baseRHR;
+  var rhrPts = rhrDiff <= 0 ? 20 : Math.max(0, 20 - (rhrDiff * 3));
+
+  // Sleep Hours (20 pts)
+  var sleepHoursPts;
+  if (hours >= 8) sleepHoursPts = 20;
+  else if (hours >= 7) sleepHoursPts = 17;
+  else if (hours >= 6) sleepHoursPts = 12;
+  else if (hours >= 5) sleepHoursPts = 6;
+  else sleepHoursPts = 2;
+
+  // Sleep Quality (15 pts) - blended with Fitbit score
+  var sleepQualityPts;
+  var hasFitbitScore = fitbitScore !== null;
+  if (hasFitbitScore) {
+    sleepQualityPts = (eff / 100) * 10 + (fitbitScore / 100) * 5;
+  } else {
+    sleepQualityPts = (eff / 100) * 15;
+  }
+  sleepQualityPts = Math.max(0, Math.min(15, sleepQualityPts));
+
+  // Deep/REM vs 30-day average (10 pts)
+  var stages = (d.sleep && d.sleep.stages) || {};
+  var deepS = stages.deep || {}; var remS = stages.rem || {};
+  var deepRemPts;
+  if (!deepS.minutes && !remS.minutes) {
+    deepRemPts = 5; // neutral
+  } else {
+    var deepBelow = deepS.thirtyDayAvgMinutes && deepS.minutes < deepS.thirtyDayAvgMinutes;
+    var remBelow  = remS.thirtyDayAvgMinutes && remS.minutes < remS.thirtyDayAvgMinutes;
+    if (!deepBelow && !remBelow) deepRemPts = 10;
+    else if (deepBelow && remBelow) deepRemPts = 2;
+    else deepRemPts = 5;
+  }
+
+  // Recent 3-night sleep pattern proxy (10 pts)
+  var patternPts;
+  if (hours >= 7 && eff >= 85) patternPts = 10;
+  else if (hours >= 6 && eff >= 75) patternPts = 6;
+  else patternPts = 3;
+
+  var total = hrvPts + rhrPts + sleepHoursPts + sleepQualityPts + deepRemPts + patternPts;
+
+  // Hard caps
+  if (hours < 4) total = Math.min(total, 35);
+  else if (hours < 5) total = Math.min(total, 55);
+  else if (hours < 6) total = Math.min(total, 75);
+
   var score = Math.round(Math.max(0, Math.min(100, total)));
   var tier  = score >= 86 ? 'hard' : score >= 66 ? 'moderate' : score >= 46 ? 'light' : 'recovery';
-  return { score: score, tier: tier, hours: hours, breakdown: { sleepQuality: Math.round(sq), sleepCliff: Math.round(sc), nervousSystem: Math.round(ns), recovery: Math.round(rec) } };
+  return {
+    score: score, tier: tier, hours: hours, hasFitbitScore: hasFitbitScore,
+    breakdown: {
+      hrv: Math.round(hrvPts),
+      rhr: Math.round(rhrPts),
+      sleepHours: Math.round(sleepHoursPts),
+      sleepQuality: Math.round(sleepQualityPts * 10) / 10,
+      deepRem: Math.round(deepRemPts),
+      pattern: Math.round(patternPts)
+    }
+  };
 }
 
 function renderReadiness() {
@@ -884,18 +938,41 @@ function renderReadiness() {
   card.style.display = 'block';
   card.style.borderColor = t.color + '44';
 
-  var bars = [['Sleep Quality', readiness.breakdown.sleepQuality, 25], ['Sleep Cliff', readiness.breakdown.sleepCliff, 25], ['Nervous System', readiness.breakdown.nervousSystem, 30], ['Recovery', readiness.breakdown.recovery, 20]];
+  var sqLabel = 'Sleep Quality' + (readiness.hasFitbitScore ? ' *' : '');
+  var bars = [['HRV', readiness.breakdown.hrv, 25], ['RHR', readiness.breakdown.rhr, 20], ['Sleep Hours', readiness.breakdown.sleepHours, 20], [sqLabel, readiness.breakdown.sleepQuality, 15], ['Deep/REM', readiness.breakdown.deepRem, 10], ['Sleep Pattern', readiness.breakdown.pattern, 10]];
   var barsHTML = '';
   for (var i = 0; i < bars.length; i++) {
     barsHTML += '<div style="display:flex;align-items:center;gap:8px;margin-bottom:10px"><span class="mono" style="font-size:11px;color:#555;width:130px;flex-shrink:0">' + bars[i][0] + '</span><div class="bar-track"><div class="bar-fill" style="width:' + ((bars[i][1]/bars[i][2])*100) + '%;background:' + t.color + '"></div></div><span class="mono" style="font-size:11px;color:#555;width:38px;text-align:right">' + bars[i][1] + '/' + bars[i][2] + '</span></div>';
   }
+  if (readiness.hasFitbitScore) {
+    barsHTML += '<div class="mono" style="font-size:9px;color:#444;margin-top:-4px;margin-bottom:6px">* includes Fitbit sleep score</div>';
+  }
 
   var stages = (fitData.sleep && fitData.sleep.stages) || {};
   var deep = stages.deep || {}; var light = stages.light || {}; var rem = stages.rem || {}; var wake = stages.wake || {};
+  var fitbitScore = (fitData.sleep && fitData.sleep.fitbit_score != null) ? fitData.sleep.fitbit_score : null;
   var sleepStagesHTML = '';
   if (deep.minutes || rem.minutes) {
+    var fsColor = '#555'; var fsTier = '';
+    if (fitbitScore !== null) {
+      if (fitbitScore >= 80) { fsColor = '#22c97a'; fsTier = 'Excellent'; }
+      else if (fitbitScore >= 60) { fsColor = '#f5a623'; fsTier = 'Good'; }
+      else if (fitbitScore >= 40) { fsColor = '#f07020'; fsTier = 'Fair'; }
+      else { fsColor = '#e84545'; fsTier = 'Poor'; }
+    }
+    var fitbitScoreHTML = '';
+    if (fitbitScore !== null) {
+      fitbitScoreHTML = '<div style="margin-bottom:16px;text-align:center;padding:16px;background:#060810;border-radius:10px;border:1px solid ' + fsColor + '22">' +
+        '<div class="mono" style="font-size:11px;color:#666;letter-spacing:2px;margin-bottom:6px">FITBIT SLEEP SCORE</div>' +
+        '<div class="oswald" style="font-size:48px;font-weight:700;color:' + fsColor + ';line-height:1">' + fitbitScore + '</div>' +
+        '<div class="mono" style="font-size:12px;color:' + fsColor + ';margin-top:4px;letter-spacing:1px">' + fsTier + '</div></div>';
+    } else {
+      fitbitScoreHTML = '<div style="margin-bottom:16px;text-align:center;padding:10px;background:#060810;border-radius:8px">' +
+        '<div class="mono" style="font-size:10px;color:#333;letter-spacing:1px">Fitbit Sleep Score not available</div></div>';
+    }
     sleepStagesHTML = '<div style="margin-top:16px;padding-top:16px;border-top:1px solid #0e1016">' +
       '<p class="clabel" style="margin-bottom:10px">sleep stages</p>' +
+      fitbitScoreHTML +
       '<div style="display:grid;grid-template-columns:repeat(4,1fr);gap:10px">' +
       stagePill("Deep", deep.minutes, deep.thirtyDayAvgMinutes, "#4488bb", (deep.minutes||0)+(rem.minutes||0)+(light.minutes||0)+(wake.minutes||0)) +
       stagePill("REM", rem.minutes, rem.thirtyDayAvgMinutes, "#9966cc", (deep.minutes||0)+(rem.minutes||0)+(light.minutes||0)+(wake.minutes||0)) +
@@ -929,8 +1006,11 @@ function renderReadiness() {
     '<div style="background:#060810;border-radius:8px;padding:12px;text-align:center"><div class="mono" style="font-size:10px;color:#555;margin-bottom:4px">VS AVG</div><div class="oswald" style="font-size:24px;font-weight:700;color:' + hrvColor + '">' + hrvArrow + Math.abs(Math.round(hrvDiff*10)/10) + '</div></div>' +
     '</div></div>' : '';
 
-  var vitalsHTML = '<div style="display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-top:16px;padding-top:16px;border-top:1px solid #0e1016">' +
+  var fScoreVital = fitbitScore !== null ? fitbitScore : '-';
+  var fScoreVSub = fitbitScore !== null ? (fitbitScore >= 80 ? 'Excellent' : fitbitScore >= 60 ? 'Good' : fitbitScore >= 40 ? 'Fair' : 'Poor') : 'n/a';
+  var vitalsHTML = '<div style="display:grid;grid-template-columns:repeat(5,1fr);gap:10px;margin-top:16px;padding-top:16px;border-top:1px solid #0e1016">' +
     statCard("Sleep", fitData.sleep && fitData.sleep.hours ? fmtHours(fitData.sleep.hours) : "-", fitData.sleep && fitData.sleep.efficiency ? fitData.sleep.efficiency + "% efficient" : "") +
+    statCard("Sleep Score", fScoreVital, fScoreVSub) +
     statCard("Resting HR", fitData.rhr ? fitData.rhr + " bpm" : "-", r7.rhr ? "7d avg " + r7.rhr : "") +
     statCard("Steps", fitData.steps ? fitData.steps.toLocaleString() : "-", "yesterday") +
     statCard("Awake", fitData.sleep && fitData.sleep.minutesAwake ? fitData.sleep.minutesAwake + " min" : "-", "during sleep") +
@@ -997,7 +1077,7 @@ function fetchAI() {
   var prompt = 'You are ApexCoach, an elite personal AI coach for ' + athleteName + '. You know everything about them. Give 3 specific, data-driven workout options for today, ordered by best fit first.\n\n' +
     'TODAY: ' + today + '\n' +
     'READINESS: ' + readiness.score + '/100 - ' + readiness.tier.toUpperCase() + '\n' +
-    'BREAKDOWN: Sleep Quality ' + readiness.breakdown.sleepQuality + '/25, Sleep Cliff ' + readiness.breakdown.sleepCliff + '/25 (' + readiness.hours.toFixed(1) + 'h), Nervous System ' + readiness.breakdown.nervousSystem + '/30, Recovery ' + readiness.breakdown.recovery + '/20\n\n' +
+    'BREAKDOWN: HRV ' + readiness.breakdown.hrv + '/25, RHR ' + readiness.breakdown.rhr + '/20, Sleep Hours ' + readiness.breakdown.sleepHours + '/20 (' + readiness.hours.toFixed(1) + 'h), Sleep Quality ' + readiness.breakdown.sleepQuality + '/15' + (readiness.hasFitbitScore ? ' (incl Fitbit score)' : '') + ', Deep/REM ' + readiness.breakdown.deepRem + '/10, Pattern ' + readiness.breakdown.pattern + '/10\n\n' +
     'LIVE FITBIT DATA:\n' +
     '- Sleep: ' + (sleep.hours ? sleep.hours.toFixed(1) : '?') + 'h, ' + (sleep.efficiency || '?') + '% efficiency, ' + (sleep.minutesAwake || '?') + 'min awake\n' +
     '- Deep: ' + (deep.minutes || '?') + 'min (30d avg ' + (deep.thirtyDayAvgMinutes || '?') + '), REM: ' + (rem.minutes || '?') + 'min (30d avg ' + (rem.thirtyDayAvgMinutes || '?') + ')\n' +

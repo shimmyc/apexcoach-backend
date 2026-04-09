@@ -188,6 +188,7 @@ async function buildDailyData(token) {
     fitGet("/1/user/-/activities/date/" + yesterday + ".json", token),
     fitGet("/1/user/-/hrv/date/" + weekAgo + "/" + today + ".json", token).catch(function() { return { hrv: [] }; }),
     fitGet("/1/user/-/activities/heart/date/" + weekAgo + "/" + today + ".json", token).catch(function() { return { "activities-heart": [] }; }),
+    fitGet("/1/user/-/sleep/date/" + today + ".json", token).catch(function() { return {}; }),
   ]);
 
   const sleep      = results[0];
@@ -197,9 +198,29 @@ async function buildDailyData(token) {
   const actYest    = results[4];
   const hrvWeek    = results[5];
   const heartWeek  = results[6];
+  const sleepV1    = results[7];
 
   const sleepArr    = sleep && sleep.sleep ? sleep.sleep : [];
   const sleepRecord = sleepArr.find(function(s) { return s.isMainSleep; }) || sleepArr[0] || null;
+
+  // Extract Fitbit sleep score from multiple possible locations
+  var fitbitSleepScore = null;
+  // Try 1.2 API response: top-level sleep[].score or sleep summary score
+  if (sleepRecord && typeof sleepRecord.score === 'number') {
+    fitbitSleepScore = sleepRecord.score;
+  }
+  // Try v1 API response as fallback
+  if (fitbitSleepScore === null && sleepV1) {
+    var sleepV1Arr = sleepV1.sleep || [];
+    var sleepV1Rec = sleepV1Arr.find(function(s) { return s.isMainSleep; }) || sleepV1Arr[0] || null;
+    if (sleepV1Rec && typeof sleepV1Rec.score === 'number') {
+      fitbitSleepScore = sleepV1Rec.score;
+    }
+  }
+  // Try top-level summary score
+  if (fitbitSleepScore === null && sleep && typeof sleep.summary === 'object' && sleep.summary !== null && typeof sleep.summary.totalScore === 'number') {
+    fitbitSleepScore = sleep.summary.totalScore;
+  }
   const heartYestArr = heartYest && heartYest["activities-heart"] ? heartYest["activities-heart"] : [];
   const zones = heartYestArr[0] && heartYestArr[0].value ? heartYestArr[0].value.heartRateZones || [] : [];
   const heartTodayArr = heartToday && heartToday["activities-heart"] ? heartToday["activities-heart"] : [];
@@ -224,6 +245,7 @@ async function buildDailyData(token) {
         efficiency:   sleepRecord ? sleepRecord.efficiency : null,
         minutesAwake: sleepRecord ? sleepRecord.minutesAwake : null,
         stages:       sleepRecord && sleepRecord.levels ? sleepRecord.levels.summary : null,
+        fitbit_score: fitbitSleepScore,
       },
       rhr: rhr,
       hrv: hrv,
