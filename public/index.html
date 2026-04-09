@@ -705,17 +705,39 @@ function bootApp() {
 }
 
 // ── STARTUP ───────────────────────────────────────────────────────────────
+function applyProfileData(pd) {
+  currentProfileData = pd;
+  if (pd && pd.ai_prompt_context) FULL_PROFILE = pd.ai_prompt_context;
+  else if (pd && pd.full_profile) FULL_PROFILE = pd.full_profile;
+}
+
+function refreshProfileData() {
+  if (!currentProfileId) return;
+  fetch('/api/profiles/' + currentProfileId)
+    .then(function(r) { return r.json(); })
+    .then(function(data) {
+      if (data.success && data.profile && data.profile.profile_data) {
+        currentProfileData = data.profile.profile_data;
+        localStorage.setItem('ac_profile_data', JSON.stringify(currentProfileData));
+        applyProfileData(currentProfileData);
+        console.log('[ApexCoach] Profile data refreshed from server:', Object.keys(currentProfileData));
+        renderProfileTab();
+      }
+    })
+    .catch(function(e) { console.warn('[ApexCoach] Could not refresh profile data:', e.message); });
+}
+
 var savedProfileId = localStorage.getItem('ac_profile_id');
 if (savedProfileId) {
   currentProfileId = parseInt(savedProfileId);
   currentProfileName = localStorage.getItem('ac_profile_name') || '';
   currentProfileColor = localStorage.getItem('ac_profile_color') || '#22c97a';
   try { currentProfileData = JSON.parse(localStorage.getItem('ac_profile_data') || 'null'); } catch(e) { currentProfileData = null; }
-  if (currentProfileData) {
-    if (currentProfileData.ai_prompt_context) FULL_PROFILE = currentProfileData.ai_prompt_context;
-    else if (currentProfileData.full_profile) FULL_PROFILE = currentProfileData.full_profile;
-  }
+  applyProfileData(currentProfileData);
+  console.log('[ApexCoach] Boot from cache. profileData:', currentProfileData ? Object.keys(currentProfileData) : 'null');
   bootApp();
+  // Always refresh from server to pick up latest profile_data
+  refreshProfileData();
 } else {
   loadProfileSelector();
 }
@@ -1075,6 +1097,7 @@ function renderAI() {
 
 function renderProfileTab() {
   var pd = currentProfileData || {};
+  console.log('[ApexCoach] renderProfileTab called. Has data:', !!currentProfileData, 'Keys:', currentProfileData ? Object.keys(currentProfileData) : 'none', 'Goals:', (pd.goals || []).length, 'Injuries:', (pd.injuries || []).length);
   var c = currentProfileColor || '#22c97a';
   var name = pd.name || currentProfileName || 'Athlete';
   var initial = name.charAt(0).toUpperCase();

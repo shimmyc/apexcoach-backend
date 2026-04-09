@@ -299,6 +299,20 @@ app.get("/api/profiles", async function(req, res) {
   }
 });
 
+app.get("/api/profiles/:id", async function(req, res) {
+  try {
+    var r = await fetch(SUPABASE_URL + "/rest/v1/profiles?id=eq." + req.params.id + "&select=id,name,avatar_color,profile_data", {
+      headers: sbHeaders(),
+    });
+    var rows = await r.json();
+    if (!rows || !rows.length) return res.json({ success: false, error: "Profile not found." });
+    var p = rows[0];
+    res.json({ success: true, profile: { id: p.id, name: p.name, avatar_color: p.avatar_color, profile_data: p.profile_data } });
+  } catch (e) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
 app.post("/api/profiles", async function(req, res) {
   try {
     var body = req.body;
