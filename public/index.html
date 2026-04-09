@@ -727,6 +727,24 @@ function refreshProfileData() {
     .catch(function(e) { console.warn('[ApexCoach] Could not refresh profile data:', e.message); });
 }
 
+// ── BELT DATA (must be before bootApp which calls renderBelt) ────────────
+var BELTS = [
+  {id:'white',   label:'White',      color:'#e0e0e0', bg:'#1a1c22'},
+  {id:'yellow',  label:'Yellow',     color:'#f5d020', bg:'#1a1800'},
+  {id:'orange',  label:'Orange',     color:'#f5a020', bg:'#1a1000'},
+  {id:'red',     label:'Red',        color:'#e84545', bg:'#1a0808'},
+  {id:'green1',  label:'Lo Green',   color:'#22c97a', bg:'#081a10'},
+  {id:'green2',  label:'Hi Green',   color:'#18e06a', bg:'#081a10'},
+  {id:'blue1',   label:'Lo Blue',    color:'#4488bb', bg:'#081018'},
+  {id:'blue2',   label:'Hi Blue',    color:'#22aaff', bg:'#081828'},
+  {id:'purple',  label:'Purple',     color:'#9966cc', bg:'#100818'},
+  {id:'brown1',  label:'Brown 1',    color:'#c97a22', bg:'#180e08'},
+  {id:'brown2',  label:'Brown 2',    color:'#a06018', bg:'#180e08'},
+  {id:'brown3',  label:'Brown 3',    color:'#804808', bg:'#180e08'},
+  {id:'black',   label:'Black Belt', color:'#ffffff', bg:'#080a0f'},
+];
+var currentBeltId = localStorage.getItem('ac_belt') || 'blue2';
+
 var savedProfileId = localStorage.getItem('ac_profile_id');
 if (savedProfileId) {
   currentProfileId = parseInt(savedProfileId);
@@ -1857,24 +1875,7 @@ function renderLog() {
   document.getElementById('log-entries').innerHTML = html;
 }
 
-// ── BELT SYSTEM ───────────────────────────────────────────────────────────
-var BELTS = [
-  {id:'white',   label:'White',      color:'#e0e0e0', bg:'#1a1c22'},
-  {id:'yellow',  label:'Yellow',     color:'#f5d020', bg:'#1a1800'},
-  {id:'orange',  label:'Orange',     color:'#f5a020', bg:'#1a1000'},
-  {id:'red',     label:'Red',        color:'#e84545', bg:'#1a0808'},
-  {id:'green1',  label:'Lo Green',   color:'#22c97a', bg:'#081a10'},
-  {id:'green2',  label:'Hi Green',   color:'#18e06a', bg:'#081a10'},
-  {id:'blue1',   label:'Lo Blue',    color:'#4488bb', bg:'#081018'},
-  {id:'blue2',   label:'Hi Blue ✓',  color:'#22aaff', bg:'#081828', current:true},
-  {id:'purple',  label:'Purple',     color:'#9966cc', bg:'#100818'},
-  {id:'brown1',  label:'Brown 1',    color:'#c97a22', bg:'#180e08'},
-  {id:'brown2',  label:'Brown 2',    color:'#a06018', bg:'#180e08'},
-  {id:'brown3',  label:'Brown 3',    color:'#804808', bg:'#180e08'},
-  {id:'black',   label:'Black Belt', color:'#ffffff', bg:'#080a0f'},
-];
-var currentBeltId = localStorage.getItem('ac_belt') || 'blue2';
-
+// ── BELT SYSTEM (BELTS array moved above bootApp to avoid hoisting issue) ─
 function renderBelt() {
   var currentIdx = 0; for(var bi=0;bi<BELTS.length;bi++){if(BELTS[bi].id===currentBeltId){currentIdx=bi;break;}}
   var pct = Math.round(((currentIdx + 1) / BELTS.length) * 100);
