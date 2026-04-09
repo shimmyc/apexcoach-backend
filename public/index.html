@@ -373,6 +373,11 @@ var workoutLog = [];
 var medLog = [];
 var schedule = {};
 
+var DAYS = ['mon','tue','wed','thu','fri','sat','sun'];
+var DAY_LABELS = ['Mon','Tue','Wed','Thu','Fri','Sat','Sun'];
+var WORKOUT_TYPES = ['Flexible','MMA / Sparring','Strength - Upper','Strength - Lower','Strength - Full Body','Conditioning / HIIT','Yoga / Mobility','PT / Rehab','Active Recovery','Walking','Rest Day'];
+var SCHEDULE_DEFAULTS = { mon:'Flexible', tue:'MMA / Sparring', wed:'Flexible', thu:'MMA / Sparring', fri:'Flexible', sat:'Flexible', sun:'Flexible' };
+
 var TIERS = {
   hard:     { label:'HARD TRAINING',  color:'#22c97a', range:'86-100' },
   moderate: { label:'MODERATE',       color:'#f5a623', range:'66-85'  },
@@ -738,11 +743,6 @@ function renderAI() {
 }
 
 // ── SCHEDULE ──────────────────────────────────────────────────────────────
-
-var DAYS = ['mon','tue','wed','thu','fri','sat','sun'];
-var DAY_LABELS = ['Mon','Tue','Wed','Thu','Fri','Sat','Sun'];
-var WORKOUT_TYPES = ['Flexible','MMA / Sparring','Strength - Upper','Strength - Lower','Strength - Full Body','Conditioning / HIIT','Yoga / Mobility','PT / Rehab','Active Recovery','Walking','Rest Day'];
-var SCHEDULE_DEFAULTS = { mon:'Flexible', tue:'MMA / Sparring', wed:'Flexible', thu:'MMA / Sparring', fri:'Flexible', sat:'Flexible', sun:'Flexible' };
 
 function loadSchedule() {
   var saved = localStorage.getItem('ac_schedule');
