@@ -76,6 +76,10 @@ input[type=range]{width:100%;accent-color:#22c97a}
       <p class="mono" style="font-size:11px;color:#22c97a;letter-spacing:3px;animation:pulse 1.6s infinite">FETCHING FITBIT DATA...</p>
     </div>
     <div id="readiness-card" class="card" style="display:none"></div>
+    <div id="progress-card" class="card" style="display:none">
+      <p class="clabel">progress brief</p>
+      <div id="progress-content"></div>
+    </div>
     <div id="ai-card" class="card" style="display:none">
       <p class="clabel">ai recommendation</p>
       <div id="ai-content"></div>
@@ -131,6 +135,12 @@ input[type=range]{width:100%;accent-color:#22c97a}
         <div id="belt-selector" style="display:flex;flex-wrap:wrap;gap:8px;margin-bottom:16px"></div>
         <button onclick="saveBelt()" class="btnPri" style="font-size:14px">Save</button>
       </div>
+    </div>
+
+    <!-- WEEKLY SCHEDULE -->
+    <div class="card">
+      <p class="clabel">my weekly schedule</p>
+      <div id="schedule-grid" style="display:grid;grid-template-columns:repeat(7,1fr);gap:8px"></div>
     </div>
 
     <!-- BIG GOALS -->
@@ -358,8 +368,10 @@ input[type=range]{width:100%;accent-color:#22c97a}
 var fitData = null;
 var readiness = null;
 var aiRec = null;
+var progressRec = null;
 var workoutLog = [];
 var medLog = [];
+var schedule = {};
 
 var TIERS = {
   hard:     { label:'HARD TRAINING',  color:'#22c97a', range:'86-100' },
@@ -402,6 +414,9 @@ if (cachedDate !== todayLocal) {
   localStorage.removeItem('ac_cache');
   localStorage.setItem('ac_cache_date', todayLocal);
 }
+
+loadSchedule();
+renderSchedule();
 
 loadWorkouts().then(function() {
   renderWeek();
@@ -499,8 +514,8 @@ function syncFitbit() {
       readiness = computeReadiness(fitData);
       renderReadiness();
       document.getElementById('status-box').style.display = 'none';
-      if (c.aiRec) { aiRec = c.aiRec; renderAI(); }
-      else { fetchAI(); }
+      if (c.progressRec) { progressRec = c.progressRec; renderProgress(); } else { fetchProgress(); }
+      if (c.aiRec) { aiRec = c.aiRec; renderAI(); } else { fetchAI(); }
       return;
     }
   }
@@ -513,6 +528,7 @@ function syncFitbit() {
       localStorage.setItem('ac_cache', JSON.stringify({ date: ds(0), fitData: fitData }));
       renderReadiness();
       document.getElementById('status-box').style.display = 'none';
+      fetchProgress();
       fetchAI();
     })
     .catch(function(e) {
@@ -610,6 +626,8 @@ function renderReadiness() {
     barsHTML + vitalsHTML + sleepStagesHTML + zonesHTML + hrvHTML;
 
   document.getElementById('ai-card').style.display = 'block';
+  document.getElementById('progress-card').style.display = 'block';
+  document.getElementById('progress-content').innerHTML = '<p class="mono" style="font-size:11px;color:#22c97a;letter-spacing:3px;animation:pulse 1.6s infinite">ANALYZING PROGRESS...</p>';
   renderLogArea();
 }
 
@@ -668,6 +686,7 @@ function fetchAI() {
     '- Steps yesterday: ' + (fitData.steps ? fitData.steps.toLocaleString() : '?') + '\n\n' +
     'RECENT 10-DAY LOG:\n' + recent + '\n\n' +
     'FULL ATHLETE PROFILE:\n' + FULL_PROFILE + '\n\n' +
+    'WEEKLY SCHEDULE DEFAULTS:\n' + getScheduleText() + '\n\n' +
     'IMPORTANT RULES FOR YOUR RECOMMENDATION:\n' +
     '- NEVER suggest exercises that cause sharp pubic pain\n' +
     '- AVOID spin drills (concussion history causes dizziness)\n' +
@@ -716,6 +735,131 @@ function renderAI() {
     '<div style="background:#060810;border-radius:8px;padding:14px;margin-bottom:14px"><p class="mono" style="font-size:9px;color:#2a2c30;letter-spacing:3px;margin-bottom:10px">TODAY\'S PLAN</p>' + exHTML + '</div>' +
     (aiRec.mobility ? '<p style="font-size:13px;color:#4488bb;margin-bottom:12px;font-style:italic">Mobility: ' + aiRec.mobility + '</p>' : '') +
     (aiRec.minimum_viable ? '<div style="background:#f5a62310;border:1px solid #f5a62322;padding:10px 14px;border-radius:6px"><p class="mono" style="font-size:9px;color:#f5a623;letter-spacing:2px;margin-bottom:6px">MINIMUM VIABLE</p><p style="font-size:13px;color:#c8a060;line-height:1.65">' + aiRec.minimum_viable + '</p></div>' : '');
+}
+
+// ── SCHEDULE ──────────────────────────────────────────────────────────────
+
+var DAYS = ['mon','tue','wed','thu','fri','sat','sun'];
+var DAY_LABELS = ['Mon','Tue','Wed','Thu','Fri','Sat','Sun'];
+var WORKOUT_TYPES = ['Flexible','MMA / Sparring','Strength - Upper','Strength - Lower','Strength - Full Body','Conditioning / HIIT','Yoga / Mobility','PT / Rehab','Active Recovery','Walking','Rest Day'];
+var SCHEDULE_DEFAULTS = { mon:'Flexible', tue:'MMA / Sparring', wed:'Flexible', thu:'MMA / Sparring', fri:'Flexible', sat:'Flexible', sun:'Flexible' };
+
+function loadSchedule() {
+  var saved = localStorage.getItem('ac_schedule');
+  schedule = saved ? JSON.parse(saved) : Object.assign({}, SCHEDULE_DEFAULTS);
+}
+
+function saveSchedule() {
+  localStorage.setItem('ac_schedule', JSON.stringify(schedule));
+}
+
+function renderSchedule() {
+  var el = document.getElementById('schedule-grid');
+  if (!el) return;
+  var todayDow = new Date().toLocaleDateString('en-US', { weekday: 'short' }).toLowerCase();
+  var html = '';
+  for (var i = 0; i < DAYS.length; i++) {
+    var day = DAYS[i];
+    var label = DAY_LABELS[i];
+    var val = schedule[day] || 'Flexible';
+    var isToday = todayDow === label.toLowerCase();
+    html += '<div style="background:#060810;border:1px solid ' + (isToday ? '#22c97a33' : '#0e1016') + ';border-radius:8px;padding:10px 6px;text-align:center">' +
+      '<div class="mono" style="font-size:10px;color:' + (isToday ? '#22c97a' : '#444') + ';letter-spacing:2px;margin-bottom:8px">' + label.toUpperCase() + '</div>' +
+      '<select onchange="schedule[\'' + day + '\']=this.value;saveSchedule()" style="font-size:11px;padding:5px 4px;margin-bottom:0;text-align:center">';
+    for (var j = 0; j < WORKOUT_TYPES.length; j++) {
+      html += '<option value="' + WORKOUT_TYPES[j] + '"' + (val === WORKOUT_TYPES[j] ? ' selected' : '') + '>' + WORKOUT_TYPES[j] + '</option>';
+    }
+    html += '</select></div>';
+  }
+  el.innerHTML = html;
+}
+
+function getScheduleText() {
+  var lines = [];
+  for (var i = 0; i < DAYS.length; i++) {
+    lines.push(DAY_LABELS[i] + ': ' + (schedule[DAYS[i]] || 'Flexible'));
+  }
+  return lines.join(', ');
+}
+
+// ── PROGRESS BRIEF ────────────────────────────────────────────────────────
+
+function fetchProgress() {
+  document.getElementById('progress-card').style.display = 'block';
+  document.getElementById('progress-content').innerHTML = '<p class="mono" style="font-size:11px;color:#22c97a;letter-spacing:3px;animation:pulse 1.6s infinite">ANALYZING PROGRESS...</p>';
+
+  var slice = workoutLog.slice(0, 14);
+  if (!slice.length) {
+    document.getElementById('progress-content').innerHTML = '<p style="font-size:13px;color:#555">No workout history yet — log some sessions to see your progress brief.</p>';
+    return;
+  }
+
+  var log14 = '';
+  for (var i = 0; i < slice.length; i++) {
+    var w = slice[i];
+    log14 += '- ' + w.date + ': ' + w.type + (w.done ? ' done' : ' skipped') + (w.mobility ? ' +mob' : '') + (w.notes ? ' (' + w.notes + ')' : '') + '\n';
+  }
+
+  var week1done = 0, week2done = 0;
+  var now = Date.now();
+  for (var i = 0; i < slice.length; i++) {
+    var daysAgo = Math.floor((now - new Date(slice[i].date + 'T12:00:00').getTime()) / 86400000);
+    if (slice[i].done) {
+      if (daysAgo < 7) week1done++;
+      else if (daysAgo < 14) week2done++;
+    }
+  }
+
+  var lastDone = workoutLog.filter(function(w) { return w.done; }).slice(0, 3);
+  var lastTypes = lastDone.map(function(w) { return w.type.split(' - ')[0].split(' /')[0].trim(); });
+
+  var prompt = 'You are ApexCoach analyzing Shimmy\'s training trend. Be direct and honest. No fluff.\n\n' +
+    'LAST 14 DAYS LOG:\n' + log14 + '\n' +
+    'THIS WEEK DONE: ' + week1done + ' sessions. LAST WEEK DONE: ' + week2done + ' sessions. TARGET: 3-4x/week.\n' +
+    'LAST 3 COMPLETED SESSION TYPES: ' + (lastTypes.join(', ') || 'none') + '\n\n' +
+    'Respond ONLY with raw JSON, no markdown:\n' +
+    '{"trend":"improving|steady|needs_attention","brief":"2-3 honest sentences about overall trend, consistency vs target, and what the data shows","pattern_alert":"if last 3 completed sessions are the same category suggest a pivot, otherwise null","injury_flag":"if any notes in last 14 days mention pain, sharp, hurt, groin, pubic, or flare summarize the concern in one sentence, otherwise null"}';
+
+  fetch('/api/ai', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ model: 'claude-haiku-4-5-20251001', max_tokens: 400, messages: [{ role: 'user', content: prompt }] })
+  })
+  .then(function(r) { return r.json(); })
+  .then(function(data) {
+    var raw = (data.content && data.content[0]) ? data.content[0].text : '{}';
+    var cleaned = raw.indexOf('{') >= 0 ? raw.substring(raw.indexOf('{'), raw.lastIndexOf('}') + 1) : '{}';
+    progressRec = JSON.parse(cleaned);
+    var cached = JSON.parse(localStorage.getItem('ac_cache') || '{}');
+    cached.progressRec = progressRec;
+    localStorage.setItem('ac_cache', JSON.stringify(cached));
+    renderProgress();
+  })
+  .catch(function() {
+    document.getElementById('progress-content').innerHTML = '<p style="color:#e87;font-size:13px">Progress analysis unavailable.</p>';
+  });
+}
+
+function renderProgress() {
+  if (!progressRec) return;
+  var trendColors = { improving: '#22c97a', steady: '#f5a623', needs_attention: '#e84545' };
+  var trendLabels = { improving: 'IMPROVING', steady: 'STEADY', needs_attention: 'NEEDS ATTENTION' };
+  var color = trendColors[progressRec.trend] || '#f5a623';
+  var label = trendLabels[progressRec.trend] || (progressRec.trend || 'STEADY').toUpperCase().replace('_', ' ');
+  var hasAlert = !!(progressRec.pattern_alert || progressRec.injury_flag);
+  var html =
+    '<div style="display:flex;align-items:center;gap:10px;margin-bottom:12px">' +
+    '<div style="width:8px;height:8px;border-radius:50%;background:' + color + ';flex-shrink:0"></div>' +
+    '<span class="mono" style="font-size:11px;color:' + color + ';letter-spacing:2px">' + label + '</span>' +
+    '</div>' +
+    '<p style="font-size:14px;color:#888;line-height:1.75' + (hasAlert ? ';margin-bottom:12px' : '') + '">' + (progressRec.brief || '') + '</p>';
+  if (progressRec.pattern_alert) {
+    html += '<div style="background:#f5a62310;border:1px solid #f5a62322;color:#c8a060;padding:8px 12px;border-radius:6px;font-size:13px' + (progressRec.injury_flag ? ';margin-bottom:8px' : '') + '">Pattern: ' + progressRec.pattern_alert + '</div>';
+  }
+  if (progressRec.injury_flag) {
+    html += '<div style="background:#e8454510;border:1px solid #e8454522;color:#e87;padding:8px 12px;border-radius:6px;font-size:13px">Flag: ' + progressRec.injury_flag + '</div>';
+  }
+  document.getElementById('progress-content').innerHTML = html;
 }
 
 function renderLogArea() {
