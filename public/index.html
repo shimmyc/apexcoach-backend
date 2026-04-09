@@ -89,26 +89,31 @@ input[type=range]{width:100%;accent-color:#22c97a}
 
   <!-- CALENDAR TAB -->
   <div id="tab-calendar" class="tab stack">
+    <div style="display:flex;gap:4px;margin-bottom:4px">
+      <button id="cal-mode-week" class="navBtn active" onclick="setCalMode('week')" style="flex:1;text-align:center">Week</button>
+      <button id="cal-mode-month" class="navBtn" onclick="setCalMode('month')" style="flex:1;text-align:center">Month</button>
+    </div>
     <div class="statsGrid" id="week-stats"></div>
     <div id="double-skip-warn" style="display:none;background:#f5a62310;border:1px solid #f5a62325;color:#f5a623;padding:12px 16px;border-radius:6px;font-size:15px">
       Two misses in a row - today is non-negotiable. Even 15 min counts.
     </div>
     <div class="card">
       <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px">
-        <button onclick="calNav(-1)" style="background:transparent;border:1px solid #1a1c22;color:#666;padding:6px 14px;border-radius:6px;cursor:pointer;font-size:15px">&larr; Prev</button>
+        <button onclick="calNav(-1)" style="background:transparent;border:1px solid #1a1c22;color:#666;padding:6px 14px;border-radius:6px;cursor:pointer;font-size:15px">&larr;</button>
         <span id="cal-title" class="oswald" style="font-size:22px;font-weight:600;color:#fff"></span>
-        <button onclick="calNav(1)" style="background:transparent;border:1px solid #1a1c22;color:#666;padding:6px 14px;border-radius:6px;cursor:pointer;font-size:15px">Next &rarr;</button>
+        <button onclick="calNav(1)" style="background:transparent;border:1px solid #1a1c22;color:#666;padding:6px 14px;border-radius:6px;cursor:pointer;font-size:15px">&rarr;</button>
       </div>
       <div style="display:grid;grid-template-columns:repeat(7,1fr);gap:4px;margin-bottom:8px">
-        <div class="mono" style="font-size:11px;color:#444;text-align:center;padding:4px">MON</div>
-        <div class="mono" style="font-size:11px;color:#444;text-align:center;padding:4px">TUE</div>
-        <div class="mono" style="font-size:11px;color:#444;text-align:center;padding:4px">WED</div>
-        <div class="mono" style="font-size:11px;color:#444;text-align:center;padding:4px">THU</div>
-        <div class="mono" style="font-size:11px;color:#444;text-align:center;padding:4px">FRI</div>
-        <div class="mono" style="font-size:11px;color:#444;text-align:center;padding:4px">SAT</div>
-        <div class="mono" style="font-size:11px;color:#444;text-align:center;padding:4px">SUN</div>
+        <div class="mono" style="font-size:11px;color:#444;text-align:center;padding:4px">M</div>
+        <div class="mono" style="font-size:11px;color:#444;text-align:center;padding:4px">T</div>
+        <div class="mono" style="font-size:11px;color:#444;text-align:center;padding:4px">W</div>
+        <div class="mono" style="font-size:11px;color:#444;text-align:center;padding:4px">T</div>
+        <div class="mono" style="font-size:11px;color:#444;text-align:center;padding:4px">F</div>
+        <div class="mono" style="font-size:11px;color:#444;text-align:center;padding:4px">S</div>
+        <div class="mono" style="font-size:11px;color:#444;text-align:center;padding:4px">S</div>
       </div>
       <div id="cal-grid" style="display:grid;grid-template-columns:repeat(7,1fr);gap:4px"></div>
+      <div id="cal-detail" style="display:none;margin-top:10px"></div>
     </div>
     <div class="card" id="week-breakdown"></div>
   </div>
@@ -1012,89 +1017,217 @@ function saveWorkout() {
 }
 
 var calOffset = 0;
-function calNav(dir) { calOffset += dir; renderCalendar(); }
+var calMode = 'week';
+var calDetailDate = null;
+
+function setCalMode(mode) {
+  calMode = mode;
+  calOffset = 0;
+  calDetailDate = null;
+  document.getElementById('cal-mode-week').classList.toggle('active', mode === 'week');
+  document.getElementById('cal-mode-month').classList.toggle('active', mode === 'month');
+  renderCalendar();
+}
+
+function calNav(dir) { calOffset += dir; calDetailDate = null; renderCalendar(); }
+
+function toggleCalDetail(dateStr) {
+  calDetailDate = (calDetailDate === dateStr) ? null : dateStr;
+  renderCalDetail();
+}
+
+function catColor(type) {
+  if (!type) return '#333';
+  var t = type.toLowerCase();
+  if (t.indexOf('mma') >= 0 || t.indexOf('sparring') >= 0) return '#22c97a';
+  if (t.indexOf('strength') >= 0) return '#4488bb';
+  if (t.indexOf('conditioning') >= 0 || t.indexOf('hiit') >= 0) return '#f5a623';
+  if (t.indexOf('yoga') >= 0 || t.indexOf('mobility') >= 0) return '#9966cc';
+  if (t.indexOf('pt') >= 0 || t.indexOf('rehab') >= 0) return '#44bbaa';
+  if (t.indexOf('rest') >= 0 || t.indexOf('walking') >= 0) return '#555';
+  if (t.indexOf('mixed') >= 0) return '#f07020';
+  if (t.indexOf('active') >= 0) return '#666';
+  return '#888';
+}
+
+function catAbbrev(type) {
+  if (!type) return '';
+  var t = type.toLowerCase();
+  if (t.indexOf('mma') >= 0) return 'MMA';
+  if (t.indexOf('upper') >= 0) return 'UPR';
+  if (t.indexOf('lower') >= 0) return 'LWR';
+  if (t.indexOf('full body') >= 0) return 'FBD';
+  if (t.indexOf('strength') >= 0) return 'STR';
+  if (t.indexOf('conditioning') >= 0 || t.indexOf('hiit') >= 0) return 'HIT';
+  if (t.indexOf('yoga') >= 0 || t.indexOf('mobility') >= 0) return 'YGA';
+  if (t.indexOf('pt') >= 0 || t.indexOf('rehab') >= 0) return 'PT';
+  if (t.indexOf('rest') >= 0) return 'RST';
+  if (t.indexOf('walking') >= 0) return 'WLK';
+  if (t.indexOf('mixed') >= 0) return 'MIX';
+  if (t.indexOf('active') >= 0) return 'REC';
+  if (t.indexOf('meditation') >= 0) return 'MED';
+  return type.substring(0, 3).toUpperCase();
+}
+
+function findEntry(dateStr) {
+  for (var j = 0; j < workoutLog.length; j++) {
+    if (workoutLog[j].date === dateStr) return workoutLog[j];
+  }
+  return null;
+}
+
+function buildDayCell(dateStr, dayNum, isToday, entry) {
+  var bg = isToday ? '#0e1018' : '#080a0f';
+  var border = entry && entry.done ? '#22c97a33' : isToday ? '#22c97a22' : '#0a0c10';
+  var sel = calDetailDate === dateStr;
+  if (sel) border = '#22c97a66';
+  var click = entry ? ' onclick="toggleCalDetail(\'' + dateStr + '\')" style="cursor:pointer;' : ' style="';
+  var h = '<div' + click + 'background:' + bg + ';border:1px solid ' + border + ';border-radius:8px;padding:6px 2px;text-align:center;min-height:56px">';
+  h += '<div class="oswald" style="font-size:16px;color:' + (isToday ? '#fff' : '#555') + ';margin-bottom:2px">' + dayNum + '</div>';
+  if (entry) {
+    var cc = catColor(entry.type);
+    h += '<div style="display:flex;align-items:center;justify-content:center;gap:3px">';
+    h += '<div style="width:6px;height:6px;border-radius:50%;background:' + cc + ';flex-shrink:0"></div>';
+    h += '<span style="font-size:9px;color:' + cc + ';font-family:IBM Plex Mono,monospace">' + catAbbrev(entry.type) + '</span>';
+    h += '</div>';
+    if (entry.done) h += '<div style="font-size:10px;color:#22c97a;margin-top:1px">&#10003;</div>';
+    else h += '<div style="font-size:10px;color:#e84545;margin-top:1px">&#10007;</div>';
+  }
+  h += '</div>';
+  return h;
+}
+
+function renderCalDetail() {
+  var el = document.getElementById('cal-detail');
+  if (!calDetailDate) { el.style.display = 'none'; return; }
+  var entry = findEntry(calDetailDate);
+  if (!entry) { el.style.display = 'none'; calDetailDate = null; return; }
+  var cc = catColor(entry.type);
+  var h = '<div style="background:#060810;border:1px solid ' + cc + '33;border-radius:8px;padding:14px;animation:fadeUp .2s ease">';
+  h += '<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">';
+  h += '<div style="display:flex;align-items:center;gap:8px"><div style="width:8px;height:8px;border-radius:50%;background:' + cc + '"></div>';
+  h += '<span style="font-size:16px;font-weight:600;color:#fff">' + entry.type + '</span></div>';
+  h += '<span class="mono" style="font-size:12px;color:#555">' + calDetailDate + '</span></div>';
+  h += '<div style="display:flex;gap:6px;margin-bottom:' + (entry.notes ? '10' : '0') + 'px">';
+  h += entry.done ? '<span style="font-family:IBM Plex Mono,monospace;font-size:11px;color:#22c97a;background:#22c97a12;padding:3px 10px;border-radius:4px">Done</span>' : '<span style="font-family:IBM Plex Mono,monospace;font-size:11px;color:#e84545;background:#e8454512;padding:3px 10px;border-radius:4px">Skipped</span>';
+  if (entry.mobility) h += '<span style="font-family:IBM Plex Mono,monospace;font-size:11px;color:#4488bb;background:#4488bb12;padding:3px 10px;border-radius:4px">Mobility</span>';
+  if (entry.med) h += '<span style="font-family:IBM Plex Mono,monospace;font-size:11px;color:#9966cc;background:#9966cc12;padding:3px 10px;border-radius:4px">Meditated</span>';
+  h += '</div>';
+  if (entry.notes) h += '<p style="font-size:14px;color:#666;line-height:1.7;font-style:italic">' + entry.notes + '</p>';
+  h += '</div>';
+  el.innerHTML = h;
+  el.style.display = 'block';
+}
 
 function renderCalendar() {
   var todayStr = ds(0);
-  // Build the month to display
-  var ref = new Date(); ref.setMonth(ref.getMonth() + calOffset); ref.setDate(1);
-  var year = ref.getFullYear();
-  var month = ref.getMonth();
-  var monthName = ref.toLocaleDateString('en-US', { month: 'long', year: 'numeric' });
-  document.getElementById('cal-title').textContent = monthName;
 
-  // First day of month (0=Sun) → shift to Mon-start: Mon=0 ... Sun=6
-  var firstDow = ref.getDay();
-  var startPad = (firstDow === 0) ? 6 : firstDow - 1;
-  var daysInMonth = new Date(year, month + 1, 0).getDate();
+  if (calMode === 'week') {
+    // Week view: 7 days centered on current week, offset by calOffset weeks
+    var startOfWeek = new Date();
+    var dow = startOfWeek.getDay();
+    var monOffset = (dow === 0) ? -6 : 1 - dow; // shift to Monday
+    startOfWeek.setDate(startOfWeek.getDate() + monOffset + (calOffset * 7));
 
-  // Build grid
-  var gridHTML = '';
-  // Empty cells before first day
-  for (var p = 0; p < startPad; p++) {
-    gridHTML += '<div style="padding:6px;text-align:center"></div>';
-  }
-  for (var day = 1; day <= daysInMonth; day++) {
-    var str = year + '-' + String(month + 1).padStart(2, '0') + '-' + String(day).padStart(2, '0');
-    var isToday = str === todayStr;
-    var entry = null;
-    for (var j = 0; j < workoutLog.length; j++) { if (workoutLog[j].date === str) { entry = workoutLog[j]; break; } }
-    var bg = isToday ? '#0e1018' : '#080a0f';
-    var border = entry && entry.done ? '#22c97a33' : isToday ? '#1a1c22' : '#0a0c10';
-    gridHTML += '<div style="background:' + bg + ';border:1px solid ' + border + ';border-radius:8px;padding:6px 2px;text-align:center;min-height:52px">';
-    gridHTML += '<div class="oswald" style="font-size:16px;color:' + (isToday ? '#fff' : '#555') + ';margin-bottom:2px">' + day + '</div>';
-    if (entry) {
-      gridHTML += '<div style="font-size:9px;color:#444;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + entry.type.split(' ')[0] + '</div>';
-      gridHTML += '<div style="font-size:10px">' + (entry.done ? '<span style="color:#22c97a">&#10003;</span>' : '<span style="color:#e84545">&#10007;</span>') + '</div>';
+    var weekStart = new Date(startOfWeek);
+    var weekEnd = new Date(startOfWeek); weekEnd.setDate(weekEnd.getDate() + 6);
+    var titleStart = weekStart.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+    var titleEnd = weekEnd.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+    document.getElementById('cal-title').textContent = titleStart + ' — ' + titleEnd;
+
+    var gridHTML = '';
+    var dates = [];
+    for (var i = 0; i < 7; i++) {
+      var d = new Date(startOfWeek); d.setDate(d.getDate() + i);
+      var str = d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
+      dates.push(str);
+      var entry = findEntry(str);
+      gridHTML += buildDayCell(str, d.getDate(), str === todayStr, entry);
     }
-    gridHTML += '</div>';
-  }
-  document.getElementById('cal-grid').innerHTML = gridHTML;
+    document.getElementById('cal-grid').innerHTML = gridHTML;
 
-  // Stats: last 7 days (always current, regardless of month viewed)
-  var done7 = 0, mob7 = 0, med7 = 0;
-  for (var i = 0; i < 7; i++) {
-    var dStr = ds(-i);
-    for (var j = 0; j < workoutLog.length; j++) {
-      if (workoutLog[j].date === dStr) {
-        if (workoutLog[j].done) done7++;
-        if (workoutLog[j].mobility) mob7++;
-        break;
-      }
+    // Stats for the visible 7 days
+    var doneC = 0, mobC = 0, medC = 0;
+    for (var i = 0; i < dates.length; i++) {
+      var e = findEntry(dates[i]);
+      if (e && e.done) doneC++;
+      if (e && e.mobility) mobC++;
+      if (medLog.indexOf(dates[i]) >= 0) medC++;
     }
-    if (medLog.indexOf(dStr) >= 0) med7++;
+    renderCalStats(doneC, mobC, medC, 7);
+
+    // Breakdown for the week
+    var types = {};
+    for (var i = 0; i < dates.length; i++) {
+      var e = findEntry(dates[i]);
+      if (e && e.done) { var cat = e.type.split(' ')[0]; types[cat] = (types[cat] || 0) + 1; }
+    }
+    renderCalBreakdown(types, 'this week');
+  } else {
+    // Month view
+    var ref = new Date(); ref.setMonth(ref.getMonth() + calOffset); ref.setDate(1);
+    var year = ref.getFullYear();
+    var month = ref.getMonth();
+    document.getElementById('cal-title').textContent = ref.toLocaleDateString('en-US', { month: 'long', year: 'numeric' });
+
+    var firstDow = ref.getDay();
+    var startPad = (firstDow === 0) ? 6 : firstDow - 1;
+    var daysInMonth = new Date(year, month + 1, 0).getDate();
+
+    var gridHTML = '';
+    var allDates = [];
+    for (var p = 0; p < startPad; p++) {
+      gridHTML += '<div style="padding:6px;text-align:center"></div>';
+    }
+    for (var day = 1; day <= daysInMonth; day++) {
+      var str = year + '-' + String(month + 1).padStart(2, '0') + '-' + String(day).padStart(2, '0');
+      allDates.push(str);
+      var entry = findEntry(str);
+      gridHTML += buildDayCell(str, day, str === todayStr, entry);
+    }
+    document.getElementById('cal-grid').innerHTML = gridHTML;
+
+    // Stats for the full month
+    var doneC = 0, mobC = 0, medC = 0;
+    for (var i = 0; i < allDates.length; i++) {
+      var e = findEntry(allDates[i]);
+      if (e && e.done) doneC++;
+      if (e && e.mobility) mobC++;
+      if (medLog.indexOf(allDates[i]) >= 0) medC++;
+    }
+    renderCalStats(doneC, mobC, medC, daysInMonth);
+
+    // Breakdown for the month
+    var types = {};
+    for (var i = 0; i < allDates.length; i++) {
+      var e = findEntry(allDates[i]);
+      if (e && e.done) { var cat = e.type.split(' ')[0]; types[cat] = (types[cat] || 0) + 1; }
+    }
+    renderCalBreakdown(types, 'this month');
   }
-  var pct = Math.round((done7 / 7) * 100);
-  var color = pct >= 57 ? '#22c97a' : pct >= 43 ? '#f5a623' : '#e84545';
+
+  // Double-skip warning (always based on today/yesterday)
+  var y0 = findEntry(ds(0)), y1 = findEntry(ds(-1));
+  var doubleSkip = (!y0 || !y0.done) && (!y1 || !y1.done);
+  document.getElementById('double-skip-warn').style.display = doubleSkip ? 'block' : 'none';
+
+  renderCalDetail();
+}
+
+function renderCalStats(done, mob, med, totalDays) {
+  var pct = Math.round((done / totalDays) * 100);
+  var color = pct >= 40 ? '#22c97a' : pct >= 25 ? '#f5a623' : '#e84545';
   var statsHTML = '';
-  var stats = [[done7,'workouts'],[mob7,'mobility'],[med7,'meditations']];
+  var stats = [[done, 'workouts'], [mob, 'mobility'], [med, 'meditations']];
   for (var i = 0; i < stats.length; i++) {
     statsHTML += '<div class="card" style="text-align:center;padding:14px"><div class="oswald" style="font-size:34px;font-weight:700;color:' + color + '">' + stats[i][0] + '</div><div class="mono" style="font-size:11px;color:#444;letter-spacing:2px;margin-top:4px">' + stats[i][1].toUpperCase() + '</div></div>';
   }
   document.getElementById('week-stats').innerHTML = statsHTML;
+}
 
-  // Double-skip warning
-  var y0 = null, y1 = null;
-  var s0 = ds(0), s1 = ds(-1);
-  for (var j = 0; j < workoutLog.length; j++) {
-    if (workoutLog[j].date === s0) y0 = workoutLog[j];
-    if (workoutLog[j].date === s1) y1 = workoutLog[j];
-  }
-  var doubleSkip = (!y0 || !y0.done) && (!y1 || !y1.done);
-  document.getElementById('double-skip-warn').style.display = doubleSkip ? 'block' : 'none';
-
-  // Breakdown: this month's types
-  var types = {};
-  for (var i = 0; i < workoutLog.length; i++) {
-    var w = workoutLog[i];
-    var wd = new Date(w.date + 'T12:00:00');
-    if (wd.getFullYear() === year && wd.getMonth() === month && w.done) {
-      var cat = w.type.split(' ')[0];
-      types[cat] = (types[cat] || 0) + 1;
-    }
-  }
+function renderCalBreakdown(types, label) {
   var entries = Object.keys(types);
-  var bdHTML = '<p class="clabel">this month</p>';
+  var bdHTML = '<p class="clabel">' + label + '</p>';
   if (entries.length) {
     for (var i = 0; i < entries.length; i++) {
       bdHTML += '<div style="display:flex;justify-content:space-between;padding:6px 0;border-bottom:1px solid #0a0c10;font-size:15px;color:#999"><span>' + entries[i] + '</span><span class="mono" style="font-size:13px;color:#22c97a">' + types[entries[i]] + 'x</span></div>';
