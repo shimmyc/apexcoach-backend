@@ -98,6 +98,24 @@ Shimmy Castle - blue belt MMA, wedding musician, new dad. Injuries: pubic osteit
 
 - After changes always commit and push to GitHub
 
+## Wearable Support
+
+- Fitbit: fully supported via OAuth2 API
+
+- Manual check-in: supported (sleep/energy/pain emoji selectors → simplified readiness score capped at 85)
+
+- Google Fit / Garmin: planned, have public APIs, buildable
+
+- Apple Watch: requires iOS app bridge, longer term
+
+- Whoop: API is invite-only, not yet accessible
+
+- Samsung Health: requires partnership approval
+
+profile_data.fitbit = true/false
+
+profile_data.wearable = device name string or null (for future device routing)
+
 ## Environment Variables (on Render)
 
 FITBIT_CLIENT_ID, FITBIT_CLIENT_SECRET, SUPABASE_URL, SUPABASE_KEY, ANTHROPIC_KEY, ADMIN_SECRET

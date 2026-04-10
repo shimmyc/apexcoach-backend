@@ -55,6 +55,14 @@ input[type=range]{width:100%;accent-color:#22c97a}
 .pb-chat-q{background:#22c97a10;border:1px solid #22c97a22;border-radius:10px;padding:12px 16px;max-width:85%;align-self:flex-start;animation:fadeUp .25s ease}
 .pb-chat-a{background:#0d0f16;border:1px solid #0e1016;border-radius:10px;padding:12px 16px;max-width:80%;align-self:flex-end;animation:fadeUp .25s ease}
 .pb-hint{font-size:12px;color:#444;font-style:italic;margin-top:4px;line-height:1.5}
+.ci-row{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:18px}
+.ci-btn{flex:1;min-width:0;background:#060810;border:2px solid #0e1016;border-radius:10px;padding:10px 4px;text-align:center;cursor:pointer;transition:all .2s;display:flex;flex-direction:column;align-items:center;gap:4px}
+.ci-btn:hover{border-color:#22c97a44}
+.ci-btn.selected{border-color:#22c97a;background:#22c97a10}
+.ci-btn .ci-emoji{font-size:26px;line-height:1}
+.ci-btn .ci-label{font-size:10px;color:#555;font-family:'IBM Plex Mono',monospace;letter-spacing:0.5px}
+.ci-btn.selected .ci-label{color:#22c97a}
+@media(max-width:700px){.ci-btn{padding:8px 2px}.ci-btn .ci-emoji{font-size:22px}.ci-btn .ci-label{font-size:9px}}
 </style>
 </head>
 <body>
@@ -130,6 +138,46 @@ input[type=range]{width:100%;accent-color:#22c97a}
     </div>
     <div id="status-box" class="card" style="border-color:#22c97a22">
       <p class="mono" style="font-size:11px;color:#22c97a;letter-spacing:3px;animation:pulse 1.6s infinite">FETCHING FITBIT DATA...</p>
+    </div>
+    <div id="checkin-card" class="card" style="display:none">
+      <div id="checkin-banner"></div>
+      <p class="clabel">how are you feeling today?</p>
+      <div id="checkin-inputs">
+        <div style="margin-bottom:6px">
+          <p class="mono" style="font-size:11px;color:#666;letter-spacing:2px;margin-bottom:8px">SLEEP QUALITY</p>
+          <div class="ci-row" id="ci-sleep">
+            <div class="ci-btn" onclick="ciSelect('sleep',1,this)"><span class="ci-emoji">&#128564;</span><span class="ci-label">Poor</span></div>
+            <div class="ci-btn" onclick="ciSelect('sleep',2,this)"><span class="ci-emoji">&#128528;</span><span class="ci-label">Okay</span></div>
+            <div class="ci-btn" onclick="ciSelect('sleep',3,this)"><span class="ci-emoji">&#128578;</span><span class="ci-label">Decent</span></div>
+            <div class="ci-btn" onclick="ciSelect('sleep',4,this)"><span class="ci-emoji">&#128522;</span><span class="ci-label">Good</span></div>
+            <div class="ci-btn" onclick="ciSelect('sleep',5,this)"><span class="ci-emoji">&#127775;</span><span class="ci-label">Great</span></div>
+          </div>
+        </div>
+        <div style="margin-bottom:6px">
+          <p class="mono" style="font-size:11px;color:#666;letter-spacing:2px;margin-bottom:8px">ENERGY LEVEL</p>
+          <div class="ci-row" id="ci-energy">
+            <div class="ci-btn" onclick="ciSelect('energy',1,this)"><span class="ci-emoji">&#129707;</span><span class="ci-label">Drained</span></div>
+            <div class="ci-btn" onclick="ciSelect('energy',2,this)"><span class="ci-emoji">&#128547;</span><span class="ci-label">Low</span></div>
+            <div class="ci-btn" onclick="ciSelect('energy',3,this)"><span class="ci-emoji">&#128528;</span><span class="ci-label">Moderate</span></div>
+            <div class="ci-btn" onclick="ciSelect('energy',4,this)"><span class="ci-emoji">&#9889;</span><span class="ci-label">Good</span></div>
+            <div class="ci-btn" onclick="ciSelect('energy',5,this)"><span class="ci-emoji">&#128293;</span><span class="ci-label">High</span></div>
+          </div>
+        </div>
+        <div style="margin-bottom:6px">
+          <p class="mono" style="font-size:11px;color:#666;letter-spacing:2px;margin-bottom:8px">PAIN / SORENESS</p>
+          <div class="ci-row" id="ci-pain">
+            <div class="ci-btn" onclick="ciSelect('pain',1,this)"><span class="ci-emoji">&#128308;</span><span class="ci-label">Significant</span></div>
+            <div class="ci-btn" onclick="ciSelect('pain',2,this)"><span class="ci-emoji">&#128992;</span><span class="ci-label">Moderate</span></div>
+            <div class="ci-btn" onclick="ciSelect('pain',3,this)"><span class="ci-emoji">&#128993;</span><span class="ci-label">Mild</span></div>
+            <div class="ci-btn" onclick="ciSelect('pain',4,this)"><span class="ci-emoji">&#128994;</span><span class="ci-label">None</span></div>
+          </div>
+        </div>
+        <button onclick="submitCheckin()" class="btnPri" style="width:100%;padding:14px;font-size:15px;border-radius:8px;margin-top:6px">Get My Recommendation</button>
+      </div>
+      <div id="checkin-result" style="display:none"></div>
+      <div id="checkin-footer" style="margin-top:14px;text-align:center">
+        <p style="font-size:12px;color:#444">Connect a fitness tracker for deeper insights &mdash; <a href="javascript:void(0)" onclick="showTab('profile',document.querySelectorAll('header nav .navBtn')[3])" style="color:#4488bb;text-decoration:none">go to Profile</a></p>
+      </div>
     </div>
     <div id="readiness-card" class="card" style="display:none"></div>
     <div id="progress-card" class="card" style="display:none">
@@ -234,18 +282,19 @@ input[type=range]{width:100%;accent-color:#22c97a}
     <div id="dev-roadmap" class="card" style="display:none;border-color:#22c97a11">
       <p class="clabel">roadmap</p>
       <div style="display:flex;flex-direction:column;gap:8px">
+        <label style="display:flex;align-items:center;gap:8px;font-size:14px;color:#22c97a"><input type="checkbox" checked disabled> Fitbit integration &mdash; LIVE</label>
+        <label style="display:flex;align-items:center;gap:8px;font-size:14px;color:#f5a623"><input type="checkbox" disabled> Manual check-in mode &mdash; IN PROGRESS</label>
+        <label style="display:flex;align-items:center;gap:8px;font-size:14px;color:#4488bb"><input type="checkbox" disabled> Google Fit / Wear OS integration &mdash; BUILDABLE (has public API)</label>
+        <label style="display:flex;align-items:center;gap:8px;font-size:14px;color:#4488bb"><input type="checkbox" disabled> Garmin integration &mdash; BUILDABLE (has public API)</label>
+        <label style="display:flex;align-items:center;gap:8px;font-size:14px;color:#555"><input type="checkbox" disabled> Apple Watch &mdash; requires iOS app (longer term)</label>
+        <label style="display:flex;align-items:center;gap:8px;font-size:14px;color:#555"><input type="checkbox" disabled> Whoop &mdash; waiting for API access (invite only)</label>
+        <label style="display:flex;align-items:center;gap:8px;font-size:14px;color:#555"><input type="checkbox" disabled> Samsung Health &mdash; requires partnership (not yet)</label>
         <label style="display:flex;align-items:center;gap:8px;font-size:14px;color:#555"><input type="checkbox" disabled> Google OAuth login</label>
         <label style="display:flex;align-items:center;gap:8px;font-size:14px;color:#555"><input type="checkbox" disabled> WhatsApp / Telegram bot integration</label>
         <label style="display:flex;align-items:center;gap:8px;font-size:14px;color:#555"><input type="checkbox" disabled> Wall display mode</label>
-        <label style="display:flex;align-items:center;gap:8px;font-size:14px;color:#555"><input type="checkbox" disabled> Fitbit historical data import</label>
         <label style="display:flex;align-items:center;gap:8px;font-size:14px;color:#555"><input type="checkbox" disabled> Workout plan generator</label>
         <label style="display:flex;align-items:center;gap:8px;font-size:14px;color:#555"><input type="checkbox" disabled> Progress photos</label>
         <label style="display:flex;align-items:center;gap:8px;font-size:14px;color:#555"><input type="checkbox" disabled> Export data to PDF</label>
-        <label style="display:flex;align-items:center;gap:8px;font-size:14px;color:#555"><input type="checkbox" disabled> Non-Fitbit manual check-in mode (energy/sleep/pain sliders)</label>
-        <label style="display:flex;align-items:center;gap:8px;font-size:14px;color:#555"><input type="checkbox" disabled> Apple Watch integration</label>
-        <label style="display:flex;align-items:center;gap:8px;font-size:14px;color:#555"><input type="checkbox" disabled> Whoop integration</label>
-        <label style="display:flex;align-items:center;gap:8px;font-size:14px;color:#555"><input type="checkbox" disabled> Samsung Health integration</label>
-        <label style="display:flex;align-items:center;gap:8px;font-size:14px;color:#555"><input type="checkbox" disabled> Other wearables support</label>
       </div>
     </div>
 
@@ -567,19 +616,31 @@ var ONBOARD_QUESTIONS = [
   { key: 'goals', q: "What's your main fitness goal right now? (e.g. lose weight, build muscle, run a 5k, get my black belt — anything goes)" },
   { key: 'injuries', q: "Any injuries or physical limitations I should always know about? If none, just say none." },
   { key: 'days', q: "How many days a week can you realistically commit to training?" },
-  { key: 'fitbit', q: "Do you have a Fitbit or other fitness tracker? (yes/no)" },
+  { key: 'fitbit', q: "Do you have a Fitbit? (yes/no)" },
 ];
+var onboardDynamicQueue = [];
 
 function startOnboarding() {
   showScreen('onboard');
   onboardStep = 0;
   onboardAnswers = {};
+  onboardDynamicQueue = [];
   document.getElementById('onboard-chat').innerHTML = '';
   document.getElementById('onboard-status').textContent = '';
   askOnboardQuestion();
 }
 
 function askOnboardQuestion() {
+  // Check dynamic queue first
+  if (onboardDynamicQueue.length > 0) {
+    var dq = onboardDynamicQueue[0];
+    var chat = document.getElementById('onboard-chat');
+    chat.innerHTML += '<div style="background:#22c97a10;border:1px solid #22c97a22;border-radius:10px;padding:12px 16px;max-width:80%;align-self:flex-start"><p style="font-size:15px;color:#22c97a;line-height:1.6">' + dq.q + '</p></div>';
+    chat.scrollTop = chat.scrollHeight;
+    document.getElementById('onboard-input').value = '';
+    document.getElementById('onboard-input').focus();
+    return;
+  }
   if (onboardStep >= ONBOARD_QUESTIONS.length) {
     finishOnboarding();
     return;
@@ -596,12 +657,44 @@ function submitOnboardAnswer() {
   var input = document.getElementById('onboard-input');
   var answer = input.value.trim();
   if (!answer) return;
-  var q = ONBOARD_QUESTIONS[onboardStep];
-  onboardAnswers[q.key] = answer;
 
   var chat = document.getElementById('onboard-chat');
   chat.innerHTML += '<div style="background:#0d0f16;border:1px solid #0e1016;border-radius:10px;padding:12px 16px;max-width:80%;align-self:flex-end"><p style="font-size:15px;color:#ddd;line-height:1.6">' + answer + '</p></div>';
   input.value = '';
+
+  // Handle dynamic queue answers
+  if (onboardDynamicQueue.length > 0) {
+    var dq = onboardDynamicQueue.shift();
+    onboardAnswers[dq.key] = answer;
+    if (dq.onAnswer) dq.onAnswer(answer);
+    setTimeout(askOnboardQuestion, 400);
+    return;
+  }
+
+  var q = ONBOARD_QUESTIONS[onboardStep];
+  onboardAnswers[q.key] = answer;
+
+  // After fitbit question: if no, ask about other trackers
+  if (q.key === 'fitbit' && !/yes|y|fitbit/i.test(answer)) {
+    onboardDynamicQueue.push({
+      key: 'wearable',
+      q: "Do you have any other fitness tracker? (Apple Watch, Garmin, Samsung, Whoop, or other)",
+      onAnswer: function(ans) {
+        var hasOther = !/no|none|nope|n\/a/i.test(ans);
+        if (hasOther) {
+          onboardAnswers.wearable = ans;
+          onboardDynamicQueue.push({
+            key: 'wearable_ack',
+            q: "We're adding support for more devices soon! For now we'll use a daily check-in to personalize your recommendations. You'll be able to connect your device when support is added. Sound good?",
+            onAnswer: function() { /* just acknowledge */ }
+          });
+        } else {
+          onboardAnswers.wearable = null;
+        }
+      }
+    });
+  }
+
   onboardStep++;
   setTimeout(askOnboardQuestion, 400);
 }
@@ -638,9 +731,10 @@ function finishOnboarding() {
     'Main goal: ' + (onboardAnswers.goals || '') + '\n' +
     'Injuries/limitations: ' + (onboardAnswers.injuries || 'none') + '\n' +
     'Training days per week: ' + (onboardAnswers.days || '3') + '\n' +
-    'Has Fitbit: ' + (onboardAnswers.fitbit || 'no') + '\n\n' +
+    'Has Fitbit: ' + (onboardAnswers.fitbit || 'no') + '\n' +
+    'Other wearable: ' + (onboardAnswers.wearable || 'none') + '\n\n' +
     'Return this EXACT structure (fill in all fields from the answers, infer sensible defaults for anything not mentioned):\n' +
-    '{"name":"their name","tagline":"2-3 word role e.g. Runner & Yogi","avatar_color":"#hex based on personality","sports":["list"],"martial_arts":true/false,"martial_arts_style":"MMA/BJJ/etc or null","current_belt":"white/blue/etc or null","goals":[{"type":"strength|distance|consistency|habit|skill|general","emoji":"emoji","title":"name","description":"brief","status":"IN PROGRESS|LONG GAME|DONE|HABIT|PAUSED","target_value":null,"current_value":null,"unit":"lbs|miles|days|sessions or null","tracker":false}],"injuries":[{"name":"name","status":"MANAGING|CHRONIC|REHABBING|MONITOR","description":"brief","triggers":"what worsens it or null"}],"experience_level":"beginner|intermediate|athletic|advanced","schedule":{"mon":"Flexible","tue":"...","wed":"...","thu":"...","fri":"...","sat":"...","sun":"..."},"weekly_target":' + (parseInt(onboardAnswers.days) || 3) + ',"biggest_obstacle":"","life_context":{"family":null,"work":null,"other":null},"philosophy":["principle 1","principle 2","principle 3"],"fitbit":' + (/yes|y/i.test(onboardAnswers.fitbit || '') ? 'true' : 'false') + ',"ai_prompt_context":"2-3 paragraph summary of this person for the AI coach to use. Keep it focused and practical.","onboarding_complete":true,"profile_sections_completed":["basic"]}';
+    '{"name":"their name","tagline":"2-3 word role e.g. Runner & Yogi","avatar_color":"#hex based on personality","sports":["list"],"martial_arts":true/false,"martial_arts_style":"MMA/BJJ/etc or null","current_belt":"white/blue/etc or null","goals":[{"type":"strength|distance|consistency|habit|skill|general","emoji":"emoji","title":"name","description":"brief","status":"IN PROGRESS|LONG GAME|DONE|HABIT|PAUSED","target_value":null,"current_value":null,"unit":"lbs|miles|days|sessions or null","tracker":false}],"injuries":[{"name":"name","status":"MANAGING|CHRONIC|REHABBING|MONITOR","description":"brief","triggers":"what worsens it or null"}],"experience_level":"beginner|intermediate|athletic|advanced","schedule":{"mon":"Flexible","tue":"...","wed":"...","thu":"...","fri":"...","sat":"...","sun":"..."},"weekly_target":' + (parseInt(onboardAnswers.days) || 3) + ',"biggest_obstacle":"","life_context":{"family":null,"work":null,"other":null},"philosophy":["principle 1","principle 2","principle 3"],"fitbit":' + (/yes|y|fitbit/i.test(onboardAnswers.fitbit || '') ? 'true' : 'false') + ',"wearable":' + (onboardAnswers.wearable ? ('"' + String(onboardAnswers.wearable).replace(/"/g, '') + '"') : 'null') + ',"ai_prompt_context":"2-3 paragraph summary of this person for the AI coach to use. Keep it focused and practical.","onboarding_complete":true,"profile_sections_completed":["basic"]}';
 
   fetch('/api/ai', {
     method: 'POST',
@@ -885,22 +979,220 @@ function renderMeditationStatus() {
   }
 }
 
+// ── MANUAL CHECK-IN ───────────────────────────────────────────────────────
+var checkinValues = { sleep: 0, energy: 0, pain: 0 };
+var manualCheckinContext = null;
+
+function ciSelect(category, value, el) {
+  checkinValues[category] = value;
+  var row = el.parentElement;
+  var btns = row.querySelectorAll('.ci-btn');
+  for (var i = 0; i < btns.length; i++) btns[i].classList.remove('selected');
+  el.classList.add('selected');
+}
+
+function showManualCheckin(reason) {
+  // reason: 'no_fitbit' | 'auth_error' | 'no_tokens'
+  var pd = currentProfileData || {};
+  var hasFitbitProfile = pd.fitbit === true;
+  var authUrl = '/auth' + (currentProfileId ? '?profile_id=' + currentProfileId : '');
+
+  document.getElementById('status-box').style.display = 'none';
+  var card = document.getElementById('checkin-card');
+  card.style.display = 'block';
+
+  // Check for cached manual check-in
+  var cached = localStorage.getItem('ac_cache');
+  if (cached) {
+    var c = JSON.parse(cached);
+    if (c.date === ds(0) && c.manualCheckin) {
+      checkinValues = c.manualCheckin;
+      manualCheckinContext = c.manualContext;
+      readiness = computeManualReadiness(checkinValues);
+      renderManualReadiness();
+      document.getElementById('checkin-inputs').style.display = 'none';
+      document.getElementById('checkin-result').style.display = 'block';
+      document.getElementById('ai-card').style.display = 'block';
+      document.getElementById('progress-card').style.display = 'block';
+      if (c.progressRec) { progressRec = c.progressRec; renderProgress(); } else { fetchProgress(); }
+      if (c.aiRec) { aiRec = c.aiRec; renderAI(); } else { fetchAI(); }
+      setBannerForCheckin(hasFitbitProfile, authUrl);
+      return;
+    }
+  }
+
+  // Reset state
+  checkinValues = { sleep: 0, energy: 0, pain: 0 };
+  manualCheckinContext = null;
+  document.getElementById('checkin-inputs').style.display = 'block';
+  document.getElementById('checkin-result').style.display = 'none';
+  document.getElementById('readiness-card').style.display = 'none';
+  // Clear previous selections
+  var allBtns = card.querySelectorAll('.ci-btn');
+  for (var i = 0; i < allBtns.length; i++) allBtns[i].classList.remove('selected');
+
+  setBannerForCheckin(hasFitbitProfile, authUrl);
+}
+
+function setBannerForCheckin(hasFitbitProfile, authUrl) {
+  var banner = document.getElementById('checkin-banner');
+  if (hasFitbitProfile) {
+    banner.innerHTML = '<div style="background:#00B0B910;border:1px solid #00B0B922;border-radius:8px;padding:12px 16px;margin-bottom:16px;display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px">' +
+      '<span style="font-size:14px;color:#00B0B9">&#128225; Connect your Fitbit for personalized biometric coaching</span>' +
+      '<a href="' + authUrl + '" style="background:#00B0B9;color:#fff;font-size:12px;font-weight:700;padding:8px 16px;border-radius:6px;text-decoration:none;font-family:DM Sans,sans-serif;white-space:nowrap">Connect Fitbit</a>' +
+      '</div>';
+  } else {
+    banner.innerHTML = '<div style="background:#4488bb08;border:1px solid #4488bb18;border-radius:8px;padding:12px 16px;margin-bottom:16px">' +
+      '<span style="font-size:14px;color:#4488bb">&#128279; Using a fitness tracker? Connect it for deeper insights &rarr; </span>' +
+      '<a href="javascript:void(0)" onclick="showTab(\'profile\',document.querySelectorAll(\'header nav .navBtn\')[3])" style="color:#4488bb;font-size:14px;text-decoration:underline">Profile Settings</a>' +
+      '</div>';
+  }
+}
+
+function computeManualReadiness(vals) {
+  var base = (vals.sleep * 10) + (vals.energy * 10) + (vals.pain * 5) - 10;
+  // Hard cap: if sleep<=2 AND energy<=2: max 45
+  if (vals.sleep <= 2 && vals.energy <= 2) base = Math.min(base, 45);
+  // Manual can never exceed 85
+  var score = Math.max(1, Math.min(85, Math.round(base)));
+  var tier = score >= 66 ? 'moderate' : score >= 46 ? 'light' : 'recovery';
+  return {
+    score: score,
+    tier: tier,
+    hours: null,
+    manual: true,
+    breakdown: { sleep: vals.sleep, energy: vals.energy, pain: vals.pain }
+  };
+}
+
+function submitCheckin() {
+  if (!checkinValues.sleep || !checkinValues.energy || !checkinValues.pain) {
+    // Highlight missing
+    if (!checkinValues.sleep) document.getElementById('ci-sleep').style.outline = '1px solid #e8454544';
+    if (!checkinValues.energy) document.getElementById('ci-energy').style.outline = '1px solid #e8454544';
+    if (!checkinValues.pain) document.getElementById('ci-pain').style.outline = '1px solid #e8454544';
+    setTimeout(function() {
+      document.getElementById('ci-sleep').style.outline = '';
+      document.getElementById('ci-energy').style.outline = '';
+      document.getElementById('ci-pain').style.outline = '';
+    }, 1500);
+    return;
+  }
+
+  readiness = computeManualReadiness(checkinValues);
+  manualCheckinContext = 'No wearable connected. Manual check-in: Sleep ' + checkinValues.sleep + '/5, Energy ' + checkinValues.energy + '/5, Pain ' + checkinValues.pain + '/4. Estimated readiness: ' + readiness.score + '. Treat this as ' + readiness.tier + ' intensity day.';
+
+  // Cache it
+  var cached = JSON.parse(localStorage.getItem('ac_cache') || '{}');
+  cached.date = ds(0);
+  cached.manualCheckin = checkinValues;
+  cached.manualContext = manualCheckinContext;
+  localStorage.setItem('ac_cache', JSON.stringify(cached));
+
+  // Show results
+  document.getElementById('checkin-inputs').style.display = 'none';
+  document.getElementById('checkin-result').style.display = 'block';
+  renderManualReadiness();
+  renderLogArea();
+
+  // Fetch AI and progress
+  document.getElementById('ai-card').style.display = 'block';
+  document.getElementById('progress-card').style.display = 'block';
+  document.getElementById('progress-content').innerHTML = '<p class="mono" style="font-size:11px;color:#22c97a;letter-spacing:3px;animation:pulse 1.6s infinite">ANALYZING PROGRESS...</p>';
+  fetchProgress();
+  fetchAI();
+}
+
+function renderManualReadiness() {
+  var t = TIERS[readiness.tier];
+  var el = document.getElementById('checkin-result');
+  var sleepLabels = ['','Poor','Okay','Decent','Good','Great'];
+  var energyLabels = ['','Drained','Low','Moderate','Good','High'];
+  var painLabels = ['','Significant','Moderate','Mild','None'];
+  var sv = checkinValues.sleep, ev = checkinValues.energy, pv = checkinValues.pain;
+
+  var h = '<p class="clabel">readiness score</p>';
+  h += '<div style="display:flex;align-items:baseline;gap:8px;margin-bottom:10px">';
+  h += '<span class="oswald" style="font-size:96px;font-weight:700;line-height:1;color:' + t.color + '">' + readiness.score + '</span>';
+  h += '<span style="color:#333;font-size:28px">/85</span></div>';
+  h += '<div style="display:inline-block;border:1px solid ' + t.color + '44;background:' + t.color + '15;color:' + t.color + ';padding:4px 14px;border-radius:4px;font-family:IBM Plex Mono,monospace;font-size:11px;letter-spacing:3px;margin-bottom:18px">' + t.label + '</div>';
+  h += '<div style="margin-bottom:8px"><span class="mono" style="font-size:10px;color:#555;letter-spacing:1px">MANUAL CHECK-IN</span></div>';
+
+  // 3 bars: Sleep, Energy, Soreness
+  var bars = [
+    { label: 'Sleep', val: sv, max: 5, text: sleepLabels[sv] + ' (' + sv + '/5)', color: t.color },
+    { label: 'Energy', val: ev, max: 5, text: energyLabels[ev] + ' (' + ev + '/5)', color: t.color },
+    { label: 'Soreness', val: pv, max: 4, text: painLabels[pv] + ' (' + pv + '/4)', color: pv >= 3 ? '#22c97a' : pv >= 2 ? '#f5a623' : '#e84545' }
+  ];
+  for (var i = 0; i < bars.length; i++) {
+    var b = bars[i];
+    var pct = (b.val / b.max) * 100;
+    h += '<div style="display:flex;align-items:center;gap:8px;margin-bottom:10px">';
+    h += '<span class="mono" style="font-size:11px;color:#555;width:80px;flex-shrink:0">' + b.label + '</span>';
+    h += '<div class="bar-track"><div class="bar-fill" style="width:' + pct + '%;background:' + b.color + '"></div></div>';
+    h += '<span class="mono" style="font-size:11px;color:#555;width:110px;text-align:right">' + b.text + '</span>';
+    h += '</div>';
+  }
+
+  // Edit button to redo check-in
+  h += '<button onclick="redoCheckin()" style="background:transparent;border:1px solid #1a1c22;color:#555;padding:8px 16px;border-radius:6px;cursor:pointer;font-size:12px;font-family:IBM Plex Mono,monospace;margin-top:8px">Redo check-in</button>';
+
+  el.innerHTML = h;
+}
+
+function redoCheckin() {
+  // Clear cache
+  var cached = JSON.parse(localStorage.getItem('ac_cache') || '{}');
+  delete cached.manualCheckin;
+  delete cached.manualContext;
+  delete cached.aiRec;
+  delete cached.progressRec;
+  localStorage.setItem('ac_cache', JSON.stringify(cached));
+  manualCheckinContext = null;
+  checkinValues = { sleep: 0, energy: 0, pain: 0 };
+  document.getElementById('checkin-inputs').style.display = 'block';
+  document.getElementById('checkin-result').style.display = 'none';
+  document.getElementById('ai-card').style.display = 'none';
+  document.getElementById('progress-card').style.display = 'none';
+  var allBtns = document.getElementById('checkin-card').querySelectorAll('.ci-btn');
+  for (var i = 0; i < allBtns.length; i++) allBtns[i].classList.remove('selected');
+}
+
 function syncFitbit() {
+  var pd = currentProfileData || {};
+
+  // If profile explicitly has fitbit=false, go straight to manual check-in
+  if (pd.fitbit === false) {
+    showManualCheckin('no_fitbit');
+    return;
+  }
+
   document.getElementById('status-box').style.display = 'block';
   document.getElementById('status-box').innerHTML = '<p class="mono" style="font-size:11px;color:#22c97a;letter-spacing:3px;animation:pulse 1.6s infinite">FETCHING FITBIT DATA...</p>';
+  document.getElementById('checkin-card').style.display = 'none';
+
   var cached = localStorage.getItem('ac_cache');
   if (cached) {
     var c = JSON.parse(cached);
     if (c.date === ds(0)) {
-      fitData = c.fitData;
-      readiness = computeReadiness(fitData);
-      renderReadiness();
-      document.getElementById('status-box').style.display = 'none';
-      if (c.progressRec) { progressRec = c.progressRec; renderProgress(); } else { fetchProgress(); }
-      if (c.aiRec) { aiRec = c.aiRec; renderAI(); } else { fetchAI(); }
-      return;
+      // Cached manual check-in
+      if (c.manualCheckin) {
+        showManualCheckin(pd.fitbit === true ? 'no_tokens' : 'no_fitbit');
+        return;
+      }
+      // Cached Fitbit data
+      if (c.fitData) {
+        fitData = c.fitData;
+        readiness = computeReadiness(fitData);
+        renderReadiness();
+        document.getElementById('status-box').style.display = 'none';
+        if (c.progressRec) { progressRec = c.progressRec; renderProgress(); } else { fetchProgress(); }
+        if (c.aiRec) { aiRec = c.aiRec; renderAI(); } else { fetchAI(); }
+        return;
+      }
     }
   }
+
   fetch(currentProfileId ? '/api/profiles/' + currentProfileId + '/daily' : '/api/daily')
     .then(function(r) { return r.json(); })
     .then(function(json) {
@@ -914,25 +1206,8 @@ function syncFitbit() {
       fetchAI();
     })
     .catch(function(e) {
-      var msg = (e.message || '').toLowerCase();
-      var isAuthError = msg.indexOf('refresh') >= 0 || msg.indexOf('token') >= 0 || msg.indexOf('authorize') >= 0 || msg.indexOf('re-auth') >= 0 || msg.indexOf('401') >= 0 || msg.indexOf('no fitbit') >= 0;
-      var authUrl = '/auth' + (currentProfileId ? '?profile_id=' + currentProfileId : '');
-      if (isAuthError) {
-        document.getElementById('status-box').style.borderColor = '#00B0B933';
-        document.getElementById('status-box').innerHTML =
-          '<div style="text-align:center;padding:12px 0">' +
-          '<div style="font-family:Oswald,sans-serif;font-size:28px;font-weight:700;color:#00B0B9;margin-bottom:6px">fitbit</div>' +
-          '<p style="font-size:15px;color:#888;line-height:1.7;margin-bottom:18px;max-width:360px;margin-left:auto;margin-right:auto">Connect your Fitbit to unlock your personalized readiness score and AI recommendations.</p>' +
-          '<a href="' + authUrl + '" style="display:inline-block;background:#00B0B9;color:#fff;font-size:16px;font-weight:700;padding:14px 36px;border-radius:8px;text-decoration:none;font-family:DM Sans,sans-serif;transition:opacity .15s" onmouseover="this.style.opacity=\'0.85\'" onmouseout="this.style.opacity=\'1\'">Connect Fitbit</a>' +
-          '</div>';
-      } else {
-        document.getElementById('status-box').innerHTML =
-          '<p style="color:#e87;font-size:14px;margin-bottom:10px">Error: ' + e.message + '</p>' +
-          '<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">' +
-          '<button onclick="syncFitbit()" style="background:transparent;border:1px solid #333;color:#666;padding:6px 14px;cursor:pointer;border-radius:6px;font-size:13px">Retry</button>' +
-          '<a href="' + authUrl + '" style="color:#00B0B9;font-size:13px;font-family:IBM Plex Mono,monospace">Re-authorize Fitbit</a>' +
-          '</div>';
-      }
+      // Auth/token errors → show manual check-in with Fitbit connect banner
+      showManualCheckin('auth_error');
     });
 }
 
@@ -1112,39 +1387,60 @@ function fetchAI() {
   }
   if (!recent) recent = 'No recent workouts logged yet.';
   var today = new Date().toLocaleDateString('en-US', {weekday:'long', month:'long', day:'numeric'});
-  var sleep = fitData.sleep || {};
-  var stages = sleep.stages || {};
-  var deep = stages.deep || {};
-  var rem = stages.rem || {};
-  var pz = fitData.prevZones || {};
-  var r7 = fitData.rolling7 || {};
 
   var athleteName = (currentProfileData && currentProfileData.name) || currentProfileName || 'this athlete';
-  var rhrDev = readiness.breakdown.rhrDeviation;
-  var rhrDevNote = rhrDev < 0 ? ' (ELEVATED - body is stressed/fighting something)' : rhrDev > 0 ? ' (below baseline - good recovery signal)' : ' (at baseline)';
-  var hrvAvg = r7.hrv || fitData.hrv || 0;
-  var hrvNote = fitData.hrv && hrvAvg ? (fitData.hrv >= hrvAvg ? ' (at/above avg - good recovery)' : ' (below avg - reduced recovery capacity)') : '';
+  var dataBlock = '';
+  var rulesBlock = '';
+
+  if (manualCheckinContext) {
+    // Manual check-in mode
+    dataBlock = 'READINESS: ' + readiness.score + '/85 (manual check-in, no wearable) - ' + readiness.tier.toUpperCase() + '\n' +
+      manualCheckinContext + '\n\n' +
+      'NOTE: This user has no connected wearable. You have subjective self-reported data only. Do NOT reference HRV, RHR, heart rate zones, or sleep stages — you don\'t have that data. Instead reference their reported sleep quality, energy, and pain levels.\n';
+    rulesBlock = 'IMPORTANT RULES:\n' +
+      '- Base recommendations on the manual check-in scores\n' +
+      '- Reference their reported sleep, energy, and pain in reasoning\n' +
+      '- ALWAYS include a mobility/posture component in each option\n' +
+      '- If readiness under 60: recovery-focused options only, no heavy loading\n' +
+      '- If pain is rated 1-2 (significant/moderate): prioritize recovery and gentle movement\n' +
+      '- Provide 3 distinct options: best fit, alternative, and a shorter option\n\n';
+  } else {
+    // Fitbit data mode
+    var sleep = fitData.sleep || {};
+    var stages = sleep.stages || {};
+    var deep = stages.deep || {};
+    var rem = stages.rem || {};
+    var pz = fitData.prevZones || {};
+    var r7 = fitData.rolling7 || {};
+    var rhrDev = readiness.breakdown.rhrDeviation;
+    var rhrDevNote = rhrDev < 0 ? ' (ELEVATED - body is stressed/fighting something)' : rhrDev > 0 ? ' (below baseline - good recovery signal)' : ' (at baseline)';
+    var hrvAvg = r7.hrv || fitData.hrv || 0;
+    var hrvNote = fitData.hrv && hrvAvg ? (fitData.hrv >= hrvAvg ? ' (at/above avg - good recovery)' : ' (below avg - reduced recovery capacity)') : '';
+    dataBlock = 'READINESS: ' + readiness.score + '/100 (Formula V3 - calibrated to personal Fitbit data) - ' + readiness.tier.toUpperCase() + '\n' +
+      'KEY METRICS: HRV: ' + (fitData.hrv ? Math.round(fitData.hrv * 10) / 10 : '?') + 'ms (7d avg: ' + (hrvAvg || '?') + ')' + hrvNote + ', Deep Sleep: ' + (deep.minutes || '?') + 'min, RHR: ' + (fitData.rhr || '?') + 'bpm (baseline: ' + readiness.breakdown.baseline + ', deviation: ' + rhrDev + ')' + rhrDevNote + '\n\n' +
+      'LIVE FITBIT DATA:\n' +
+      '- Sleep: ' + (sleep.hours ? sleep.hours.toFixed(1) : '?') + 'h, ' + (sleep.efficiency || '?') + '% efficiency, ' + (sleep.minutesAwake || '?') + 'min awake\n' +
+      '- Deep: ' + (deep.minutes || '?') + 'min (30d avg ' + (deep.thirtyDayAvgMinutes || '?') + '), REM: ' + (rem.minutes || '?') + 'min (30d avg ' + (rem.thirtyDayAvgMinutes || '?') + ')\n' +
+      '- RHR: ' + (fitData.rhr || '?') + 'bpm (7d avg ' + (r7.rhr || '?') + '), HRV: ' + (fitData.hrv || '?') + ' (7d avg ' + (r7.hrv || '?') + ')\n' +
+      '- Yesterday zones: Peak ' + (pz.peak || 0) + 'min, Cardio ' + (pz.cardio || 0) + 'min, Fat Burn ' + (pz.fatBurn || 0) + 'min\n' +
+      '- Steps yesterday: ' + (fitData.steps ? fitData.steps.toLocaleString() : '?') + '\n';
+    rulesBlock = 'IMPORTANT RULES:\n' +
+      '- NEVER suggest exercises that cause sharp pubic pain\n' +
+      '- AVOID spin drills (concussion history causes dizziness)\n' +
+      '- ALWAYS include a mobility/posture component in each option\n' +
+      '- If readiness under 60: recovery-focused options only, no heavy loading\n' +
+      '- Always account for whether a gig day happened recently\n' +
+      '- Reference actual HRV vs 7-day average in reasoning\n' +
+      '- Provide 3 distinct options: best fit, alternative, and a shorter option\n\n';
+  }
+
   var prompt = 'You are ApexCoach, an elite personal AI coach for ' + athleteName + '. You know everything about them. Give 3 specific, data-driven workout options for today, ordered by best fit first.\n\n' +
     'TODAY: ' + today + '\n' +
-    'READINESS: ' + readiness.score + '/100 (Formula V3 - calibrated to personal Fitbit data) - ' + readiness.tier.toUpperCase() + '\n' +
-    'KEY METRICS: HRV: ' + (fitData.hrv ? Math.round(fitData.hrv * 10) / 10 : '?') + 'ms (7d avg: ' + (hrvAvg || '?') + ')' + hrvNote + ', Deep Sleep: ' + (deep.minutes || '?') + 'min, RHR: ' + (fitData.rhr || '?') + 'bpm (baseline: ' + readiness.breakdown.baseline + ', deviation: ' + rhrDev + ')' + rhrDevNote + '\n\n' +
-    'LIVE FITBIT DATA:\n' +
-    '- Sleep: ' + (sleep.hours ? sleep.hours.toFixed(1) : '?') + 'h, ' + (sleep.efficiency || '?') + '% efficiency, ' + (sleep.minutesAwake || '?') + 'min awake\n' +
-    '- Deep: ' + (deep.minutes || '?') + 'min (30d avg ' + (deep.thirtyDayAvgMinutes || '?') + '), REM: ' + (rem.minutes || '?') + 'min (30d avg ' + (rem.thirtyDayAvgMinutes || '?') + ')\n' +
-    '- RHR: ' + (fitData.rhr || '?') + 'bpm (7d avg ' + (r7.rhr || '?') + '), HRV: ' + (fitData.hrv || '?') + ' (7d avg ' + (r7.hrv || '?') + ')\n' +
-    '- Yesterday zones: Peak ' + (pz.peak || 0) + 'min, Cardio ' + (pz.cardio || 0) + 'min, Fat Burn ' + (pz.fatBurn || 0) + 'min\n' +
-    '- Steps yesterday: ' + (fitData.steps ? fitData.steps.toLocaleString() : '?') + '\n\n' +
+    dataBlock + '\n' +
     'RECENT 10-DAY LOG:\n' + recent + '\n\n' +
     'FULL ATHLETE PROFILE:\n' + FULL_PROFILE + '\n\n' +
     'WEEKLY SCHEDULE DEFAULTS:\n' + getScheduleText() + '\n\n' +
-    'IMPORTANT RULES:\n' +
-    '- NEVER suggest exercises that cause sharp pubic pain\n' +
-    '- AVOID spin drills (concussion history causes dizziness)\n' +
-    '- ALWAYS include a mobility/posture component in each option\n' +
-    '- If readiness under 60: recovery-focused options only, no heavy loading\n' +
-    '- Always account for whether a gig day happened recently\n' +
-    '- Reference actual HRV vs 7-day average in reasoning\n' +
-    '- Provide 3 distinct options: best fit, alternative, and a shorter option\n\n' +
+    rulesBlock +
     'Respond ONLY with raw JSON, no markdown:\n' +
     '{"brief":"one sentence overall context for today","options":[{"type":"workout category","headline":"punchy 6-8 word name","duration":45,"intensity":"descriptor","reasoning":"why this fits today, reference numbers","exercises":["exercise + sets/reps","exercise + sets/reps","exercise + sets/reps"],"mobility":"specific focus"},{"type":"category","headline":"name","duration":30,"intensity":"descriptor","reasoning":"why this alternative","exercises":["ex","ex","ex"],"mobility":"focus"},{"type":"category","headline":"name","duration":20,"intensity":"descriptor","reasoning":"why this shorter option","exercises":["ex","ex"],"mobility":"focus"}],"minimum_viable":"genuine 10-15 min fallback","warning":"one specific caution based on the data, or null"}';
 
