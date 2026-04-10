@@ -914,7 +914,25 @@ function syncFitbit() {
       fetchAI();
     })
     .catch(function(e) {
-      document.getElementById('status-box').innerHTML = '<p style="color:#e87;font-size:13px">Error: ' + e.message + '</p><br><button onclick="syncFitbit()" style="background:transparent;border:1px solid #333;color:#666;padding:4px 10px;cursor:pointer;border-radius:4px;font-size:11px;margin-top:8px">Retry</button><br><br><a href="/auth' + (currentProfileId ? '?profile_id=' + currentProfileId : '') + '" style="color:#22c97a;font-size:11px;font-family:monospace">Re-authorize Fitbit</a>';
+      var msg = (e.message || '').toLowerCase();
+      var isAuthError = msg.indexOf('refresh') >= 0 || msg.indexOf('token') >= 0 || msg.indexOf('authorize') >= 0 || msg.indexOf('re-auth') >= 0 || msg.indexOf('401') >= 0 || msg.indexOf('no fitbit') >= 0;
+      var authUrl = '/auth' + (currentProfileId ? '?profile_id=' + currentProfileId : '');
+      if (isAuthError) {
+        document.getElementById('status-box').style.borderColor = '#00B0B933';
+        document.getElementById('status-box').innerHTML =
+          '<div style="text-align:center;padding:12px 0">' +
+          '<div style="font-family:Oswald,sans-serif;font-size:28px;font-weight:700;color:#00B0B9;margin-bottom:6px">fitbit</div>' +
+          '<p style="font-size:15px;color:#888;line-height:1.7;margin-bottom:18px;max-width:360px;margin-left:auto;margin-right:auto">Connect your Fitbit to unlock your personalized readiness score and AI recommendations.</p>' +
+          '<a href="' + authUrl + '" style="display:inline-block;background:#00B0B9;color:#fff;font-size:16px;font-weight:700;padding:14px 36px;border-radius:8px;text-decoration:none;font-family:DM Sans,sans-serif;transition:opacity .15s" onmouseover="this.style.opacity=\'0.85\'" onmouseout="this.style.opacity=\'1\'">Connect Fitbit</a>' +
+          '</div>';
+      } else {
+        document.getElementById('status-box').innerHTML =
+          '<p style="color:#e87;font-size:14px;margin-bottom:10px">Error: ' + e.message + '</p>' +
+          '<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">' +
+          '<button onclick="syncFitbit()" style="background:transparent;border:1px solid #333;color:#666;padding:6px 14px;cursor:pointer;border-radius:6px;font-size:13px">Retry</button>' +
+          '<a href="' + authUrl + '" style="color:#00B0B9;font-size:13px;font-family:IBM Plex Mono,monospace">Re-authorize Fitbit</a>' +
+          '</div>';
+      }
     });
 }
 
