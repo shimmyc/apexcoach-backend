@@ -192,8 +192,29 @@ input[type=range]{width:100%;accent-color:#22c97a}
 
     <!-- GOALS -->
     <div class="card">
-      <p class="clabel">goals &amp; milestones</p>
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">
+        <p class="clabel" style="margin-bottom:0">goals &amp; milestones</p>
+        <button onclick="toggleGoalEdit()" id="goal-edit-btn" style="background:transparent;border:1px solid #1a1c22;color:#666;padding:5px 12px;border-radius:6px;cursor:pointer;font-size:13px">Edit</button>
+      </div>
       <div id="goals-display" class="goalsGrid"></div>
+      <div id="goals-editor" style="display:none;margin-top:14px">
+        <div id="goals-edit-list" style="display:flex;flex-direction:column;gap:8px;margin-bottom:14px"></div>
+        <div style="border-top:1px solid #0e1016;padding-top:14px">
+          <p class="mono" style="font-size:10px;color:#555;letter-spacing:2px;margin-bottom:8px">ADD NEW GOAL</p>
+          <input id="new-goal-title" type="text" placeholder="Goal title (e.g. Run a 5k)" style="width:100%;background:#060810;border:1px solid #0e1016;color:#e0e0e0;padding:10px 14px;border-radius:6px;font-size:14px;outline:none;font-family:'DM Sans',sans-serif;margin-bottom:8px">
+          <input id="new-goal-desc" type="text" placeholder="Brief description (optional)" style="width:100%;background:#060810;border:1px solid #0e1016;color:#e0e0e0;padding:10px 14px;border-radius:6px;font-size:14px;outline:none;font-family:'DM Sans',sans-serif;margin-bottom:8px">
+          <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:10px">
+            <select id="new-goal-status" style="flex:1;min-width:140px;font-size:13px;padding:8px 10px;margin-bottom:0">
+              <option value="IN PROGRESS">In Progress</option>
+              <option value="LONG GAME">Long Game</option>
+              <option value="HABIT">Habit</option>
+              <option value="PAUSED">Paused</option>
+              <option value="DONE">Done</option>
+            </select>
+          </div>
+          <button onclick="addGoal()" class="btnPri" style="font-size:13px;padding:10px 18px;width:100%">+ Add Goal</button>
+        </div>
+      </div>
     </div>
 
     <div id="profile-injuries"></div>
@@ -1357,6 +1378,121 @@ function renderProfileGoals() {
   if (typeof renderMeditationStatus === 'function') renderMeditationStatus();
 }
 
+// ── GOAL EDITING ─────────────────────────────────────────────────────────
+var goalEditMode = false;
+
+function toggleGoalEdit() {
+  goalEditMode = !goalEditMode;
+  var editor = document.getElementById('goals-editor');
+  var display = document.getElementById('goals-display');
+  var btn = document.getElementById('goal-edit-btn');
+  if (goalEditMode) {
+    editor.style.display = 'block';
+    btn.textContent = 'Done';
+    btn.style.color = '#22c97a';
+    btn.style.borderColor = '#22c97a33';
+    renderGoalEditList();
+  } else {
+    editor.style.display = 'none';
+    btn.textContent = 'Edit';
+    btn.style.color = '#666';
+    btn.style.borderColor = '#1a1c22';
+  }
+}
+
+function renderGoalEditList() {
+  var pd = currentProfileData || {};
+  var goals = pd.goals || [];
+  var el = document.getElementById('goals-edit-list');
+  if (!goals.length) {
+    el.innerHTML = '<p style="color:#444;font-size:13px;font-style:italic">No goals yet — add one below.</p>';
+    return;
+  }
+  var statusColors = { 'IN PROGRESS': '#f5a623', 'LONG GAME': '#4488bb', 'DONE': '#22c97a', 'HABIT': '#9966cc', 'PAUSED': '#555' };
+  var html = '';
+  for (var i = 0; i < goals.length; i++) {
+    var g = goals[i];
+    var sc = statusColors[g.status] || '#f5a623';
+    html += '<div style="display:flex;align-items:center;gap:10px;background:#060810;border:1px solid #0e1016;border-radius:8px;padding:12px">';
+    html += '<div style="flex:1;min-width:0">';
+    html += '<div style="display:flex;align-items:center;gap:8px;margin-bottom:4px">';
+    html += '<span style="font-size:16px">' + (g.emoji || '&#127919;') + '</span>';
+    html += '<span style="font-size:14px;font-weight:600;color:#fff;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">' + (g.title || 'Untitled') + '</span>';
+    html += '</div>';
+    if (g.description) html += '<div style="font-size:12px;color:#555;line-height:1.5;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + g.description + '</div>';
+    html += '<div style="margin-top:6px"><select onchange="updateGoalStatus(' + i + ',this.value)" style="font-size:11px;padding:4px 8px;margin-bottom:0;background:#0d0f16;min-width:100px">';
+    var statuses = ['IN PROGRESS', 'LONG GAME', 'HABIT', 'PAUSED', 'DONE'];
+    for (var s = 0; s < statuses.length; s++) {
+      html += '<option value="' + statuses[s] + '"' + (g.status === statuses[s] ? ' selected' : '') + '>' + statuses[s] + '</option>';
+    }
+    html += '</select></div>';
+    html += '</div>';
+    html += '<button onclick="removeGoal(' + i + ')" style="background:#e8454512;border:1px solid #e8454522;color:#e84545;padding:6px 10px;border-radius:6px;cursor:pointer;font-size:18px;flex-shrink:0;line-height:1" title="Remove goal">&times;</button>';
+    html += '</div>';
+  }
+  el.innerHTML = html;
+}
+
+function addGoal() {
+  var title = document.getElementById('new-goal-title').value.trim();
+  if (!title) return;
+  var desc = document.getElementById('new-goal-desc').value.trim();
+  var status = document.getElementById('new-goal-status').value;
+  var pd = currentProfileData || {};
+  if (!pd.goals) pd.goals = [];
+  pd.goals.push({
+    type: 'general',
+    emoji: '&#127919;',
+    title: title,
+    description: desc,
+    status: status,
+    target_value: null,
+    current_value: null,
+    unit: null,
+    tracker: false
+  });
+  document.getElementById('new-goal-title').value = '';
+  document.getElementById('new-goal-desc').value = '';
+  document.getElementById('new-goal-status').value = 'IN PROGRESS';
+  saveProfileDataToServer(pd);
+  renderGoalEditList();
+  renderProfileGoals();
+}
+
+function removeGoal(idx) {
+  var pd = currentProfileData || {};
+  if (!pd.goals || idx < 0 || idx >= pd.goals.length) return;
+  pd.goals.splice(idx, 1);
+  saveProfileDataToServer(pd);
+  renderGoalEditList();
+  renderProfileGoals();
+}
+
+function updateGoalStatus(idx, newStatus) {
+  var pd = currentProfileData || {};
+  if (!pd.goals || idx < 0 || idx >= pd.goals.length) return;
+  pd.goals[idx].status = newStatus;
+  saveProfileDataToServer(pd);
+  renderProfileGoals();
+}
+
+function saveProfileDataToServer(pd) {
+  currentProfileData = pd;
+  localStorage.setItem('ac_profile_data', JSON.stringify(pd));
+  if (pd.ai_prompt_context) FULL_PROFILE = pd.ai_prompt_context;
+  if (!currentProfileId) return;
+  fetch('/api/profiles/' + currentProfileId, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ profile_data: pd })
+  }).then(function(r) { return r.json(); }).then(function(data) {
+    if (data.success && data.profile && data.profile.profile_data) {
+      currentProfileData = data.profile.profile_data;
+      localStorage.setItem('ac_profile_data', JSON.stringify(currentProfileData));
+    }
+  }).catch(function(e) { console.error('Save profile error:', e); });
+}
+
 // ── SCHEDULE ──────────────────────────────────────────────────────────────
 
 function loadSchedule() {
@@ -2039,6 +2175,7 @@ var PB_SECTIONS = [
   {
     id: 'goals', label: 'Goals & Milestones', icon: '&#127919;',
     questions: [
+      { key: 'all_goals', q: "List out all of your fitness goals — big and small, short-term and long-term. Don't hold back, just dump everything you want to work toward.", hint: "Examples: 'lose 20lbs, bench 200, run a 5k, get my purple belt, do 10 pullups, touch my toes, meditate daily' — anything counts" },
       { key: 'six_month', q: "What does success look like for you in 6 months? Be as specific as you can — numbers are great if you have them.", hint: "For example: 'I want to bench 200lbs', 'run a 5k in under 30 minutes', 'lose 20 pounds', 'get my purple belt'" },
       { key: 'milestones', q: "Are there any milestone moments you're training toward? A trip, event, competition, wedding, reunion?", hint: "These help me prioritize what to focus on and when" },
       { key: 'priorities', q: "On a scale of 1-5, how important is each of these to you right now?\n(1) Building strength\n(2) Losing weight\n(3) Better endurance\n(4) Flexibility/mobility\n(5) Sport performance\n(6) Mental health/stress relief", hint: "Just give me numbers like: 1=5, 2=3, 3=4, 4=2, 5=1, 6=4" },
