@@ -388,6 +388,46 @@ app.post("/api/profiles/verify", async function(req, res) {
   }
 });
 
+app.patch("/api/profiles/:id", async function(req, res) {
+  try {
+    var profileId = req.params.id;
+    var newData = req.body.profile_data;
+    if (!newData || typeof newData !== 'object') {
+      return res.status(400).json({ success: false, error: "profile_data object required." });
+    }
+    // Fetch existing profile_data
+    var r = await fetch(SUPABASE_URL + "/rest/v1/profiles?id=eq." + profileId + "&select=profile_data", {
+      headers: sbHeaders(),
+    });
+    var rows = await r.json();
+    if (!rows || !rows.length) return res.json({ success: false, error: "Profile not found." });
+    var existing = rows[0].profile_data || {};
+    // Deep merge: arrays are replaced, objects are merged
+    var merged = Object.assign({}, existing);
+    var keys = Object.keys(newData);
+    for (var i = 0; i < keys.length; i++) {
+      var key = keys[i];
+      if (newData[key] !== null && typeof newData[key] === 'object' && !Array.isArray(newData[key]) &&
+          merged[key] && typeof merged[key] === 'object' && !Array.isArray(merged[key])) {
+        merged[key] = Object.assign({}, merged[key], newData[key]);
+      } else {
+        merged[key] = newData[key];
+      }
+    }
+    // Save merged data
+    var r2 = await fetch(SUPABASE_URL + "/rest/v1/profiles?id=eq." + profileId, {
+      method: "PATCH",
+      headers: sbHeaders("return=representation"),
+      body: JSON.stringify({ profile_data: merged }),
+    });
+    var updated = await r2.json();
+    var profile = Array.isArray(updated) ? updated[0] : updated;
+    res.json({ success: true, profile: { id: profile.id, name: profile.name, avatar_color: profile.avatar_color, profile_data: profile.profile_data } });
+  } catch (e) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
 app.patch("/api/profiles/:id/pin", async function(req, res) {
   try {
     var body = req.body;

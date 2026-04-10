@@ -47,6 +47,14 @@ input[type=range]{width:100%;accent-color:#22c97a}
 .pill-blue{background:#4488bb18;color:#4488bb;border:1px solid #4488bb33}
 .injury-item{padding:12px 0;border-bottom:1px solid #0e1016;display:flex;flex-direction:column;gap:5px}
 .injury-item:last-child{border-bottom:none}
+.pb-progress-track{width:100%;height:8px;background:#0e1016;border-radius:4px;overflow:hidden;margin:12px 0}
+.pb-progress-fill{height:100%;border-radius:4px;background:linear-gradient(90deg,#22c97a,#4488bb);transition:width .8s cubic-bezier(.4,0,.2,1)}
+.pb-section-btn{background:#060810;border:1px solid #1a1c22;color:#888;padding:10px 16px;border-radius:8px;cursor:pointer;font-size:14px;font-family:'DM Sans',sans-serif;text-align:left;width:100%;display:flex;align-items:center;justify-content:space-between;transition:border-color .2s}
+.pb-section-btn:hover{border-color:#22c97a33}
+.pb-section-btn.done{border-color:#22c97a33;color:#22c97a}
+.pb-chat-q{background:#22c97a10;border:1px solid #22c97a22;border-radius:10px;padding:12px 16px;max-width:85%;align-self:flex-start;animation:fadeUp .25s ease}
+.pb-chat-a{background:#0d0f16;border:1px solid #0e1016;border-radius:10px;padding:12px 16px;max-width:80%;align-self:flex-end;animation:fadeUp .25s ease}
+.pb-hint{font-size:12px;color:#444;font-style:italic;margin-top:4px;line-height:1.5}
 </style>
 </head>
 <body>
@@ -271,6 +279,28 @@ input[type=range]{width:100%;accent-color:#22c97a}
     <div style="display:flex;gap:8px;justify-content:flex-end">
       <button class="btnSec" onclick="closeModal()">Cancel</button>
       <button class="btnPri" onclick="saveWorkout()">Save</button>
+    </div>
+  </div>
+</div>
+
+<!-- BUILD PROFILE MODAL -->
+<div class="overlay" id="profile-builder-modal" style="display:none" onclick="closeProfileBuilder()">
+  <div class="modal" onclick="event.stopPropagation()" style="max-width:560px;max-height:90vh;display:flex;flex-direction:column">
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;flex-shrink:0">
+      <p class="mono" style="font-size:12px;color:#22c97a;letter-spacing:3px" id="pb-title">BUILD YOUR PROFILE</p>
+      <button onclick="closeProfileBuilder()" style="background:transparent;border:none;color:#555;font-size:20px;cursor:pointer;padding:4px 8px">&times;</button>
+    </div>
+    <div id="pb-section-select" style="display:flex;flex-direction:column;gap:8px;flex-shrink:0"></div>
+    <div id="pb-chat" style="display:none;flex:1;overflow-y:auto;flex-direction:column;gap:12px;margin-bottom:14px;padding-right:4px"></div>
+    <div id="pb-input-area" style="display:none;flex-shrink:0">
+      <div style="display:flex;gap:8px">
+        <div style="flex:1;position:relative">
+          <input id="pb-input" type="text" placeholder="Type your answer..." style="width:100%;background:#060810;border:1px solid #1a1c22;color:#e0e0e0;padding:14px 44px 14px 14px;border-radius:8px;font-size:15px;outline:none;font-family:'DM Sans',sans-serif" onkeyup="if(event.key==='Enter')submitPBAnswer()">
+          <button onclick="startPBVoice()" id="pb-mic" style="position:absolute;right:8px;top:8px;background:#22c97a18;border:1px solid #22c97a33;color:#22c97a;border-radius:6px;padding:6px 10px;cursor:pointer;font-size:14px">&#127908;</button>
+        </div>
+        <button onclick="submitPBAnswer()" class="btnPri" style="padding:14px 20px;font-size:15px">Send</button>
+      </div>
+      <div id="pb-status" class="mono" style="font-size:11px;color:#555;margin-top:6px;min-height:16px"></div>
     </div>
   </div>
 </div>
@@ -513,13 +543,10 @@ var onboardAnswers = {};
 var onboardRecognition = null;
 var ONBOARD_QUESTIONS = [
   { key: 'name', q: "What's your name?" },
-  { key: 'goals', q: "What are your fitness goals? (e.g., build muscle, run a marathon, lose weight, get better at MMA)" },
-  { key: 'injuries', q: "Do you have any injuries or health conditions I should know about? (say 'none' if clear)" },
-  { key: 'preferences', q: "What types of workouts do you enjoy or prefer? (e.g., strength training, yoga, MMA, running, HIIT)" },
-  { key: 'schedule', q: "What days do you typically train? Any fixed schedule?" },
-  { key: 'experience', q: "What's your experience level? (beginner, intermediate, advanced)" },
-  { key: 'obstacles', q: "What are your biggest obstacles to staying consistent?" },
-  { key: 'fitbit', q: "Do you use a Fitbit? (yes or no)" },
+  { key: 'goals', q: "What's your main fitness goal right now? (e.g. lose weight, build muscle, run a 5k, get my black belt — anything goes)" },
+  { key: 'injuries', q: "Any injuries or physical limitations I should always know about? If none, just say none." },
+  { key: 'days', q: "How many days a week can you realistically commit to training?" },
+  { key: 'fitbit', q: "Do you have a Fitbit or other fitness tracker? (yes/no)" },
 ];
 
 function startOnboarding() {
@@ -585,17 +612,14 @@ function finishOnboarding() {
   document.getElementById('onboard-input-area').style.display = 'none';
 
   // Ask AI to build profile_data from answers
-  var prompt = 'Generate a structured athlete profile JSON from these onboarding answers. Return ONLY raw JSON, no markdown.\n\n' +
+  var prompt = 'Generate a fitness coaching profile from these onboarding answers. Create reasonable goals, a basic schedule, and coaching principles based on what they shared. Be generous in interpreting their answers — if they mention an injury, create an injury entry. If they mention a goal, create a structured goal with estimated targets. Return ONLY raw JSON, no markdown.\n\n' +
     'Name: ' + (onboardAnswers.name || '') + '\n' +
-    'Goals: ' + (onboardAnswers.goals || '') + '\n' +
-    'Injuries: ' + (onboardAnswers.injuries || 'none') + '\n' +
-    'Preferences: ' + (onboardAnswers.preferences || '') + '\n' +
-    'Schedule: ' + (onboardAnswers.schedule || '') + '\n' +
-    'Experience: ' + (onboardAnswers.experience || '') + '\n' +
-    'Obstacles: ' + (onboardAnswers.obstacles || '') + '\n' +
-    'Fitbit: ' + (onboardAnswers.fitbit || 'no') + '\n\n' +
+    'Main goal: ' + (onboardAnswers.goals || '') + '\n' +
+    'Injuries/limitations: ' + (onboardAnswers.injuries || 'none') + '\n' +
+    'Training days per week: ' + (onboardAnswers.days || '3') + '\n' +
+    'Has Fitbit: ' + (onboardAnswers.fitbit || 'no') + '\n\n' +
     'Return this EXACT structure (fill in all fields from the answers, infer sensible defaults for anything not mentioned):\n' +
-    '{"name":"their name","tagline":"2-3 word role e.g. Runner & Yogi","avatar_color":"#hex based on personality","sports":["list"],"martial_arts":true/false,"martial_arts_style":"MMA/BJJ/etc or null","current_belt":"white/blue/etc or null","goals":[{"type":"strength|distance|consistency|habit|skill|general","emoji":"emoji","title":"name","description":"brief","status":"IN PROGRESS|LONG GAME|DONE|HABIT|PAUSED","target_value":null,"current_value":null,"unit":"lbs|miles|days|sessions or null","tracker":false}],"injuries":[{"name":"name","status":"MANAGING|CHRONIC|REHABBING|MONITOR","description":"brief","triggers":"what worsens it or null"}],"experience_level":"beginner|intermediate|athletic|advanced","schedule":{"mon":"Flexible","tue":"...","wed":"...","thu":"...","fri":"...","sat":"...","sun":"..."},"weekly_target":3,"biggest_obstacle":"string","life_context":{"family":"or null","work":"or null","other":"or null"},"philosophy":["principle 1","principle 2","principle 3","principle 4"],"fitbit":true/false,"ai_prompt_context":"2-3 paragraph summary of this person for the AI coach to use"}';
+    '{"name":"their name","tagline":"2-3 word role e.g. Runner & Yogi","avatar_color":"#hex based on personality","sports":["list"],"martial_arts":true/false,"martial_arts_style":"MMA/BJJ/etc or null","current_belt":"white/blue/etc or null","goals":[{"type":"strength|distance|consistency|habit|skill|general","emoji":"emoji","title":"name","description":"brief","status":"IN PROGRESS|LONG GAME|DONE|HABIT|PAUSED","target_value":null,"current_value":null,"unit":"lbs|miles|days|sessions or null","tracker":false}],"injuries":[{"name":"name","status":"MANAGING|CHRONIC|REHABBING|MONITOR","description":"brief","triggers":"what worsens it or null"}],"experience_level":"beginner|intermediate|athletic|advanced","schedule":{"mon":"Flexible","tue":"...","wed":"...","thu":"...","fri":"...","sat":"...","sun":"..."},"weekly_target":' + (parseInt(onboardAnswers.days) || 3) + ',"biggest_obstacle":"","life_context":{"family":null,"work":null,"other":null},"philosophy":["principle 1","principle 2","principle 3"],"fitbit":' + (/yes|y/i.test(onboardAnswers.fitbit || '') ? 'true' : 'false') + ',"ai_prompt_context":"2-3 paragraph summary of this person for the AI coach to use. Keep it focused and practical.","onboarding_complete":true,"profile_sections_completed":["basic"]}';
 
   fetch('/api/ai', {
     method: 'POST',
@@ -1235,7 +1259,9 @@ function renderProfileTab() {
     h += '<div class="card" id="belt-card"><div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px"><p class="clabel" style="margin-bottom:0">Belt Journey</p><button onclick="toggleBeltEdit()" id="belt-edit-btn" style="background:transparent;border:1px solid #1a1c22;color:#666;padding:5px 12px;border-radius:6px;cursor:pointer;font-size:13px">Edit</button></div><div id="belt-display"></div><div id="belt-editor" style="display:none"><p style="font-size:14px;color:#888;margin-bottom:12px">Select your current belt:</p><div id="belt-selector" style="display:flex;flex-wrap:wrap;gap:8px;margin-bottom:16px"></div><button onclick="saveBelt()" class="btnPri" style="font-size:14px">Save</button></div></div>';
   }
 
-  document.getElementById('profile-dynamic').innerHTML = h;
+  // Prepend completeness card
+  var completenessHTML = renderProfileCompletenessCard();
+  document.getElementById('profile-dynamic').innerHTML = completenessHTML + h;
 
   // Re-render belt if martial arts
   if (pd.martial_arts && pd.current_belt && typeof renderBelt === 'function') renderBelt();
@@ -1256,19 +1282,25 @@ function renderProfileTab() {
       injHTML += '</div>';
     }
     injHTML += '</div>';
+  } else {
+    injHTML = '<div class="card"><p class="clabel">injury and health status</p><p style="font-size:14px;color:#444;font-style:italic">No injuries logged — tap "Build Profile" to add health context</p></div>';
   }
   document.getElementById('profile-injuries').innerHTML = injHTML;
 
   // ── PHILOSOPHY ──
   var phils = pd.philosophy || [];
-  var philHTML = '';
-  if (phils.length) {
-    philHTML = '<div class="card"><p class="clabel">training philosophy</p><div style="display:flex;flex-direction:column;gap:8px">';
-    for (var i = 0; i < phils.length; i++) {
-      philHTML += '<div style="display:flex;gap:10px;align-items:flex-start"><span style="color:' + c + ';flex-shrink:0;font-size:15px">—</span><span style="font-size:15px;color:#888;line-height:1.65">' + phils[i] + '</span></div>';
-    }
-    philHTML += '</div></div>';
+  // Generate defaults if empty
+  if (!phils.length) {
+    var lvl = pd.experience_level || 'beginner';
+    if (lvl === 'beginner') phils = ['Start slow and build habits', 'Consistency beats intensity', 'Every session counts, even 10 minutes'];
+    else if (lvl === 'intermediate') phils = ['Progressive overload drives results', 'Recovery is part of training', 'Train movement patterns, not just muscles'];
+    else phils = ['Push limits strategically', 'Periodize for peak performance', 'The body adapts — keep evolving'];
   }
+  var philHTML = '<div class="card"><p class="clabel">training philosophy</p><div style="display:flex;flex-direction:column;gap:8px">';
+  for (var i = 0; i < phils.length; i++) {
+    philHTML += '<div style="display:flex;gap:10px;align-items:flex-start"><span style="color:' + c + ';flex-shrink:0;font-size:15px">—</span><span style="font-size:15px;color:#888;line-height:1.65">' + phils[i] + '</span></div>';
+  }
+  philHTML += '</div></div>';
   document.getElementById('profile-philosophy').innerHTML = philHTML;
 
   // ── LIFE CONTEXT ──
@@ -1295,7 +1327,7 @@ function renderProfileGoals() {
   var pd = currentProfileData || {};
   var pGoals = pd.goals || [];
   if (!pGoals.length) {
-    document.getElementById('goals-display').innerHTML = '<p style="color:#2a2c30;font-size:15px;font-style:italic">No goals set yet.</p>';
+    document.getElementById('goals-display').innerHTML = '<p style="color:#444;font-size:14px;font-style:italic">Tap "Build Profile" to add your goals</p>';
     return;
   }
   var statusColors = { 'IN PROGRESS': '#f5a623', 'LONG GAME': '#4488bb', 'DONE': '#22c97a', 'HABIT': '#9966cc', 'PAUSED': '#555' };
@@ -1937,6 +1969,367 @@ function toggleBeltEdit() {
 // Old goal/belt rendering now handled by renderProfileTab()
 // renderGoals is an alias for the dynamic version
 function renderGoals() { renderProfileGoals(); }
+
+// ── PROFILE COMPLETENESS ──────────────────────────────────────────────────
+function computeProfileCompleteness(pd) {
+  if (!pd) return { pct: 0, sections: {} };
+  var sections = {};
+  // Basic (20%): name + goal + fitbit status from phase 1
+  sections.basic = !!(pd.onboarding_complete || (pd.name && pd.goals && pd.goals.length > 0));
+  // Goals (20%): at least 2 goals with descriptions
+  var goals = pd.goals || [];
+  var detailedGoals = goals.filter(function(g) { return g.title && g.description; });
+  sections.goals = detailedGoals.length >= 2 && (pd.profile_sections_completed || []).indexOf('goals') >= 0;
+  // Injuries (15%): at least one documented OR confirmed none
+  sections.injuries = (pd.profile_sections_completed || []).indexOf('injuries') >= 0;
+  // Training background (20%)
+  sections.training = (pd.profile_sections_completed || []).indexOf('training') >= 0;
+  // Lifestyle (15%)
+  sections.lifestyle = (pd.profile_sections_completed || []).indexOf('lifestyle') >= 0;
+  // Mindset (10%)
+  sections.mindset = (pd.profile_sections_completed || []).indexOf('mindset') >= 0;
+  var pct = 0;
+  if (sections.basic) pct += 20;
+  if (sections.goals) pct += 20;
+  if (sections.injuries) pct += 15;
+  if (sections.training) pct += 20;
+  if (sections.lifestyle) pct += 15;
+  if (sections.mindset) pct += 10;
+  return { pct: pct, sections: sections };
+}
+
+function renderProfileCompletenessCard() {
+  var pd = currentProfileData || {};
+  var comp = computeProfileCompleteness(pd);
+  var pct = comp.pct;
+  var sections = comp.sections;
+  var color = pct >= 80 ? '#22c97a' : pct >= 50 ? '#f5a623' : '#4488bb';
+  var h = '<div class="card" style="border-color:' + color + '33;margin-bottom:14px">';
+  h += '<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">';
+  h += '<p class="clabel" style="margin-bottom:0">your profile</p>';
+  h += '<span class="mono" style="font-size:13px;color:' + color + ';font-weight:600">' + pct + '%</span>';
+  h += '</div>';
+  h += '<div class="pb-progress-track"><div class="pb-progress-fill" style="width:' + pct + '%;background:linear-gradient(90deg,' + color + ',#4488bb)"></div></div>';
+  if (pct < 100) {
+    h += '<p style="font-size:14px;color:#888;line-height:1.6;margin-bottom:14px">Your profile is ' + pct + '% complete. The more you share, the smarter your coaching gets.</p>';
+    var missing = [];
+    if (!sections.goals) missing.push('Goals');
+    if (!sections.injuries) missing.push('Injuries & Health');
+    if (!sections.training) missing.push('Training Background');
+    if (!sections.lifestyle) missing.push('Lifestyle & Schedule');
+    if (!sections.mindset) missing.push('Mindset & Motivation');
+    if (missing.length) {
+      h += '<div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:14px">';
+      for (var i = 0; i < missing.length; i++) {
+        h += '<span class="mono" style="font-size:10px;color:#555;background:#060810;padding:4px 10px;border-radius:4px;border:1px solid #0e1016">' + missing[i] + '</span>';
+      }
+      h += '</div>';
+    }
+    h += '<button onclick="openProfileBuilder()" style="background:#22c97a;color:#040605;border:none;padding:12px 24px;font-size:14px;font-weight:700;cursor:pointer;border-radius:8px;font-family:DM Sans,sans-serif;width:100%">Build Profile</button>';
+  } else {
+    h += '<p style="font-size:14px;color:#22c97a;line-height:1.6">Profile complete! Your AI coaching is fully personalized.</p>';
+    h += '<button onclick="openProfileBuilder()" style="background:transparent;border:1px solid #1a1c22;color:#888;padding:10px 20px;font-size:13px;cursor:pointer;border-radius:8px;font-family:DM Sans,sans-serif;width:100%;margin-top:8px">Update Profile Sections</button>';
+  }
+  h += '</div>';
+  return h;
+}
+
+// ── DEEP PROFILE BUILDER ──────────────────────────────────────────────────
+var PB_SECTIONS = [
+  {
+    id: 'goals', label: 'Goals & Milestones', icon: '&#127919;',
+    questions: [
+      { key: 'six_month', q: "What does success look like for you in 6 months? Be as specific as you can — numbers are great if you have them.", hint: "For example: 'I want to bench 200lbs', 'run a 5k in under 30 minutes', 'lose 20 pounds', 'get my purple belt'" },
+      { key: 'milestones', q: "Are there any milestone moments you're training toward? A trip, event, competition, wedding, reunion?", hint: "These help me prioritize what to focus on and when" },
+      { key: 'priorities', q: "On a scale of 1-5, how important is each of these to you right now?\n(1) Building strength\n(2) Losing weight\n(3) Better endurance\n(4) Flexibility/mobility\n(5) Sport performance\n(6) Mental health/stress relief", hint: "Just give me numbers like: 1=5, 2=3, 3=4, 4=2, 5=1, 6=4" },
+    ]
+  },
+  {
+    id: 'injuries', label: 'Injuries & Health', icon: '&#129657;',
+    questions: [
+      { key: 'injuries_list', q: "Do you have any current or past injuries?", hint: "Include anything that affects how you train — even old injuries that flare up occasionally" },
+    ],
+    injuryFollowUps: [
+      { key: 'onset', q: "When did {injury} start? Was it sudden (like an accident) or gradual?", hint: "e.g. 'car accident Dec 2022' or 'gradually over the last 2 years'" },
+      { key: 'pain', q: "On a typical day, what's the pain like for {injury}? (0=no pain, 10=severe)", hint: "Think about your average day, not your worst day" },
+      { key: 'triggers', q: "What makes {injury} worse? What movements, activities, or situations trigger it?", hint: "e.g. 'high kicks', 'sitting for long periods', 'carrying heavy bags'" },
+      { key: 'management', q: "Are you currently doing anything to manage {injury}? PT, exercises, avoiding certain movements?", hint: "This helps me know what's already working for you" },
+      { key: 'training_impact', q: "Does {injury} affect your training? If so, how?", hint: "e.g. 'can't do squats', 'have to modify pushups', 'flares up after running'" },
+    ]
+  },
+  {
+    id: 'training', label: 'Training Background', icon: '&#127947;',
+    questions: [
+      { key: 'experience', q: "How long have you been training consistently? (weeks/months/years)", hint: "Count any form of regular physical activity, not just gym work" },
+      { key: 'enjoy_dread', q: "What types of workouts do you actually enjoy? What do you dread?", hint: "Be honest — if you hate running, I won't make you run. There are always alternatives." },
+      { key: 'best_period', q: "Describe your best ever training period — what were you doing, how often, how did you feel?", hint: "This helps me understand what works for your body and schedule" },
+      { key: 'fall_off', q: "What has made you stop or fall off track in the past?", hint: "Common answers: injury, travel, work stress, lost motivation, no time — no judgment here" },
+    ]
+  },
+  {
+    id: 'lifestyle', label: 'Lifestyle & Schedule', icon: '&#128197;',
+    questions: [
+      { key: 'typical_day', q: "Walk me through a typical weekday and a typical weekend day.", hint: "I want to understand when you have time and energy to train — morning person? Evening? Lunch breaks?" },
+      { key: 'job', q: "What's your job like physically? (desk job, on your feet all day, physical labor, unpredictable)", hint: "This affects your recovery and what kind of training makes sense" },
+      { key: 'home', q: "Tell me about your home situation — do you have kids, a partner who trains with you, time constraints?", hint: "No judgment — I just want to build something realistic for your actual life" },
+      { key: 'equipment', q: "What equipment do you have access to? (home gym, commercial gym, just bodyweight, etc)", hint: "This determines what exercises I can recommend" },
+    ]
+  },
+  {
+    id: 'mindset', label: 'Mindset & Motivation', icon: '&#129504;',
+    questions: [
+      { key: 'why_now', q: "Why now? What made you decide to focus on your fitness at this point in your life?", hint: "Understanding your 'why' helps me give you better coaching on hard days" },
+      { key: 'consistency', q: "When you've been most consistent with training, what kept you going?", hint: "Knowing your motivational patterns helps me keep you on track" },
+      { key: 'bad_week', q: "What does a bad week look like for you? What throws you off?", hint: "I want to help you plan for the hard weeks, not just the easy ones" },
+    ]
+  }
+];
+
+var pbCurrentSection = null;
+var pbCurrentStep = 0;
+var pbAnswers = {};
+var pbInjuries = [];
+var pbInjuryIdx = 0;
+var pbInjuryFollowUpIdx = 0;
+var pbInInjuryFollowUp = false;
+var pbRecognition = null;
+
+function openProfileBuilder() {
+  document.getElementById('profile-builder-modal').style.display = 'flex';
+  pbCurrentSection = null;
+  renderPBSectionSelect();
+}
+
+function closeProfileBuilder() {
+  document.getElementById('profile-builder-modal').style.display = 'none';
+  pbCurrentSection = null;
+  if (pbRecognition) { pbRecognition.stop(); pbRecognition = null; }
+}
+
+function renderPBSectionSelect() {
+  var pd = currentProfileData || {};
+  var completed = pd.profile_sections_completed || [];
+  document.getElementById('pb-section-select').style.display = 'flex';
+  document.getElementById('pb-chat').style.display = 'none';
+  document.getElementById('pb-input-area').style.display = 'none';
+  document.getElementById('pb-title').textContent = 'BUILD YOUR PROFILE';
+  var h = '<p style="font-size:14px;color:#888;line-height:1.6;margin-bottom:8px">Choose a section to complete. Each one takes 2-5 minutes and makes your coaching smarter.</p>';
+  for (var i = 0; i < PB_SECTIONS.length; i++) {
+    var s = PB_SECTIONS[i];
+    var isDone = completed.indexOf(s.id) >= 0;
+    h += '<button onclick="startPBSection(\'' + s.id + '\')" class="pb-section-btn' + (isDone ? ' done' : '') + '">';
+    h += '<span>' + s.icon + '  ' + s.label + '</span>';
+    h += isDone ? '<span class="mono" style="font-size:10px;letter-spacing:2px">&#10003; DONE</span>' : '<span class="mono" style="font-size:10px;color:#555;letter-spacing:1px">START</span>';
+    h += '</button>';
+  }
+  document.getElementById('pb-section-select').innerHTML = h;
+}
+
+function startPBSection(sectionId) {
+  pbCurrentSection = null;
+  for (var i = 0; i < PB_SECTIONS.length; i++) {
+    if (PB_SECTIONS[i].id === sectionId) { pbCurrentSection = PB_SECTIONS[i]; break; }
+  }
+  if (!pbCurrentSection) return;
+  pbCurrentStep = 0;
+  pbAnswers = {};
+  pbInjuries = [];
+  pbInjuryIdx = 0;
+  pbInjuryFollowUpIdx = 0;
+  pbInInjuryFollowUp = false;
+  document.getElementById('pb-section-select').style.display = 'none';
+  document.getElementById('pb-chat').style.display = 'flex';
+  document.getElementById('pb-chat').innerHTML = '';
+  document.getElementById('pb-input-area').style.display = 'block';
+  document.getElementById('pb-status').textContent = '';
+  document.getElementById('pb-title').textContent = pbCurrentSection.label.toUpperCase();
+  document.getElementById('pb-input').value = '';
+  document.getElementById('pb-input').type = 'text';
+  document.getElementById('pb-input').maxLength = 5000;
+  document.getElementById('pb-input').placeholder = 'Type your answer...';
+  askPBQuestion();
+}
+
+function askPBQuestion() {
+  var chat = document.getElementById('pb-chat');
+  var q, hint;
+  if (pbCurrentSection.id === 'injuries' && pbInInjuryFollowUp) {
+    var fu = pbCurrentSection.injuryFollowUps[pbInjuryFollowUpIdx];
+    var injName = pbInjuries[pbInjuryIdx] || 'this injury';
+    q = fu.q.replace(/\{injury\}/g, injName);
+    hint = fu.hint;
+  } else {
+    if (pbCurrentStep >= pbCurrentSection.questions.length) {
+      finishPBSection();
+      return;
+    }
+    var qObj = pbCurrentSection.questions[pbCurrentStep];
+    q = qObj.q;
+    hint = qObj.hint;
+  }
+  var h = '<div class="pb-chat-q"><p style="font-size:15px;color:#22c97a;line-height:1.6;white-space:pre-line">' + q + '</p>';
+  if (hint) h += '<p class="pb-hint">' + hint + '</p>';
+  h += '</div>';
+  chat.innerHTML += h;
+  chat.scrollTop = chat.scrollHeight;
+  document.getElementById('pb-input').value = '';
+  document.getElementById('pb-input').focus();
+}
+
+function submitPBAnswer() {
+  var input = document.getElementById('pb-input');
+  var answer = input.value.trim();
+  if (!answer) return;
+  var chat = document.getElementById('pb-chat');
+  chat.innerHTML += '<div class="pb-chat-a"><p style="font-size:15px;color:#ddd;line-height:1.6">' + answer + '</p></div>';
+  input.value = '';
+
+  if (pbCurrentSection.id === 'injuries' && pbInInjuryFollowUp) {
+    var fu = pbCurrentSection.injuryFollowUps[pbInjuryFollowUpIdx];
+    var injKey = pbInjuries[pbInjuryIdx] + '_' + fu.key;
+    pbAnswers[injKey] = answer;
+    pbInjuryFollowUpIdx++;
+    if (pbInjuryFollowUpIdx >= pbCurrentSection.injuryFollowUps.length) {
+      pbInjuryIdx++;
+      pbInjuryFollowUpIdx = 0;
+      if (pbInjuryIdx >= pbInjuries.length) {
+        pbInInjuryFollowUp = false;
+        pbCurrentStep++;
+        setTimeout(askPBQuestion, 400);
+        return;
+      }
+    }
+    setTimeout(askPBQuestion, 400);
+    return;
+  }
+
+  var qObj = pbCurrentSection.questions[pbCurrentStep];
+  pbAnswers[qObj.key] = answer;
+
+  // For injuries section, parse injury names and start follow-ups
+  if (pbCurrentSection.id === 'injuries' && qObj.key === 'injuries_list') {
+    var lower = answer.toLowerCase().trim();
+    if (lower === 'none' || lower === 'no' || lower === 'nope' || lower === 'n/a' || lower === 'nothing') {
+      pbCurrentStep++;
+      setTimeout(askPBQuestion, 400);
+      return;
+    }
+    // Parse injuries — split by comma, "and", newline
+    var parts = answer.split(/,|\band\b|\n/).map(function(s) { return s.trim(); }).filter(function(s) { return s.length > 0; });
+    if (parts.length > 0) {
+      pbInjuries = parts;
+      pbInjuryIdx = 0;
+      pbInjuryFollowUpIdx = 0;
+      pbInInjuryFollowUp = true;
+      chat.innerHTML += '<div class="pb-chat-q"><p style="font-size:14px;color:#22c97a;line-height:1.6">Got it — let me ask a few follow-up questions about each one so I can coach around them properly.</p></div>';
+      setTimeout(askPBQuestion, 600);
+      return;
+    }
+  }
+
+  pbCurrentStep++;
+  setTimeout(askPBQuestion, 400);
+}
+
+function finishPBSection() {
+  var chat = document.getElementById('pb-chat');
+  chat.innerHTML += '<div class="pb-chat-q"><p class="mono" style="font-size:12px;color:#22c97a;letter-spacing:2px;animation:pulse 1.6s infinite">UPDATING YOUR PROFILE...</p></div>';
+  document.getElementById('pb-input-area').style.display = 'none';
+  chat.scrollTop = chat.scrollHeight;
+
+  var pd = currentProfileData || {};
+  var answersText = '';
+  var keys = Object.keys(pbAnswers);
+  for (var i = 0; i < keys.length; i++) {
+    answersText += keys[i] + ': ' + pbAnswers[keys[i]] + '\n';
+  }
+
+  var existingJSON = JSON.stringify(pd);
+  var sectionId = pbCurrentSection.id;
+
+  var prompt = 'You are updating a fitness coaching profile with new information from a deep-dive questionnaire. The user completed the "' + sectionId + '" section.\n\n' +
+    'EXISTING PROFILE DATA:\n' + existingJSON + '\n\n' +
+    'NEW ANSWERS FROM USER:\n' + answersText + '\n\n' +
+    'INSTRUCTIONS:\n' +
+    '- Merge this new information into the existing profile_data\n' +
+    '- For the "goals" section: update/expand the goals array with more detail, add new goals mentioned\n' +
+    '- For the "injuries" section: update/expand the injuries array with detailed entries including onset, pain_level, triggers, management, training_impact fields\n' +
+    '- For the "training" section: add/update experience_level, training_preferences (likes/dislikes), best_training_period, fall_off_reasons\n' +
+    '- For the "lifestyle" section: update life_context with detailed family/work/schedule/equipment info, update schedule if mentioned\n' +
+    '- For the "mindset" section: update philosophy array, add motivation_why, consistency_drivers, bad_week_triggers\n' +
+    '- Always update ai_prompt_context to include the new information\n' +
+    '- Add "' + sectionId + '" to the profile_sections_completed array (keep existing entries)\n' +
+    '- Do NOT remove any existing data — only add or enhance\n' +
+    '- Return ONLY the complete updated profile_data JSON, no markdown, no explanation';
+
+  fetch('/api/ai', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ model: 'claude-sonnet-4-20250514', max_tokens: 3000, messages: [{ role: 'user', content: prompt }] })
+  })
+  .then(function(r) { return r.json(); })
+  .then(function(data) {
+    var raw = (data.content && data.content[0]) ? data.content[0].text : '{}';
+    var cleaned = raw.indexOf('{') >= 0 ? raw.substring(raw.indexOf('{'), raw.lastIndexOf('}') + 1) : '{}';
+    var updatedData = JSON.parse(cleaned);
+
+    // Ensure sections_completed is properly set
+    var sections = updatedData.profile_sections_completed || [];
+    if (sections.indexOf(sectionId) < 0) sections.push(sectionId);
+    updatedData.profile_sections_completed = sections;
+
+    // Save to server
+    return fetch('/api/profiles/' + currentProfileId, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ profile_data: updatedData })
+    }).then(function(r2) { return r2.json(); }).then(function(saveData) {
+      if (saveData.success && saveData.profile) {
+        currentProfileData = saveData.profile.profile_data;
+      } else {
+        currentProfileData = updatedData;
+      }
+      localStorage.setItem('ac_profile_data', JSON.stringify(currentProfileData));
+      if (currentProfileData.ai_prompt_context) FULL_PROFILE = currentProfileData.ai_prompt_context;
+      renderProfileTab();
+
+      chat.innerHTML += '<div class="pb-chat-q"><p style="font-size:15px;color:#22c97a;line-height:1.6">Done! Your ' + pbCurrentSection.label.toLowerCase() + ' section is now saved.</p></div>';
+      chat.scrollTop = chat.scrollHeight;
+
+      // Show back button
+      setTimeout(function() {
+        chat.innerHTML += '<div style="display:flex;gap:8px;margin-top:8px;align-self:center"><button onclick="renderPBSectionSelect()" class="btnPri" style="font-size:14px;padding:10px 20px">Continue Building</button><button onclick="closeProfileBuilder()" class="btnSec" style="font-size:14px;padding:10px 20px">Done For Now</button></div>';
+        chat.scrollTop = chat.scrollHeight;
+      }, 500);
+    });
+  })
+  .catch(function(e) {
+    chat.innerHTML += '<div class="pb-chat-q"><p style="color:#e87;font-size:14px">Error updating profile: ' + e.message + '. Your answers were saved locally — try again later.</p></div>';
+    document.getElementById('pb-input-area').style.display = 'block';
+    chat.scrollTop = chat.scrollHeight;
+  });
+}
+
+function startPBVoice() {
+  var SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+  if (!SR) { document.getElementById('pb-status').textContent = 'Voice not supported — use Chrome.'; return; }
+  if (pbRecognition) { pbRecognition.stop(); pbRecognition = null; document.getElementById('pb-mic').innerHTML = '&#127908;'; return; }
+  pbRecognition = new SR();
+  pbRecognition.continuous = false;
+  pbRecognition.interimResults = true;
+  pbRecognition.lang = 'en-US';
+  document.getElementById('pb-mic').textContent = '\u23F9';
+  document.getElementById('pb-status').textContent = 'Listening...';
+  pbRecognition.onresult = function(e) {
+    var transcript = '';
+    for (var i = 0; i < e.results.length; i++) { transcript = e.results[i][0].transcript; }
+    document.getElementById('pb-input').value = transcript;
+    if (e.results[0].isFinal) document.getElementById('pb-status').textContent = 'Got it — press Send or keep talking.';
+  };
+  pbRecognition.onerror = function() { document.getElementById('pb-status').textContent = ''; document.getElementById('pb-mic').innerHTML = '&#127908;'; pbRecognition = null; };
+  pbRecognition.onend = function() { document.getElementById('pb-mic').innerHTML = '&#127908;'; pbRecognition = null; };
+  pbRecognition.start();
+}
 
 function showTab(name, btn) {
   document.querySelectorAll('.tab').forEach(function(t) { t.classList.remove('active'); });
