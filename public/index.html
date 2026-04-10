@@ -28,6 +28,13 @@
 body{background:var(--bg);color:var(--text);font-family:'DM Sans',sans-serif;min-height:100vh;font-size:17px;line-height:1.7}
 body.font-large{font-size:19px}
 body.font-xl{font-size:21px}
+body.compact .card{padding:12px}
+body.compact .stack{gap:8px}
+body.compact .tab.active{gap:8px}
+body.compact .clabel{font-size:11px;margin-bottom:10px}
+body.compact .statsGrid,.compact .goalsGrid{gap:8px}
+body.compact main{padding:20px 24px 60px}
+@media(max-width:700px){body.compact main{padding:14px 10px 50px}}
 @keyframes pulse{0%,100%{opacity:.2}50%{opacity:1}}
 @keyframes fadeUp{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:translateY(0)}}
 @keyframes toastIn{from{opacity:0;transform:translateY(20px)}to{opacity:1;transform:translateY(0)}}
@@ -109,6 +116,8 @@ input[type=range]{width:100%;accent-color:var(--accent)}
 @media(max-width:700px){.settings-nav{display:none}.settings-body{flex-direction:column}.settings-content{padding:16px}.settings-tabs-mobile{display:flex;overflow-x:auto;border-bottom:1px solid var(--border);flex-shrink:0;padding:0 8px}.settings-tabs-mobile button{flex-shrink:0;background:transparent;border:none;color:var(--text-sec);padding:10px 14px;font-size:12px;cursor:pointer;font-family:'IBM Plex Mono',monospace;white-space:nowrap;border-bottom:2px solid transparent}.settings-tabs-mobile button.active{color:var(--accent);border-bottom-color:var(--accent)}}
 @media(min-width:701px){.settings-tabs-mobile{display:none}}
 .del-confirm-modal{position:fixed;inset:0;background:rgba(0,0,0,.92);display:flex;align-items:center;justify-content:center;z-index:150;padding:20px}
+.equip-tag{display:inline-flex;align-items:center;gap:6px;background:var(--accent-10);border:1px solid var(--accent-33);color:var(--accent);padding:4px 10px;border-radius:14px;font-size:12px;font-family:'IBM Plex Mono',monospace}
+.equip-tag button{background:none;border:none;color:var(--accent);cursor:pointer;font-size:14px;padding:0;line-height:1}
 </style>
 </head>
 <body>
@@ -333,6 +342,7 @@ input[type=range]{width:100%;accent-color:var(--accent)}
         <label style="display:flex;align-items:center;gap:8px;font-size:14px;color:#555"><input type="checkbox" disabled> Workout plan generator</label>
         <label style="display:flex;align-items:center;gap:8px;font-size:14px;color:#555"><input type="checkbox" disabled> Progress photos</label>
         <label style="display:flex;align-items:center;gap:8px;font-size:14px;color:#555"><input type="checkbox" disabled> Export data to PDF</label>
+        <label style="display:flex;align-items:center;gap:8px;font-size:14px;color:#555"><input type="checkbox" disabled> Push notifications (morning check-in, streak alerts, weekly summary, rest reminders) &mdash; needs service worker + push API</label>
       </div>
     </div>
 
@@ -511,6 +521,7 @@ function showToast(msg) {
     document.body.classList.add('theme-' + s.theme);
   }
   if (s.fontSize && s.fontSize !== 'normal') document.body.classList.add('font-' + s.fontSize);
+  if (localStorage.getItem('ac_compact') === 'true') document.body.classList.add('compact');
   if (s.accentOverride) {
     document.documentElement.style.setProperty('--accent', s.accentOverride);
     var alphas = ['08','10','12','15','18','20','22','33','40','44','66'];
@@ -1554,9 +1565,19 @@ function fetchAI() {
   var aiTone = aiSettings.aiTone || 'Motivational';
   var aiDetail = aiSettings.aiDetail || 'Normal';
   var aiNumOpts = aiSettings.aiOptions || 3;
-  var aiShowMV = aiSettings.aiShowMV !== false;
+  var aiMV = aiSettings.aiShowMV === undefined ? 'always' : aiSettings.aiShowMV;
+  if (aiMV === true) aiMV = 'always'; if (aiMV === false) aiMV = 'never';
+  var aiShowMV = aiMV === 'always' || (aiMV === 'low' && readiness && readiness.score < 50);
+  var aiLang = aiSettings.aiLang || 'Casual';
+  var allEquip = (aiSettings.equipment || []).concat(aiSettings.customEquipment || []);
+  var equipStr = allEquip.length ? allEquip.join(', ') : 'not specified';
+  var wkLoc = aiSettings.workoutLocation || 'Both';
+  var maxDur = aiSettings.maxDuration || 60;
+  var prefTime = aiSettings.preferredTime || 'Any';
   var prompt = 'You are ApexCoach, an elite personal AI coach for ' + athleteName + '. You know everything about them. Give ' + aiNumOpts + ' specific, data-driven workout options for today, ordered by best fit first.\n\n' +
-    'COACHING STYLE: ' + aiTone + ' tone. Detail level: ' + aiDetail + '.\n\n' +
+    'COACHING STYLE: ' + aiTone + ' tone. ' + aiLang + ' language. Detail level: ' + aiDetail + '.\n' +
+    'AVAILABLE EQUIPMENT: ' + equipStr + '\n' +
+    'WORKOUT LOCATION: ' + wkLoc + '. MAX DURATION: ' + (maxDur ? maxDur + ' min' : 'no limit') + '. PREFERRED TIME: ' + prefTime + '.\n\n' +
     'TODAY: ' + today + '\n' +
     dataBlock + '\n' +
     'RECENT 10-DAY LOG:\n' + recent + '\n\n' +
@@ -2921,7 +2942,9 @@ var SETTINGS_TABS = [
   {id:'appearance', label:'Appearance', icon:'&#127912;'},
   {id:'ai', label:'AI Coaching', icon:'&#129302;'},
   {id:'training', label:'Training', icon:'&#127947;'},
-  {id:'data', label:'Data & Readiness', icon:'&#128202;'}
+  {id:'data', label:'Data & Readiness', icon:'&#128202;'},
+  {id:'goals', label:'Goals & Tracking', icon:'&#127919;'},
+  {id:'profile', label:'Profile Management', icon:'&#128100;'}
 ];
 var currentSettingsTab = 'account';
 
@@ -2956,8 +2979,11 @@ function switchSettingsTab(id) {
 function renderSettingsContent() {
   var s = getSettings();
   var pd = currentProfileData || {};
+  var dp = JSON.parse(localStorage.getItem('ac_data_prefs') || '{}');
+  var tp = JSON.parse(localStorage.getItem('ac_tracking_prefs') || '{}');
   var h = '';
-  // Account
+
+  // ── ACCOUNT ──
   h += '<div class="settings-section' + (currentSettingsTab === 'account' ? ' active' : '') + '">';
   h += '<h3>Account & Security</h3>';
   h += '<div class="s-row"><label class="s-label">DISPLAY NAME</label>';
@@ -2973,9 +2999,10 @@ function renderSettingsContent() {
   h += '<button onclick="openChangePinModal();closeSettings()" class="btnSec" style="padding:8px 18px;font-size:13px">Change PIN</button></div>';
   h += '<div class="s-row"><label class="s-label">CONNECTED DEVICES</label>';
   var hasFitbit = pd.fitbit === true;
+  var authUrl = '/auth' + (currentProfileId ? '?profile_id=' + currentProfileId : '');
   h += '<div style="background:var(--bg-input);border:1px solid var(--border);border-radius:8px;padding:12px 16px;display:flex;align-items:center;justify-content:space-between">';
   h += '<span style="font-size:14px;color:var(--text-sec)">Fitbit</span>';
-  h += hasFitbit ? '<span class="mono" style="font-size:11px;color:var(--accent)">CONNECTED</span>' : '<span class="mono" style="font-size:11px;color:var(--text-muted)">NOT CONNECTED</span>';
+  h += hasFitbit ? '<span class="mono" style="font-size:11px;color:var(--accent)">CONNECTED</span>' : '<a href="' + authUrl + '" class="mono" style="font-size:11px;color:#00B0B9;text-decoration:none">CONNECT</a>';
   h += '</div></div>';
   h += '<div class="s-row"><label class="s-label">DATA</label>';
   h += '<div style="display:flex;gap:8px;flex-wrap:wrap">';
@@ -2986,7 +3013,7 @@ function renderSettingsContent() {
   h += '<button onclick="openDeleteModal()" style="background:transparent;border:1px solid var(--danger);color:var(--danger);padding:10px 20px;border-radius:6px;cursor:pointer;font-size:13px;font-weight:600">Delete Profile</button>';
   h += '</div></div>';
 
-  // Appearance
+  // ── APPEARANCE ──
   h += '<div class="settings-section' + (currentSettingsTab === 'appearance' ? ' active' : '') + '">';
   h += '<h3>Appearance</h3>';
   h += '<div class="s-row"><label class="s-label">THEME</label>';
@@ -2994,11 +3021,8 @@ function renderSettingsContent() {
   var themeNames = Object.keys(THEMES);
   var currentTheme = s.theme || 'apex';
   for (var i = 0; i < themeNames.length; i++) {
-    var tn = themeNames[i];
-    var tt = THEMES[tn];
-    h += '<div onclick="applyTheme(\'' + tn + '\');renderSettingsContent()" class="theme-swatch' + (currentTheme === tn ? ' active' : '') + '" style="background:' + tt.card + ';border-color:' + (currentTheme === tn ? tt.accent : tt.border) + '" title="' + tn + '">';
-    h += '<div style="width:14px;height:14px;border-radius:50%;background:' + tt.accent + '"></div>';
-    h += '</div>';
+    var tn = themeNames[i]; var tt = THEMES[tn];
+    h += '<div onclick="applyTheme(\'' + tn + '\');renderSettingsContent()" class="theme-swatch' + (currentTheme === tn ? ' active' : '') + '" style="background:' + tt.card + ';border-color:' + (currentTheme === tn ? tt.accent : tt.border) + '" title="' + tn + '"><div style="width:14px;height:14px;border-radius:50%;background:' + tt.accent + '"></div></div>';
   }
   h += '</div>';
   h += '<div style="display:flex;flex-wrap:wrap;gap:8px;margin-top:8px">';
@@ -3009,14 +3033,16 @@ function renderSettingsContent() {
   h += '</div></div>';
   h += '<div class="s-row"><label class="s-label">FONT SIZE</label>';
   var fs = s.fontSize || 'normal';
-  var fsOpts = [['normal','Normal (17px)'],['large','Large (19px)'],['xl','XL (21px)']];
   h += '<div style="display:flex;gap:8px">';
-  for (var i = 0; i < fsOpts.length; i++) {
-    var fv = fsOpts[i][0], fl = fsOpts[i][1];
-    var isSel = fs === fv;
-    h += '<button onclick="setFontSize(\'' + fv + '\')" style="flex:1;background:' + (isSel ? 'var(--accent-15)' : 'var(--bg-input)') + ';border:1px solid ' + (isSel ? 'var(--accent-33)' : 'var(--border)') + ';color:' + (isSel ? 'var(--accent)' : 'var(--text-sec)') + ';padding:10px;border-radius:6px;cursor:pointer;font-size:13px;font-family:DM Sans,sans-serif">' + fl + '</button>';
-  }
+  [['normal','Normal'],['large','Large'],['xl','XL']].forEach(function(o) {
+    var isSel = fs === o[0];
+    h += '<button onclick="setFontSize(\'' + o[0] + '\')" style="flex:1;background:' + (isSel ? 'var(--accent-15)' : 'var(--bg-input)') + ';border:1px solid ' + (isSel ? 'var(--accent-33)' : 'var(--border)') + ';color:' + (isSel ? 'var(--accent)' : 'var(--text-sec)') + ';padding:10px;border-radius:6px;cursor:pointer;font-size:13px;font-family:DM Sans,sans-serif">' + o[1] + '</button>';
+  });
   h += '</div></div>';
+  // Compact mode
+  var isCompact = localStorage.getItem('ac_compact') === 'true';
+  h += '<div class="s-row"><label style="display:flex;align-items:center;gap:8px;cursor:pointer"><input type="checkbox" ' + (isCompact?'checked':'') + ' onchange="toggleCompact(this.checked)"><span style="font-size:14px;color:var(--text-sec)">Compact mode (less padding, tighter layout)</span></label></div>';
+  // Accent override
   h += '<div class="s-row"><label class="s-label">ACCENT COLOR OVERRIDE</label>';
   var accentOpts = ['#22c97a','#00d4ff','#ff6b35','#ff2d55','#4fc3f7','#b44fff','#f5c842','#a8ff3e'];
   var curAccent = s.accentOverride || '';
@@ -3029,15 +3055,23 @@ function renderSettingsContent() {
   h += '</div></div>';
   h += '</div>';
 
-  // AI Coaching
+  // ── AI COACHING ──
   h += '<div class="settings-section' + (currentSettingsTab === 'ai' ? ' active' : '') + '">';
   h += '<h3>AI Coaching</h3>';
   var aiTone = s.aiTone || 'Motivational';
   var aiDetail = s.aiDetail || 'Normal';
   var aiOptions = s.aiOptions || 3;
-  var aiMV = s.aiShowMV !== false;
-  h += '<div class="s-row"><label class="s-label">COACHING TONE</label><select onchange="saveSetting(\'aiTone\',this.value)" style="margin-bottom:0">';
-  ['Motivational','Direct','Gentle','Scientific'].forEach(function(v){ h += '<option' + (aiTone===v?' selected':'') + '>' + v + '</option>'; });
+  var aiMV = s.aiShowMV === undefined ? 'always' : s.aiShowMV;
+  if (aiMV === true) aiMV = 'always'; if (aiMV === false) aiMV = 'never';
+  var aiLang = s.aiLang || 'Casual';
+  h += '<div class="s-row"><label class="s-label">COACHING TONE</label>';
+  h += '<p style="font-size:12px;color:var(--text-dim);margin-bottom:6px">How should your AI coach talk to you?</p>';
+  h += '<select onchange="saveSetting(\'aiTone\',this.value)" style="margin-bottom:0">';
+  [['Motivational','Motivational \uD83D\uDCAA \u2014 hype-focused, encourages pushing through'],['Direct','Direct \uD83C\uDFAF \u2014 blunt, no fluff, just what to do'],['Gentle','Gentle \uD83C\uDF31 \u2014 supportive, emphasizes rest and listening to your body'],['Scientific','Scientific \uD83D\uDD2C \u2014 data-focused, references specific numbers']].forEach(function(v){ h += '<option value="'+v[0]+'"' + (aiTone===v[0]?' selected':'') + '>' + v[1] + '</option>'; });
+  h += '</select></div>';
+  h += '<div class="s-row"><label class="s-label">LANGUAGE STYLE</label>';
+  h += '<select onchange="saveSetting(\'aiLang\',this.value)" style="margin-bottom:0">';
+  [['Casual','Casual \u2014 conversational, friendly, uses contractions'],['Professional','Professional \u2014 formal, precise, structured']].forEach(function(v){ h += '<option value="'+v[0]+'"' + (aiLang===v[0]?' selected':'') + '>' + v[1] + '</option>'; });
   h += '</select></div>';
   h += '<div class="s-row"><label class="s-label">DETAIL LEVEL</label><select onchange="saveSetting(\'aiDetail\',this.value)" style="margin-bottom:0">';
   ['Brief','Normal','Detailed'].forEach(function(v){ h += '<option' + (aiDetail===v?' selected':'') + '>' + v + '</option>'; });
@@ -3045,43 +3079,99 @@ function renderSettingsContent() {
   h += '<div class="s-row"><label class="s-label">NUMBER OF OPTIONS</label><select onchange="saveSetting(\'aiOptions\',parseInt(this.value))" style="margin-bottom:0">';
   [2,3,4].forEach(function(v){ h += '<option value="'+v+'"' + (aiOptions===v?' selected':'') + '>' + v + ' options</option>'; });
   h += '</select></div>';
-  h += '<div class="s-row"><label style="display:flex;align-items:center;gap:8px;cursor:pointer"><input type="checkbox" ' + (aiMV?'checked':'') + ' onchange="saveSetting(\'aiShowMV\',this.checked)"><span style="font-size:14px;color:var(--text-sec)">Show minimum viable option</span></label></div>';
+  h += '<div class="s-row"><label class="s-label">SHOW MINIMUM VIABLE OPTION</label><select onchange="saveSetting(\'aiShowMV\',this.value)" style="margin-bottom:0">';
+  [['always','Always'],['low','Only on low readiness (below 50)'],['never','Never']].forEach(function(v){ h += '<option value="'+v[0]+'"' + (aiMV===v[0]?' selected':'') + '>' + v[1] + '</option>'; });
+  h += '</select></div>';
   h += '</div>';
 
-  // Training
+  // ── TRAINING ──
   h += '<div class="settings-section' + (currentSettingsTab === 'training' ? ' active' : '') + '">';
   h += '<h3>Training Preferences</h3>';
   var equipList = ['Barbell','Dumbbells','Kettlebell','Pull-up Bar','Resistance Bands','Cable Machine','Bodyweight Only','Full Gym'];
   var equip = s.equipment || [];
+  var customEquip = s.customEquipment || [];
   h += '<div class="s-row"><label class="s-label">AVAILABLE EQUIPMENT</label>';
   h += '<div style="display:flex;flex-wrap:wrap;gap:8px">';
   for (var i = 0; i < equipList.length; i++) {
-    var eq = equipList[i];
-    var isChk = equip.indexOf(eq) >= 0;
+    var eq = equipList[i]; var isChk = equip.indexOf(eq) >= 0;
     h += '<label style="display:flex;align-items:center;gap:6px;background:var(--bg-input);border:1px solid ' + (isChk ? 'var(--accent-33)' : 'var(--border)') + ';padding:8px 12px;border-radius:6px;cursor:pointer;font-size:13px;color:' + (isChk ? 'var(--accent)' : 'var(--text-sec)') + '"><input type="checkbox" ' + (isChk?'checked':'') + ' onchange="toggleEquipment(\'' + eq + '\',this.checked)">' + eq + '</label>';
   }
+  h += '</div>';
+  // Custom equipment tags
+  if (customEquip.length) {
+    h += '<div style="display:flex;flex-wrap:wrap;gap:6px;margin-top:8px">';
+    for (var i = 0; i < customEquip.length; i++) {
+      h += '<span class="equip-tag">' + customEquip[i] + ' <button onclick="removeCustomEquip(' + i + ')">&times;</button></span>';
+    }
+    h += '</div>';
+  }
+  h += '<div style="display:flex;gap:8px;margin-top:10px">';
+  h += '<input type="text" id="custom-equip-input" placeholder="Other equipment (e.g. TRX, Boxing bag)" style="flex:1;background:var(--bg-input);border:1px solid var(--border);color:var(--text);padding:8px 12px;border-radius:6px;font-size:13px;outline:none;font-family:DM Sans,sans-serif" onkeyup="if(event.key===\'Enter\')addCustomEquip()">';
+  h += '<button onclick="addCustomEquip()" class="btnSec" style="padding:8px 14px;font-size:12px;white-space:nowrap">+ Add</button>';
   h += '</div></div>';
+  // Workout location
+  var wkLoc = s.workoutLocation || 'Both';
+  h += '<div class="s-row"><label class="s-label">WORKOUT LOCATION</label><select onchange="saveSetting(\'workoutLocation\',this.value)" style="margin-bottom:0">';
+  ['Home','Gym','Both'].forEach(function(v){ h += '<option' + (wkLoc===v?' selected':'') + '>' + v + '</option>'; });
+  h += '</select></div>';
   var maxDur = s.maxDuration || 60;
   h += '<div class="s-row"><label class="s-label">MAX WORKOUT DURATION</label><select onchange="saveSetting(\'maxDuration\',parseInt(this.value))" style="margin-bottom:0">';
-  [20,30,45,60,75,90].forEach(function(v){ h += '<option value="'+v+'"' + (maxDur===v?' selected':'') + '>' + v + ' minutes</option>'; });
+  [15,30,45,60,90,0].forEach(function(v){ h += '<option value="'+v+'"' + (maxDur===v?' selected':'') + '>' + (v ? v + ' minutes' : 'No limit') + '</option>'; });
   h += '</select></div>';
   var prefTime = s.preferredTime || 'Any';
-  h += '<div class="s-row"><label class="s-label">PREFERRED TIME</label><select onchange="saveSetting(\'preferredTime\',this.value)" style="margin-bottom:0">';
+  h += '<div class="s-row"><label class="s-label">PREFERRED WORKOUT TIME</label><select onchange="saveSetting(\'preferredTime\',this.value)" style="margin-bottom:0">';
   ['Any','Morning','Afternoon','Evening'].forEach(function(v){ h += '<option' + (prefTime===v?' selected':'') + '>' + v + '</option>'; });
+  h += '</select></div>';
+  var restPref = s.restDayPref || 'flexible';
+  h += '<div class="s-row"><label class="s-label">REST DAY PREFERENCE</label><select onchange="saveSetting(\'restDayPref\',this.value)" style="margin-bottom:0">';
+  [['fixed','Fixed days (uses your schedule)'],['flexible','Flexible (based on readiness)']].forEach(function(v){ h += '<option value="'+v[0]+'"' + (restPref===v[0]?' selected':'') + '>' + v[1] + '</option>'; });
   h += '</select></div>';
   h += '</div>';
 
-  // Data & Readiness
+  // ── DATA & READINESS ──
   h += '<div class="settings-section' + (currentSettingsTab === 'data' ? ' active' : '') + '">';
   h += '<h3>Data & Readiness</h3>';
   h += '<div class="s-row"><label class="s-label">READINESS FORMULA</label>';
   h += '<div style="background:var(--bg-input);border:1px solid var(--border);padding:12px;border-radius:6px;font-size:13px;color:var(--text-sec)">V3 (Regression-fitted, R\u00B2=0.885)</div></div>';
-  var autoSync = s.autoSync !== false;
-  h += '<div class="s-row"><label style="display:flex;align-items:center;gap:8px;cursor:pointer"><input type="checkbox" ' + (autoSync?'checked':'') + ' onchange="saveSetting(\'autoSync\',this.checked)"><span style="font-size:14px;color:var(--text-sec)">Auto-sync Fitbit on app load</span></label></div>';
-  var calDefault = s.calendarDefault || 'week';
-  h += '<div class="s-row"><label class="s-label">CALENDAR DEFAULT VIEW</label><select onchange="saveSetting(\'calendarDefault\',this.value)" style="margin-bottom:0">';
-  ['week','month'].forEach(function(v){ h += '<option' + (calDefault===v?' selected':'') + '>' + v + '</option>'; });
+  var autoSync = dp.autoSync !== false;
+  h += '<div class="s-row"><label style="display:flex;align-items:center;gap:8px;cursor:pointer"><input type="checkbox" ' + (autoSync?'checked':'') + ' onchange="saveDataPref(\'autoSync\',this.checked)"><span style="font-size:14px;color:var(--text-sec)">Auto-sync Fitbit on app load</span></label></div>';
+  var showFbScore = dp.showFitbitScore !== false;
+  h += '<div class="s-row"><label style="display:flex;align-items:center;gap:8px;cursor:pointer"><input type="checkbox" ' + (showFbScore?'checked':'') + ' onchange="saveDataPref(\'showFitbitScore\',this.checked)"><span style="font-size:14px;color:var(--text-sec)">Show Fitbit sleep score alongside readiness</span></label></div>';
+  var cacheDur = dp.cacheDuration || 'day';
+  h += '<div class="s-row"><label class="s-label">CACHE DURATION</label><select onchange="saveDataPref(\'cacheDuration\',this.value)" style="margin-bottom:0">';
+  [['day','Same day (default)'],['none','Always refresh (ignore cache)']].forEach(function(v){ h += '<option value="'+v[0]+'"' + (cacheDur===v[0]?' selected':'') + '>' + v[1] + '</option>'; });
   h += '</select></div>';
+  h += '</div>';
+
+  // ── GOALS & TRACKING ──
+  h += '<div class="settings-section' + (currentSettingsTab === 'goals' ? ' active' : '') + '">';
+  h += '<h3>Goals & Tracking</h3>';
+  var weekTarget = tp.weeklyTarget || 4;
+  h += '<div class="s-row"><label class="s-label">WEEKLY WORKOUT TARGET</label>';
+  h += '<input type="number" min="1" max="7" value="' + weekTarget + '" onchange="saveTrackingPref(\'weeklyTarget\',parseInt(this.value))" style="width:80px;background:var(--bg-input);border:1px solid var(--border);color:var(--text);padding:10px 14px;border-radius:6px;font-size:15px;outline:none;font-family:DM Sans,sans-serif"></div>';
+  var showMed = tp.showMeditation !== false;
+  h += '<div class="s-row"><label style="display:flex;align-items:center;gap:8px;cursor:pointer"><input type="checkbox" ' + (showMed?'checked':'') + ' onchange="saveTrackingPref(\'showMeditation\',this.checked)"><span style="font-size:14px;color:var(--text-sec)">Show meditation tracker on profile</span></label></div>';
+  var showMob = tp.showMobility !== false;
+  h += '<div class="s-row"><label style="display:flex;align-items:center;gap:8px;cursor:pointer"><input type="checkbox" ' + (showMob?'checked':'') + ' onchange="saveTrackingPref(\'showMobility\',this.checked)"><span style="font-size:14px;color:var(--text-sec)">Show mobility tracker on week stats</span></label></div>';
+  var calDef = tp.calendarDefault || 'week';
+  h += '<div class="s-row"><label class="s-label">CALENDAR DEFAULT VIEW</label><select onchange="saveTrackingPref(\'calendarDefault\',this.value)" style="margin-bottom:0">';
+  ['week','month'].forEach(function(v){ h += '<option' + (calDef===v?' selected':'') + '>' + v + '</option>'; });
+  h += '</select></div>';
+  h += '</div>';
+
+  // ── PROFILE MANAGEMENT ──
+  h += '<div class="settings-section' + (currentSettingsTab === 'profile' ? ' active' : '') + '">';
+  h += '<h3>Profile Management</h3>';
+  var curWearable = pd.wearable || (pd.fitbit ? 'Fitbit' : 'None');
+  h += '<div class="s-row"><label class="s-label">WEARABLE DEVICE</label><select onchange="saveWearable(this.value)" style="margin-bottom:0">';
+  ['None','Fitbit','Apple Watch','Garmin','Whoop','Samsung','Other'].forEach(function(v){ h += '<option' + (curWearable===v?' selected':'') + '>' + v + '</option>'; });
+  h += '</select>';
+  h += '<p style="font-size:12px;color:var(--text-dim);margin-top:4px">Currently only Fitbit is fully supported. Other devices use manual check-in.</p></div>';
+  h += '<div class="s-row"><label class="s-label">PROFILE TOOLS</label>';
+  h += '<div style="display:flex;flex-direction:column;gap:8px">';
+  h += '<button onclick="closeSettings();openProfileBuilder()" class="btnSec" style="padding:10px 18px;font-size:13px;text-align:left">&#128221; Rebuild Profile (deep-dive questions)</button>';
+  h += '<button onclick="confirmResetOnboarding()" class="btnSec" style="padding:10px 18px;font-size:13px;text-align:left;color:var(--warning);border-color:' + '#f5a62333' + '">&#x21bb; Reset Onboarding (keeps workout history)</button>';
+  h += '</div></div>';
   h += '</div>';
 
   document.getElementById('settings-content').innerHTML = h;
@@ -3145,6 +3235,61 @@ function toggleEquipment(item, checked) {
   if (!checked) s.equipment = s.equipment.filter(function(e){ return e !== item; });
   saveSettings(s);
   showToast();
+}
+function toggleCompact(on) {
+  localStorage.setItem('ac_compact', on ? 'true' : 'false');
+  document.body.classList.toggle('compact', on);
+  showToast();
+}
+function addCustomEquip() {
+  var inp = document.getElementById('custom-equip-input');
+  var val = inp.value.trim();
+  if (!val) return;
+  var s = getSettings();
+  if (!s.customEquipment) s.customEquipment = [];
+  if (s.customEquipment.indexOf(val) < 0) s.customEquipment.push(val);
+  saveSettings(s);
+  inp.value = '';
+  renderSettingsContent();
+  showToast();
+}
+function removeCustomEquip(idx) {
+  var s = getSettings();
+  if (s.customEquipment) s.customEquipment.splice(idx, 1);
+  saveSettings(s);
+  renderSettingsContent();
+  showToast();
+}
+function saveDataPref(key, val) {
+  var dp = JSON.parse(localStorage.getItem('ac_data_prefs') || '{}');
+  dp[key] = val;
+  localStorage.setItem('ac_data_prefs', JSON.stringify(dp));
+  showToast();
+}
+function saveTrackingPref(key, val) {
+  var tp = JSON.parse(localStorage.getItem('ac_tracking_prefs') || '{}');
+  tp[key] = val;
+  localStorage.setItem('ac_tracking_prefs', JSON.stringify(tp));
+  showToast();
+}
+function saveWearable(device) {
+  var pd = currentProfileData || {};
+  pd.wearable = device === 'None' ? null : device;
+  pd.fitbit = device === 'Fitbit';
+  saveProfileDataToServer(pd);
+  showToast();
+}
+function confirmResetOnboarding() {
+  if (confirm('This will reset your profile information but keep your workout history. Continue?')) {
+    var pd = currentProfileData || {};
+    // Keep workout-related data, clear profile sections
+    var keep = { fitbit: pd.fitbit, wearable: pd.wearable, onboarding_complete: false };
+    currentProfileData = keep;
+    localStorage.setItem('ac_profile_data', JSON.stringify(keep));
+    saveProfileDataToServer(keep);
+    closeSettings();
+    startOnboarding();
+  }
 }
 function handleAvatarUpload(input) {
   if (!input.files || !input.files[0]) return;

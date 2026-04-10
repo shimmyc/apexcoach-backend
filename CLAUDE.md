@@ -135,17 +135,21 @@ Full-screen settings overlay accessible via gear icon or profile avatar click. S
 ## Profile Data Fields
 
 - profile_data.avatar_image — base64 JPEG string (200x200), displayed as circular photo
-- profile_data.ai_preferences — {tone, detail_level, num_options, show_minimum}
-- profile_data.training_preferences — {equipment[], max_duration, preferred_time}
 - profile_data.fitbit — true/false
-- profile_data.wearable — device name string or null
+- profile_data.wearable — device name string or null (Fitbit, Apple Watch, Garmin, Whoop, Samsung, Other)
 - profile_data.profile_sections_completed — array of completed deep profile sections
 - profile_data.onboarding_complete — boolean
 
 ## localStorage Keys
 
 - ac_theme — current theme name
-- ac_settings — JSON with font_size, accent_override, auto_sync, cal_default_view
+- ac_compact — "true"/"false" for compact mode
+- ac_settings — JSON with all settings:
+  - fontSize, accentOverride — appearance
+  - aiTone (Motivational/Direct/Gentle/Scientific), aiLang (Casual/Professional), aiDetail (Brief/Normal/Detailed), aiOptions (2-4), aiShowMV (always/low/never) — AI coaching
+  - equipment[] (preset items), customEquipment[] (user-added items), workoutLocation (Home/Gym/Both), maxDuration (minutes or 0), preferredTime (Any/Morning/Afternoon/Evening), restDayPref (fixed/flexible) — training
+- ac_data_prefs — JSON: autoSync (bool), showFitbitScore (bool), cacheDuration (day/none)
+- ac_tracking_prefs — JSON: weeklyTarget (1-7), showMeditation (bool), showMobility (bool), calendarDefault (week/month)
 - ac_profile_id, ac_profile_name, ac_profile_color, ac_profile_data — profile cache
 - ac_cache, ac_cache_date — Fitbit/check-in data cache
 - ac_schedule — weekly schedule
