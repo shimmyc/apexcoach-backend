@@ -74,9 +74,11 @@ Clamped to [1, 100]. See FORMULAS.md for full documentation.
 
 - PATCH /api/workouts/:id — edit workout
 
-- PATCH /api/profiles/:id — update profile data
+- PATCH /api/profiles/:id — update profile data (also accepts name, avatar_color top-level)
 
 - PATCH /api/profiles/:id/pin — change PIN
+
+- DELETE /api/profiles/:id — delete profile + all workouts (requires PIN in body)
 
 - POST /api/ai — Anthropic API proxy
 
@@ -115,6 +117,39 @@ Shimmy Castle - blue belt MMA, wedding musician, new dad. Injuries: pubic osteit
 profile_data.fitbit = true/false
 
 profile_data.wearable = device name string or null (for future device routing)
+
+## Settings Panel
+
+Full-screen settings overlay accessible via gear icon or profile avatar click. Sections:
+
+- Account & Security: display name, profile photo upload, change PIN, Fitbit status, export data, delete profile
+- Appearance: 10 themes, font size (Normal/Large/XL), accent color override
+- AI Coaching: tone (Motivational/Direct/Gentle/Scientific), detail level, num options, minimum viable toggle
+- Training: equipment checkboxes, max duration, preferred workout time
+- Data & Readiness: formula version, auto-sync, calendar default view
+
+## Theme System
+
+10 themes using CSS custom properties: apex (default), midnight, carbon, forest, crimson, arctic (light), sunset, monochrome, purple, gold. All colors use var() references. JS TC object mirrors CSS vars for dynamic HTML generation.
+
+## Profile Data Fields
+
+- profile_data.avatar_image — base64 JPEG string (200x200), displayed as circular photo
+- profile_data.ai_preferences — {tone, detail_level, num_options, show_minimum}
+- profile_data.training_preferences — {equipment[], max_duration, preferred_time}
+- profile_data.fitbit — true/false
+- profile_data.wearable — device name string or null
+- profile_data.profile_sections_completed — array of completed deep profile sections
+- profile_data.onboarding_complete — boolean
+
+## localStorage Keys
+
+- ac_theme — current theme name
+- ac_settings — JSON with font_size, accent_override, auto_sync, cal_default_view
+- ac_profile_id, ac_profile_name, ac_profile_color, ac_profile_data — profile cache
+- ac_cache, ac_cache_date — Fitbit/check-in data cache
+- ac_schedule — weekly schedule
+- ac_belt — current belt level
 
 ## Environment Variables (on Render)
 

@@ -391,34 +391,42 @@ app.post("/api/profiles/verify", async function(req, res) {
 app.patch("/api/profiles/:id", async function(req, res) {
   try {
     var profileId = req.params.id;
-    var newData = req.body.profile_data;
-    if (!newData || typeof newData !== 'object') {
-      return res.status(400).json({ success: false, error: "profile_data object required." });
-    }
-    // Fetch existing profile_data
-    var r = await fetch(SUPABASE_URL + "/rest/v1/profiles?id=eq." + profileId + "&select=profile_data", {
-      headers: sbHeaders(),
-    });
-    var rows = await r.json();
-    if (!rows || !rows.length) return res.json({ success: false, error: "Profile not found." });
-    var existing = rows[0].profile_data || {};
-    // Deep merge: arrays are replaced, objects are merged
-    var merged = Object.assign({}, existing);
-    var keys = Object.keys(newData);
-    for (var i = 0; i < keys.length; i++) {
-      var key = keys[i];
-      if (newData[key] !== null && typeof newData[key] === 'object' && !Array.isArray(newData[key]) &&
-          merged[key] && typeof merged[key] === 'object' && !Array.isArray(merged[key])) {
-        merged[key] = Object.assign({}, merged[key], newData[key]);
-      } else {
-        merged[key] = newData[key];
+    var body = req.body;
+    // Build update payload - supports name, avatar_color, and profile_data
+    var updatePayload = {};
+    if (body.name) updatePayload.name = body.name;
+    if (body.avatar_color) updatePayload.avatar_color = body.avatar_color;
+
+    if (body.profile_data && typeof body.profile_data === 'object') {
+      // Fetch existing profile_data for merge
+      var r = await fetch(SUPABASE_URL + "/rest/v1/profiles?id=eq." + profileId + "&select=profile_data", {
+        headers: sbHeaders(),
+      });
+      var rows = await r.json();
+      if (!rows || !rows.length) return res.json({ success: false, error: "Profile not found." });
+      var existing = rows[0].profile_data || {};
+      var merged = Object.assign({}, existing);
+      var keys = Object.keys(body.profile_data);
+      for (var i = 0; i < keys.length; i++) {
+        var key = keys[i];
+        if (body.profile_data[key] !== null && typeof body.profile_data[key] === 'object' && !Array.isArray(body.profile_data[key]) &&
+            merged[key] && typeof merged[key] === 'object' && !Array.isArray(merged[key])) {
+          merged[key] = Object.assign({}, merged[key], body.profile_data[key]);
+        } else {
+          merged[key] = body.profile_data[key];
+        }
       }
+      updatePayload.profile_data = merged;
     }
-    // Save merged data
+
+    if (Object.keys(updatePayload).length === 0) {
+      return res.status(400).json({ success: false, error: "Nothing to update." });
+    }
+
     var r2 = await fetch(SUPABASE_URL + "/rest/v1/profiles?id=eq." + profileId, {
       method: "PATCH",
       headers: sbHeaders("return=representation"),
-      body: JSON.stringify({ profile_data: merged }),
+      body: JSON.stringify(updatePayload),
     });
     var updated = await r2.json();
     var profile = Array.isArray(updated) ? updated[0] : updated;
@@ -448,6 +456,38 @@ app.patch("/api/profiles/:id/pin", async function(req, res) {
       method: "PATCH",
       headers: sbHeaders("return=minimal"),
       body: JSON.stringify({ pin: hashPin(body.new_pin) }),
+    });
+    res.json({ success: true });
+  } catch (e) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+// ── DELETE PROFILE ────────────────────────────────────────────────────────
+app.delete("/api/profiles/:id", async function(req, res) {
+  try {
+    var body = req.body;
+    if (!body.pin) {
+      return res.status(400).json({ success: false, error: "PIN required to delete profile." });
+    }
+    // Verify PIN
+    var r = await fetch(SUPABASE_URL + "/rest/v1/profiles?id=eq." + req.params.id + "&select=pin", {
+      headers: sbHeaders(),
+    });
+    var rows = await r.json();
+    if (!rows || !rows.length) return res.json({ success: false, error: "Profile not found." });
+    if (rows[0].pin !== hashPin(body.pin)) {
+      return res.json({ success: false, error: "Incorrect PIN." });
+    }
+    // Delete all workouts for this profile
+    await fetch(SUPABASE_URL + "/rest/v1/workouts?profile_id=eq." + req.params.id, {
+      method: "DELETE",
+      headers: sbHeaders("return=minimal"),
+    });
+    // Delete the profile
+    await fetch(SUPABASE_URL + "/rest/v1/profiles?id=eq." + req.params.id, {
+      method: "DELETE",
+      headers: sbHeaders("return=minimal"),
     });
     res.json({ success: true });
   } catch (e) {
