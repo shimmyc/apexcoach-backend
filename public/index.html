@@ -2082,7 +2082,8 @@ function renderLogArea() {
   }
   var el = document.getElementById('log-area');
   if (todayEntry) {
-    el.innerHTML = '<div class="loggedPill">done: ' + todayEntry.type + (todayEntry.mobility ? ' + mobility' : '') + (todayEntry.med ? ' + meditation' : '') + '</div>';
+    var editData = JSON.stringify({id:todayEntry.id,date:todayEntry.date,type:todayEntry.type,notes:todayEntry.notes||'',done:todayEntry.done,mobility:todayEntry.mobility,med:todayEntry.med}).replace(/"/g,"'");
+    el.innerHTML = '<div class="loggedPill" style="display:flex;align-items:center;justify-content:space-between">done: ' + todayEntry.type + (todayEntry.mobility ? ' + mobility' : '') + (todayEntry.med ? ' + meditation' : '') + '<button onclick="editWorkout(' + editData + ')" style="background:transparent;border:1px solid var(--accent-33);color:var(--accent);padding:3px 10px;border-radius:4px;cursor:pointer;font-size:11px;font-family:IBM Plex Mono,monospace;margin-left:10px">Edit</button></div>';
   } else {
     el.innerHTML = '<button class="logBtn" onclick="openModal()">+ log today\'s workout</button>';
   }
@@ -2144,15 +2145,29 @@ function saveWorkout() {
   };
 
   if (editingWorkoutId) {
-    // Update existing
+    // Update existing — find by id and replace in local array
+    var found = false;
     for (var i = 0; i < workoutLog.length; i++) {
       if (workoutLog[i].id === editingWorkoutId) {
         workoutLog[i] = Object.assign(workoutLog[i], entry);
+        found = true;
         break;
       }
     }
+    // If not found by id (edge case), find by date match
+    if (!found) {
+      for (var i = 0; i < workoutLog.length; i++) {
+        if (workoutLog[i].date === entryDate) {
+          workoutLog[i] = Object.assign(workoutLog[i], entry);
+          found = true;
+          break;
+        }
+      }
+    }
+    // PATCH existing on server — never POST
     updateWorkoutInSupabase(editingWorkoutId, entry);
   } else {
+    // New workout — POST to server
     workoutLog.unshift(entry);
     saveWorkoutToSupabase(entry);
   }
@@ -2461,7 +2476,7 @@ function formatNotesWithAI() {
     body: JSON.stringify({
       model: 'claude-sonnet-4-20250514',
       max_tokens: 600,
-      messages: [{ role: 'user', content: 'Format these workout notes into a clean structured list. Each exercise or activity on its own line. Expand abbreviations. Add reps/sets formatting where mentioned. Keep it concise. Return ONLY the formatted text, no JSON, no explanation: ' + notes }]
+      messages: [{ role: 'user', content: 'Format these workout notes into a clean structured list. Rules:\n- Each exercise on its own line with sets/reps/weight formatted cleanly\n- PRESERVE ALL subjective notes exactly as written - anything about how it felt, pain levels, energy, difficulty, sensations (e.g. \'felt tight\', \'groin felt okay\', \'really hard today\', \'good pump\') must be kept\n- Put exercise lines first, then a \'Notes:\' section at the bottom with all the subjective/feeling content\n- Expand abbreviations (3x12 is fine to keep, but spell out exercise names)\n- Return ONLY the formatted text, no explanation\n\n' + notes }]
     })
   })
   .then(function(r) { return r.json(); })
