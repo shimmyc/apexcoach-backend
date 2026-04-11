@@ -114,7 +114,8 @@ async function loadProfileTokens(profileId) {
 
 async function saveProfileTokens(profileId, tokens) {
   try {
-    await fetch(SUPABASE_URL + "/rest/v1/profiles?id=eq." + profileId, {
+    console.log("[Fitbit] saveProfileTokens: writing to profiles table, id=" + profileId);
+    var patchRes = await fetch(SUPABASE_URL + "/rest/v1/profiles?id=eq." + profileId, {
       method: "PATCH",
       headers: sbHeaders("return=minimal"),
       body: JSON.stringify({
@@ -123,6 +124,7 @@ async function saveProfileTokens(profileId, tokens) {
         fitbit_expires_at:    tokens.expires_at,
       }),
     });
+    console.log("[Fitbit] saveProfileTokens response status:", patchRes.status);
   } catch (e) {
     console.error("saveProfileTokens error:", e.message);
   }
@@ -268,16 +270,20 @@ async function buildDailyData(token) {
 // ── OAUTH ──────────────────────────────────────────────────────────────────
 app.get("/auth", function(req, res) {
   var profileId = req.query.profile_id || "";
+  console.log("[OAuth] /auth called. profile_id=" + profileId);
   const url = "https://www.fitbit.com/oauth2/authorize?response_type=code&client_id=" + CLIENT_ID +
     "&redirect_uri=" + encodeURIComponent(REDIRECT_URI) +
     "&scope=" + encodeURIComponent("sleep heartrate activity profile") +
-    "&state=" + profileId;
+    "&state=" + encodeURIComponent(profileId);
+  console.log("[OAuth] Redirecting to Fitbit with state=" + profileId);
   res.redirect(url);
 });
 
 app.get("/callback", async function(req, res) {
   const code = req.query.code;
-  const profileId = req.query.state || "";
+  const rawState = req.query.state || "";
+  const profileId = decodeURIComponent(rawState).trim();
+  console.log("[OAuth] /callback received. code=" + (code ? "yes" : "no") + ", raw state='" + rawState + "', profileId='" + profileId + "'");
   if (!code) return res.status(400).send("No code.");
   try {
     const creds = Buffer.from(CLIENT_ID + ":" + CLIENT_SECRET).toString("base64");
@@ -298,14 +304,17 @@ app.get("/callback", async function(req, res) {
     };
     // Save to profile if profileId provided, otherwise legacy tokens table
     if (profileId) {
+      console.log("[OAuth] Saving tokens to PROFILES table, id=" + profileId);
       await saveProfileTokens(profileId, tokenData);
-      console.log("OAuth complete. Tokens saved to profile " + profileId);
+      console.log("[OAuth] SUCCESS: Tokens saved to profile " + profileId + ". expires_at=" + new Date(tokenData.expires_at).toISOString());
     } else {
+      console.log("[OAuth] WARNING: No profileId in state param. Saving to legacy tokens table.");
       await saveTokens(tokenData);
-      console.log("OAuth complete. Tokens saved to legacy tokens table.");
+      console.log("[OAuth] Tokens saved to legacy tokens table.");
     }
     res.redirect("/");
   } catch (err) {
+    console.error("[OAuth] ERROR in callback:", err.message);
     res.status(500).send(err.message);
   }
 });
@@ -508,9 +517,10 @@ app.get("/api/daily", async function(req, res) {
   }
 });
 
-// Per-profile endpoint (uses profile's fitbit tokens)
+// Per-profile endpoint (uses profile's fitbit tokens from profiles table)
 app.get("/api/profiles/:id/daily", async function(req, res) {
   try {
+    console.log("[Fitbit] /api/profiles/" + req.params.id + "/daily called - loading tokens from profiles table");
     const token = await getValidProfileToken(req.params.id);
     const result = await buildDailyData(token);
     res.json({ success: true, date: result.date, data: result.data });
