@@ -177,6 +177,18 @@ Full-screen settings overlay accessible via gear icon or profile avatar click. S
 
 FITBIT_CLIENT_ID, FITBIT_CLIENT_SECRET, SUPABASE_URL, SUPABASE_KEY, ANTHROPIC_KEY, ADMIN_SECRET
 
+## Developer Tools
+
+These browser console utilities are available for testing and debugging:
+
+- `window.testStreak(days)` - Test streak display with any number of days. Example: `testStreak(30)` shows legendary mode, `testStreak(0)` shows broken streak
+
+- `localStorage.removeItem('ac_cache')` then `location.reload()` - Force clear Fitbit cache and fetch fresh data
+
+- `localStorage.clear()` then `location.reload()` - Nuclear option, clears everything including profile (will show profile selector)
+
+These are intentionally left in production — they require console access and are invisible to regular users.
+
 ## Maintenance Instructions
 
 This file should be kept up to date as the project evolves. After any significant change - new features, schema changes, new endpoints, formula updates, or architectural decisions - update the relevant section of this CLAUDE.md automatically as part of the commit. This way the file always reflects the current state of the project.
