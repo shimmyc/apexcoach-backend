@@ -1294,6 +1294,14 @@ function syncFitbit() {
     return;
   }
 
+  // Ensure profileId is set from localStorage if variable is empty
+  if (!currentProfileId) {
+    var lsId = localStorage.getItem('ac_profile_id');
+    if (lsId) currentProfileId = parseInt(lsId);
+  }
+  var dailyUrl = currentProfileId ? '/api/profiles/' + currentProfileId + '/daily' : '/api/daily';
+  console.log('[ApexCoach] syncFitbit: profileId=' + currentProfileId + ', url=' + dailyUrl);
+
   document.getElementById('status-box').style.display = 'block';
   document.getElementById('status-box').innerHTML = '<p class="mono" style="font-size:11px;color:var(--accent);letter-spacing:3px;animation:pulse 1.6s infinite">FETCHING FITBIT DATA...</p>';
   document.getElementById('checkin-card').style.display = 'none';
@@ -1320,7 +1328,7 @@ function syncFitbit() {
     }
   }
 
-  fetch(currentProfileId ? '/api/profiles/' + currentProfileId + '/daily' : '/api/daily')
+  fetch(dailyUrl)
     .then(function(r) { return r.json(); })
     .then(function(json) {
       if (!json.success) throw new Error(json.error);
