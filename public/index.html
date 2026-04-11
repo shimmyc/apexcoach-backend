@@ -1347,30 +1347,52 @@ function syncFitbit() {
 }
 
 function computeReadiness(d) {
-  var hrv = d.hrv || 0;
-  var deepSleepMinutes = (d.sleep && d.sleep.stages && d.sleep.stages.deep) ? (d.sleep.stages.deep.minutes || 0) : 0;
-  var rhr = d.rhr || 0;
-  var rhrHistory = [];
+  var r7 = d.rolling7 || {};
+  var deepStages = (d.sleep && d.sleep.stages && d.sleep.stages.deep) ? d.sleep.stages.deep : null;
 
-  // Build 7-day RHR history - use rolling7 avg as proxy if we only have today
-  if (d.rhrHistory7Day && d.rhrHistory7Day.length > 0) {
-    rhrHistory = d.rhrHistory7Day;
-  } else if (d.rolling7 && d.rolling7.rhr) {
-    // Fill array with 7-day average as best proxy
-    rhrHistory = [rhr, d.rolling7.rhr, d.rolling7.rhr, d.rolling7.rhr, d.rolling7.rhr, d.rolling7.rhr, d.rolling7.rhr];
-  } else {
-    rhrHistory = [rhr];
+  // HRV: use today's value, fallback to 7-day average
+  var hrv = d.hrv;
+  if (hrv === null || hrv === undefined) {
+    hrv = r7.hrv || 0;
+    console.log('[Readiness] HRV null, using 7d avg fallback:', hrv);
   }
 
-  var baseline = rhrHistory.reduce(function(sum, val) { return sum + val; }, 0) / rhrHistory.length;
-  var rhrDeviation = rhr - baseline;
+  // Deep sleep: use today's value, fallback to 30-day average
+  var deepSleepMinutes = deepStages ? (deepStages.minutes || 0) : 0;
+  if (!deepSleepMinutes && deepStages && deepStages.thirtyDayAvgMinutes) {
+    deepSleepMinutes = deepStages.thirtyDayAvgMinutes;
+    console.log('[Readiness] Deep sleep 0, using 30d avg fallback:', deepSleepMinutes);
+  }
+
+  // RHR: use today's value, fallback to 7-day average; if still null, deviation = 0
+  var rhr = d.rhr;
+  var rhrDeviation = 0;
+  var baseline = 0;
+
+  if (rhr !== null && rhr !== undefined) {
+    var rhrHistory = [];
+    if (d.rhrHistory7Day && d.rhrHistory7Day.length > 0) {
+      rhrHistory = d.rhrHistory7Day;
+    } else if (r7.rhr) {
+      rhrHistory = [rhr, r7.rhr, r7.rhr, r7.rhr, r7.rhr, r7.rhr, r7.rhr];
+    } else {
+      rhrHistory = [rhr];
+    }
+    baseline = rhrHistory.reduce(function(sum, val) { return sum + val; }, 0) / rhrHistory.length;
+    rhrDeviation = rhr - baseline;
+  } else {
+    // RHR null: use 7-day avg as both rhr and baseline → deviation = 0 (neutral)
+    rhr = r7.rhr || 0;
+    baseline = rhr;
+    rhrDeviation = 0;
+    console.log('[Readiness] RHR null, deviation set to 0 (neutral). Using r7 avg:', rhr);
+  }
 
   var raw = (1.2077 * hrv) + (0.1100 * deepSleepMinutes) - (3.3834 * rhrDeviation) - 10.8400;
   var score = Math.max(1, Math.min(100, Math.round(raw)));
 
   var tier = score >= 86 ? 'hard' : score >= 66 ? 'moderate' : score >= 46 ? 'light' : 'recovery';
 
-  // Keep breakdown for display but reflect new formula inputs
   return {
     score: score,
     tier: tier,

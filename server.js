@@ -264,7 +264,17 @@ async function buildDailyData(token) {
   const heartYestArr = heartYest && heartYest["activities-heart"] ? heartYest["activities-heart"] : [];
   const zones = heartYestArr[0] && heartYestArr[0].value ? heartYestArr[0].value.heartRateZones || [] : [];
   const heartTodayArr = heartToday && heartToday["activities-heart"] ? heartToday["activities-heart"] : [];
-  const rhr = heartTodayArr[0] && heartTodayArr[0].value ? heartTodayArr[0].value.restingHeartRate || null : null;
+  if (heartTodayArr[0]) console.log("[Fitbit] RHR raw today:", JSON.stringify(heartTodayArr[0].value ? { restingHeartRate: heartTodayArr[0].value.restingHeartRate, hasZones: !!heartTodayArr[0].value.heartRateZones } : heartTodayArr[0]));
+  var rhr = heartTodayArr[0] && heartTodayArr[0].value ? heartTodayArr[0].value.restingHeartRate || null : null;
+  // Fallback: if no RHR for today, try yesterday's heart data
+  if (rhr === null && heartYestArr[0] && heartYestArr[0].value && heartYestArr[0].value.restingHeartRate) {
+    rhr = heartYestArr[0].value.restingHeartRate;
+    console.log("[Fitbit] RHR fallback to yesterday: " + rhr);
+  } else if (rhr !== null) {
+    console.log("[Fitbit] RHR from today: " + rhr);
+  } else {
+    console.log("[Fitbit] RHR null - not available in today or yesterday data");
+  }
 
   var hrvTodayArr = hrvToday && hrvToday.hrv ? hrvToday.hrv : [];
   var hrvDate = today;
