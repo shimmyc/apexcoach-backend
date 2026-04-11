@@ -209,25 +209,47 @@ async function buildDailyData(token) {
     fitGet("/1/user/-/sleep/date/" + today + ".json", token).catch(function() { return {}; }),
   ]);
 
-  const sleep      = results[0];
+  var sleep      = results[0];
   const heartToday = results[1];
   const heartYest  = results[2];
-  const hrvToday   = results[3];
+  var hrvToday   = results[3];
   const actYest    = results[4];
   const hrvWeek    = results[5];
   const heartWeek  = results[6];
-  const sleepV1    = results[7];
+  var sleepV1    = results[7];
 
-  const sleepArr    = sleep && sleep.sleep ? sleep.sleep : [];
+  var sleepArr    = sleep && sleep.sleep ? sleep.sleep : [];
+  var sleepDate = today;
+
+  // Fallback: if no sleep data for today, try yesterday (Fitbit stores sleep under start date)
+  if (sleepArr.length === 0) {
+    console.log("[Fitbit] No sleep data for today (" + today + "), trying yesterday (" + yesterday + ")");
+    try {
+      var sleepYest = await fitGet("/1.2/user/-/sleep/date/" + yesterday + ".json", token);
+      sleepArr = sleepYest && sleepYest.sleep ? sleepYest.sleep : [];
+      if (sleepArr.length > 0) {
+        sleep = sleepYest;
+        sleepDate = yesterday;
+        console.log("[Fitbit] Found sleep data for yesterday (" + yesterday + "): " + sleepArr.length + " records");
+        // Also update sleepV1 fallback
+        sleepV1 = sleepYest;
+      } else {
+        console.log("[Fitbit] No sleep data for yesterday either");
+      }
+    } catch(e) {
+      console.log("[Fitbit] Yesterday sleep fetch failed: " + e.message);
+    }
+  } else {
+    console.log("[Fitbit] Found sleep data for today (" + today + "): " + sleepArr.length + " records");
+  }
+
   const sleepRecord = sleepArr.find(function(s) { return s.isMainSleep; }) || sleepArr[0] || null;
 
   // Extract Fitbit sleep score from multiple possible locations
   var fitbitSleepScore = null;
-  // Try 1.2 API response: top-level sleep[].score or sleep summary score
   if (sleepRecord && typeof sleepRecord.score === 'number') {
     fitbitSleepScore = sleepRecord.score;
   }
-  // Try v1 API response as fallback
   if (fitbitSleepScore === null && sleepV1) {
     var sleepV1Arr = sleepV1.sleep || [];
     var sleepV1Rec = sleepV1Arr.find(function(s) { return s.isMainSleep; }) || sleepV1Arr[0] || null;
@@ -235,15 +257,37 @@ async function buildDailyData(token) {
       fitbitSleepScore = sleepV1Rec.score;
     }
   }
-  // Try top-level summary score
   if (fitbitSleepScore === null && sleep && typeof sleep.summary === 'object' && sleep.summary !== null && typeof sleep.summary.totalScore === 'number') {
     fitbitSleepScore = sleep.summary.totalScore;
   }
+
   const heartYestArr = heartYest && heartYest["activities-heart"] ? heartYest["activities-heart"] : [];
   const zones = heartYestArr[0] && heartYestArr[0].value ? heartYestArr[0].value.heartRateZones || [] : [];
   const heartTodayArr = heartToday && heartToday["activities-heart"] ? heartToday["activities-heart"] : [];
   const rhr = heartTodayArr[0] && heartTodayArr[0].value ? heartTodayArr[0].value.restingHeartRate || null : null;
-  const hrvTodayArr = hrvToday && hrvToday.hrv ? hrvToday.hrv : [];
+
+  var hrvTodayArr = hrvToday && hrvToday.hrv ? hrvToday.hrv : [];
+  var hrvDate = today;
+
+  // Fallback: if no HRV data for today, try yesterday
+  if (hrvTodayArr.length === 0) {
+    console.log("[Fitbit] No HRV data for today (" + today + "), trying yesterday (" + yesterday + ")");
+    try {
+      var hrvYest = await fitGet("/1/user/-/hrv/date/" + yesterday + ".json", token);
+      hrvTodayArr = hrvYest && hrvYest.hrv ? hrvYest.hrv : [];
+      if (hrvTodayArr.length > 0) {
+        hrvDate = yesterday;
+        console.log("[Fitbit] Found HRV data for yesterday (" + yesterday + "): " + hrvTodayArr.length + " records");
+      } else {
+        console.log("[Fitbit] No HRV data for yesterday either");
+      }
+    } catch(e) {
+      console.log("[Fitbit] Yesterday HRV fetch failed: " + e.message);
+    }
+  } else {
+    console.log("[Fitbit] Found HRV data for today (" + today + "): " + hrvTodayArr.length + " records");
+  }
+
   const hrv = hrvTodayArr[0] && hrvTodayArr[0].value ? hrvTodayArr[0].value.dailyRmssd || null : null;
   const heartWeekArr = heartWeek && heartWeek["activities-heart"] ? heartWeek["activities-heart"] : [];
   const rhrVals = heartWeekArr.map(function(d) { return d.value && d.value.restingHeartRate; }).filter(Boolean);
