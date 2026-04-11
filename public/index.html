@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
 <title>ApexCoach</title>
 <link href="https://fonts.googleapis.com/css2?family=Oswald:wght@400;600;700&family=IBM+Plex+Mono:wght@400;500&family=DM+Sans:ital,wght@0,400;0,500;0,600;1,400&display=swap" rel="stylesheet">
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
@@ -114,11 +114,70 @@ input[type=range]{width:100%;accent-color:var(--accent)}
 .theme-swatch.active{border-color:var(--accent);box-shadow:0 0 8px var(--accent-44)}
 .accent-swatch{width:32px;height:32px;border-radius:50%;cursor:pointer;border:2px solid transparent;transition:all .2s}
 .accent-swatch.active{border-color:var(--text-bright);box-shadow:0 0 6px rgba(255,255,255,.3)}
-@media(max-width:700px){.settings-nav{display:none}.settings-body{flex-direction:column}.settings-content{padding:16px}.settings-tabs-mobile{display:flex;overflow-x:auto;border-bottom:1px solid var(--border);flex-shrink:0;padding:0 8px}.settings-tabs-mobile button{flex-shrink:0;background:transparent;border:none;color:var(--text-sec);padding:10px 14px;font-size:12px;cursor:pointer;font-family:'IBM Plex Mono',monospace;white-space:nowrap;border-bottom:2px solid transparent}.settings-tabs-mobile button.active{color:var(--accent);border-bottom-color:var(--accent)}}
+@media(max-width:700px){.settings-nav{display:none}.settings-body{flex-direction:column}.settings-content{padding:16px 16px 60px}.settings-tabs-mobile{display:flex;flex-direction:column;overflow-x:visible;flex-shrink:0;padding:8px;gap:2px}.settings-tabs-mobile button{flex-shrink:0;background:transparent;border:none;color:var(--text-sec);padding:14px 16px;font-size:14px;cursor:pointer;font-family:'DM Sans',sans-serif;white-space:nowrap;border-bottom:none;border-radius:6px;text-align:left;min-height:44px}.settings-tabs-mobile button.active{color:var(--accent);background:var(--accent-10)}}
 @media(min-width:701px){.settings-tabs-mobile{display:none}}
 .del-confirm-modal{position:fixed;inset:0;background:rgba(0,0,0,.92);display:flex;align-items:center;justify-content:center;z-index:150;padding:20px}
 .equip-tag{display:inline-flex;align-items:center;gap:6px;background:var(--accent-10);border:1px solid var(--accent-33);color:var(--accent);padding:4px 10px;border-radius:14px;font-size:12px;font-family:'IBM Plex Mono',monospace}
 .equip-tag button{background:none;border:none;color:var(--accent);cursor:pointer;font-size:14px;padding:0;line-height:1}
+
+/* ── TABLET ─────────────────────────────────────────────────────────── */
+@media(max-width:768px){
+  .tab.active{max-width:100%;overflow-x:hidden}
+  .goalsGrid{grid-template-columns:repeat(2,1fr);gap:10px}
+  .statsGrid{grid-template-columns:repeat(2,1fr);gap:10px}
+  .card{padding:16px}
+  body{font-size:15px}
+  select,textarea,input[type=text],input[type=password]{font-size:16px!important}
+  .btnPri,.btnSec{min-height:44px}
+  .injury-item{padding:14px 0;font-size:14px;line-height:1.7}
+  /* Settings mobile: vertical menu */
+  .settings-tabs-mobile{flex-direction:column!important;overflow-x:visible!important;padding:8px!important;gap:2px!important;border-bottom:none!important}
+  .settings-tabs-mobile button{text-align:left!important;padding:14px 16px!important;font-size:14px!important;border-bottom:none!important;border-radius:6px!important}
+  .settings-tabs-mobile button.active{background:var(--accent-10)!important}
+  .settings-content{padding:16px 16px 60px}
+}
+
+/* ── PHONE ──────────────────────────────────────────────────────────── */
+@media(max-width:480px){
+  /* Header */
+  header{padding:10px 12px;overflow:hidden;gap:4px}
+  .logo{font-size:22px}
+  .logosub{display:none}
+  nav{gap:2px}
+  .navBtn{padding:6px 8px;font-size:11px}
+  .syncBtn{padding:6px 10px;font-size:14px}
+  .sync-text{display:none}
+  .sync-icon{display:inline!important}
+  .gearBtn{padding:6px 8px;font-size:14px}
+  #profile-icon-btn{width:30px!important;height:30px!important;font-size:13px!important}
+  #streak-badge{font-size:12px!important}
+
+  /* Main content */
+  main{padding:16px 12px 80px}
+  .card{padding:14px}
+  .stack{gap:12px}
+  .clabel{font-size:11px;letter-spacing:2px;margin-bottom:12px}
+
+  /* Typography */
+  body{font-size:14px}
+  .mono{font-size:12px}
+
+  /* Touch targets */
+  .btnPri,.btnSec{min-height:44px;font-size:14px}
+  .logBtn{padding:16px;font-size:14px}
+
+  /* Inputs prevent iOS zoom */
+  select,textarea,input[type=text],input[type=password],input[type=number]{font-size:16px!important}
+
+  /* Today tab */
+  #dow{font-size:40px!important}
+
+  /* Profile tab */
+  .goalsGrid{grid-template-columns:1fr 1fr;gap:8px}
+
+  /* Library tab */
+  #lib-dashboard .card canvas{width:100%!important}
+}
 </style>
 </head>
 <body>
@@ -174,7 +233,7 @@ input[type=range]{width:100%;accent-color:var(--accent)}
   </nav>
   <div style="display:flex;gap:8px;align-items:center">
     <span id="streak-badge" style="display:none;font-size:14px;color:#f5a623;font-weight:700;cursor:pointer;position:relative" onclick="toggleStreakTooltip(event)"></span>
-    <button class="syncBtn" onclick="syncFitbit(true)">sync</button>
+    <button class="syncBtn" onclick="syncFitbit(true)"><span class="sync-text">sync</span><span class="sync-icon" style="display:none">&#8635;</span></button>
     <button class="gearBtn" onclick="openSettings()" title="Settings">&#9881;</button>
     <div style="position:relative">
       <button id="profile-icon-btn" onclick="openSettings()" style="width:34px;height:34px;border-radius:50%;border:1px solid var(--border-accent);background:var(--accent-18);color:var(--accent);font-family:'Oswald',sans-serif;font-size:15px;font-weight:700;cursor:pointer;overflow:hidden;padding:0" title="Settings"><span id="profile-icon-inner">S</span></button>
