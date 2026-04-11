@@ -76,6 +76,8 @@ Calculated from workoutLog entries where done=true. Counts backwards from today 
 
 - All API calls scoped by profile_id
 
+- profile_data is sanitized on both read and write via cleanProfileData() in server.js — strips \r\n and excess whitespace from all string values recursively, preventing corruption from multiline form inputs or copy-paste
+
 ## Key API Endpoints
 
 - GET /api/profiles — list profiles

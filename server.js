@@ -28,6 +28,23 @@ function hashPin(pin) {
   return crypto.createHash("sha256").update(String(pin)).digest("hex");
 }
 
+function cleanProfileData(obj) {
+  if (typeof obj === "string") {
+    return obj.replace(/\r\n\s*/g, " ").replace(/\r/g, " ").trim();
+  }
+  if (Array.isArray(obj)) {
+    return obj.map(cleanProfileData);
+  }
+  if (obj && typeof obj === "object") {
+    var cleaned = {};
+    Object.keys(obj).forEach(function(key) {
+      cleaned[key] = cleanProfileData(obj[key]);
+    });
+    return cleaned;
+  }
+  return obj;
+}
+
 // ── TOKEN STORAGE (legacy — used by /api/daily fallback) ──────────────────
 async function loadTokens() {
   try {
@@ -415,7 +432,7 @@ app.get("/api/profiles/:id", async function(req, res) {
     var rows = await r.json();
     if (!rows || !rows.length) return res.json({ success: false, error: "Profile not found." });
     var p = rows[0];
-    res.json({ success: true, profile: { id: p.id, name: p.name, avatar_color: p.avatar_color, profile_data: p.profile_data } });
+    res.json({ success: true, profile: { id: p.id, name: p.name, avatar_color: p.avatar_color, profile_data: cleanProfileData(p.profile_data || {}) } });
   } catch (e) {
     res.status(500).json({ success: false, error: e.message });
   }
@@ -434,7 +451,7 @@ app.post("/api/profiles", async function(req, res) {
         name: body.name,
         pin: hashPin(body.pin),
         avatar_color: body.avatar_color || "#22c97a",
-        profile_data: body.profile_data || {},
+        profile_data: cleanProfileData(body.profile_data || {}),
       }),
     });
     var data = await r.json();
@@ -464,7 +481,7 @@ app.post("/api/profiles/verify", async function(req, res) {
         id: profile.id,
         name: profile.name,
         avatar_color: profile.avatar_color,
-        profile_data: profile.profile_data,
+        profile_data: cleanProfileData(profile.profile_data || {}),
       },
     });
   } catch (e) {
@@ -500,7 +517,7 @@ app.patch("/api/profiles/:id", async function(req, res) {
           merged[key] = body.profile_data[key];
         }
       }
-      updatePayload.profile_data = merged;
+      updatePayload.profile_data = cleanProfileData(merged);
     }
 
     if (Object.keys(updatePayload).length === 0) {
