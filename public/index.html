@@ -2129,6 +2129,19 @@ function updateWorkoutInSupabase(id, entry) {
   }).catch(function(e) { console.error('Update error:', e); });
 }
 
+function deleteWorkout(id) {
+  if (!confirm('Delete this workout? This cannot be undone.')) return;
+  // Remove from local array
+  workoutLog = workoutLog.filter(function(w) { return w.id !== id; });
+  localStorage.setItem('ac_log', JSON.stringify(workoutLog));
+  // Delete from server
+  fetch('/api/workouts/' + id, { method: 'DELETE' }).catch(function(e) { console.error('Delete error:', e); });
+  // Re-render
+  renderLogArea();
+  renderWeek();
+  renderLog();
+}
+
 function saveWorkout() {
   var type = document.getElementById('wtype').value;
   if (!type) return;
@@ -2517,6 +2530,7 @@ function renderLog() {
           (w.mobility ? '<span style="font-family:IBM Plex Mono,monospace;font-size:11px;color:#4488bb;background:#4488bb12;padding:3px 10px;border-radius:4px">Mobility</span>' : '') +
           (w.med ? '<span style="font-family:IBM Plex Mono,monospace;font-size:11px;color:#9966cc;background:#9966cc12;padding:3px 10px;border-radius:4px">Meditated</span>' : '') +
           '<button onclick="editWorkout(' + editData + ')" style="background:transparent;border:1px solid var(--border-accent);color:var(--text-muted);padding:3px 12px;border-radius:4px;cursor:pointer;font-size:12px;margin-left:4px">Edit</button>' +
+          (w.id ? '<button onclick="deleteWorkout(' + w.id + ')" style="background:transparent;border:1px solid #e8454533;color:#e84545;padding:3px 8px;border-radius:4px;cursor:pointer;font-size:12px" title="Delete">&times;</button>' : '') +
         '</div>' +
       '</div>' +
       '<div style="font-weight:600;font-size:18px;color:var(--text-bright);margin-bottom:6px">' + w.type + '</div>' +

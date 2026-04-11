@@ -564,6 +564,19 @@ app.patch("/api/workouts/:id", async function(req, res) {
   }
 });
 
+app.delete("/api/workouts/:id", async function(req, res) {
+  try {
+    var id = req.params.id;
+    await fetch(SUPABASE_URL + "/rest/v1/workouts?id=eq." + id, {
+      method: "DELETE",
+      headers: sbHeaders("return=minimal"),
+    });
+    res.json({ success: true });
+  } catch (e) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
 // ── MEDITATION LOG ─────────────────────────────────────────────────────────
 app.get("/api/meditations", async function(req, res) {
   try {
