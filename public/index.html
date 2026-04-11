@@ -171,7 +171,7 @@ input[type=range]{width:100%;accent-color:var(--accent)}
     <button class="navBtn" onclick="showTab('profile',this)">Profile</button>
   </nav>
   <div style="display:flex;gap:8px;align-items:center">
-    <button class="syncBtn" onclick="syncFitbit()">sync</button>
+    <button class="syncBtn" onclick="syncFitbit(true)">sync</button>
     <button class="gearBtn" onclick="openSettings()" title="Settings">&#9881;</button>
     <div style="position:relative">
       <button id="profile-icon-btn" onclick="openSettings()" style="width:34px;height:34px;border-radius:50%;border:1px solid var(--border-accent);background:var(--accent-18);color:var(--accent);font-family:'Oswald',sans-serif;font-size:15px;font-weight:700;cursor:pointer;overflow:hidden;padding:0" title="Settings"><span id="profile-icon-inner">S</span></button>
@@ -1212,6 +1212,7 @@ function submitCheckin() {
   // Cache it
   var cached = JSON.parse(localStorage.getItem('ac_cache') || '{}');
   cached.date = ds(0);
+  cached.ts = Date.now();
   cached.manualCheckin = checkinValues;
   cached.manualContext = manualCheckinContext;
   localStorage.setItem('ac_cache', JSON.stringify(cached));
@@ -1285,7 +1286,31 @@ function redoCheckin() {
   for (var i = 0; i < allBtns.length; i++) allBtns[i].classList.remove('selected');
 }
 
-function syncFitbit() {
+var CACHE_MAX_AGE = 2 * 60 * 60 * 1000; // 2 hours
+
+function isCacheValid(c) {
+  if (!c || c.date !== ds(0)) return false;
+  // Check age - expire after 2 hours
+  if (c.ts && (Date.now() - c.ts > CACHE_MAX_AGE)) {
+    console.log('[Cache] Expired: age=' + Math.round((Date.now() - c.ts) / 60000) + 'min, max=' + (CACHE_MAX_AGE / 60000) + 'min');
+    return false;
+  }
+  // Manual check-in cache is always valid for the day
+  if (c.manualCheckin) return true;
+  // Fitbit cache: validate data quality
+  if (c.fitData) {
+    var fd = c.fitData;
+    var hasSleep = fd.sleep && fd.sleep.hours !== null;
+    var hasHrv = fd.hrv !== null;
+    var hasRhr = fd.rhr !== null;
+    if (!hasSleep) { console.log('[Cache] Invalid: sleep.hours is null'); return false; }
+    if (!hasHrv && !hasRhr) { console.log('[Cache] Invalid: both HRV and RHR are null'); return false; }
+    return true;
+  }
+  return false;
+}
+
+function syncFitbit(forceRefresh) {
   var pd = currentProfileData || {};
 
   // If profile explicitly has fitbit=false, go straight to manual check-in
@@ -1300,32 +1325,36 @@ function syncFitbit() {
     if (lsId) currentProfileId = parseInt(lsId);
   }
   var dailyUrl = currentProfileId ? '/api/profiles/' + currentProfileId + '/daily' : '/api/daily';
-  console.log('[ApexCoach] syncFitbit: profileId=' + currentProfileId + ', url=' + dailyUrl);
+  console.log('[ApexCoach] syncFitbit: profileId=' + currentProfileId + ', url=' + dailyUrl + ', forceRefresh=' + !!forceRefresh);
 
   document.getElementById('status-box').style.display = 'block';
   document.getElementById('status-box').innerHTML = '<p class="mono" style="font-size:11px;color:var(--accent);letter-spacing:3px;animation:pulse 1.6s infinite">FETCHING FITBIT DATA...</p>';
   document.getElementById('checkin-card').style.display = 'none';
 
-  var cached = localStorage.getItem('ac_cache');
-  if (cached) {
-    var c = JSON.parse(cached);
-    if (c.date === ds(0)) {
-      // Cached manual check-in
-      if (c.manualCheckin) {
-        showManualCheckin(pd.fitbit === true ? 'no_tokens' : 'no_fitbit');
-        return;
-      }
-      // Cached Fitbit data
-      if (c.fitData) {
-        fitData = c.fitData;
-        readiness = computeReadiness(fitData);
-        renderReadiness();
-        document.getElementById('status-box').style.display = 'none';
-        if (c.progressRec) { progressRec = c.progressRec; renderProgress(); } else { fetchProgress(); }
-        if (c.aiRec) { aiRec = c.aiRec; renderAI(); } else { fetchAI(); }
-        return;
+  // Check cache (skip if force refresh)
+  if (!forceRefresh) {
+    var cached = localStorage.getItem('ac_cache');
+    if (cached) {
+      var c = JSON.parse(cached);
+      if (isCacheValid(c)) {
+        if (c.manualCheckin) {
+          showManualCheckin(pd.fitbit === true ? 'no_tokens' : 'no_fitbit');
+          return;
+        }
+        if (c.fitData) {
+          console.log('[Cache] Using cached Fitbit data (age=' + (c.ts ? Math.round((Date.now() - c.ts) / 60000) + 'min' : 'unknown') + ')');
+          fitData = c.fitData;
+          readiness = computeReadiness(fitData);
+          renderReadiness();
+          document.getElementById('status-box').style.display = 'none';
+          if (c.progressRec) { progressRec = c.progressRec; renderProgress(); } else { fetchProgress(); }
+          if (c.aiRec) { aiRec = c.aiRec; renderAI(); } else { fetchAI(); }
+          return;
+        }
       }
     }
+  } else {
+    console.log('[Cache] Force refresh - bypassing cache');
   }
 
   fetch(dailyUrl)
@@ -1334,7 +1363,13 @@ function syncFitbit() {
       if (!json.success) throw new Error(json.error);
       fitData = json.data;
       readiness = computeReadiness(fitData);
-      localStorage.setItem('ac_cache', JSON.stringify({ date: ds(0), fitData: fitData }));
+      // Only cache if we got real data (sleep.hours not null)
+      if (fitData.sleep && fitData.sleep.hours !== null) {
+        localStorage.setItem('ac_cache', JSON.stringify({ date: ds(0), ts: Date.now(), fitData: fitData }));
+        console.log('[Cache] Saved fresh Fitbit data');
+      } else {
+        console.log('[Cache] Not caching - sleep.hours is null (incomplete data)');
+      }
       renderReadiness();
       document.getElementById('status-box').style.display = 'none';
       fetchProgress();
