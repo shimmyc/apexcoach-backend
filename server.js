@@ -426,13 +426,13 @@ app.get("/api/profiles", async function(req, res) {
 
 app.get("/api/profiles/:id", async function(req, res) {
   try {
-    var r = await fetch(SUPABASE_URL + "/rest/v1/profiles?id=eq." + req.params.id + "&select=id,name,avatar_color,profile_data", {
+    var r = await fetch(SUPABASE_URL + "/rest/v1/profiles?id=eq." + req.params.id + "&select=id,name,avatar_color,profile_data,created_at", {
       headers: sbHeaders(),
     });
     var rows = await r.json();
     if (!rows || !rows.length) return res.json({ success: false, error: "Profile not found." });
     var p = rows[0];
-    res.json({ success: true, profile: { id: p.id, name: p.name, avatar_color: p.avatar_color, profile_data: cleanProfileData(p.profile_data || {}) } });
+    res.json({ success: true, profile: { id: p.id, name: p.name, avatar_color: p.avatar_color, profile_data: cleanProfileData(p.profile_data || {}), created_at: p.created_at } });
   } catch (e) {
     res.status(500).json({ success: false, error: e.message });
   }
@@ -468,7 +468,7 @@ app.post("/api/profiles/verify", async function(req, res) {
     if (!body.id || !body.pin) {
       return res.status(400).json({ success: false, error: "Profile ID and PIN required." });
     }
-    var r = await fetch(SUPABASE_URL + "/rest/v1/profiles?id=eq." + body.id + "&select=id,name,avatar_color,pin,profile_data", {
+    var r = await fetch(SUPABASE_URL + "/rest/v1/profiles?id=eq." + body.id + "&select=id,name,avatar_color,pin,profile_data,created_at", {
       headers: sbHeaders(),
     });
     var rows = await r.json();
@@ -482,6 +482,7 @@ app.post("/api/profiles/verify", async function(req, res) {
         name: profile.name,
         avatar_color: profile.avatar_color,
         profile_data: cleanProfileData(profile.profile_data || {}),
+        created_at: profile.created_at,
       },
     });
   } catch (e) {

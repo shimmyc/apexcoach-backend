@@ -148,10 +148,10 @@ input[type=range]{width:100%;accent-color:var(--accent)}
     <p class="mono" style="font-size:12px;color:var(--text-dim);letter-spacing:2px;margin-top:8px">NEW PROFILE SETUP</p>
   </div>
   <div id="onboard-chat" style="display:flex;flex-direction:column;gap:12px;margin-bottom:20px"></div>
-  <div id="onboard-input-area" style="display:flex;gap:8px">
+  <div id="onboard-input-area" style="display:flex;gap:8px;align-items:flex-end">
     <div style="flex:1;position:relative">
-      <input id="onboard-input" type="text" placeholder="Type your answer..." style="width:100%;background:var(--bg-input);border:1px solid var(--border-accent);color:var(--text);padding:14px 44px 14px 14px;border-radius:8px;font-size:15px;outline:none;font-family:'DM Sans',sans-serif" onkeyup="if(event.key==='Enter')submitOnboardAnswer()">
-      <button onclick="startOnboardVoice()" id="onboard-mic" style="position:absolute;right:8px;top:8px;background:var(--accent-18);border:1px solid var(--accent-33);color:var(--accent);border-radius:6px;padding:6px 10px;cursor:pointer;font-size:14px">🎙</button>
+      <textarea id="onboard-input" rows="3" placeholder="Type your answer..." style="width:100%;background:var(--bg-input);border:1px solid var(--border-accent);color:var(--text);padding:14px 44px 14px 14px;border-radius:8px;font-size:16px;outline:none;font-family:'DM Sans',sans-serif;resize:none;line-height:1.5;overflow-y:hidden" onkeydown="if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();submitOnboardAnswer()}" oninput="autoExpandOnboard(this)"></textarea>
+      <button onclick="startOnboardVoice()" id="onboard-mic" style="position:absolute;right:8px;top:10px;background:var(--accent-18);border:1px solid var(--accent-33);color:var(--accent);border-radius:6px;padding:6px 10px;cursor:pointer;font-size:14px">🎙</button>
     </div>
     <button onclick="submitOnboardAnswer()" class="btnPri" style="padding:14px 20px;font-size:15px">Send</button>
   </div>
@@ -715,6 +715,7 @@ function verifyPin() {
       localStorage.setItem('ac_profile_name', currentProfileName);
       localStorage.setItem('ac_profile_color', currentProfileColor);
       localStorage.setItem('ac_profile_data', JSON.stringify(currentProfileData));
+      if (data.profile.created_at) localStorage.setItem('ac_profile_created', data.profile.created_at);
       if (currentProfileData.ai_prompt_context) {
         FULL_PROFILE = currentProfileData.ai_prompt_context;
       } else if (currentProfileData.full_profile) {
@@ -845,6 +846,14 @@ function askOnboardQuestion() {
   chat.scrollTop = chat.scrollHeight;
   document.getElementById('onboard-input').value = '';
   document.getElementById('onboard-input').focus();
+}
+
+function autoExpandOnboard(el) {
+  el.style.height = 'auto';
+  var maxRows = 6;
+  var lineH = parseFloat(getComputedStyle(el).lineHeight) || 24;
+  var maxH = lineH * maxRows + 28;
+  el.style.height = Math.min(el.scrollHeight, maxH) + 'px';
 }
 
 function submitOnboardAnswer() {
@@ -1189,7 +1198,7 @@ function renderStreakCard() {
   if (!card) return;
   var html = '';
 
-  if (currentStreak === 0 && streakBroken) {
+  if (currentStreak === 0 && streakBroken && !isNewProfile()) {
     // Streak just broke
     html = '<div class="card" style="border-color:#44444433;text-align:center;padding:12px">' +
       '<span style="font-size:13px;color:var(--text-dim)">Streak ended &mdash; start fresh today &#x1F4AA;</span></div>';
@@ -1235,6 +1244,13 @@ window.testStreak = function(days, loggedToday) {
   renderStreak();
   console.log('[ApexCoach] Testing streak: ' + days + ' days, loggedToday=' + streakLoggedToday + ', broken=' + streakBroken);
 };
+
+function isNewProfile() {
+  var created = localStorage.getItem('ac_profile_created');
+  if (!created) return workoutLog.length === 0;
+  var age = Date.now() - new Date(created).getTime();
+  return age < 7 * 24 * 60 * 60 * 1000;
+}
 
 function ds(offset) {
   offset = offset || 0;
@@ -3359,9 +3375,30 @@ function renderCalendar() {
   }
 
   // Double-skip warning (always based on today/yesterday)
-  var y0 = findEntry(ds(0)), y1 = findEntry(ds(-1));
-  var doubleSkip = (!y0 || !y0.done) && (!y1 || !y1.done);
-  document.getElementById('double-skip-warn').style.display = doubleSkip ? 'block' : 'none';
+  var warnEl = document.getElementById('double-skip-warn');
+  if (isNewProfile()) {
+    if (workoutLog.length === 0) {
+      warnEl.style.display = 'block';
+      warnEl.style.background = '#22c97a10';
+      warnEl.style.borderColor = '#22c97a25';
+      warnEl.style.color = '#22c97a';
+      warnEl.textContent = 'Welcome! Start logging your workouts to build your streak \uD83D\uDCAA';
+    } else {
+      warnEl.style.display = 'none';
+    }
+  } else {
+    var y0 = findEntry(ds(0)), y1 = findEntry(ds(-1));
+    var doubleSkip = (!y0 || !y0.done) && (!y1 || !y1.done);
+    if (doubleSkip) {
+      warnEl.style.display = 'block';
+      warnEl.style.background = '#f5a62310';
+      warnEl.style.borderColor = '#f5a62325';
+      warnEl.style.color = '#f5a623';
+      warnEl.textContent = 'Two misses in a row \u2014 today is non-negotiable. Even 15 min counts.';
+    } else {
+      warnEl.style.display = 'none';
+    }
+  }
 
   renderCalDetail();
 }
