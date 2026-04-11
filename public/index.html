@@ -574,6 +574,8 @@ var workoutLog = [];
 var medLog = [];
 var currentStreak = 0;
 var previousStreak = 0;
+var streakLoggedToday = false;
+var streakBroken = false;
 var schedule = {};
 
 var DAYS = ['mon','tue','wed','thu','fri','sat','sun'];
@@ -1087,15 +1089,24 @@ function loadWorkouts() {
 function calculateStreak() {
   previousStreak = currentStreak;
   currentStreak = 0;
+  streakBroken = false;
   var doneDates = {};
   for (var i = 0; i < workoutLog.length; i++) {
     if (workoutLog[i].done) doneDates[workoutLog[i].date] = true;
   }
   var d = new Date();
-  var check = d.getFullYear() + '-' + String(d.getMonth()+1).padStart(2,'0') + '-' + String(d.getDate()).padStart(2,'0');
+  var today = d.getFullYear() + '-' + String(d.getMonth()+1).padStart(2,'0') + '-' + String(d.getDate()).padStart(2,'0');
+  streakLoggedToday = !!doneDates[today];
+  var check = today;
   if (!doneDates[check]) {
     d.setDate(d.getDate() - 1);
     check = d.getFullYear() + '-' + String(d.getMonth()+1).padStart(2,'0') + '-' + String(d.getDate()).padStart(2,'0');
+    if (!doneDates[check]) {
+      // Neither today nor yesterday — check if day before yesterday had one (streak just broke)
+      var d2 = new Date(); d2.setDate(d2.getDate() - 2);
+      var dayBefore = d2.getFullYear() + '-' + String(d2.getMonth()+1).padStart(2,'0') + '-' + String(d2.getDate()).padStart(2,'0');
+      if (doneDates[dayBefore]) streakBroken = true;
+    }
   }
   while (doneDates[check]) {
     currentStreak++;
@@ -1132,15 +1143,21 @@ function toggleStreakTooltip(e) {
 function renderStreakCard() {
   var card = document.getElementById('streak-card');
   if (!card) return;
-  if (currentStreak <= 1 && previousStreak <= 1) {
-    card.style.display = 'none';
-    return;
-  }
-  card.style.display = 'block';
   var html = '';
-  if (currentStreak === 0 && previousStreak >= 2) {
-    html = '<div class="card" style="border-color:#55555544;background:var(--bg-input);text-align:center;padding:16px">' +
-      '<span style="font-size:15px;color:var(--text-muted)">Streak ended &mdash; start a new one today &#x1F4AA;</span></div>';
+
+  if (currentStreak === 0 && streakBroken) {
+    // Streak just broke
+    html = '<div class="card" style="border-color:#44444433;text-align:center;padding:12px">' +
+      '<span style="font-size:13px;color:var(--text-dim)">Streak ended &mdash; start fresh today &#x1F4AA;</span></div>';
+  } else if (currentStreak === 1) {
+    // 1 day completed
+    html = '<div class="card" style="border-color:#22c97a33;text-align:center;padding:12px">' +
+      '<span style="font-size:13px;color:#22c97a">&#x1F4AA; Great start &mdash; work out tomorrow to start your streak!</span></div>';
+  } else if (currentStreak >= 2 && !streakLoggedToday) {
+    // Active streak but not logged today — urgent nudge
+    var nudgeColor = currentStreak >= 30 ? '#f5c518' : currentStreak >= 14 ? '#f07020' : currentStreak >= 7 ? '#f5a623' : '#f5a623';
+    html = '<div class="card" style="border-color:' + nudgeColor + '66;text-align:center;padding:16px;animation:pulse 2s infinite">' +
+      '<span style="font-size:16px;color:' + nudgeColor + ';font-weight:700">&#x1F525; ' + currentStreak + ' day streak &mdash; don\'t break it today!</span></div>';
   } else if (currentStreak >= 30) {
     html = '<div class="card" style="border-color:#f5c51844;background:linear-gradient(135deg,rgba(245,197,24,0.08),rgba(245,168,35,0.05));text-align:center;padding:20px;animation:pulse 2s infinite">' +
       '<span style="font-size:20px;color:#f5c518;font-weight:700">&#x1F451; ' + currentStreak + ' days &mdash; LEGENDARY</span></div>';
@@ -1157,6 +1174,7 @@ function renderStreakCard() {
     card.style.display = 'none';
     return;
   }
+  card.style.display = 'block';
   card.innerHTML = html;
 }
 
@@ -1165,11 +1183,13 @@ function renderStreak() {
   renderStreakCard();
 }
 
-window.testStreak = function(days) {
+window.testStreak = function(days, loggedToday) {
   previousStreak = currentStreak || 2;
   currentStreak = days;
+  streakBroken = (days === 0);
+  streakLoggedToday = loggedToday !== undefined ? loggedToday : (days >= 1);
   renderStreak();
-  console.log('[ApexCoach] Testing streak: ' + days + ' days');
+  console.log('[ApexCoach] Testing streak: ' + days + ' days, loggedToday=' + streakLoggedToday + ', broken=' + streakBroken);
 };
 
 function ds(offset) {
