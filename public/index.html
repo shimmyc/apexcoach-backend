@@ -1160,6 +1160,18 @@ function renderStreakCard() {
   card.innerHTML = html;
 }
 
+function renderStreak() {
+  renderStreakBadge();
+  renderStreakCard();
+}
+
+window.testStreak = function(days) {
+  previousStreak = currentStreak || 2;
+  currentStreak = days;
+  renderStreak();
+  console.log('[ApexCoach] Testing streak: ' + days + ' days');
+};
+
 function ds(offset) {
   offset = offset || 0;
   var d = new Date();
