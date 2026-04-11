@@ -862,6 +862,37 @@ app.post("/api/profiles/:id/search-history", async function(req, res) {
 });
 
 // ── EXERCISE LIBRARY ──────────────────────────────────────────────────────
+var CANONICAL_NAMES = {
+  'cat and cow': 'Cat-Cow', 'cat cow': 'Cat-Cow', 'cat-cows': 'Cat-Cow',
+  'windshield wipers': 'Windshield Wiper', 'windshield wiper': 'Windshield Wiper',
+  'glute bridges': 'Glute Bridge', 'glute bridge': 'Glute Bridge',
+  'clam shell': 'Clamshell', 'clamshells': 'Clamshell', 'clamshell': 'Clamshell',
+  'push up': 'Push-Up', 'pushup': 'Push-Up', 'push ups': 'Push-Up', 'pushups': 'Push-Up', 'push-ups': 'Push-Up',
+  'dead bugs': 'Dead Bug', 'dead bug': 'Dead Bug',
+  'hip flexor stretch': 'Hip Flexor Stretch', 'hip flexor stretches': 'Hip Flexor Stretch',
+  'dumbbell row': 'Dumbbell Row', 'dumbbell rows': 'Dumbbell Row',
+  'bicep curl': 'Bicep Curl', 'bicep curls': 'Bicep Curl', 'dumbbell bicep curl': 'Bicep Curl', 'dumbbell bicep curls': 'Bicep Curl',
+  'bird dog': 'Bird Dog', 'bird dogs': 'Bird Dog',
+  'plank': 'Plank', 'planks': 'Plank',
+  'squat': 'Squat', 'squats': 'Squat',
+  'lunge': 'Lunge', 'lunges': 'Lunge',
+  'burpee': 'Burpee', 'burpees': 'Burpee',
+  'sit up': 'Sit-Up', 'sit ups': 'Sit-Up', 'situp': 'Sit-Up', 'situps': 'Sit-Up',
+  'pull up': 'Pull-Up', 'pull ups': 'Pull-Up', 'pullup': 'Pull-Up', 'pullups': 'Pull-Up',
+  'chin up': 'Chin-Up', 'chin ups': 'Chin-Up', 'chinup': 'Chin-Up', 'chinups': 'Chin-Up',
+};
+
+function normalizeExerciseName(name) {
+  if (!name) return name;
+  var lower = name.toLowerCase().trim();
+  if (CANONICAL_NAMES[lower]) return CANONICAL_NAMES[lower];
+  if (lower.endsWith('s') && !lower.endsWith('ss')) {
+    var singular = lower.slice(0, -1);
+    if (CANONICAL_NAMES[singular]) return CANONICAL_NAMES[singular];
+  }
+  return name.trim();
+}
+
 app.post("/api/profiles/:id/extract-exercises", async function(req, res) {
   try {
     var profileId = req.params.id;
@@ -873,7 +904,7 @@ app.post("/api/profiles/:id/extract-exercises", async function(req, res) {
 
     console.log("[extract-exercises] Processing notes for profile " + profileId + ": " + body.notes.substring(0, 100) + "...");
 
-    var prompt = "Extract all exercises from these workout notes. For each exercise identify: name (normalized, e.g. 'Glute Bridge' not 'glute bridges'), category (one of: strength/cardio/mobility/mma/rehab/other), sets (number or null), reps (number or null), weight_lbs (number or null), distance_miles (number or null), duration_minutes (number or null), raw_text (original text snippet).\nReturn ONLY a JSON array of exercise objects, no explanation.\nExample: [{\"name\":\"Glute Bridge\",\"category\":\"rehab\",\"sets\":3,\"reps\":12,\"weight_lbs\":null,\"distance_miles\":null,\"duration_minutes\":null,\"raw_text\":\"glute bridges 3x12\"}]\nWorkout type: " + (body.type || "unknown") + "\nNotes: " + body.notes;
+    var prompt = "Extract all exercises from these workout notes. For each exercise identify: name (normalized), category (one of: strength/cardio/mobility/mma/rehab/other), sets (number or null), reps (number or null), weight_lbs (number or null), distance_miles (number or null), duration_minutes (number or null), raw_text (original text snippet).\n\nCRITICAL NORMALIZATION RULES:\n- Always use singular form: 'Glute Bridge' not 'Glute Bridges'\n- Capitalize first letter of each word\n- Use hyphens for compound exercises: 'Push-Up', 'Pull-Up', 'Sit-Up', 'Cat-Cow'\n- Cat Cow / Cat-Cow / Cat and Cow → always 'Cat-Cow'\n- Windshield Wiper / Windshield Wipers → always 'Windshield Wiper'\n- Glute Bridge / Glute Bridges → always 'Glute Bridge'\n- Clamshell / Clam Shell / Clamshells → always 'Clamshell'\n- Push-up / Push Up / Pushup → always 'Push-Up'\n- Remove trailing s from plural exercise names\n\nReturn ONLY a JSON array of exercise objects, no explanation.\nExample: [{\"name\":\"Glute Bridge\",\"category\":\"rehab\",\"sets\":3,\"reps\":12,\"weight_lbs\":null,\"distance_miles\":null,\"duration_minutes\":null,\"raw_text\":\"glute bridges 3x12\"}]\nWorkout type: " + (body.type || "unknown") + "\nNotes: " + body.notes;
 
     var aiText = await callAI(prompt, 1000);
     console.log("[extract-exercises] Raw AI response: " + (aiText || "(empty)").substring(0, 300));
@@ -901,6 +932,7 @@ app.post("/api/profiles/:id/extract-exercises", async function(req, res) {
     for (var i = 0; i < exercises.length; i++) {
       var ex = exercises[i];
       if (!ex.name) continue;
+      ex.name = normalizeExerciseName(ex.name);
       var insertBody = {
         profile_id: parseInt(profileId),
         workout_id: body.workout_id ? parseInt(body.workout_id) : null,
