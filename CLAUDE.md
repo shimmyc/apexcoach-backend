@@ -48,6 +48,16 @@ score = 1.2077 × HRV + 0.1100 × deepSleepMinutes - 3.3834 × RHR_deviation - 1
 
 Clamped to [1, 100]. See FORMULAS.md for full documentation.
 
+## Sleep Score Formula
+
+Personal regression model fitted on 36 nights of Fitbit sleep data (R²=0.883, MAE=2.45, 94% within 5pts of Fitbit):
+
+score = 0.1558 × deep + 0.0935 × rem + 0.0607 × light - 0.1143 × awake - durationPenalty + 49.77
+
+Duration penalty: max(0, (300 - asleepMinutes) * 0.3) for nights under 5 hours.
+Tiers: 85+ Excellent, 70-84 Good, 55-69 Fair, <55 Poor.
+Displayed in readiness card and sent to AI prompt. See FORMULAS.md for full documentation.
+
 ## Multi-Profile System
 
 - PIN auth: sha256 hashed PINs stored in Supabase

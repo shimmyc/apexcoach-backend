@@ -1,4 +1,58 @@
-# ApexCoach Readiness Formulas
+# ApexCoach Formulas
+
+---
+
+## Sleep Score — Personal Regression Model
+
+**Fitted on 36 nights of Fitbit sleep data with known Fitbit sleep scores**
+
+### Model Performance
+- **R² = 0.883** (explains 88.3% of variance in Fitbit's actual sleep score)
+- **MAE = 2.45** (average error under 2.5 points)
+- **94% of nights within 5 points** of Fitbit's actual score
+
+### Formula
+
+```
+asleepMinutes = deep + rem + light
+durationPenalty = max(0, (300 - asleepMinutes) * 0.3)
+
+raw = 0.1558 × deep_minutes
+    + 0.0935 × rem_minutes
+    + 0.0607 × light_minutes
+    - 0.1143 × awake_minutes
+    - durationPenalty
+    + 49.77
+
+score = clamp(round(raw), 1, 100)
+```
+
+### Variables
+
+| Variable | Coefficient | Description |
+|----------|-------------|-------------|
+| Deep Sleep (min) | +0.1558 | Most valuable stage — 1.7x REM, 2.6x Light |
+| REM Sleep (min) | +0.0935 | Second most valuable stage |
+| Light Sleep (min) | +0.0607 | Contributes but least impactful per minute |
+| Awake (min) | -0.1143 | Penalizes time awake during the night |
+| Duration Penalty | -0.3/min | Extra penalty for total sleep under 5 hours (300 min) |
+| Intercept | +49.77 | Baseline constant |
+
+### Per-Minute Value Hierarchy
+- **Deep sleep** is 1.7x more valuable than REM per minute
+- **Deep sleep** is 2.6x more valuable than Light per minute
+- **REM** is 1.5x more valuable than Light per minute
+- Each minute **awake** costs ~1.9x what a minute of Light sleep contributes
+
+### Tiers
+- 85-100: Excellent (green)
+- 70-84: Good (amber)
+- 55-69: Fair (orange)
+- Below 55: Poor (red)
+
+---
+
+# Readiness Formulas
 
 ## V1 (Original)
 

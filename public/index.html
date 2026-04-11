@@ -335,7 +335,7 @@ input[type=range]{width:100%;accent-color:var(--accent)}
         <label style="display:flex;align-items:center;gap:8px;font-size:14px;color:#22c97a"><input type="checkbox" checked disabled> Manual check-in mode</label>
 
         <p style="font-size:11px;letter-spacing:2px;color:#f5a623;margin:10px 0 0;font-weight:700">COMING SOON</p>
-        <label style="display:flex;align-items:center;gap:8px;font-size:14px;color:#ccc"><input type="checkbox" disabled> Sleep Score Formula V2 (regression logic)</label>
+        <label style="display:flex;align-items:center;gap:8px;font-size:14px;color:#22c97a"><input type="checkbox" checked disabled> Sleep Score Formula (personal regression, R²=0.883) &mdash; LIVE</label>
         <label style="display:flex;align-items:center;gap:8px;font-size:14px;color:#ccc"><input type="checkbox" disabled> Morning sleep analysis &mdash; personalized recommendations based on sleep score when data first loads</label>
         <label style="display:flex;align-items:center;gap:8px;font-size:14px;color:#ccc"><input type="checkbox" disabled> Workout streak icon (&#x1F525; consecutive training days)</label>
         <label style="display:flex;align-items:center;gap:8px;font-size:14px;color:#ccc"><input type="checkbox" disabled> Auto-retry Fitbit sync (retry every 5min up to 3x before falling back to manual check-in)</label>
@@ -1410,6 +1410,19 @@ function syncFitbit(forceRefresh) {
     });
 }
 
+function estimateSleepScore(deepMinutes, remMinutes, lightMinutes, awakeMinutes) {
+  if (!deepMinutes && !remMinutes && !lightMinutes) return null;
+  var asleepMinutes = (deepMinutes||0) + (remMinutes||0) + (lightMinutes||0);
+  var durationPenalty = Math.max(0, (300 - asleepMinutes) * 0.3);
+  var raw = 0.1558 * (deepMinutes||0)
+          + 0.0935 * (remMinutes||0)
+          + 0.0607 * (lightMinutes||0)
+          - 0.1143 * (awakeMinutes||0)
+          - durationPenalty
+          + 49.77;
+  return Math.max(1, Math.min(100, Math.round(raw)));
+}
+
 function computeReadiness(d) {
   var r7 = d.rolling7 || {};
   var deepStages = (d.sleep && d.sleep.stages && d.sleep.stages.deep) ? d.sleep.stages.deep : null;
@@ -1495,28 +1508,33 @@ function renderReadiness() {
   var stages = (fitData.sleep && fitData.sleep.stages) || {};
   var deep = stages.deep || {}; var light = stages.light || {}; var rem = stages.rem || {}; var wake = stages.wake || {};
   var fitbitScore = (fitData.sleep && fitData.sleep.fitbit_score != null) ? fitData.sleep.fitbit_score : null;
+  var sleepScore = (deep.minutes || rem.minutes || light.minutes) ? estimateSleepScore(deep.minutes, rem.minutes, light.minutes, wake.minutes) : null;
   var sleepStagesHTML = '';
   if (deep.minutes || rem.minutes) {
-    var fsColor = 'var(--text-muted)'; var fsTier = '';
-    if (fitbitScore !== null) {
-      if (fitbitScore >= 80) { fsColor = '#22c97a'; fsTier = 'Excellent'; }
-      else if (fitbitScore >= 60) { fsColor = '#f5a623'; fsTier = 'Good'; }
-      else if (fitbitScore >= 40) { fsColor = '#f07020'; fsTier = 'Fair'; }
-      else { fsColor = '#e84545'; fsTier = 'Poor'; }
+    // Personal sleep score display
+    var ssColor = 'var(--text-muted)'; var ssTier = '';
+    if (sleepScore !== null) {
+      if (sleepScore >= 85) { ssColor = '#22c97a'; ssTier = 'Excellent'; }
+      else if (sleepScore >= 70) { ssColor = '#f5a623'; ssTier = 'Good'; }
+      else if (sleepScore >= 55) { ssColor = '#f07020'; ssTier = 'Fair'; }
+      else { ssColor = '#e84545'; ssTier = 'Poor'; }
     }
-    var fitbitScoreHTML = '';
-    if (fitbitScore !== null) {
-      fitbitScoreHTML = '<div style="margin-bottom:16px;text-align:center;padding:16px;background:var(--bg-input);border-radius:10px;border:1px solid ' + hexA(fsColor,'22') + '">' +
-        '<div class="mono" style="font-size:11px;color:var(--text-muted);letter-spacing:2px;margin-bottom:6px">FITBIT SLEEP SCORE</div>' +
-        '<div class="oswald" style="font-size:48px;font-weight:700;color:' + fsColor + ';line-height:1">' + fitbitScore + '</div>' +
-        '<div class="mono" style="font-size:12px;color:' + fsColor + ';margin-top:4px;letter-spacing:1px">' + fsTier + '</div></div>';
+    var sleepScoreHTML = '';
+    if (sleepScore !== null) {
+      var fitbitCompare = fitbitScore !== null ? '<div class="mono" style="font-size:10px;color:var(--text-dim);margin-top:6px">Fitbit: ' + fitbitScore + ' · Diff: ' + (sleepScore - fitbitScore > 0 ? '+' : '') + (sleepScore - fitbitScore) + '</div>' : '';
+      sleepScoreHTML = '<div style="margin-bottom:16px;text-align:center;padding:16px;background:var(--bg-input);border-radius:10px;border:1px solid ' + hexA(ssColor,'22') + '">' +
+        '<div class="mono" style="font-size:11px;color:var(--text-muted);letter-spacing:2px;margin-bottom:6px">SLEEP SCORE</div>' +
+        '<div class="oswald" style="font-size:48px;font-weight:700;color:' + ssColor + ';line-height:1">' + sleepScore + '</div>' +
+        '<div class="mono" style="font-size:12px;color:' + ssColor + ';margin-top:4px;letter-spacing:1px">' + ssTier + '</div>' +
+        fitbitCompare +
+        '<div class="mono" style="font-size:9px;color:var(--text-dim);margin-top:6px">Personal formula · R²=0.883</div></div>';
     } else {
-      fitbitScoreHTML = '<div style="margin-bottom:16px;text-align:center;padding:10px;background:var(--bg-input);border-radius:8px">' +
-        '<div class="mono" style="font-size:10px;color:var(--text-dim);letter-spacing:1px">Fitbit Sleep Score not available</div></div>';
+      sleepScoreHTML = '<div style="margin-bottom:16px;text-align:center;padding:10px;background:var(--bg-input);border-radius:8px">' +
+        '<div class="mono" style="font-size:10px;color:var(--text-dim);letter-spacing:1px">Sleep score not available</div></div>';
     }
     sleepStagesHTML = '<div style="margin-top:16px;padding-top:16px;border-top:1px solid var(--border)">' +
       '<p class="clabel" style="margin-bottom:10px">sleep stages</p>' +
-      fitbitScoreHTML +
+      sleepScoreHTML +
       '<div style="display:grid;grid-template-columns:repeat(4,1fr);gap:10px">' +
       stagePill("Deep", deep.minutes, deep.thirtyDayAvgMinutes, "#4488bb", (deep.minutes||0)+(rem.minutes||0)+(light.minutes||0)+(wake.minutes||0)) +
       stagePill("REM", rem.minutes, rem.thirtyDayAvgMinutes, "#9966cc", (deep.minutes||0)+(rem.minutes||0)+(light.minutes||0)+(wake.minutes||0)) +
@@ -1550,10 +1568,11 @@ function renderReadiness() {
     '<div style="background:#060810;border-radius:8px;padding:12px;text-align:center"><div class="mono" style="font-size:10px;color:#555;margin-bottom:4px">VS AVG</div><div class="oswald" style="font-size:24px;font-weight:700;color:' + hrvColor + '">' + hrvArrow + Math.abs(Math.round(hrvDiff*10)/10) + '</div></div>' +
     '</div></div>' : '';
 
-  var fScoreVital = fitbitScore !== null ? fitbitScore : '-';
-  var fScoreVSub = fitbitScore !== null ? (fitbitScore >= 80 ? 'Excellent' : fitbitScore >= 60 ? 'Good' : fitbitScore >= 40 ? 'Fair' : 'Poor') : 'n/a';
-  var vitalsHTML = '<div style="display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-top:16px;padding-top:16px;border-top:1px solid var(--border)">' +
+  var ssVital = sleepScore !== null ? sleepScore : '-';
+  var ssVSub = sleepScore !== null ? (sleepScore >= 85 ? 'Excellent' : sleepScore >= 70 ? 'Good' : sleepScore >= 55 ? 'Fair' : 'Poor') : 'n/a';
+  var vitalsHTML = '<div style="display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-top:16px;padding-top:16px;border-top:1px solid var(--border)">' +
     statCard("Sleep", fitData.sleep && fitData.sleep.hours ? fmtHours(fitData.sleep.hours) : "-", fitData.sleep && fitData.sleep.efficiency ? fitData.sleep.efficiency + "% efficient" : "") +
+    statCard("Sleep Score", ssVital, ssVSub) +
     statCard("Resting HR", fitData.rhr ? fitData.rhr + " bpm" : "-", r7.rhr ? "7d avg " + r7.rhr : "") +
     statCard("Steps", fitData.steps ? fitData.steps.toLocaleString() : "-", "yesterday") +
     '</div>';
@@ -1637,7 +1656,10 @@ function fetchAI() {
     var rhrDevNote = rhrDev < 0 ? ' (ELEVATED - body is stressed/fighting something)' : rhrDev > 0 ? ' (below baseline - good recovery signal)' : ' (at baseline)';
     var hrvAvg = r7.hrv || fitData.hrv || 0;
     var hrvNote = fitData.hrv && hrvAvg ? (fitData.hrv >= hrvAvg ? ' (at/above avg - good recovery)' : ' (below avg - reduced recovery capacity)') : '';
-    dataBlock = 'READINESS: ' + readiness.score + '/100 (Formula V3 - calibrated to personal Fitbit data) - ' + readiness.tier.toUpperCase() + '\n' +
+    var aiSleepScore = (deep.minutes || rem.minutes || light.minutes) ? estimateSleepScore(deep.minutes, rem.minutes, light.minutes, wake.minutes) : null;
+    var aiSsTier = aiSleepScore !== null ? (aiSleepScore >= 85 ? 'Excellent' : aiSleepScore >= 70 ? 'Good' : aiSleepScore >= 55 ? 'Fair' : 'Poor') : null;
+    var aiSsLine = aiSleepScore !== null ? '\nSLEEP SCORE (personal formula): ' + aiSleepScore + '/100 (' + aiSsTier + ')' : '';
+    dataBlock = 'READINESS: ' + readiness.score + '/100 (Formula V3 - calibrated to personal Fitbit data) - ' + readiness.tier.toUpperCase() + aiSsLine + '\n' +
       'KEY METRICS: HRV: ' + (fitData.hrv ? Math.round(fitData.hrv * 10) / 10 : '?') + 'ms (7d avg: ' + (hrvAvg || '?') + ')' + hrvNote + ', Deep Sleep: ' + (deep.minutes || '?') + 'min, RHR: ' + (fitData.rhr || '?') + 'bpm (baseline: ' + readiness.breakdown.baseline + ', deviation: ' + rhrDev + ')' + rhrDevNote + '\n\n' +
       'LIVE FITBIT DATA:\n' +
       '- Sleep: ' + (sleep.hours ? sleep.hours.toFixed(1) : '?') + 'h, ' + (sleep.efficiency || '?') + '% efficiency, ' + (sleep.minutesAwake || '?') + 'min awake\n' +
