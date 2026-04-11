@@ -277,6 +277,15 @@ input[type=range]{width:100%;accent-color:var(--accent)}
 
   <!-- LOG TAB -->
   <div id="tab-log" class="tab stack">
+    <div class="card" style="border-color:var(--accent-22)">
+      <p class="clabel">ask your history</p>
+      <div style="display:flex;gap:8px">
+        <input type="text" id="history-query" placeholder="When did I last do glute bridges?" style="flex:1;background:var(--bg-input);border:1px solid var(--border);color:var(--text);padding:10px 14px;border-radius:6px;font-size:14px;outline:none;font-family:'DM Sans',sans-serif" onkeyup="if(event.key==='Enter')searchHistory()">
+        <button onclick="searchHistory()" class="btnPri" style="padding:10px 16px;font-size:13px;white-space:nowrap">Search</button>
+      </div>
+      <div class="mono" style="font-size:10px;color:var(--text-dim);margin-top:6px">Try: "How many MMA sessions this month?" · "When did my groin last flare up?"</div>
+      <div id="history-answer" style="display:none;margin-top:12px;padding:14px;background:var(--bg-input);border-radius:8px;border:1px solid var(--accent-22)"></div>
+    </div>
     <p class="mono" id="log-count" style="font-size:9px;color:#333;letter-spacing:3px">HISTORY - 0 SESSIONS</p>
     <div id="log-entries"></div>
   </div>
@@ -318,6 +327,7 @@ input[type=range]{width:100%;accent-color:var(--accent)}
       </div>
     </div>
 
+    <div id="coaching-brief-card"></div>
     <div id="profile-injuries"></div>
     <div id="profile-philosophy"></div>
     <div id="profile-context"></div>
@@ -346,7 +356,7 @@ input[type=range]{width:100%;accent-color:var(--accent)}
         <label style="display:flex;align-items:center;gap:8px;font-size:14px;color:#ccc"><input type="checkbox" disabled> Exercise Library &mdash; extract exercises from workout notes, store in exercises table in Supabase</label>
         <label style="display:flex;align-items:center;gap:8px;font-size:14px;color:#ccc"><input type="checkbox" disabled> Progress charts per exercise (bench press weight over time, running distance, reps progression)</label>
         <label style="display:flex;align-items:center;gap:8px;font-size:14px;color:#ccc"><input type="checkbox" disabled> AI references exercise history in recommendations</label>
-        <label style="display:flex;align-items:center;gap:8px;font-size:14px;color:#ccc"><input type="checkbox" disabled> Living Coaching Brief &mdash; persistent AI memory auto-updated after every workout, stored in Supabase</label>
+        <label style="display:flex;align-items:center;gap:8px;font-size:14px;color:#22c97a"><input type="checkbox" checked disabled> Living Coaching Brief &mdash; persistent AI memory auto-updated after every workout, stored in Supabase &mdash; LIVE</label>
 
         <p style="font-size:11px;letter-spacing:2px;color:#4488bb;margin:10px 0 0;font-weight:700">ONBOARDING &amp; PROFILES</p>
         <label style="display:flex;align-items:center;gap:8px;font-size:14px;color:#ccc"><input type="checkbox" disabled> Wife's profile onboarding</label>
@@ -572,6 +582,9 @@ var aiRec = null;
 var progressRec = null;
 var workoutLog = [];
 var medLog = [];
+var coachingBrief = '';
+var historicalBrief = '';
+var briefUpdatedAt = null;
 var currentStreak = 0;
 var previousStreak = 0;
 var streakLoggedToday = false;
@@ -1006,6 +1019,21 @@ function bootApp() {
     renderMeditationStatus();
     syncFitbit();
   });
+
+  // Load coaching briefs
+  if (currentProfileId) {
+    fetch('/api/profiles/' + currentProfileId + '/brief')
+      .then(function(r) { return r.json(); })
+      .then(function(data) {
+        if (data.success) {
+          coachingBrief = data.coaching_brief || '';
+          historicalBrief = data.historical_brief || '';
+          briefUpdatedAt = data.historical_brief_updated_at || null;
+          renderCoachingBrief();
+        }
+      })
+      .catch(function() {});
+  }
 }
 
 // ── STARTUP ───────────────────────────────────────────────────────────────
@@ -1818,6 +1846,8 @@ function fetchAI() {
     'CURRENT WORKOUT STREAK: ' + currentStreak + ' days' + (currentStreak >= 7 ? ' (impressive consistency!)' : '') + '\n' +
     dataBlock + '\n' +
     'RECENT 10-DAY LOG:\n' + recent + '\n\n' +
+    (historicalBrief ? 'HISTORICAL TRAINING SUMMARY:\n' + historicalBrief + '\n\n' : '') +
+    (coachingBrief ? 'RECENT COACHING BRIEF:\n' + coachingBrief + '\n\n' : '') +
     'FULL ATHLETE PROFILE:\n' + FULL_PROFILE + '\n\n' +
     'WEEKLY SCHEDULE DEFAULTS:\n' + getScheduleText() + '\n\n' +
     rulesBlock +
@@ -2040,6 +2070,97 @@ function renderProfileTab() {
     ctxHTML += '</div></div>';
   }
   document.getElementById('profile-context').innerHTML = ctxHTML;
+}
+
+function renderCoachingBrief() {
+  var el = document.getElementById('coaching-brief-card');
+  if (!el) return;
+  if (!coachingBrief && !historicalBrief) {
+    el.innerHTML = '<div class="card" style="border-color:var(--accent-22)"><p class="clabel">&#x1F9E0; coaching brief</p>' +
+      '<p style="font-size:14px;color:var(--text-dim);margin-bottom:12px">No coaching brief generated yet.</p>' +
+      '<button onclick="generateBrief()" class="btnPri" style="font-size:13px;padding:10px 18px">Generate Brief</button></div>';
+    return;
+  }
+  var updatedStr = briefUpdatedAt ? new Date(briefUpdatedAt).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }) : '';
+  var html = '<div class="card" style="border-color:var(--accent-22)">';
+  html += '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px"><p class="clabel" style="margin-bottom:0">&#x1F9E0; coaching brief</p>';
+  html += '<button onclick="generateBrief()" id="brief-regen-btn" style="background:transparent;border:1px solid var(--border-accent);color:var(--text-muted);padding:5px 12px;border-radius:6px;cursor:pointer;font-size:12px">Regenerate</button></div>';
+  if (coachingBrief) {
+    html += '<div style="font-size:14px;color:var(--text-sec);line-height:1.7;white-space:pre-line">' + escHtml(coachingBrief) + '</div>';
+  }
+  if (historicalBrief) {
+    html += '<div style="margin-top:14px;border-top:1px solid var(--border);padding-top:12px">';
+    html += '<div onclick="toggleHistoricalBrief()" style="cursor:pointer;display:flex;align-items:center;gap:6px"><span id="hist-arrow" style="color:var(--text-dim);font-size:12px">&#9654;</span><span class="mono" style="font-size:10px;color:var(--text-dim);letter-spacing:2px">HISTORICAL SUMMARY</span>' + (updatedStr ? '<span class="mono" style="font-size:9px;color:var(--text-dim);margin-left:auto">' + updatedStr + '</span>' : '') + '</div>';
+    html += '<div id="historical-brief-content" style="display:none;margin-top:10px;font-size:13px;color:var(--text-muted);line-height:1.7;white-space:pre-line">' + escHtml(historicalBrief) + '</div>';
+    html += '</div>';
+  }
+  html += '</div>';
+  el.innerHTML = html;
+}
+
+function toggleHistoricalBrief() {
+  var content = document.getElementById('historical-brief-content');
+  var arrow = document.getElementById('hist-arrow');
+  if (!content) return;
+  if (content.style.display === 'none') {
+    content.style.display = 'block';
+    if (arrow) arrow.innerHTML = '&#9660;';
+  } else {
+    content.style.display = 'none';
+    if (arrow) arrow.innerHTML = '&#9654;';
+  }
+}
+
+function generateBrief() {
+  if (!currentProfileId) return;
+  var btn = document.getElementById('brief-regen-btn');
+  if (btn) { btn.textContent = 'Generating...'; btn.disabled = true; }
+  fetch('/api/profiles/' + currentProfileId + '/generate-brief', { method: 'POST' })
+    .then(function(r) { return r.json(); })
+    .then(function(data) {
+      if (data.success) {
+        coachingBrief = data.coaching_brief || '';
+        historicalBrief = data.historical_brief || historicalBrief;
+        briefUpdatedAt = new Date().toISOString();
+        renderCoachingBrief();
+      } else {
+        if (btn) { btn.textContent = 'Error - Retry'; btn.disabled = false; }
+      }
+    })
+    .catch(function() {
+      if (btn) { btn.textContent = 'Error - Retry'; btn.disabled = false; }
+    });
+}
+
+function escHtml(s) {
+  var d = document.createElement('div');
+  d.textContent = s;
+  return d.innerHTML;
+}
+
+function searchHistory() {
+  var input = document.getElementById('history-query');
+  var answer = document.getElementById('history-answer');
+  if (!input || !answer || !input.value.trim()) return;
+  if (!currentProfileId) return;
+  answer.style.display = 'block';
+  answer.innerHTML = '<p class="mono" style="font-size:11px;color:#22c97a;letter-spacing:3px;animation:pulse 1.6s infinite">SEARCHING...</p>';
+  fetch('/api/profiles/' + currentProfileId + '/search-history', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ query: input.value.trim() })
+  })
+    .then(function(r) { return r.json(); })
+    .then(function(data) {
+      if (data.success && data.answer) {
+        answer.innerHTML = '<div style="font-size:14px;color:var(--text-sec);line-height:1.7;white-space:pre-line">' + escHtml(data.answer) + '</div>';
+      } else {
+        answer.innerHTML = '<p style="font-size:14px;color:var(--text-dim)">Could not find an answer. Try rephrasing.</p>';
+      }
+    })
+    .catch(function() {
+      answer.innerHTML = '<p style="font-size:14px;color:#e84545">Search error. Please try again.</p>';
+    });
 }
 
 function renderProfileGoals() {
@@ -2436,7 +2557,24 @@ function saveWorkout() {
   renderLogArea();
   renderWeek();
   renderLog();
+  calculateStreak();
+  renderStreak();
   if (readiness && fitData) fetchAI();
+
+  // Regenerate coaching brief in background
+  if (currentProfileId) {
+    fetch('/api/profiles/' + currentProfileId + '/generate-brief', { method: 'POST' })
+      .then(function(r) { return r.json(); })
+      .then(function(data) {
+        if (data.success) {
+          coachingBrief = data.coaching_brief || '';
+          historicalBrief = data.historical_brief || historicalBrief;
+          renderCoachingBrief();
+          console.log('[ApexCoach] Coaching brief updated');
+        }
+      })
+      .catch(function() {});
+  }
 }
 
 var calOffset = 0;

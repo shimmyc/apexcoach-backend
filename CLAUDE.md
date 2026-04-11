@@ -22,7 +22,7 @@ ApexCoach is a personalized AI fitness coaching web app. Users connect their Fit
 
 ## Supabase Tables
 
-- profiles: id, name, pin (sha256 hashed), avatar_color, profile_data (jsonb), fitbit_access_token, fitbit_refresh_token, fitbit_expires_at, created_at
+- profiles: id, name, pin (sha256 hashed), avatar_color, profile_data (jsonb), fitbit_access_token, fitbit_refresh_token, fitbit_expires_at, coaching_brief (text), historical_brief (text), historical_brief_updated_at (timestamp), created_at
 
 - workouts: id, date, type, notes, done, mobility, med, ts, profile_id
 
@@ -101,6 +101,24 @@ Calculated from workoutLog entries where done=true. Counts backwards from today 
 - DELETE /api/profiles/:id — delete profile + all workouts (requires PIN in body)
 
 - POST /api/ai — Anthropic API proxy
+
+- GET /api/profiles/:id/brief — returns coaching_brief, historical_brief, historical_brief_updated_at
+
+- POST /api/profiles/:id/generate-brief — generates coaching briefs from workout history (two AI calls)
+
+- POST /api/profiles/:id/search-history — natural language search across all workout history
+
+## Coaching Memory System (Three-Tier)
+
+Three-tier AI memory system stored in Supabase profiles table:
+
+1. **Historical Brief** (historical_brief column) — long-term training summary generated from all workouts beyond the last 30. Regenerated monthly or on demand. Covers consistency patterns, exercise progressions, injury history, and milestones.
+
+2. **Coaching Brief** (coaching_brief column) — living analysis of the last 30 sessions, regenerated after every workout save. Covers recent patterns, exercise trends, injury status, what's working, and what needs attention. Includes historical context.
+
+3. **History Search** (search-history endpoint) — on-demand natural language search across the complete workout history. Powers the "Ask Your History" feature on the Log tab.
+
+Both briefs are injected into the daily AI coaching prompt (before FULL_PROFILE) so recommendations reference training history. The coaching brief card is displayed on the Profile tab with a collapsible historical section.
 
 ## Current Primary User
 

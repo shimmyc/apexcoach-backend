@@ -718,6 +718,150 @@ app.get("/api/token-info", async function(req, res) {
 });
 
 // ── AI PROXY ───────────────────────────────────────────────────────────────
+// ── COACHING MEMORY SYSTEM ────────────────────────────────────────────────
+function formatWorkoutForAI(w) {
+  return w.date + ": " + w.type + (w.done ? " (done)" : " (skipped)") + (w.mobility ? " +mobility" : "") + (w.med ? " +meditation" : "") + (w.notes ? " — " + w.notes : "");
+}
+
+async function callAI(prompt, maxTokens) {
+  var response = await fetch("https://api.anthropic.com/v1/messages", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "x-api-key": process.env.ANTHROPIC_KEY,
+      "anthropic-version": "2023-06-01",
+    },
+    body: JSON.stringify({
+      model: "claude-sonnet-4-20250514",
+      max_tokens: maxTokens || 1000,
+      messages: [{ role: "user", content: prompt }],
+    }),
+  });
+  var data = await response.json();
+  return (data.content && data.content[0]) ? data.content[0].text : "";
+}
+
+app.get("/api/profiles/:id/brief", async function(req, res) {
+  try {
+    var r = await fetch(SUPABASE_URL + "/rest/v1/profiles?id=eq." + req.params.id + "&select=coaching_brief,historical_brief,historical_brief_updated_at", {
+      headers: sbHeaders(),
+    });
+    var rows = await r.json();
+    if (!rows || !rows.length) return res.json({ success: false, error: "Profile not found." });
+    var p = rows[0];
+    res.json({ success: true, coaching_brief: p.coaching_brief, historical_brief: p.historical_brief, historical_brief_updated_at: p.historical_brief_updated_at });
+  } catch (e) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+app.post("/api/profiles/:id/generate-brief", async function(req, res) {
+  try {
+    var profileId = req.params.id;
+
+    // Fetch profile data
+    var pr = await fetch(SUPABASE_URL + "/rest/v1/profiles?id=eq." + profileId + "&select=profile_data,historical_brief,historical_brief_updated_at", {
+      headers: sbHeaders(),
+    });
+    var pRows = await pr.json();
+    if (!pRows || !pRows.length) return res.json({ success: false, error: "Profile not found." });
+    var profile = pRows[0];
+    var profileContext = (profile.profile_data && profile.profile_data.ai_prompt_context) || "";
+
+    // Fetch ALL workouts
+    var wr = await fetch(SUPABASE_URL + "/rest/v1/workouts?profile_id=eq." + profileId + "&select=*&order=date.desc&limit=10000", {
+      headers: sbHeaders(),
+    });
+    var allWorkouts = await wr.json();
+    if (!Array.isArray(allWorkouts)) allWorkouts = [];
+
+    var recent = allWorkouts.slice(0, 30);
+    var historical = allWorkouts.slice(30);
+
+    // Calculate streak
+    var doneDates = {};
+    allWorkouts.forEach(function(w) { if (w.done) doneDates[w.date] = true; });
+    var streak = 0;
+    var d = new Date();
+    var check = d.toISOString().slice(0, 10);
+    if (!doneDates[check]) { d.setDate(d.getDate() - 1); check = d.toISOString().slice(0, 10); }
+    while (doneDates[check]) { streak++; d.setDate(d.getDate() - 1); check = d.toISOString().slice(0, 10); }
+
+    var updatePayload = {};
+
+    // CALL 1 - Historical Brief (if needed)
+    var needsHistorical = !profile.historical_brief_updated_at ||
+      (Date.now() - new Date(profile.historical_brief_updated_at).getTime() > 30 * 24 * 60 * 60 * 1000);
+
+    var historicalBrief = profile.historical_brief || "";
+
+    if (needsHistorical && historical.length > 0) {
+      var histFormatted = historical.map(formatWorkoutForAI).join("\n");
+      var histPrompt = "Analyze this athlete's complete workout history before their last 30 sessions and write a Historical Training Summary. Cover: overall consistency patterns, long-term exercise progressions, injury history from notes, seasonal patterns, what types of training they gravitate toward, any notable milestones or breakthroughs. Keep under 300 words. Write in third person coaching voice.\n\nHISTORICAL WORKOUTS:\n" + histFormatted;
+      historicalBrief = await callAI(histPrompt, 800);
+      updatePayload.historical_brief = historicalBrief;
+      updatePayload.historical_brief_updated_at = new Date().toISOString();
+    }
+
+    // CALL 2 - Recent Coaching Brief (always)
+    var recentFormatted = recent.map(formatWorkoutForAI).join("\n");
+    var recentPrompt = "You are analyzing an athlete's recent 30 training sessions to write a Living Coaching Brief.\n\n" +
+      "HISTORICAL CONTEXT:\n" + (historicalBrief || "No historical data yet.") + "\n\n" +
+      "ATHLETE PROFILE:\n" + (profileContext || "No profile data.") + "\n\n" +
+      "RECENT 30 SESSIONS:\n" + recentFormatted + "\n\n" +
+      "Write a coaching brief covering:\n" +
+      "- Recent pattern (last 14 days): session count, types, consistency %\n" +
+      "- Exercise trends: any progressions or plateaus from notes\n" +
+      "- Injury status: pain mentions in last 30 days, what's improving\n" +
+      "- What's working: 2-3 observations\n" +
+      "- What needs attention: 2-3 observations\n" +
+      "- Current streak: " + streak + " days\n" +
+      "Keep under 400 words. Be specific, reference actual dates and numbers.";
+
+    var coachingBrief = await callAI(recentPrompt, 1000);
+    updatePayload.coaching_brief = coachingBrief;
+
+    // Save to Supabase
+    await fetch(SUPABASE_URL + "/rest/v1/profiles?id=eq." + profileId, {
+      method: "PATCH",
+      headers: sbHeaders("return=minimal"),
+      body: JSON.stringify(updatePayload),
+    });
+
+    res.json({ success: true, coaching_brief: coachingBrief, historical_brief: historicalBrief });
+  } catch (e) {
+    console.error("generate-brief error:", e);
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+app.post("/api/profiles/:id/search-history", async function(req, res) {
+  try {
+    var profileId = req.params.id;
+    var query = req.body.query;
+    if (!query) return res.status(400).json({ success: false, error: "Query required." });
+
+    // Fetch ALL workouts
+    var wr = await fetch(SUPABASE_URL + "/rest/v1/workouts?profile_id=eq." + profileId + "&select=*&order=date.desc&limit=10000", {
+      headers: sbHeaders(),
+    });
+    var allWorkouts = await wr.json();
+    if (!Array.isArray(allWorkouts)) allWorkouts = [];
+
+    var formatted = allWorkouts.map(formatWorkoutForAI).join("\n");
+    var prompt = "Search this athlete's complete workout history and answer this specific question with exact dates, numbers, and context.\n\n" +
+      "QUESTION: " + query + "\n\n" +
+      "COMPLETE WORKOUT HISTORY (" + allWorkouts.length + " sessions):\n" + formatted + "\n\n" +
+      "Answer concisely with specific data. If not found, say so.";
+
+    var answer = await callAI(prompt, 600);
+    res.json({ success: true, answer: answer });
+  } catch (e) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+// ── AI PROXY ──────────────────────────────────────────────────────────────
 app.post("/api/ai", async function(req, res) {
   try {
     const response = await fetch("https://api.anthropic.com/v1/messages", {
