@@ -58,6 +58,14 @@ Duration penalty: max(0, (300 - asleepMinutes) * 0.3) for nights under 5 hours.
 Tiers: 85+ Excellent, 70-84 Good, 55-69 Fair, <55 Poor.
 Displayed in readiness card and sent to AI prompt. See FORMULAS.md for full documentation.
 
+## Workout Streak Tracking
+
+Calculated from workoutLog entries where done=true. Counts backwards from today (or yesterday if no workout today). Streak breaks on a gap day with no completed workout. Displayed as:
+- Header badge (fire emoji + count, visible at 2+ days, tappable tooltip)
+- Streak card on Today tab (tiered: 2-6 green, 7-13 amber, 14-29 orange, 30+ gold animated)
+- "Streak ended" card shown when a streak breaks
+- Streak count sent to AI prompt for coaching context
+
 ## Multi-Profile System
 
 - PIN auth: sha256 hashed PINs stored in Supabase

@@ -171,6 +171,7 @@ input[type=range]{width:100%;accent-color:var(--accent)}
     <button class="navBtn" onclick="showTab('profile',this)">Profile</button>
   </nav>
   <div style="display:flex;gap:8px;align-items:center">
+    <span id="streak-badge" style="display:none;font-size:14px;color:#f5a623;font-weight:700;cursor:pointer;position:relative" onclick="toggleStreakTooltip(event)"></span>
     <button class="syncBtn" onclick="syncFitbit(true)">sync</button>
     <button class="gearBtn" onclick="openSettings()" title="Settings">&#9881;</button>
     <div style="position:relative">
@@ -230,6 +231,7 @@ input[type=range]{width:100%;accent-color:var(--accent)}
         <p style="font-size:12px;color:var(--text-dim)">Connect a fitness tracker for deeper insights &mdash; <a href="javascript:void(0)" onclick="showTab('profile',document.querySelectorAll('header nav .navBtn')[3])" style="color:var(--info);text-decoration:none">go to Profile</a></p>
       </div>
     </div>
+    <div id="streak-card" style="display:none"></div>
     <div id="readiness-card" class="card" style="display:none"></div>
     <div id="progress-card" class="card" style="display:none">
       <p class="clabel">progress brief</p>
@@ -337,7 +339,7 @@ input[type=range]{width:100%;accent-color:var(--accent)}
         <p style="font-size:11px;letter-spacing:2px;color:#f5a623;margin:10px 0 0;font-weight:700">COMING SOON</p>
         <label style="display:flex;align-items:center;gap:8px;font-size:14px;color:#22c97a"><input type="checkbox" checked disabled> Sleep Score Formula (personal regression, R²=0.883) &mdash; LIVE</label>
         <label style="display:flex;align-items:center;gap:8px;font-size:14px;color:#ccc"><input type="checkbox" disabled> Morning sleep analysis &mdash; personalized recommendations based on sleep score when data first loads</label>
-        <label style="display:flex;align-items:center;gap:8px;font-size:14px;color:#ccc"><input type="checkbox" disabled> Workout streak icon (&#x1F525; consecutive training days)</label>
+        <label style="display:flex;align-items:center;gap:8px;font-size:14px;color:#22c97a"><input type="checkbox" checked disabled> Workout streak icon (&#x1F525; consecutive training days) &mdash; LIVE</label>
         <label style="display:flex;align-items:center;gap:8px;font-size:14px;color:#ccc"><input type="checkbox" disabled> Auto-retry Fitbit sync (retry every 5min up to 3x before falling back to manual check-in)</label>
 
         <p style="font-size:11px;letter-spacing:2px;color:#4488bb;margin:10px 0 0;font-weight:700">EXERCISE TRACKING</p>
@@ -570,6 +572,8 @@ var aiRec = null;
 var progressRec = null;
 var workoutLog = [];
 var medLog = [];
+var currentStreak = 0;
+var previousStreak = 0;
 var schedule = {};
 
 var DAYS = ['mon','tue','wed','thu','fri','sat','sun'];
@@ -1072,7 +1076,88 @@ function loadWorkouts() {
     .catch(function() {
       workoutLog = JSON.parse(localStorage.getItem('ac_log') || '[]');
       medLog = JSON.parse(localStorage.getItem('ac_med') || '[]');
+    })
+    .then(function() {
+      calculateStreak();
+      renderStreakBadge();
+      renderStreakCard();
     });
+}
+
+function calculateStreak() {
+  previousStreak = currentStreak;
+  currentStreak = 0;
+  var doneDates = {};
+  for (var i = 0; i < workoutLog.length; i++) {
+    if (workoutLog[i].done) doneDates[workoutLog[i].date] = true;
+  }
+  var d = new Date();
+  var check = d.getFullYear() + '-' + String(d.getMonth()+1).padStart(2,'0') + '-' + String(d.getDate()).padStart(2,'0');
+  if (!doneDates[check]) {
+    d.setDate(d.getDate() - 1);
+    check = d.getFullYear() + '-' + String(d.getMonth()+1).padStart(2,'0') + '-' + String(d.getDate()).padStart(2,'0');
+  }
+  while (doneDates[check]) {
+    currentStreak++;
+    d.setDate(d.getDate() - 1);
+    check = d.getFullYear() + '-' + String(d.getMonth()+1).padStart(2,'0') + '-' + String(d.getDate()).padStart(2,'0');
+  }
+}
+
+function renderStreakBadge() {
+  var badge = document.getElementById('streak-badge');
+  if (!badge) return;
+  if (currentStreak >= 2) {
+    badge.style.display = 'inline';
+    badge.innerHTML = '&#x1F525; ' + currentStreak;
+    badge.setAttribute('data-streak', currentStreak);
+  } else {
+    badge.style.display = 'none';
+  }
+}
+
+function toggleStreakTooltip(e) {
+  e.stopPropagation();
+  var existing = document.getElementById('streak-tooltip');
+  if (existing) { existing.remove(); return; }
+  var tip = document.createElement('div');
+  tip.id = 'streak-tooltip';
+  tip.style.cssText = 'position:absolute;top:100%;right:0;margin-top:6px;background:var(--bg-card);border:1px solid var(--accent-33);border-radius:8px;padding:10px 14px;font-size:13px;color:var(--text);white-space:nowrap;z-index:100;box-shadow:0 4px 12px rgba(0,0,0,0.3)';
+  tip.textContent = currentStreak + ' day streak! Keep it going.';
+  e.currentTarget.style.position = 'relative';
+  e.currentTarget.appendChild(tip);
+  setTimeout(function() { var t = document.getElementById('streak-tooltip'); if (t) t.remove(); }, 3000);
+}
+
+function renderStreakCard() {
+  var card = document.getElementById('streak-card');
+  if (!card) return;
+  if (currentStreak <= 1 && previousStreak <= 1) {
+    card.style.display = 'none';
+    return;
+  }
+  card.style.display = 'block';
+  var html = '';
+  if (currentStreak === 0 && previousStreak >= 2) {
+    html = '<div class="card" style="border-color:#55555544;background:var(--bg-input);text-align:center;padding:16px">' +
+      '<span style="font-size:15px;color:var(--text-muted)">Streak ended &mdash; start a new one today &#x1F4AA;</span></div>';
+  } else if (currentStreak >= 30) {
+    html = '<div class="card" style="border-color:#f5c51844;background:linear-gradient(135deg,rgba(245,197,24,0.08),rgba(245,168,35,0.05));text-align:center;padding:20px;animation:pulse 2s infinite">' +
+      '<span style="font-size:20px;color:#f5c518;font-weight:700">&#x1F451; ' + currentStreak + ' days &mdash; LEGENDARY</span></div>';
+  } else if (currentStreak >= 14) {
+    html = '<div class="card" style="border-color:#f0702044;text-align:center;padding:18px">' +
+      '<span style="font-size:18px;color:#f07020;font-weight:700">&#x1F525;&#x1F525;&#x1F525; ' + currentStreak + ' days &mdash; you\'re on fire!</span></div>';
+  } else if (currentStreak >= 7) {
+    html = '<div class="card" style="border-color:#f5a62344;text-align:center;padding:16px">' +
+      '<span style="font-size:16px;color:#f5a623;font-weight:700">&#x1F525;&#x1F525; ' + currentStreak + ' day streak &mdash; one week strong!</span></div>';
+  } else if (currentStreak >= 2) {
+    html = '<div class="card" style="border-color:#22c97a44;text-align:center;padding:14px">' +
+      '<span style="font-size:15px;color:#22c97a;font-weight:600">&#x1F525; ' + currentStreak + ' day streak</span></div>';
+  } else {
+    card.style.display = 'none';
+    return;
+  }
+  card.innerHTML = html;
 }
 
 function ds(offset) {
@@ -1698,6 +1783,7 @@ function fetchAI() {
     'AVAILABLE EQUIPMENT: ' + equipStr + '\n' +
     'WORKOUT LOCATION: ' + wkLoc + '. MAX DURATION: ' + (maxDur ? maxDur + ' min' : 'no limit') + '. PREFERRED TIME: ' + prefTime + '.\n\n' +
     'TODAY: ' + today + '\n' +
+    'CURRENT WORKOUT STREAK: ' + currentStreak + ' days' + (currentStreak >= 7 ? ' (impressive consistency!)' : '') + '\n' +
     dataBlock + '\n' +
     'RECENT 10-DAY LOG:\n' + recent + '\n\n' +
     'FULL ATHLETE PROFILE:\n' + FULL_PROFILE + '\n\n' +
