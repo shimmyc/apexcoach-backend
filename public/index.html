@@ -328,21 +328,50 @@ input[type=range]{width:100%;accent-color:var(--accent)}
     <!-- DEV ROADMAP (hidden, long-press logo to reveal) -->
     <div id="dev-roadmap" class="card" style="display:none;border-color:var(--accent-10)">
       <p class="clabel">roadmap</p>
-      <div style="display:flex;flex-direction:column;gap:8px">
-        <label style="display:flex;align-items:center;gap:8px;font-size:14px;color:#22c97a"><input type="checkbox" checked disabled> Fitbit integration &mdash; LIVE</label>
-        <label style="display:flex;align-items:center;gap:8px;font-size:14px;color:#f5a623"><input type="checkbox" disabled> Manual check-in mode &mdash; IN PROGRESS</label>
-        <label style="display:flex;align-items:center;gap:8px;font-size:14px;color:#4488bb"><input type="checkbox" disabled> Google Fit / Wear OS integration &mdash; BUILDABLE (has public API)</label>
-        <label style="display:flex;align-items:center;gap:8px;font-size:14px;color:#4488bb"><input type="checkbox" disabled> Garmin integration &mdash; BUILDABLE (has public API)</label>
-        <label style="display:flex;align-items:center;gap:8px;font-size:14px;color:#555"><input type="checkbox" disabled> Apple Watch &mdash; requires iOS app (longer term)</label>
-        <label style="display:flex;align-items:center;gap:8px;font-size:14px;color:#555"><input type="checkbox" disabled> Whoop &mdash; waiting for API access (invite only)</label>
-        <label style="display:flex;align-items:center;gap:8px;font-size:14px;color:#555"><input type="checkbox" disabled> Samsung Health &mdash; requires partnership (not yet)</label>
-        <label style="display:flex;align-items:center;gap:8px;font-size:14px;color:#555"><input type="checkbox" disabled> Google OAuth login</label>
+      <div style="display:flex;flex-direction:column;gap:12px">
+
+        <p style="font-size:11px;letter-spacing:2px;color:var(--accent);margin:4px 0 0;font-weight:700">LIVE</p>
+        <label style="display:flex;align-items:center;gap:8px;font-size:14px;color:#22c97a"><input type="checkbox" checked disabled> Fitbit integration</label>
+        <label style="display:flex;align-items:center;gap:8px;font-size:14px;color:#22c97a"><input type="checkbox" checked disabled> Manual check-in mode</label>
+
+        <p style="font-size:11px;letter-spacing:2px;color:#f5a623;margin:10px 0 0;font-weight:700">COMING SOON</p>
+        <label style="display:flex;align-items:center;gap:8px;font-size:14px;color:#ccc"><input type="checkbox" disabled> Sleep Score Formula V2 (regression logic)</label>
+        <label style="display:flex;align-items:center;gap:8px;font-size:14px;color:#ccc"><input type="checkbox" disabled> Morning sleep analysis &mdash; personalized recommendations based on sleep score when data first loads</label>
+        <label style="display:flex;align-items:center;gap:8px;font-size:14px;color:#ccc"><input type="checkbox" disabled> Workout streak icon (&#x1F525; consecutive training days)</label>
+        <label style="display:flex;align-items:center;gap:8px;font-size:14px;color:#ccc"><input type="checkbox" disabled> Auto-retry Fitbit sync (retry every 5min up to 3x before falling back to manual check-in)</label>
+
+        <p style="font-size:11px;letter-spacing:2px;color:#4488bb;margin:10px 0 0;font-weight:700">EXERCISE TRACKING</p>
+        <label style="display:flex;align-items:center;gap:8px;font-size:14px;color:#ccc"><input type="checkbox" disabled> Exercise Library &mdash; extract exercises from workout notes, store in exercises table in Supabase</label>
+        <label style="display:flex;align-items:center;gap:8px;font-size:14px;color:#ccc"><input type="checkbox" disabled> Progress charts per exercise (bench press weight over time, running distance, reps progression)</label>
+        <label style="display:flex;align-items:center;gap:8px;font-size:14px;color:#ccc"><input type="checkbox" disabled> AI references exercise history in recommendations</label>
+        <label style="display:flex;align-items:center;gap:8px;font-size:14px;color:#ccc"><input type="checkbox" disabled> Living Coaching Brief &mdash; persistent AI memory auto-updated after every workout, stored in Supabase</label>
+
+        <p style="font-size:11px;letter-spacing:2px;color:#4488bb;margin:10px 0 0;font-weight:700">ONBOARDING &amp; PROFILES</p>
+        <label style="display:flex;align-items:center;gap:8px;font-size:14px;color:#ccc"><input type="checkbox" disabled> Wife's profile onboarding</label>
+        <label style="display:flex;align-items:center;gap:8px;font-size:14px;color:#ccc"><input type="checkbox" disabled> Fix profile_data \r\n corruption permanently</label>
+        <label style="display:flex;align-items:center;gap:8px;font-size:14px;color:#ccc"><input type="checkbox" disabled> Profile completeness score and deep profile builder sections</label>
+        <label style="display:flex;align-items:center;gap:8px;font-size:14px;color:#ccc"><input type="checkbox" disabled> Photo workout entry (Claude vision extracts exercises from photo)</label>
+
+        <p style="font-size:11px;letter-spacing:2px;color:#4488bb;margin:10px 0 0;font-weight:700">NAVIGATION</p>
+        <label style="display:flex;align-items:center;gap:8px;font-size:14px;color:#ccc"><input type="checkbox" disabled> Previous days navigation on Today tab (swipe/arrow through past days like Fitbit)</label>
+
+        <p style="font-size:11px;letter-spacing:2px;color:#4488bb;margin:10px 0 0;font-weight:700">INTEGRATIONS</p>
+        <label style="display:flex;align-items:center;gap:8px;font-size:14px;color:#4488bb"><input type="checkbox" disabled> Google Fit / Wear OS integration (has public API, buildable)</label>
+        <label style="display:flex;align-items:center;gap:8px;font-size:14px;color:#4488bb"><input type="checkbox" disabled> Garmin integration (has public API, buildable)</label>
+        <label style="display:flex;align-items:center;gap:8px;font-size:14px;color:#555"><input type="checkbox" disabled> Apple Watch (requires iOS app bridge, longer term)</label>
+        <label style="display:flex;align-items:center;gap:8px;font-size:14px;color:#555"><input type="checkbox" disabled> Whoop (API invite only, waiting)</label>
+        <label style="display:flex;align-items:center;gap:8px;font-size:14px;color:#ccc"><input type="checkbox" disabled> Google OAuth login (replace PIN system)</label>
+        <label style="display:flex;align-items:center;gap:8px;font-size:14px;color:#ccc"><input type="checkbox" disabled> Push notifications (morning reminder, streak alerts, weekly summary, rest day reminders)</label>
+
+        <p style="font-size:11px;letter-spacing:2px;color:#555;margin:10px 0 0;font-weight:700">FUTURE</p>
         <label style="display:flex;align-items:center;gap:8px;font-size:14px;color:#555"><input type="checkbox" disabled> WhatsApp / Telegram bot integration</label>
-        <label style="display:flex;align-items:center;gap:8px;font-size:14px;color:#555"><input type="checkbox" disabled> Wall display mode</label>
+        <label style="display:flex;align-items:center;gap:8px;font-size:14px;color:#555"><input type="checkbox" disabled> Wall display mode (always-on tablet/TV dashboard)</label>
         <label style="display:flex;align-items:center;gap:8px;font-size:14px;color:#555"><input type="checkbox" disabled> Workout plan generator</label>
         <label style="display:flex;align-items:center;gap:8px;font-size:14px;color:#555"><input type="checkbox" disabled> Progress photos</label>
         <label style="display:flex;align-items:center;gap:8px;font-size:14px;color:#555"><input type="checkbox" disabled> Export data to PDF</label>
-        <label style="display:flex;align-items:center;gap:8px;font-size:14px;color:#555"><input type="checkbox" disabled> Push notifications (morning check-in, streak alerts, weekly summary, rest reminders) &mdash; needs service worker + push API</label>
+        <label style="display:flex;align-items:center;gap:8px;font-size:14px;color:#555"><input type="checkbox" disabled> Custom domain</label>
+        <label style="display:flex;align-items:center;gap:8px;font-size:14px;color:#555"><input type="checkbox" disabled> Upgrade Render to paid ($7/mo) to eliminate cold start delay</label>
+
       </div>
     </div>
 
