@@ -866,45 +866,71 @@ app.post("/api/profiles/:id/extract-exercises", async function(req, res) {
   try {
     var profileId = req.params.id;
     var body = req.body;
-    if (!body.notes || !body.notes.trim()) return res.json({ success: true, exercises: [] });
+    if (!body.notes || !body.notes.trim()) {
+      console.log("[extract-exercises] No notes provided, skipping");
+      return res.json({ success: true, exercises: [], count: 0 });
+    }
+
+    console.log("[extract-exercises] Processing notes for profile " + profileId + ": " + body.notes.substring(0, 100) + "...");
 
     var prompt = "Extract all exercises from these workout notes. For each exercise identify: name (normalized, e.g. 'Glute Bridge' not 'glute bridges'), category (one of: strength/cardio/mobility/mma/rehab/other), sets (number or null), reps (number or null), weight_lbs (number or null), distance_miles (number or null), duration_minutes (number or null), raw_text (original text snippet).\nReturn ONLY a JSON array of exercise objects, no explanation.\nExample: [{\"name\":\"Glute Bridge\",\"category\":\"rehab\",\"sets\":3,\"reps\":12,\"weight_lbs\":null,\"distance_miles\":null,\"duration_minutes\":null,\"raw_text\":\"glute bridges 3x12\"}]\nWorkout type: " + (body.type || "unknown") + "\nNotes: " + body.notes;
 
     var aiText = await callAI(prompt, 1000);
+    console.log("[extract-exercises] Raw AI response: " + (aiText || "(empty)").substring(0, 300));
+
     var exercises = [];
     try {
-      var cleaned = aiText.indexOf("[") >= 0 ? aiText.substring(aiText.indexOf("["), aiText.lastIndexOf("]") + 1) : "[]";
+      var startIdx = aiText.indexOf("[");
+      var endIdx = aiText.lastIndexOf("]");
+      if (startIdx < 0 || endIdx < 0 || endIdx <= startIdx) {
+        console.error("[extract-exercises] No JSON array found in AI response");
+        return res.json({ success: true, exercises: [], count: 0 });
+      }
+      var cleaned = aiText.substring(startIdx, endIdx + 1);
       exercises = JSON.parse(cleaned);
-    } catch (e) {
-      console.error("Exercise parse error:", e.message);
-      return res.json({ success: true, exercises: [] });
+      if (!Array.isArray(exercises)) exercises = [];
+    } catch (parseErr) {
+      console.error("[extract-exercises] JSON parse error:", parseErr.message, "| Raw text:", aiText.substring(0, 200));
+      return res.json({ success: true, exercises: [], count: 0 });
     }
 
+    console.log("[extract-exercises] AI returned " + exercises.length + " exercises");
+
     // Insert into Supabase
+    var inserted = 0;
     for (var i = 0; i < exercises.length; i++) {
       var ex = exercises[i];
-      await fetch(SUPABASE_URL + "/rest/v1/exercises", {
+      if (!ex.name) continue;
+      var insertBody = {
+        profile_id: parseInt(profileId),
+        workout_id: body.workout_id ? parseInt(body.workout_id) : null,
+        date: body.date,
+        name: ex.name,
+        category: ex.category || "other",
+        sets: ex.sets || null,
+        reps: ex.reps || null,
+        weight_lbs: ex.weight_lbs || null,
+        distance_miles: ex.distance_miles || null,
+        duration_minutes: ex.duration_minutes || null,
+        notes: null,
+        raw_text: ex.raw_text || null,
+      };
+      var insertRes = await fetch(SUPABASE_URL + "/rest/v1/exercises", {
         method: "POST",
         headers: sbHeaders("return=minimal"),
-        body: JSON.stringify({
-          profile_id: parseInt(profileId),
-          workout_id: body.workout_id || null,
-          date: body.date,
-          name: ex.name,
-          category: ex.category || "other",
-          sets: ex.sets || null,
-          reps: ex.reps || null,
-          weight_lbs: ex.weight_lbs || null,
-          distance_miles: ex.distance_miles || null,
-          duration_minutes: ex.duration_minutes || null,
-          notes: null,
-          raw_text: ex.raw_text || null,
-        }),
+        body: JSON.stringify(insertBody),
       });
+      if (insertRes.ok) {
+        inserted++;
+      } else {
+        var errText = await insertRes.text();
+        console.error("[extract-exercises] Supabase insert error for '" + ex.name + "':", insertRes.status, errText);
+      }
     }
-    res.json({ success: true, exercises: exercises });
+    console.log("[extract-exercises] Inserted " + inserted + "/" + exercises.length + " exercises into Supabase");
+    res.json({ success: true, exercises: exercises, count: inserted });
   } catch (e) {
-    console.error("extract-exercises error:", e);
+    console.error("[extract-exercises] Error:", e);
     res.status(500).json({ success: false, error: e.message });
   }
 });

@@ -2583,11 +2583,21 @@ function saveWorkoutToSupabase(entry) {
     if (data.success && entry.notes && entry.notes.trim() && currentProfileId) {
       var wk = Array.isArray(data.workout) ? data.workout[0] : data.workout;
       var wkId = wk && wk.id ? wk.id : null;
+      console.log('[ApexCoach] Auto-extracting exercises from workout notes...');
       fetch('/api/profiles/' + currentProfileId + '/extract-exercises', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ workout_id: wkId, date: entry.date, notes: entry.notes, type: entry.type })
-      }).then(function() { console.log('[ApexCoach] Exercises extracted from workout'); }).catch(function() {});
+      })
+      .then(function(r) { return r.json(); })
+      .then(function(exData) {
+        console.log('[ApexCoach] Exercises extracted:', exData.count || 0, 'from workout');
+        // Refresh library data if on Library tab
+        if (document.getElementById('tab-library') && document.getElementById('tab-library').classList.contains('active')) {
+          loadLibrary();
+        }
+      })
+      .catch(function(e) { console.error('[ApexCoach] Exercise extraction error:', e); });
     }
   })
   .catch(function(e) { console.error('Save error:', e); });
@@ -2751,12 +2761,19 @@ function importExerciseHistory() {
   var withNotes = workoutLog.filter(function(w) { return w.notes && w.notes.trim() && w.done; });
   var total = withNotes.length;
   var done = 0;
+  var totalExtracted = 0;
 
   function next() {
     if (done >= total) {
-      if (prog) prog.textContent = 'Done! Imported from ' + total + ' workouts.';
-      if (btn) { btn.textContent = 'Complete'; }
+      if (totalExtracted > 0) {
+        if (prog) prog.textContent = 'Imported ' + totalExtracted + ' exercises from ' + total + ' workouts!';
+        if (btn) { btn.textContent = 'Complete'; }
+      } else {
+        if (prog) prog.innerHTML = 'No exercises found in workout notes &mdash; try adding detailed notes to your workouts (e.g. "bench press 3x10 @135lbs, glute bridges 3x12")';
+        if (btn) { btn.textContent = 'No Results'; }
+      }
       loadLibrary();
+      setTimeout(function() { showLibView('exercises'); }, 500);
       return;
     }
     var w = withNotes[done];
@@ -2765,7 +2782,18 @@ function importExerciseHistory() {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ workout_id: w.id || null, date: w.date, notes: w.notes, type: w.type })
-    }).then(function() { done++; setTimeout(next, 200); }).catch(function() { done++; setTimeout(next, 200); });
+    })
+    .then(function(r) { return r.json(); })
+    .then(function(data) {
+      if (data.success) totalExtracted += (data.count || 0);
+      done++;
+      setTimeout(next, 300);
+    })
+    .catch(function(e) {
+      console.error('[Library] Import error for workout:', e);
+      done++;
+      setTimeout(next, 300);
+    });
   }
   next();
 }
