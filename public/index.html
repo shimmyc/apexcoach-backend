@@ -5,6 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>ApexCoach</title>
 <link href="https://fonts.googleapis.com/css2?family=Oswald:wght@400;600;700&family=IBM+Plex+Mono:wght@400;500&family=DM+Sans:ital,wght@0,400;0,500;0,600;1,400&display=swap" rel="stylesheet">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
 <style>
 :root{
 --bg:#080a0f;--bg-card:#0d0f16;--bg-input:#060810;--border:#0e1016;--border-accent:#1a1c22;
@@ -168,6 +169,7 @@ input[type=range]{width:100%;accent-color:var(--accent)}
     <button class="navBtn active" onclick="showTab('today',this)">Today</button>
     <button class="navBtn" onclick="showTab('calendar',this)">Calendar</button>
     <button class="navBtn" onclick="showTab('log',this)">Log</button>
+    <button class="navBtn" onclick="showTab('library',this)">Library</button>
     <button class="navBtn" onclick="showTab('profile',this)">Profile</button>
   </nav>
   <div style="display:flex;gap:8px;align-items:center">
@@ -290,6 +292,20 @@ input[type=range]{width:100%;accent-color:var(--accent)}
     <div id="log-entries"></div>
   </div>
 
+  <!-- LIBRARY TAB -->
+  <div id="tab-library" class="tab stack">
+    <div style="display:flex;gap:6px;margin-bottom:16px">
+      <button class="navBtn active" id="lib-btn-dashboard" onclick="showLibView('dashboard')">Dashboard</button>
+      <button class="navBtn" id="lib-btn-exercises" onclick="showLibView('exercises')">Exercises</button>
+      <button class="navBtn" id="lib-btn-records" onclick="showLibView('records')">Records</button>
+    </div>
+    <div id="lib-import-banner" style="display:none"></div>
+    <div id="lib-dashboard"></div>
+    <div id="lib-exercises" style="display:none"></div>
+    <div id="lib-records" style="display:none"></div>
+    <div id="lib-detail" style="display:none"></div>
+  </div>
+
   <!-- PROFILE TAB -->
   <div id="tab-profile" class="tab stack">
     <div id="profile-dynamic"></div>
@@ -353,9 +369,9 @@ input[type=range]{width:100%;accent-color:var(--accent)}
         <label style="display:flex;align-items:center;gap:8px;font-size:14px;color:#ccc"><input type="checkbox" disabled> Auto-retry Fitbit sync (retry every 5min up to 3x before falling back to manual check-in)</label>
 
         <p style="font-size:11px;letter-spacing:2px;color:#4488bb;margin:10px 0 0;font-weight:700">EXERCISE TRACKING</p>
-        <label style="display:flex;align-items:center;gap:8px;font-size:14px;color:#ccc"><input type="checkbox" disabled> Exercise Library &mdash; extract exercises from workout notes, store in exercises table in Supabase</label>
-        <label style="display:flex;align-items:center;gap:8px;font-size:14px;color:#ccc"><input type="checkbox" disabled> Progress charts per exercise (bench press weight over time, running distance, reps progression)</label>
-        <label style="display:flex;align-items:center;gap:8px;font-size:14px;color:#ccc"><input type="checkbox" disabled> AI references exercise history in recommendations</label>
+        <label style="display:flex;align-items:center;gap:8px;font-size:14px;color:#22c97a"><input type="checkbox" checked disabled> Exercise Library &mdash; extract exercises from workout notes, store in exercises table in Supabase &mdash; LIVE</label>
+        <label style="display:flex;align-items:center;gap:8px;font-size:14px;color:#22c97a"><input type="checkbox" checked disabled> Progress charts per exercise (weight, reps, distance over time with Chart.js) &mdash; LIVE</label>
+        <label style="display:flex;align-items:center;gap:8px;font-size:14px;color:#22c97a"><input type="checkbox" checked disabled> AI references exercise history in recommendations &mdash; LIVE</label>
         <label style="display:flex;align-items:center;gap:8px;font-size:14px;color:#22c97a"><input type="checkbox" checked disabled> Living Coaching Brief &mdash; persistent AI memory auto-updated after every workout, stored in Supabase &mdash; LIVE</label>
 
         <p style="font-size:11px;letter-spacing:2px;color:#4488bb;margin:10px 0 0;font-weight:700">ONBOARDING &amp; PROFILES</p>
@@ -1777,6 +1793,25 @@ function fetchAI() {
   var today = new Date().toLocaleDateString('en-US', {weekday:'long', month:'long', day:'numeric'});
 
   var athleteName = (currentProfileData && currentProfileData.name) || currentProfileName || 'this athlete';
+  var recentExerciseContext = '';
+  if (libExercises && libExercises.length) {
+    var exLines = [];
+    var topEx = libExercises.slice(0, 10);
+    for (var ei = 0; ei < topEx.length; ei++) {
+      var ex = topEx[ei];
+      var lastSess = ex.sessions && ex.sessions[0];
+      var line = '- ' + ex.name + ': ' + ex.count + 'x logged';
+      if (lastSess) {
+        line += ', last ' + lastSess.date;
+        if (lastSess.sets) line += ' ' + lastSess.sets + 's';
+        if (lastSess.reps) line += 'x' + lastSess.reps + 'r';
+        if (lastSess.weight_lbs) line += ' @' + lastSess.weight_lbs + 'lbs';
+      }
+      if (ex.best_weight) line += ', best ' + ex.best_weight + 'lbs';
+      exLines.push(line);
+    }
+    if (exLines.length) recentExerciseContext = 'RECENT EXERCISE HISTORY:\n' + exLines.join('\n') + '\n\n';
+  }
   var dataBlock = '';
   var rulesBlock = '';
 
@@ -1848,6 +1883,7 @@ function fetchAI() {
     'RECENT 10-DAY LOG:\n' + recent + '\n\n' +
     (historicalBrief ? 'HISTORICAL TRAINING SUMMARY:\n' + historicalBrief + '\n\n' : '') +
     (coachingBrief ? 'RECENT COACHING BRIEF:\n' + coachingBrief + '\n\n' : '') +
+    (recentExerciseContext || '') +
     'FULL ATHLETE PROFILE:\n' + FULL_PROFILE + '\n\n' +
     'WEEKLY SCHEDULE DEFAULTS:\n' + getScheduleText() + '\n\n' +
     rulesBlock +
@@ -2541,7 +2577,20 @@ function saveWorkoutToSupabase(entry) {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(payload)
-  }).catch(function(e) { console.error('Save error:', e); });
+  })
+  .then(function(r) { return r.json(); })
+  .then(function(data) {
+    if (data.success && entry.notes && entry.notes.trim() && currentProfileId) {
+      var wk = Array.isArray(data.workout) ? data.workout[0] : data.workout;
+      var wkId = wk && wk.id ? wk.id : null;
+      fetch('/api/profiles/' + currentProfileId + '/extract-exercises', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ workout_id: wkId, date: entry.date, notes: entry.notes, type: entry.type })
+      }).then(function() { console.log('[ApexCoach] Exercises extracted from workout'); }).catch(function() {});
+    }
+  })
+  .catch(function(e) { console.error('Save error:', e); });
 }
 
 function updateWorkoutInSupabase(id, entry) {
@@ -2642,6 +2691,443 @@ function saveWorkout() {
   }
 }
 
+// ── EXERCISE LIBRARY ──────────────────────────────────────────────────────
+var libView = 'dashboard';
+var libExercises = [];
+var libStats = null;
+var libCharts = {};
+var libFilter = 'all';
+var LIB_COLORS = { 'MMA / Sparring':'#e84545','Strength - Upper':'#4488bb','Strength - Lower':'#4488bb','Strength - Full Body':'#4488bb','Yoga / Mobility':'#9966cc','Conditioning / HIIT':'#f5a623','Mixed Training':'#22c97a','Rest Day':'#555','Active Recovery':'#888','Walking':'#888','PT / Rehab':'#f07020' };
+var CAT_COLORS = { strength:'#4488bb', cardio:'#f5a623', mobility:'#9966cc', mma:'#e84545', rehab:'#f07020', other:'#888' };
+
+function showLibView(view) {
+  libView = view;
+  ['dashboard','exercises','records'].forEach(function(v) {
+    var el = document.getElementById('lib-' + v);
+    var btn = document.getElementById('lib-btn-' + v);
+    if (el) el.style.display = v === view ? 'block' : 'none';
+    if (btn) btn.classList.toggle('active', v === view);
+  });
+  var det = document.getElementById('lib-detail');
+  if (det) det.style.display = 'none';
+  if (view === 'dashboard') renderLibDashboard();
+  else if (view === 'exercises') renderLibExercises();
+  else if (view === 'records') renderLibRecords();
+}
+
+function loadLibrary() {
+  if (!currentProfileId) return;
+  Promise.all([
+    fetch('/api/profiles/' + currentProfileId + '/exercises').then(function(r) { return r.json(); }),
+    fetch('/api/profiles/' + currentProfileId + '/exercises/stats').then(function(r) { return r.json(); })
+  ]).then(function(results) {
+    if (results[0].success) libExercises = results[0].exercises || [];
+    if (results[1].success) libStats = results[1].stats || {};
+    renderLibImportBanner();
+    if (libView === 'dashboard') renderLibDashboard();
+    else if (libView === 'exercises') renderLibExercises();
+    else if (libView === 'records') renderLibRecords();
+  }).catch(function(e) { console.error('[Library] Load error:', e); });
+}
+
+function renderLibImportBanner() {
+  var el = document.getElementById('lib-import-banner');
+  if (!el) return;
+  if (libExercises.length > 0 || !workoutLog.length) { el.style.display = 'none'; return; }
+  var withNotes = workoutLog.filter(function(w) { return w.notes && w.notes.trim(); });
+  if (!withNotes.length) { el.style.display = 'none'; return; }
+  el.style.display = 'block';
+  el.innerHTML = '<div class="card" style="border-color:#f5a62344;text-align:center;padding:16px">' +
+    '<p style="font-size:14px;color:var(--text-sec);margin-bottom:10px">No exercises in your library yet. Import from your ' + withNotes.length + ' workouts with notes?</p>' +
+    '<button onclick="importExerciseHistory()" id="lib-import-btn" class="btnPri" style="padding:10px 20px;font-size:14px">Import Exercise History</button>' +
+    '<div id="lib-import-progress" style="margin-top:8px;font-size:12px;color:var(--text-muted)"></div></div>';
+}
+
+function importExerciseHistory() {
+  if (!currentProfileId) return;
+  var btn = document.getElementById('lib-import-btn');
+  if (btn) { btn.disabled = true; btn.textContent = 'Importing...'; }
+  var prog = document.getElementById('lib-import-progress');
+  var withNotes = workoutLog.filter(function(w) { return w.notes && w.notes.trim() && w.done; });
+  var total = withNotes.length;
+  var done = 0;
+
+  function next() {
+    if (done >= total) {
+      if (prog) prog.textContent = 'Done! Imported from ' + total + ' workouts.';
+      if (btn) { btn.textContent = 'Complete'; }
+      loadLibrary();
+      return;
+    }
+    var w = withNotes[done];
+    if (prog) prog.textContent = 'Importing workout ' + (done + 1) + ' of ' + total + '...';
+    fetch('/api/profiles/' + currentProfileId + '/extract-exercises', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ workout_id: w.id || null, date: w.date, notes: w.notes, type: w.type })
+    }).then(function() { done++; setTimeout(next, 200); }).catch(function() { done++; setTimeout(next, 200); });
+  }
+  next();
+}
+
+function renderLibDashboard() {
+  var el = document.getElementById('lib-dashboard');
+  if (!el) return;
+  if (!libStats) { el.innerHTML = '<p class="mono" style="font-size:11px;color:#22c97a;letter-spacing:3px;animation:pulse 1.6s infinite">LOADING...</p>'; loadLibrary(); return; }
+
+  var html = '';
+
+  // Quick stats row
+  html += '<div style="display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-bottom:16px">';
+  html += statCard('Workouts', libStats.total_workouts || 0, 'completed');
+  html += statCard('Exercises', libStats.unique_exercises || 0, 'unique');
+  html += statCard('Streak', currentStreak || 0, 'days');
+  html += statCard('Best Day', libStats.most_active_day || '-', 'most active');
+  html += '</div>';
+
+  // Donut chart
+  html += '<div class="card" style="margin-bottom:16px"><p class="clabel">workout distribution</p><div style="max-width:280px;margin:0 auto"><canvas id="lib-donut"></canvas></div><div id="lib-donut-legend" style="margin-top:12px"></div></div>';
+
+  // Volume chart
+  html += '<div class="card" style="margin-bottom:16px"><p class="clabel">weekly training volume</p><canvas id="lib-volume" style="max-height:200px"></canvas></div>';
+
+  // Top exercises grid
+  var topEx = (libStats.top_exercises || []).slice(0, 6);
+  if (topEx.length) {
+    html += '<div class="card"><p class="clabel">top exercises</p><div style="display:grid;grid-template-columns:repeat(2,1fr);gap:10px">';
+    for (var i = 0; i < topEx.length; i++) {
+      var ex = topEx[i];
+      var cc = CAT_COLORS[ex.category] || '#888';
+      html += '<div onclick="showExerciseDetail(\'' + escAttr(ex.name) + '\')" style="background:var(--bg-input);border:1px solid var(--border);border-radius:8px;padding:12px;cursor:pointer">' +
+        '<div style="font-size:15px;color:var(--text);font-weight:500;margin-bottom:4px">' + escHtml(ex.name) + '</div>' +
+        '<span class="mono" style="font-size:9px;color:' + cc + ';letter-spacing:1px;text-transform:uppercase;background:' + cc + '18;padding:2px 6px;border-radius:3px">' + ex.category + '</span>' +
+        '<div class="mono" style="font-size:11px;color:var(--text-muted);margin-top:6px">' + ex.count + 'x logged</div></div>';
+    }
+    html += '</div></div>';
+  }
+
+  el.innerHTML = html;
+
+  // Render charts after DOM update
+  setTimeout(function() {
+    renderDonutChart();
+    renderVolumeChart();
+  }, 50);
+}
+
+function renderDonutChart() {
+  var canvas = document.getElementById('lib-donut');
+  if (!canvas || !libStats || !libStats.workout_type_frequency) return;
+  if (libCharts.donut) libCharts.donut.destroy();
+
+  var freq = libStats.workout_type_frequency;
+  var labels = Object.keys(freq);
+  var values = labels.map(function(k) { return freq[k]; });
+  var colors = labels.map(function(k) { return LIB_COLORS[k] || '#888'; });
+  var total = values.reduce(function(a,b) { return a+b; }, 0);
+
+  libCharts.donut = new Chart(canvas, {
+    type: 'doughnut',
+    data: { labels: labels, datasets: [{ data: values, backgroundColor: colors, borderWidth: 0 }] },
+    options: {
+      responsive: true,
+      cutout: '65%',
+      plugins: {
+        legend: { display: false },
+        tooltip: { callbacks: { label: function(ctx) { return ctx.label + ': ' + ctx.raw + ' (' + Math.round(ctx.raw/total*100) + '%)'; } } }
+      }
+    }
+  });
+
+  // Legend
+  var leg = document.getElementById('lib-donut-legend');
+  if (leg) {
+    var lh = '<div style="display:flex;flex-wrap:wrap;gap:8px;justify-content:center">';
+    for (var i = 0; i < labels.length; i++) {
+      var pct = Math.round(values[i]/total*100);
+      lh += '<span class="mono" style="font-size:10px;color:var(--text-muted)"><span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:' + colors[i] + ';margin-right:4px"></span>' + labels[i].split(' /')[0].split(' - ')[0] + ' ' + pct + '%</span>';
+    }
+    lh += '</div>';
+    leg.innerHTML = lh;
+  }
+}
+
+function renderVolumeChart() {
+  var canvas = document.getElementById('lib-volume');
+  if (!canvas || !libStats || !libStats.weekly_volume) return;
+  if (libCharts.volume) libCharts.volume.destroy();
+
+  var vol = libStats.weekly_volume;
+  var weeks = Object.keys(vol).sort();
+  var values = weeks.map(function(k) { return vol[k]; });
+  var labels = weeks.map(function(k) { var d = new Date(k + 'T12:00:00'); return (d.getMonth()+1) + '/' + d.getDate(); });
+
+  libCharts.volume = new Chart(canvas, {
+    type: 'bar',
+    data: { labels: labels, datasets: [{ data: values, backgroundColor: '#22c97a44', borderColor: '#22c97a', borderWidth: 1, borderRadius: 4 }] },
+    options: {
+      responsive: true,
+      plugins: { legend: { display: false } },
+      scales: {
+        x: { ticks: { color: '#555', font: { size: 10 } }, grid: { display: false } },
+        y: { ticks: { color: '#555', font: { size: 10 } }, grid: { color: '#1a1c22' }, beginAtZero: true }
+      }
+    }
+  });
+}
+
+function renderLibExercises() {
+  var el = document.getElementById('lib-exercises');
+  if (!el) return;
+  if (!libExercises.length && !libStats) { loadLibrary(); return; }
+
+  var cats = ['all','strength','cardio','mobility','mma','rehab','other'];
+  var html = '<div style="margin-bottom:12px"><input type="text" id="lib-search" placeholder="Search exercises..." oninput="filterLibExercises()" style="width:100%;background:var(--bg-input);border:1px solid var(--border);color:var(--text);padding:10px 14px;border-radius:6px;font-size:14px;outline:none;font-family:DM Sans,sans-serif;margin-bottom:8px">';
+  html += '<div style="display:flex;gap:6px;flex-wrap:wrap">';
+  for (var i = 0; i < cats.length; i++) {
+    var c = cats[i];
+    var cc = c === 'all' ? 'var(--accent)' : (CAT_COLORS[c] || '#888');
+    html += '<button onclick="libFilter=\'' + c + '\';filterLibExercises()" class="lib-cat-btn' + (libFilter === c ? ' active' : '') + '" style="font-size:11px;padding:5px 12px;border-radius:4px;border:1px solid ' + cc + '33;background:' + (libFilter === c ? cc + '22' : 'transparent') + ';color:' + cc + ';cursor:pointer;font-family:IBM Plex Mono,monospace;letter-spacing:1px;text-transform:uppercase">' + c + '</button>';
+  }
+  html += '</div></div>';
+  html += '<div id="lib-exercise-list"></div>';
+  el.innerHTML = html;
+  filterLibExercises();
+}
+
+function filterLibExercises() {
+  var search = (document.getElementById('lib-search') || {}).value || '';
+  search = search.toLowerCase();
+  var filtered = libExercises.filter(function(ex) {
+    if (libFilter !== 'all' && ex.category !== libFilter) return false;
+    if (search && ex.name.toLowerCase().indexOf(search) < 0) return false;
+    return true;
+  });
+
+  var list = document.getElementById('lib-exercise-list');
+  if (!list) return;
+  if (!filtered.length) { list.innerHTML = '<p style="font-size:14px;color:var(--text-dim);text-align:center;padding:20px">No exercises found.</p>'; return; }
+
+  var html = '';
+  for (var i = 0; i < filtered.length; i++) {
+    var ex = filtered[i];
+    var cc = CAT_COLORS[ex.category] || '#888';
+    var bestStr = '';
+    if (ex.best_weight) bestStr = ex.best_weight + ' lbs';
+    else if (ex.best_reps) bestStr = ex.best_reps + ' reps';
+    html += '<div onclick="showExerciseDetail(\'' + escAttr(ex.name) + '\')" style="display:flex;align-items:center;justify-content:space-between;padding:12px;background:var(--bg-input);border:1px solid var(--border);border-radius:8px;margin-bottom:6px;cursor:pointer">' +
+      '<div><div style="font-size:15px;color:var(--text);font-weight:500">' + escHtml(ex.name) + '</div>' +
+      '<div style="display:flex;gap:6px;align-items:center;margin-top:4px"><span class="mono" style="font-size:9px;color:' + cc + ';letter-spacing:1px;text-transform:uppercase;background:' + cc + '18;padding:1px 6px;border-radius:3px">' + ex.category + '</span>' +
+      '<span class="mono" style="font-size:10px;color:var(--text-dim)">' + ex.count + 'x</span>' +
+      (ex.last_date ? '<span class="mono" style="font-size:10px;color:var(--text-dim)">last ' + ex.last_date + '</span>' : '') + '</div></div>' +
+      (bestStr ? '<div class="mono" style="font-size:12px;color:var(--text-muted)">' + bestStr + '</div>' : '') + '</div>';
+  }
+  list.innerHTML = html;
+}
+
+function showExerciseDetail(name) {
+  if (!currentProfileId) return;
+  var views = ['dashboard','exercises','records'];
+  views.forEach(function(v) { var el = document.getElementById('lib-' + v); if (el) el.style.display = 'none'; });
+  var det = document.getElementById('lib-detail');
+  if (!det) return;
+  det.style.display = 'block';
+  det.innerHTML = '<p class="mono" style="font-size:11px;color:#22c97a;letter-spacing:3px;animation:pulse 1.6s infinite">LOADING...</p>';
+
+  fetch('/api/profiles/' + currentProfileId + '/exercises/' + encodeURIComponent(name))
+    .then(function(r) { return r.json(); })
+    .then(function(data) {
+      if (!data.success) { det.innerHTML = '<p style="color:#e84545">Error loading exercise.</p>'; return; }
+      var hist = data.history || [];
+      var pr = data.pr || {};
+      var cat = hist.length ? hist[0].category : 'other';
+      var cc = CAT_COLORS[cat] || '#888';
+
+      var html = '<button onclick="backToLibList()" style="background:transparent;border:none;color:var(--accent);cursor:pointer;font-size:13px;padding:0;margin-bottom:12px;font-family:DM Sans,sans-serif">&larr; Back to list</button>';
+      html += '<div class="card" style="border-color:' + cc + '33">';
+      html += '<div class="oswald" style="font-size:28px;font-weight:700;color:var(--text-bright);margin-bottom:4px">' + escHtml(name) + '</div>';
+      html += '<span class="mono" style="font-size:10px;color:' + cc + ';letter-spacing:1px;text-transform:uppercase;background:' + cc + '18;padding:2px 8px;border-radius:3px">' + cat + '</span>';
+
+      // Stats row
+      html += '<div style="display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-top:16px">';
+      html += statCard('Logged', hist.length, 'times');
+      html += statCard('First', hist.length ? hist[0].date.slice(5) : '-', '');
+      html += statCard('Last', hist.length ? hist[hist.length-1].date.slice(5) : '-', '');
+      var prVal = pr.max_weight ? pr.max_weight + ' lbs' : pr.max_reps ? pr.max_reps + ' reps' : pr.max_distance ? pr.max_distance + ' mi' : '-';
+      html += statCard('Best', prVal, 'PR');
+      html += '</div>';
+
+      // Progression chart
+      html += '<div style="margin-top:16px"><canvas id="lib-ex-chart" style="max-height:200px"></canvas></div>';
+
+      // Session history
+      html += '<div style="margin-top:16px;border-top:1px solid var(--border);padding-top:12px"><p class="clabel">session history</p>';
+      var recent = hist.slice(-10).reverse();
+      for (var i = 0; i < recent.length; i++) {
+        var s = recent[i];
+        var detail = [];
+        if (s.sets) detail.push(s.sets + ' sets');
+        if (s.reps) detail.push(s.reps + ' reps');
+        if (s.weight_lbs) detail.push(s.weight_lbs + ' lbs');
+        if (s.distance_miles) detail.push(s.distance_miles + ' mi');
+        html += '<div style="display:flex;justify-content:space-between;padding:8px 0;border-bottom:1px solid var(--border);font-size:13px">' +
+          '<span style="color:var(--text-muted)">' + s.date + '</span>' +
+          '<span style="color:var(--text-sec)">' + (detail.join(' · ') || '-') + '</span></div>';
+      }
+      html += '</div>';
+
+      // AI Insight
+      html += '<div id="lib-ex-insight" style="margin-top:16px"></div>';
+      html += '</div>';
+
+      det.innerHTML = html;
+
+      // Render progression chart
+      setTimeout(function() { renderExDetailChart(hist, pr); }, 50);
+
+      // Fetch AI insight
+      fetchExInsight(name, hist);
+    })
+    .catch(function() { det.innerHTML = '<p style="color:#e84545">Error loading exercise.</p>'; });
+}
+
+function renderExDetailChart(hist, pr) {
+  var canvas = document.getElementById('lib-ex-chart');
+  if (!canvas || !hist.length) return;
+  if (libCharts.detail) libCharts.detail.destroy();
+
+  var hasWeight = hist.some(function(h) { return h.weight_lbs; });
+  var hasDistance = hist.some(function(h) { return h.distance_miles; });
+
+  var labels = hist.map(function(h) { return h.date.slice(5); });
+  var values, ylabel;
+  if (hasWeight) { values = hist.map(function(h) { return h.weight_lbs || null; }); ylabel = 'Weight (lbs)'; }
+  else if (hasDistance) { values = hist.map(function(h) { return h.distance_miles || null; }); ylabel = 'Distance (mi)'; }
+  else { values = hist.map(function(h) { return h.reps || null; }); ylabel = 'Reps'; }
+
+  var pointColors = values.map(function(v) {
+    var maxVal = hasWeight ? pr.max_weight : hasDistance ? pr.max_distance : pr.max_reps;
+    return v === maxVal ? '#f5c518' : '#22c97a';
+  });
+  var pointSizes = values.map(function(v) {
+    var maxVal = hasWeight ? pr.max_weight : hasDistance ? pr.max_distance : pr.max_reps;
+    return v === maxVal ? 8 : 4;
+  });
+
+  libCharts.detail = new Chart(canvas, {
+    type: 'line',
+    data: { labels: labels, datasets: [{ data: values, borderColor: '#22c97a', backgroundColor: '#22c97a22', fill: true, tension: 0.3, pointBackgroundColor: pointColors, pointRadius: pointSizes, spanGaps: true }] },
+    options: {
+      responsive: true,
+      plugins: { legend: { display: false } },
+      scales: {
+        x: { ticks: { color: '#555', font: { size: 10 } }, grid: { display: false } },
+        y: { ticks: { color: '#555', font: { size: 10 } }, grid: { color: '#1a1c22' }, title: { display: true, text: ylabel, color: '#555', font: { size: 10 } } }
+      }
+    }
+  });
+}
+
+function fetchExInsight(name, hist) {
+  var el = document.getElementById('lib-ex-insight');
+  if (!el || hist.length < 2) return;
+  el.innerHTML = '<p class="mono" style="font-size:10px;color:#22c97a;letter-spacing:2px;animation:pulse 1.6s infinite">AI ANALYZING...</p>';
+  var formatted = hist.slice(-15).map(function(h) {
+    var parts = [h.date];
+    if (h.sets) parts.push(h.sets + 's');
+    if (h.reps) parts.push(h.reps + 'r');
+    if (h.weight_lbs) parts.push(h.weight_lbs + 'lbs');
+    return parts.join(' ');
+  }).join(', ');
+  var prompt = 'In 2-3 sentences, analyze this exercise progression and give one specific recommendation.\nExercise: ' + name + '\nHistory: ' + formatted;
+  fetch('/api/ai', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ model: 'claude-haiku-4-5-20251001', max_tokens: 300, messages: [{ role: 'user', content: prompt }] })
+  })
+  .then(function(r) { return r.json(); })
+  .then(function(data) {
+    var text = (data.content && data.content[0]) ? data.content[0].text : '';
+    if (text) {
+      el.innerHTML = '<div class="card" style="border-color:var(--accent-22)"><p class="clabel">&#x1F9E0; ai insight</p><p style="font-size:14px;color:var(--text-sec);line-height:1.7">' + escHtml(text) + '</p></div>';
+    } else {
+      el.innerHTML = '';
+    }
+  })
+  .catch(function() { el.innerHTML = ''; });
+}
+
+function backToLibList() {
+  var det = document.getElementById('lib-detail');
+  if (det) det.style.display = 'none';
+  showLibView(libView === 'dashboard' ? 'dashboard' : 'exercises');
+}
+
+function renderLibRecords() {
+  var el = document.getElementById('lib-records');
+  if (!el) return;
+  if (!libStats) { loadLibrary(); return; }
+
+  var prs = libStats.personal_records || [];
+  var html = '';
+
+  // Top records
+  var heaviest = null, mostReps = null, longestDist = null;
+  prs.forEach(function(p) {
+    if (p.max_weight && (!heaviest || p.max_weight > heaviest.max_weight)) heaviest = p;
+    if (p.max_reps && (!mostReps || p.max_reps > mostReps.max_reps)) mostReps = p;
+    if (p.max_distance && (!longestDist || p.max_distance > longestDist.max_distance)) longestDist = p;
+  });
+
+  html += '<div class="card"><p class="clabel">&#x1F3C6; personal records</p>';
+  html += '<div style="display:grid;grid-template-columns:1fr;gap:10px">';
+  if (heaviest) html += prCard('Heaviest Lift', heaviest.name, heaviest.max_weight + ' lbs', '#f5c518');
+  if (mostReps) html += prCard('Most Reps', mostReps.name, mostReps.max_reps + ' reps', '#22c97a');
+  if (longestDist) html += prCard('Longest Distance', longestDist.name, longestDist.max_distance + ' mi', '#4488bb');
+  if (!heaviest && !mostReps && !longestDist) html += '<p style="font-size:14px;color:var(--text-dim)">No records yet. Log workouts with details to track PRs.</p>';
+  html += '</div></div>';
+
+  // All time stats
+  html += '<div class="card"><p class="clabel">all time stats</p>';
+  html += '<div style="display:grid;grid-template-columns:repeat(2,1fr);gap:10px">';
+  html += statCard('Total Sets', (libStats.total_sets || 0).toLocaleString(), 'all time');
+  html += statCard('Total Reps', (libStats.total_reps || 0).toLocaleString(), 'estimated');
+  html += statCard('Weight Moved', (libStats.total_weight || 0).toLocaleString() + ' lbs', 'estimated');
+  html += statCard('Exercises', libStats.unique_exercises || 0, 'unique');
+  html += '</div></div>';
+
+  // PR table
+  var withPR = prs.filter(function(p) { return p.max_weight || p.max_reps || p.max_distance; });
+  if (withPR.length) {
+    html += '<div class="card"><p class="clabel">all personal records</p>';
+    for (var i = 0; i < withPR.length; i++) {
+      var p = withPR[i];
+      var vals = [];
+      if (p.max_weight) vals.push(p.max_weight + ' lbs');
+      if (p.max_reps) vals.push(p.max_reps + ' reps');
+      if (p.max_distance) vals.push(p.max_distance + ' mi');
+      html += '<div style="display:flex;justify-content:space-between;padding:8px 0;border-bottom:1px solid var(--border);font-size:14px;cursor:pointer" onclick="showExerciseDetail(\'' + escAttr(p.name) + '\')">' +
+        '<span style="color:var(--text)">' + escHtml(p.name) + '</span>' +
+        '<span class="mono" style="color:var(--text-muted);font-size:12px">' + vals.join(' · ') + '</span></div>';
+    }
+    html += '</div>';
+  }
+
+  el.innerHTML = html;
+}
+
+function prCard(title, exercise, value, color) {
+  return '<div style="background:var(--bg-input);border:1px solid ' + color + '33;border-radius:8px;padding:14px;display:flex;justify-content:space-between;align-items:center">' +
+    '<div><div class="mono" style="font-size:10px;color:' + color + ';letter-spacing:2px;margin-bottom:4px">' + title.toUpperCase() + '</div>' +
+    '<div style="font-size:15px;color:var(--text)">' + escHtml(exercise) + '</div></div>' +
+    '<div class="oswald" style="font-size:24px;font-weight:700;color:' + color + '">' + value + '</div></div>';
+}
+
+function escAttr(s) {
+  return s.replace(/'/g, "\\'").replace(/"/g, '&quot;');
+}
+
+// ── CALENDAR ─────────────────────────────────────────────────────────────
 var calOffset = 0;
 var calMode = 'week';
 var calDetailDate = null;
@@ -3403,6 +3889,7 @@ function showTab(name, btn) {
   document.querySelectorAll('header nav .navBtn').forEach(function(b) { b.classList.remove('active'); });
   document.getElementById('tab-' + name).classList.add('active');
   btn.classList.add('active');
+  if (name === 'library') loadLibrary();
 }
 
 // ── SETTINGS PANEL ───────────────────────────────────────────────────────

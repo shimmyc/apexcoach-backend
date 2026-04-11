@@ -26,11 +26,13 @@ ApexCoach is a personalized AI fitness coaching web app. Users connect their Fit
 
 - workouts: id, date, type, notes, done, mobility, med, ts, profile_id
 
+- exercises: id, profile_id, workout_id, date, name, category (strength/cardio/mobility/mma/rehab/other), sets, reps, weight_lbs, distance_miles, duration_minutes, notes, raw_text, created_at
+
 ## App Structure (public/index.html)
 
 - Profile selector screen on load (PIN protected)
 
-- 4 tabs: Today, Calendar, Log, Profile
+- 5 tabs: Today, Calendar, Log, Library, Profile
 
 - Today tab: Fitbit biometrics + readiness score + progress brief + 3 AI workout options
 
@@ -119,6 +121,26 @@ Three-tier AI memory system stored in Supabase profiles table:
 3. **History Search** (search-history endpoint) — on-demand natural language search across the complete workout history. Powers the "Ask Your History" feature on the Log tab.
 
 Both briefs are injected into the daily AI coaching prompt (before FULL_PROFILE) so recommendations reference training history. The coaching brief card is displayed on the Profile tab with a collapsible historical section.
+
+## Exercise Library System
+
+Exercises are auto-extracted from workout notes by Claude AI on every workout save and stored in the exercises table. The Library tab has three views:
+
+1. **Dashboard** — workout type donut chart (Chart.js), weekly volume bar chart, top 6 exercises grid, quick stats row
+2. **Exercises** — searchable/filterable list of all exercises with category pills, click for detail view with progression chart, session history, and AI insight
+3. **Records** — personal records (heaviest lift, most reps, longest distance), all-time aggregated stats
+
+### Endpoints
+- `POST /api/profiles/:id/extract-exercises` — AI extracts exercises from workout notes, inserts into exercises table
+- `GET /api/profiles/:id/exercises` — all exercises grouped by name with counts, filtered by ?name= or ?category=
+- `GET /api/profiles/:id/exercises/stats` — aggregate stats (type frequency, top exercises, PRs, weekly volume)
+- `GET /api/profiles/:id/exercises/:name` — full history for one exercise with PR data
+
+### Auto-Extraction
+- Triggered silently after every workout save (if notes exist)
+- "Import History" button on Library tab backfills from existing workouts
+- Exercise names are normalized by AI (e.g., "glute bridges 3x12" → "Glute Bridge")
+- Top 10 recent exercises injected into daily AI coaching prompt
 
 ## Current Primary User
 

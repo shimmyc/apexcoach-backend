@@ -861,6 +861,201 @@ app.post("/api/profiles/:id/search-history", async function(req, res) {
   }
 });
 
+// ── EXERCISE LIBRARY ──────────────────────────────────────────────────────
+app.post("/api/profiles/:id/extract-exercises", async function(req, res) {
+  try {
+    var profileId = req.params.id;
+    var body = req.body;
+    if (!body.notes || !body.notes.trim()) return res.json({ success: true, exercises: [] });
+
+    var prompt = "Extract all exercises from these workout notes. For each exercise identify: name (normalized, e.g. 'Glute Bridge' not 'glute bridges'), category (one of: strength/cardio/mobility/mma/rehab/other), sets (number or null), reps (number or null), weight_lbs (number or null), distance_miles (number or null), duration_minutes (number or null), raw_text (original text snippet).\nReturn ONLY a JSON array of exercise objects, no explanation.\nExample: [{\"name\":\"Glute Bridge\",\"category\":\"rehab\",\"sets\":3,\"reps\":12,\"weight_lbs\":null,\"distance_miles\":null,\"duration_minutes\":null,\"raw_text\":\"glute bridges 3x12\"}]\nWorkout type: " + (body.type || "unknown") + "\nNotes: " + body.notes;
+
+    var aiText = await callAI(prompt, 1000);
+    var exercises = [];
+    try {
+      var cleaned = aiText.indexOf("[") >= 0 ? aiText.substring(aiText.indexOf("["), aiText.lastIndexOf("]") + 1) : "[]";
+      exercises = JSON.parse(cleaned);
+    } catch (e) {
+      console.error("Exercise parse error:", e.message);
+      return res.json({ success: true, exercises: [] });
+    }
+
+    // Insert into Supabase
+    for (var i = 0; i < exercises.length; i++) {
+      var ex = exercises[i];
+      await fetch(SUPABASE_URL + "/rest/v1/exercises", {
+        method: "POST",
+        headers: sbHeaders("return=minimal"),
+        body: JSON.stringify({
+          profile_id: parseInt(profileId),
+          workout_id: body.workout_id || null,
+          date: body.date,
+          name: ex.name,
+          category: ex.category || "other",
+          sets: ex.sets || null,
+          reps: ex.reps || null,
+          weight_lbs: ex.weight_lbs || null,
+          distance_miles: ex.distance_miles || null,
+          duration_minutes: ex.duration_minutes || null,
+          notes: null,
+          raw_text: ex.raw_text || null,
+        }),
+      });
+    }
+    res.json({ success: true, exercises: exercises });
+  } catch (e) {
+    console.error("extract-exercises error:", e);
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+app.get("/api/profiles/:id/exercises", async function(req, res) {
+  try {
+    var profileId = req.params.id;
+    var url = SUPABASE_URL + "/rest/v1/exercises?profile_id=eq." + profileId + "&select=*&order=date.desc";
+    if (req.query.name) url += "&name=eq." + encodeURIComponent(req.query.name);
+    if (req.query.category) url += "&category=eq." + encodeURIComponent(req.query.category);
+    if (req.query.limit) url += "&limit=" + req.query.limit;
+    else url += "&limit=5000";
+    var r = await fetch(url, { headers: sbHeaders() });
+    var data = await r.json();
+    var exercises = Array.isArray(data) ? data : [];
+
+    // Group by name for summary
+    var grouped = {};
+    for (var i = 0; i < exercises.length; i++) {
+      var ex = exercises[i];
+      if (!grouped[ex.name]) {
+        grouped[ex.name] = { name: ex.name, category: ex.category, count: 0, last_date: null, best_weight: null, best_reps: null, sessions: [] };
+      }
+      var g = grouped[ex.name];
+      g.count++;
+      if (!g.last_date || ex.date > g.last_date) g.last_date = ex.date;
+      if (ex.weight_lbs && (!g.best_weight || ex.weight_lbs > g.best_weight)) g.best_weight = ex.weight_lbs;
+      if (ex.reps && (!g.best_reps || ex.reps > g.best_reps)) g.best_reps = ex.reps;
+      g.sessions.push(ex);
+    }
+
+    var summary = Object.values(grouped).sort(function(a, b) { return b.count - a.count; });
+    res.json({ success: true, exercises: summary, raw: exercises });
+  } catch (e) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+app.get("/api/profiles/:id/exercises/stats", async function(req, res) {
+  try {
+    var profileId = req.params.id;
+
+    // Fetch all exercises
+    var er = await fetch(SUPABASE_URL + "/rest/v1/exercises?profile_id=eq." + profileId + "&select=*&order=date.desc&limit=10000", { headers: sbHeaders() });
+    var allEx = await er.json();
+    if (!Array.isArray(allEx)) allEx = [];
+
+    // Fetch all workouts for type frequency
+    var wr = await fetch(SUPABASE_URL + "/rest/v1/workouts?profile_id=eq." + profileId + "&select=type,date,done&order=date.desc&limit=10000", { headers: sbHeaders() });
+    var allWk = await wr.json();
+    if (!Array.isArray(allWk)) allWk = [];
+
+    // Workout type frequency
+    var typeFreq = {};
+    allWk.forEach(function(w) { if (w.done) { typeFreq[w.type] = (typeFreq[w.type] || 0) + 1; } });
+
+    // Top exercises
+    var exCount = {};
+    allEx.forEach(function(ex) {
+      if (!exCount[ex.name]) exCount[ex.name] = { name: ex.name, category: ex.category, count: 0 };
+      exCount[ex.name].count++;
+    });
+    var topEx = Object.values(exCount).sort(function(a, b) { return b.count - a.count; }).slice(0, 10);
+
+    // Personal records
+    var prs = {};
+    allEx.forEach(function(ex) {
+      if (!prs[ex.name]) prs[ex.name] = { name: ex.name, max_weight: null, max_reps: null, max_distance: null };
+      var p = prs[ex.name];
+      if (ex.weight_lbs && (!p.max_weight || ex.weight_lbs > p.max_weight)) p.max_weight = ex.weight_lbs;
+      if (ex.reps && (!p.max_reps || ex.reps > p.max_reps)) p.max_reps = ex.reps;
+      if (ex.distance_miles && (!p.max_distance || ex.distance_miles > p.max_distance)) p.max_distance = ex.distance_miles;
+    });
+
+    // Weekly volume (last 12 weeks)
+    var weeklyVol = {};
+    var now = new Date();
+    allEx.forEach(function(ex) {
+      if (!ex.sets) return;
+      var d = new Date(ex.date + "T12:00:00");
+      var weekAgo = Math.floor((now - d) / (7 * 86400000));
+      if (weekAgo < 12) {
+        var weekStart = new Date(d);
+        weekStart.setDate(weekStart.getDate() - weekStart.getDay());
+        var key = weekStart.toISOString().slice(0, 10);
+        weeklyVol[key] = (weeklyVol[key] || 0) + (ex.sets || 0);
+      }
+    });
+
+    // Most active day
+    var dayCount = [0,0,0,0,0,0,0];
+    allWk.forEach(function(w) {
+      if (w.done) {
+        var d = new Date(w.date + "T12:00:00").getDay();
+        dayCount[d]++;
+      }
+    });
+    var dayNames = ["Sun","Mon","Tue","Wed","Thu","Fri","Sat"];
+    var mostActiveDay = dayNames[dayCount.indexOf(Math.max.apply(null, dayCount))];
+
+    var totalSets = 0, totalReps = 0, totalWeight = 0;
+    allEx.forEach(function(ex) {
+      totalSets += (ex.sets || 0);
+      totalReps += (ex.sets || 1) * (ex.reps || 0);
+      totalWeight += (ex.sets || 1) * (ex.reps || 0) * (ex.weight_lbs || 0);
+    });
+
+    res.json({
+      success: true,
+      stats: {
+        workout_type_frequency: typeFreq,
+        top_exercises: topEx,
+        personal_records: Object.values(prs),
+        weekly_volume: weeklyVol,
+        total_exercises_logged: allEx.length,
+        unique_exercises: Object.keys(exCount).length,
+        total_workouts: allWk.filter(function(w) { return w.done; }).length,
+        most_active_day: mostActiveDay,
+        total_sets: totalSets,
+        total_reps: totalReps,
+        total_weight: Math.round(totalWeight),
+      },
+    });
+  } catch (e) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+app.get("/api/profiles/:id/exercises/:name", async function(req, res) {
+  try {
+    var profileId = req.params.id;
+    var name = decodeURIComponent(req.params.name);
+    var url = SUPABASE_URL + "/rest/v1/exercises?profile_id=eq." + profileId + "&name=eq." + encodeURIComponent(name) + "&select=*&order=date.asc&limit=5000";
+    var r = await fetch(url, { headers: sbHeaders() });
+    var history = await r.json();
+    if (!Array.isArray(history)) history = [];
+
+    var pr = { max_weight: null, max_reps: null, max_distance: null, max_sets: null };
+    history.forEach(function(ex) {
+      if (ex.weight_lbs && (!pr.max_weight || ex.weight_lbs > pr.max_weight)) pr.max_weight = ex.weight_lbs;
+      if (ex.reps && (!pr.max_reps || ex.reps > pr.max_reps)) pr.max_reps = ex.reps;
+      if (ex.distance_miles && (!pr.max_distance || ex.distance_miles > pr.max_distance)) pr.max_distance = ex.distance_miles;
+      if (ex.sets && (!pr.max_sets || ex.sets > pr.max_sets)) pr.max_sets = ex.sets;
+    });
+
+    res.json({ success: true, exercise: name, history: history, pr: pr });
+  } catch (e) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
 // ── AI PROXY ──────────────────────────────────────────────────────────────
 app.post("/api/ai", async function(req, res) {
   try {
