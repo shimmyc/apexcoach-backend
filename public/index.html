@@ -502,11 +502,17 @@ input[type=range]{width:100%;accent-color:var(--accent)}
 <div class="overlay" id="log-modal" style="display:none" onclick="closeModal()">
   <div class="modal" onclick="event.stopPropagation()">
     <p class="mono" style="font-size:10px;color:#555;letter-spacing:3px;margin-bottom:14px">LOG TODAY'S WORKOUT</p>
-    <p class="mono" style="font-size:10px;color:#555;letter-spacing:2px;margin-bottom:6px">LOG FOR</p>
-    <select id="wdate" style="margin-bottom:14px">
-      <option value="today">Today</option>
-      <option value="yesterday">Yesterday</option>
-    </select>
+    <div id="wdate-picker">
+      <p class="mono" style="font-size:10px;color:#555;letter-spacing:2px;margin-bottom:6px">LOG FOR</p>
+      <select id="wdate" style="margin-bottom:14px">
+        <option value="today">Today</option>
+        <option value="yesterday">Yesterday</option>
+      </select>
+    </div>
+    <div id="wdate-readonly" style="display:none;margin-bottom:14px">
+      <p class="mono" style="font-size:10px;color:#555;letter-spacing:2px;margin-bottom:6px">DATE</p>
+      <div id="wdate-display" class="mono" style="font-size:14px;color:var(--text-sec);background:var(--bg-input);border:1px solid var(--border);padding:11px 14px;border-radius:6px"></div>
+    </div>
     <select id="wtype">
       <option value="">Choose type...</option>
       <option>Mixed Training</option>
@@ -2624,22 +2630,32 @@ function renderLogArea() {
 }
 
 var editingWorkoutId = null;
+var editingWorkoutDate = null;
 
 function editWorkout(entry) {
   editingWorkoutId = entry.id || null;
+  editingWorkoutDate = entry.date || null;
   document.getElementById('wtype').value = entry.type || '';
   document.getElementById('wnotes').value = entry.notes || '';
   document.getElementById('wdone').checked = entry.done !== false;
   document.getElementById('wmob').checked = !!entry.mobility;
   document.getElementById('wmed').checked = !!entry.med;
-  var dateEl = document.getElementById('wdate');
-  if (dateEl) dateEl.value = entry.date === ds(-1) ? 'yesterday' : 'today';
-  document.querySelector('.modal p.mono').textContent = editingWorkoutId ? 'EDIT WORKOUT' : "LOG TODAY'S WORKOUT";
+  // Hide date picker, show read-only date
+  document.getElementById('wdate-picker').style.display = 'none';
+  document.getElementById('wdate-readonly').style.display = 'block';
+  var d = new Date(entry.date + 'T12:00:00');
+  var fmtDate = d.toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric', year: 'numeric' });
+  document.getElementById('wdate-display').textContent = fmtDate;
+  document.querySelector('.modal p.mono').textContent = 'EDIT WORKOUT \u2014 ' + fmtDate.toUpperCase();
   document.getElementById('log-modal').style.display = 'flex';
 }
 
 function openModal() {
   editingWorkoutId = null;
+  editingWorkoutDate = null;
+  // Show date picker, hide read-only
+  document.getElementById('wdate-picker').style.display = 'block';
+  document.getElementById('wdate-readonly').style.display = 'none';
   document.querySelector('.modal p.mono').textContent = "LOG TODAY'S WORKOUT";
   document.getElementById('log-modal').style.display = 'flex';
 }
@@ -2704,9 +2720,9 @@ function saveWorkout() {
   if (!type) return;
   var medDone = document.getElementById('wmed').checked;
   var dateEl = document.getElementById('wdate');
-  var entryDate = dateEl && dateEl.value === 'yesterday' ? ds(-1) : ds(0);
+  var entryDate = editingWorkoutId && editingWorkoutDate ? editingWorkoutDate : (dateEl && dateEl.value === 'yesterday' ? ds(-1) : ds(0));
   var entry = {
-    date: entryDate, type: type,
+    type: type,
     notes: document.getElementById('wnotes').value,
     done: document.getElementById('wdone').checked,
     mobility: document.getElementById('wmob').checked,
@@ -2715,29 +2731,30 @@ function saveWorkout() {
   };
 
   if (editingWorkoutId) {
-    // Update existing — find by id and replace in local array
+    // Edit mode — only update fields, preserve original date
+    var editUpdate = Object.assign({}, entry);
     var found = false;
     for (var i = 0; i < workoutLog.length; i++) {
       if (workoutLog[i].id === editingWorkoutId) {
-        workoutLog[i] = Object.assign(workoutLog[i], entry);
+        workoutLog[i] = Object.assign(workoutLog[i], editUpdate);
         found = true;
         break;
       }
     }
-    // If not found by id (edge case), find by date match
     if (!found) {
       for (var i = 0; i < workoutLog.length; i++) {
         if (workoutLog[i].date === entryDate) {
-          workoutLog[i] = Object.assign(workoutLog[i], entry);
+          workoutLog[i] = Object.assign(workoutLog[i], editUpdate);
           found = true;
           break;
         }
       }
     }
-    // PATCH existing on server — never POST
-    updateWorkoutInSupabase(editingWorkoutId, entry);
+    // PATCH existing on server — never POST, don't send date
+    updateWorkoutInSupabase(editingWorkoutId, editUpdate);
   } else {
     // New workout — POST to server
+    entry.date = entryDate;
     workoutLog.unshift(entry);
     saveWorkoutToSupabase(entry);
   }
