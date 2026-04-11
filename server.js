@@ -95,17 +95,24 @@ async function getValidToken() {
 // ── PROFILE TOKEN STORAGE ─────────────────────────────────────────────────
 async function loadProfileTokens(profileId) {
   try {
+    console.log("[Fitbit] loadProfileTokens: reading from profiles table, id=" + profileId);
     const res = await fetch(SUPABASE_URL + "/rest/v1/profiles?id=eq." + profileId + "&select=fitbit_access_token,fitbit_refresh_token,fitbit_expires_at", {
       headers: sbHeaders(),
     });
     const rows = await res.json();
     if (rows && rows.length > 0) {
+      var hasAccess = !!rows[0].fitbit_access_token;
+      var hasRefresh = !!rows[0].fitbit_refresh_token;
+      var expiresAt = rows[0].fitbit_expires_at || 0;
+      var isExpired = Date.now() >= Number(expiresAt);
+      console.log("[Fitbit] loadProfileTokens result: has_access=" + hasAccess + ", has_refresh=" + hasRefresh + ", expires_at=" + (expiresAt ? new Date(Number(expiresAt)).toISOString() : "none") + ", is_expired=" + isExpired);
       return {
         access_token:  rows[0].fitbit_access_token  || "",
         refresh_token: rows[0].fitbit_refresh_token || "",
-        expires_at:    rows[0].fitbit_expires_at    || 0,
+        expires_at:    expiresAt,
       };
     }
+    console.log("[Fitbit] loadProfileTokens: no profile found for id=" + profileId);
   } catch (e) {
     console.error("loadProfileTokens error:", e.message);
   }
@@ -156,18 +163,27 @@ async function refreshProfileToken(profileId) {
 async function getValidProfileToken(profileId) {
   const tokens = await loadProfileTokens(profileId);
   if (tokens.access_token && Date.now() < Number(tokens.expires_at)) {
+    console.log("[Fitbit] getValidProfileToken: token is VALID for profile " + profileId + ", using existing token");
     return tokens.access_token;
   }
+  console.log("[Fitbit] getValidProfileToken: token is EXPIRED or MISSING for profile " + profileId + ", refreshing...");
   return await refreshProfileToken(profileId);
 }
 
 // ── FITBIT HELPERS ────────────────────────────────────────────────────────
 async function fitGet(endpoint, token) {
+  console.log("[Fitbit API] GET " + endpoint);
   const res = await fetch("https://api.fitbit.com" + endpoint, {
     headers: { "Authorization": "Bearer " + token },
   });
-  if (!res.ok) throw new Error("Fitbit " + res.status + " for " + endpoint);
-  return res.json();
+  if (!res.ok) {
+    var errBody = await res.text();
+    console.error("[Fitbit API] ERROR " + res.status + " for " + endpoint + ": " + errBody.substring(0, 200));
+    throw new Error("Fitbit " + res.status + " for " + endpoint);
+  }
+  var data = await res.json();
+  console.log("[Fitbit API] OK " + endpoint + " -> keys: " + Object.keys(data).join(","));
+  return data;
 }
 
 function dateStr(offsetDays) {
@@ -239,6 +255,11 @@ async function buildDailyData(token) {
     const z = zones.find(function(z) { return z.name === name; });
     return z ? z.minutes || 0 : 0;
   }
+
+  console.log("[Fitbit] buildDailyData extracted: sleepRecord=" + (sleepRecord ? "yes" : "null") + ", rhr=" + rhr + ", hrv=" + hrv + ", fitbitSleepScore=" + fitbitSleepScore + ", steps=" + (actYest && actYest.summary ? actYest.summary.steps : "null"));
+  if (!sleepRecord) console.log("[Fitbit] Sleep debug: sleepArr.length=" + sleepArr.length + ", raw sleep keys=" + (sleep ? Object.keys(sleep).join(",") : "null"));
+  if (!rhr) console.log("[Fitbit] RHR debug: heartTodayArr.length=" + heartTodayArr.length + ", raw heartToday keys=" + (heartToday ? Object.keys(heartToday).join(",") : "null"));
+  if (!hrv) console.log("[Fitbit] HRV debug: hrvTodayArr.length=" + hrvTodayArr.length + ", raw hrvToday keys=" + (hrvToday ? Object.keys(hrvToday).join(",") : "null"));
 
   return {
     date: today,
@@ -604,11 +625,25 @@ app.get("/api/meditations", async function(req, res) {
 
 // ── TOKEN INFO ─────────────────────────────────────────────────────────────
 app.get("/api/token-info", async function(req, res) {
-  const tokens = await loadTokens();
-  res.json({
-    has_refresh_token: !!tokens.refresh_token,
-    expires_at: tokens.expires_at ? new Date(Number(tokens.expires_at)).toISOString() : "none",
-  });
+  var profileId = req.query.profile_id;
+  if (profileId) {
+    var tokens = await loadProfileTokens(profileId);
+    res.json({
+      source: "profiles table (id=" + profileId + ")",
+      has_access_token: !!tokens.access_token,
+      has_refresh_token: !!tokens.refresh_token,
+      access_token_preview: tokens.access_token ? tokens.access_token.substring(0, 10) + "..." : "none",
+      expires_at: tokens.expires_at ? new Date(Number(tokens.expires_at)).toISOString() : "none",
+      is_expired: tokens.expires_at ? Date.now() >= Number(tokens.expires_at) : true,
+    });
+  } else {
+    var tokens = await loadTokens();
+    res.json({
+      source: "legacy tokens table",
+      has_refresh_token: !!tokens.refresh_token,
+      expires_at: tokens.expires_at ? new Date(Number(tokens.expires_at)).toISOString() : "none",
+    });
+  }
 });
 
 // ── AI PROXY ───────────────────────────────────────────────────────────────
