@@ -28,6 +28,8 @@ ApexCoach is a personalized AI fitness coaching web app. Users connect their Fit
 
 - exercises: id, profile_id, workout_id, date, name, category (strength/cardio/mobility/mma/rehab/other), sets, reps, weight_lbs, distance_miles, duration_minutes, notes, raw_text, created_at
 
+- daily_checkins: id, profile_id, date (text, YYYY-MM-DD), energy (text), soreness (text[]), severity (text), checkin_text (text), created_at. UNIQUE(profile_id, date) for upsert.
+
 ## App Structure (public/index.html)
 
 - Profile selector screen on load (PIN protected)
@@ -108,6 +110,10 @@ Calculated from workoutLog entries where done=true. Counts backwards from today 
 
 - POST /api/ai — Anthropic API proxy
 
+- GET /api/profiles/:id/checkin?date= — get daily feeling check-in for a date
+
+- POST /api/profiles/:id/checkin — upsert daily feeling check-in (syncs across devices)
+
 - POST /api/profiles/:id/generate-goal-description — AI generates motivating goal description from title
 
 - POST /api/profiles/:id/goal-progress — calculates progress for all goals using workout data + AI deduction
@@ -128,7 +134,7 @@ Optional daily check-in card on Today tab, shown between readiness card and AI r
 - **Free text**: Optional textarea with voice input via startCheckinVoice()
 - **Submit**: "Tell My Coach" button, disabled until at least one input provided
 - **Collapsed state**: After submit, collapses to summary pill with "Update" link to re-open
-- **localStorage**: Stored as `ac_checkin` with `{date, energy, soreness[], severity, text}`. Resets daily (date mismatch = fresh card)
+- **Storage**: Primary storage in Supabase `daily_checkins` table (syncs across devices). localStorage `ac_checkin` kept as offline fallback. On load: fetches from Supabase first, falls back to localStorage if network fails.
 - **AI injection**: `buildCheckinContext()` builds context string injected into fetchAI() prompt after readiness data. Instructs AI to avoid sore body areas and reduce intensity if energy is low. Free text gets additional AI parsing instruction.
 - **Re-trigger**: Submitting check-in re-fetches AI recommendation if AI card is already visible
 

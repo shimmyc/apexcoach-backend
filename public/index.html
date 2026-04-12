@@ -1808,10 +1808,25 @@ function submitFeelingCheckin() {
     severity: fcState.severity,
     text: fcState.text
   };
+  // Save to localStorage as offline fallback
   localStorage.setItem('ac_checkin', JSON.stringify(dailyCheckin));
   showFeelingCheckinSummary();
   // Re-trigger AI with check-in context
   if (document.getElementById('ai-card').style.display === 'block') fetchAI();
+  // Save to Supabase (fire and forget, localStorage is already set)
+  if (currentProfileId) {
+    fetch('/api/profiles/' + currentProfileId + '/checkin', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        date: dailyCheckin.date,
+        energy: dailyCheckin.energy,
+        soreness: dailyCheckin.soreness,
+        severity: dailyCheckin.severity,
+        checkin_text: dailyCheckin.text
+      })
+    }).catch(function(e) { console.warn('[ApexCoach] Failed to save check-in to server:', e.message); });
+  }
 }
 
 function showFeelingCheckinSummary() {
@@ -1858,23 +1873,37 @@ function restoreFcSelections() {
   fcValidate();
 }
 
-function loadDailyCheckin() {
+function applyCheckinData(data) {
+  dailyCheckin = {
+    date: data.date,
+    energy: data.energy || '',
+    soreness: data.soreness || [],
+    severity: data.severity || '',
+    text: data.checkin_text || data.text || ''
+  };
+  fcState.energy = dailyCheckin.energy;
+  fcState.soreness = dailyCheckin.soreness;
+  fcState.severity = dailyCheckin.severity;
+  fcState.text = dailyCheckin.text;
+  // Sync to localStorage
+  localStorage.setItem('ac_checkin', JSON.stringify(dailyCheckin));
+  showFeelingCheckinSummary();
+}
+
+function loadDailyCheckinFromLocalStorage() {
   var stored = localStorage.getItem('ac_checkin');
-  if (!stored) return;
+  if (!stored) return false;
   try {
     var data = JSON.parse(stored);
     if (data.date !== ds(0)) {
       localStorage.removeItem('ac_checkin');
-      return;
+      return false;
     }
-    dailyCheckin = data;
-    fcState.energy = data.energy || '';
-    fcState.soreness = data.soreness || [];
-    fcState.severity = data.severity || '';
-    fcState.text = data.text || '';
-    showFeelingCheckinSummary();
+    applyCheckinData(data);
+    return true;
   } catch (e) {
     localStorage.removeItem('ac_checkin');
+    return false;
   }
 }
 
@@ -1882,7 +1911,24 @@ function showFeelingCheckinCard() {
   var card = document.getElementById('feeling-checkin-card');
   if (!card) return;
   card.style.display = 'block';
-  loadDailyCheckin();
+  // Try Supabase first, fall back to localStorage
+  if (currentProfileId) {
+    fetch('/api/profiles/' + currentProfileId + '/checkin?date=' + ds(0))
+      .then(function(r) { return r.json(); })
+      .then(function(data) {
+        if (data.checkin) {
+          applyCheckinData(data.checkin);
+        } else if (!loadDailyCheckinFromLocalStorage()) {
+          // No check-in anywhere — show input card (already default)
+        }
+      })
+      .catch(function() {
+        // Network error — fall back to localStorage
+        loadDailyCheckinFromLocalStorage();
+      });
+  } else {
+    loadDailyCheckinFromLocalStorage();
+  }
 }
 
 var checkinRecognition = null;

@@ -1271,6 +1271,52 @@ app.get("/api/profiles/:id/exercises/:name", async function(req, res) {
   }
 });
 
+// ── DAILY CHECK-IN ───────────────────────────────────────────────────────
+app.get("/api/profiles/:id/checkin", async function(req, res) {
+  try {
+    const pid = req.params.id;
+    const date = req.query.date;
+    if (!date) return res.status(400).json({ error: "date query param required" });
+    const r = await fetch(
+      SUPABASE_URL + "/rest/v1/daily_checkins?profile_id=eq." + pid + "&date=eq." + date + "&limit=1",
+      { headers: sbHeaders() }
+    );
+    const rows = await r.json();
+    res.json({ checkin: (rows && rows.length) ? rows[0] : null });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.post("/api/profiles/:id/checkin", async function(req, res) {
+  try {
+    const pid = req.params.id;
+    const { date, energy, soreness, severity, checkin_text } = req.body;
+    if (!date) return res.status(400).json({ error: "date is required" });
+    const payload = {
+      profile_id: pid,
+      date: date,
+      energy: energy || null,
+      soreness: soreness || [],
+      severity: severity || null,
+      checkin_text: checkin_text || null,
+    };
+    const r = await fetch(
+      SUPABASE_URL + "/rest/v1/daily_checkins",
+      {
+        method: "POST",
+        headers: sbHeaders("return=representation,resolution=merge-duplicates"),
+        body: JSON.stringify(payload),
+      }
+    );
+    const data = await r.json();
+    if (!r.ok) return res.status(r.status).json({ error: data });
+    res.json({ success: true, checkin: data[0] || payload });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 // ── AI PROXY ──────────────────────────────────────────────────────────────
 app.post("/api/ai", async function(req, res) {
   const bodySize = JSON.stringify(req.body).length;
