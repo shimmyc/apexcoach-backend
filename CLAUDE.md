@@ -323,6 +323,75 @@ These browser console utilities are available for testing and debugging:
 
 These are intentionally left in production — they require console access and are invisible to regular users.
 
+## Business Roadmap
+
+### Pricing Model (Recommended)
+- Free: Manual check-in, basic workout log, no AI
+- Pro ($9.99/mo): Full AI coaching, Fitbit sync, exercise library, road map
+- Family ($14.99/mo): Up to 4 profiles
+
+### Phase 1 - Beta (0-100 users)
+Infrastructure: ~$32/mo
+- Render paid: $7/mo
+- Supabase Pro: $25/mo
+One-time: LLC ($50-500), Privacy Policy/TOS ($30-1500)
+Personnel: Just the founder
+Break-even: N/A (beta/free)
+
+### Phase 2 - Launch (100-500 users)
+Infrastructure: ~$121/mo
+- Render Pro: $50/mo, Supabase Pro: $25/mo, Cloudflare: $20/mo, Sentry: $26/mo
+- Stripe fees: 2.9% + $0.30/transaction
+Personnel: ~$600-1500/mo
+- Part-time customer support (10hrs/week at $15-25/hr)
+- Freelance developer as needed ($50-150/hr)
+Break-even: ~150-200 paid users
+Revenue at 500 users: ~$4,995/mo gross
+
+### Phase 3 - Growth (500-2000 users)
+Infrastructure: ~$600-950/mo
+- AWS/GCP compute, managed PostgreSQL, Redis cache, monitoring stack
+Personnel: ~$6,700-11,250/mo
+- Full-time customer support: $35-45k/yr
+- Part-time AI/backend developer: $2,000-4,000/mo
+- Part-time marketing: $1,500-3,000/mo
+- Accountant: $200-500/mo
+Break-even: ~1,000 paid users
+Revenue at 2,000 users: ~$19,980/mo gross
+
+### Phase 4 - Scale (2000-10000 users)
+Infrastructure: ~$2,200-4,700/mo
+Personnel: ~$48,000-60,000/mo
+- 2x customer support, 1x backend dev, 1x AI/ML engineer, 1x DevOps, 1x marketing manager, founder salary
+Revenue at 10,000 users: ~$99,900/mo gross
+Valuation at this scale: $6-12M (5-10x ARR)
+
+### AI API Cost Estimates (Claude API)
+- Per recommendation: ~$0.01-0.03
+- 1,000 users/day: ~$300-900/mo
+- 10,000 users/day: ~$3,000-9,000/mo
+- IMPORTANT: Factor into pricing model
+
+### Key Risks
+- Fitbit API dependency - mitigate by adding Apple Health, Garmin
+- AI API costs scale with users - monitor closely
+- Health data sensitivity - get proper legal review before launch
+
+### Commercial Readiness TODO
+- [ ] Google/Apple OAuth (replace PIN)
+- [ ] JWT tokens with expiry (replace localStorage auth)
+- [ ] Rate limiting on all API endpoints
+- [ ] Submit Fitbit app for production approval (removes 10 user limit)
+- [ ] Stripe payment integration
+- [ ] Privacy Policy and Terms of Service
+- [ ] LLC formation
+- [ ] Sentry error monitoring
+- [ ] Uptime monitoring (UptimeRobot)
+- [ ] Security audit
+- [ ] GDPR/CCPA compliance review
+- [ ] Apple Developer Account ($99/yr) for iOS app
+- [ ] Freemium tier system (Free/Pro/Family)
+
 ## Maintenance Instructions
 
 This file should be kept up to date as the project evolves. After any significant change - new features, schema changes, new endpoints, formula updates, or architectural decisions - update the relevant section of this CLAUDE.md automatically as part of the commit. This way the file always reflects the current state of the project.
