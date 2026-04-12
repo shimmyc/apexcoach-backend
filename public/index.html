@@ -2004,22 +2004,24 @@ function fetchAI() {
     // Fitbit data mode
     var sleep = fitData.sleep || {};
     var stages = sleep.stages || {};
-    var deep = stages.deep || {};
-    var rem = stages.rem || {};
+    var deepMins = stages.deep || {};
+    var remMins = stages.rem || {};
+    var lightMins = stages.light || {};
+    var wakeMins = stages.wake || {};
     var pz = fitData.prevZones || {};
     var r7 = fitData.rolling7 || {};
     var rhrDev = readiness.breakdown.rhrDeviation;
     var rhrDevNote = rhrDev < 0 ? ' (ELEVATED - body is stressed/fighting something)' : rhrDev > 0 ? ' (below baseline - good recovery signal)' : ' (at baseline)';
     var hrvAvg = r7.hrv || fitData.hrv || 0;
     var hrvNote = fitData.hrv && hrvAvg ? (fitData.hrv >= hrvAvg ? ' (at/above avg - good recovery)' : ' (below avg - reduced recovery capacity)') : '';
-    var aiSleepScore = (deep.minutes || rem.minutes || light.minutes) ? estimateSleepScore(deep.minutes, rem.minutes, light.minutes, wake.minutes) : null;
+    var aiSleepScore = (deepMins.minutes || remMins.minutes || lightMins.minutes) ? estimateSleepScore(deepMins.minutes, remMins.minutes, lightMins.minutes, wakeMins.minutes) : null;
     var aiSsTier = aiSleepScore !== null ? (aiSleepScore >= 85 ? 'Excellent' : aiSleepScore >= 70 ? 'Good' : aiSleepScore >= 55 ? 'Fair' : 'Poor') : null;
     var aiSsLine = aiSleepScore !== null ? '\nSLEEP SCORE (personal formula): ' + aiSleepScore + '/100 (' + aiSsTier + ')' : '';
     dataBlock = 'READINESS: ' + readiness.score + '/100 (Formula V3 - calibrated to personal Fitbit data) - ' + readiness.tier.toUpperCase() + aiSsLine + '\n' +
-      'KEY METRICS: HRV: ' + (fitData.hrv ? Math.round(fitData.hrv * 10) / 10 : '?') + 'ms (7d avg: ' + (hrvAvg || '?') + ')' + hrvNote + ', Deep Sleep: ' + (deep.minutes || '?') + 'min, RHR: ' + (fitData.rhr || '?') + 'bpm (baseline: ' + readiness.breakdown.baseline + ', deviation: ' + rhrDev + ')' + rhrDevNote + '\n\n' +
+      'KEY METRICS: HRV: ' + (fitData.hrv ? Math.round(fitData.hrv * 10) / 10 : '?') + 'ms (7d avg: ' + (hrvAvg || '?') + ')' + hrvNote + ', Deep Sleep: ' + (deepMins.minutes || '?') + 'min, RHR: ' + (fitData.rhr || '?') + 'bpm (baseline: ' + readiness.breakdown.baseline + ', deviation: ' + rhrDev + ')' + rhrDevNote + '\n\n' +
       'LIVE FITBIT DATA:\n' +
       '- Sleep: ' + (sleep.hours ? sleep.hours.toFixed(1) : '?') + 'h, ' + (sleep.efficiency || '?') + '% efficiency, ' + (sleep.minutesAwake || '?') + 'min awake\n' +
-      '- Deep: ' + (deep.minutes || '?') + 'min (30d avg ' + (deep.thirtyDayAvgMinutes || '?') + '), REM: ' + (rem.minutes || '?') + 'min (30d avg ' + (rem.thirtyDayAvgMinutes || '?') + ')\n' +
+      '- Deep: ' + (deepMins.minutes || '?') + 'min (30d avg ' + (deepMins.thirtyDayAvgMinutes || '?') + '), REM: ' + (remMins.minutes || '?') + 'min (30d avg ' + (remMins.thirtyDayAvgMinutes || '?') + ')\n' +
       '- RHR: ' + (fitData.rhr || '?') + 'bpm (7d avg ' + (r7.rhr || '?') + '), HRV: ' + (fitData.hrv || '?') + ' (7d avg ' + (r7.hrv || '?') + ')\n' +
       '- Yesterday zones: Peak ' + (pz.peak || 0) + 'min, Cardio ' + (pz.cardio || 0) + 'min, Fat Burn ' + (pz.fatBurn || 0) + 'min\n' +
       '- Steps yesterday: ' + (fitData.steps ? fitData.steps.toLocaleString() : '?') + '\n';
