@@ -1369,10 +1369,21 @@ app.post("/api/profiles/:id/roadmap", async function(req, res) {
       goalCtx += '\n';
     }
 
+    // Build schedule from profile_data
+    let scheduleStr = '';
+    if (pd.schedule) {
+      const days = ['mon','tue','wed','thu','fri','sat','sun'];
+      const dayNames = ['Monday','Tuesday','Wednesday','Thursday','Friday','Saturday','Sunday'];
+      days.forEach(function(d, i) {
+        if (pd.schedule[d]) scheduleStr += dayNames[i] + ': ' + pd.schedule[d] + '\n';
+      });
+    }
+
     const prompt = 'You are a personal fitness coach creating a realistic road map for this athlete based on their current progress and goals.\n\n' +
       'ATHLETE PROFILE:\n' + (pd.ai_prompt_context || pd.name || 'Athlete') + '\n\n' +
       'GOAL PRIORITIES AND CURRENT PROGRESS:\n' + (goalCtx || 'No goals set yet.\n') + '\n' +
       'RECENT CONSISTENCY: ' + doneCount + ' sessions in last 30 days (~' + Math.round(doneCount / 4.3) + '/week). Types: ' + typeStr + '\n\n' +
+      (scheduleStr ? 'ATHLETE\'S ACTUAL WEEKLY SCHEDULE (use this exactly, do not suggest different days):\n' + scheduleStr + '\nWhen writing the Weekly Blueprint section, build around these specific days. For example if Tuesday and Thursday are MMA days, the blueprint must show MMA on Tuesday and Thursday, not Monday or Saturday.\n\n' : '') +
       'COACHING BRIEF:\n' + (brief || 'No coaching brief yet.') + '\n\n' +
       'Generate a realistic road map with:\n\n' +
       'CURRENT STATUS (1 paragraph):\nWhere they are right now honestly - consistency, progress toward each goal, what\'s working.\n\n' +
@@ -1380,7 +1391,7 @@ app.post("/api/profiles/:id/roadmap", async function(req, res) {
       '90-DAY MILESTONES:\n- 3 specific targets for 90 days\n- Based on realistic progression from current pace\n\n' +
       '6-MONTH VISION:\n- Where they could realistically be in 6 months\n- If consistent at current pace vs if they hit targets\n\n' +
       '12-MONTH VISION:\n- Long term projection\n- Which goals could be achieved by then\n\n' +
-      'WEEKLY BLUEPRINT:\n- Ideal weekly training split to hit all goals given priorities\n- e.g. "Tuesday: MMA, Thursday: MMA, Mon/Wed/Fri: rotate between strength and cardio"\n\n' +
+      'WEEKLY BLUEPRINT:\n- Build around the athlete\'s ACTUAL schedule above — do not change their training days\n- Fill in recovery/rest days and add specific focus for each session\n- If no schedule provided, suggest an ideal split\n\n' +
       'BIGGEST RISK:\n- One honest assessment of what could derail progress\n- One specific mitigation strategy\n\n' +
       'Keep total response under 600 words. Be specific with numbers and dates. Be honest but encouraging. Use markdown formatting with ## headers.';
 
