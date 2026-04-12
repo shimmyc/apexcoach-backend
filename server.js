@@ -867,10 +867,8 @@ app.post("/api/profiles/:id/generate-goal-description", async function(req, res)
   try {
     var body = req.body;
     if (!body.title) return res.status(400).json({ success: false, error: "Title required." });
-    var prompt = "Generate a short 1-2 sentence motivating description for this fitness goal. Be specific and personal.\nGoal: " + body.title +
-      (body.type ? "\nType: " + body.type : "") +
+    var prompt = "Write a single plain sentence describing this fitness goal. Be direct and simple, no motivational language, no exclamation marks. Maximum 15 words.\nExample: 'Hike 8 miles carrying Noam on your back without stopping.'\nGoal: " + body.title +
       (body.target_value ? "\nTarget: " + body.target_value + " " + (body.unit || "") : "") +
-      (body.profile_name ? "\nAthlete: " + body.profile_name : "") +
       "\nReturn ONLY the description text, no quotes, no explanation.";
     var text = await callAI(prompt, 200);
     res.json({ success: true, description: text.trim() });
@@ -900,6 +898,16 @@ var CANONICAL_NAMES = {
   'chin up': 'Chin-Up', 'chin ups': 'Chin-Up', 'chinup': 'Chin-Up', 'chinups': 'Chin-Up',
 };
 
+var CATEGORY_OVERRIDES = {
+  'Plank': 'core', 'Crunch': 'core', 'Sit-Up': 'core', 'Leg Raise': 'core',
+  'Mountain Climber': 'core', 'Dead Bug': 'core', 'Bird Dog': 'core',
+  'Ab Wheel': 'core', 'Russian Twist': 'core', 'Windshield Wiper': 'core',
+  'Push-Up': 'strength', 'Pull-Up': 'strength', 'Chin-Up': 'strength', 'Dip': 'strength',
+  'Burpee': 'cardio', 'Jumping Jack': 'cardio',
+  'Glute Bridge': 'rehab', 'Clamshell': 'rehab', 'Cat-Cow': 'rehab', 'Hip Flexor Stretch': 'rehab',
+  'Boxing': 'combat', 'Sparring': 'combat',
+};
+
 function normalizeExerciseName(name) {
   if (!name) return name;
   var lower = name.toLowerCase().trim();
@@ -909,6 +917,11 @@ function normalizeExerciseName(name) {
     if (CANONICAL_NAMES[singular]) return CANONICAL_NAMES[singular];
   }
   return name.trim();
+}
+
+function normalizeCategory(name, aiCategory) {
+  if (CATEGORY_OVERRIDES[name]) return CATEGORY_OVERRIDES[name];
+  return aiCategory || 'other';
 }
 
 app.post("/api/profiles/:id/extract-exercises", async function(req, res) {
@@ -922,7 +935,7 @@ app.post("/api/profiles/:id/extract-exercises", async function(req, res) {
 
     console.log("[extract-exercises] Processing notes for profile " + profileId + ": " + body.notes.substring(0, 100) + "...");
 
-    var prompt = "Extract all exercises from these workout notes. For each exercise identify: name (normalized), category (one of: strength/combat/cardio/mobility/rehab/core/other), sets (number or null), reps (number or null), weight_lbs (number or null), distance_miles (number or null), duration_minutes (number or null), raw_text (original text snippet).\n\nCATEGORY GUIDE:\n- strength: weightlifting, resistance, dumbbell/barbell work\n- combat: MMA, boxing, sparring, martial arts, kicks, grappling, BJJ\n- cardio: running, elliptical, jumping jacks, cycling, rowing\n- mobility: stretching, yoga, flexibility work\n- rehab: PT exercises, injury rehab, therapeutic (glute bridge, clamshell, cat-cow, dead bug)\n- core: planks, crunches, ab work, russian twist\n- other: anything else\n\nCRITICAL NORMALIZATION RULES:\n- Always use singular form: 'Glute Bridge' not 'Glute Bridges'\n- Capitalize first letter of each word\n- Use hyphens for compound exercises: 'Push-Up', 'Pull-Up', 'Sit-Up', 'Cat-Cow'\n- Remove trailing s from plural exercise names\n\nReturn ONLY a JSON array of exercise objects, no explanation.\nExample: [{\"name\":\"Glute Bridge\",\"category\":\"rehab\",\"sets\":3,\"reps\":12,\"weight_lbs\":null,\"distance_miles\":null,\"duration_minutes\":null,\"raw_text\":\"glute bridges 3x12\"}]\nWorkout type: " + (body.type || "unknown") + "\nNotes: " + body.notes;
+    var prompt = "Extract all exercises from these workout notes. For each exercise identify: name (normalized), category (one of: strength/combat/cardio/mobility/rehab/core/other), sets (number or null), reps (number or null), weight_lbs (number or null), distance_miles (number or null), duration_minutes (number or null), raw_text (original text snippet).\n\nCATEGORY GUIDE:\n- strength: weightlifting, resistance, dumbbell/barbell work, push-up, pull-up, dip, squat, lunge, row\n- combat: MMA, boxing, sparring, martial arts, kicks, grappling, BJJ, pad work\n- cardio: running, elliptical, jumping jacks, cycling, rowing, burpee, jump rope\n- mobility: stretching, yoga, flexibility work\n- rehab: PT exercises, injury rehab, therapeutic (glute bridge, clamshell, cat-cow, hip flexor stretch)\n- core: plank, crunch, sit-up, leg raise, dead bug, bird dog, mountain climber, ab wheel, russian twist, windshield wiper - these are ALWAYS 'core' not 'strength'\n- other: anything else\n\nCRITICAL NORMALIZATION RULES:\n- Always use singular form: 'Glute Bridge' not 'Glute Bridges'\n- Capitalize first letter of each word\n- Use hyphens for compound exercises: 'Push-Up', 'Pull-Up', 'Sit-Up', 'Cat-Cow'\n- Remove trailing s from plural exercise names\n\nReturn ONLY a JSON array of exercise objects, no explanation.\nExample: [{\"name\":\"Glute Bridge\",\"category\":\"rehab\",\"sets\":3,\"reps\":12,\"weight_lbs\":null,\"distance_miles\":null,\"duration_minutes\":null,\"raw_text\":\"glute bridges 3x12\"}]\nWorkout type: " + (body.type || "unknown") + "\nNotes: " + body.notes;
 
     var aiText = await callAI(prompt, 1000);
     console.log("[extract-exercises] Raw AI response: " + (aiText || "(empty)").substring(0, 300));
@@ -951,12 +964,13 @@ app.post("/api/profiles/:id/extract-exercises", async function(req, res) {
       var ex = exercises[i];
       if (!ex.name) continue;
       ex.name = normalizeExerciseName(ex.name);
+      ex.category = normalizeCategory(ex.name, ex.category);
       var insertBody = {
         profile_id: parseInt(profileId),
         workout_id: body.workout_id ? parseInt(body.workout_id) : null,
         date: body.date,
         name: ex.name,
-        category: ex.category || "other",
+        category: ex.category,
         sets: ex.sets || null,
         reps: ex.reps || null,
         weight_lbs: ex.weight_lbs || null,

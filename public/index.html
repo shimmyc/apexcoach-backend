@@ -429,15 +429,19 @@ input[type=range]{width:100%;accent-color:var(--accent)}
 
   <!-- PROFILE TAB -->
   <div id="tab-profile" class="tab stack">
+    <!-- 1. Athlete Header -->
     <div id="profile-dynamic"></div>
 
-    <!-- WEEKLY SCHEDULE -->
+    <!-- 2. Weekly Schedule -->
     <div class="card">
       <p class="clabel">my weekly schedule</p>
       <div id="schedule-grid" style="display:grid;grid-template-columns:repeat(7,1fr);gap:8px"></div>
     </div>
 
-    <!-- GOALS -->
+    <!-- 3. Belt Journey (rendered dynamically) -->
+    <div id="belt-section"></div>
+
+    <!-- 4. Goals -->
     <div class="card">
       <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">
         <p class="clabel" style="margin-bottom:0">goals &amp; milestones</p>
@@ -2174,9 +2178,8 @@ function renderProfileTab() {
   var c = currentProfileColor || TC.accent;
   var name = pd.name || currentProfileName || 'Athlete';
   var initial = name.charAt(0).toUpperCase();
-  var tagline = pd.tagline || '';
 
-  // ── ATHLETE HEADER (clean: photo + name + tagline only) ──
+  // ── ATHLETE HEADER (photo + name only) ──
   var h = '<div class="card" style="border-color:var(--accent-33)">';
   h += '<div style="display:flex;align-items:center;gap:16px">';
   if (pd.avatar_image) {
@@ -2184,22 +2187,24 @@ function renderProfileTab() {
   } else {
     h += '<div style="width:64px;height:64px;border-radius:50%;background:var(--accent-18);border:1px solid var(--accent-33);display:flex;align-items:center;justify-content:center;font-family:Oswald,sans-serif;font-size:24px;font-weight:700;color:var(--accent)">' + initial + '</div>';
   }
-  h += '<div><div style="font-family:Oswald,sans-serif;font-size:24px;font-weight:600;color:var(--text-bright)">' + name + '</div>';
-  if (tagline) h += '<div class="mono" style="font-size:10px;color:var(--text-muted);letter-spacing:2px">' + tagline.toUpperCase() + '</div>';
-  h += '</div></div></div>';
+  h += '<div><div style="font-family:Oswald,sans-serif;font-size:24px;font-weight:600;color:var(--text-bright)">' + name + '</div></div>';
+  h += '</div></div>';
   var injuries = pd.injuries || [];
-
-  // ── BELT JOURNEY (only if martial arts) ──
-  if (pd.martial_arts && pd.current_belt) {
-    h += '<div class="card" id="belt-card"><div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px"><p class="clabel" style="margin-bottom:0">Belt Journey</p><button onclick="toggleBeltEdit()" id="belt-edit-btn" style="background:transparent;border:1px solid #1a1c22;color:#666;padding:5px 12px;border-radius:6px;cursor:pointer;font-size:13px">Edit</button></div><div id="belt-display"></div><div id="belt-editor" style="display:none"><p style="font-size:14px;color:#888;margin-bottom:12px">Select your current belt:</p><div id="belt-selector" style="display:flex;flex-wrap:wrap;gap:8px;margin-bottom:16px"></div><button onclick="saveBelt()" class="btnPri" style="font-size:14px">Save</button></div></div>';
-  }
 
   // Prepend completeness card
   var completenessHTML = renderProfileCompletenessCard();
   document.getElementById('profile-dynamic').innerHTML = completenessHTML + h;
 
-  // Re-render belt if martial arts
-  if (pd.martial_arts && pd.current_belt && typeof renderBelt === 'function') renderBelt();
+  // ── BELT JOURNEY (rendered into its own section between schedule and goals) ──
+  var beltSection = document.getElementById('belt-section');
+  if (beltSection) {
+    if (pd.martial_arts && pd.current_belt) {
+      beltSection.innerHTML = '<div class="card" id="belt-card"><div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px"><p class="clabel" style="margin-bottom:0">Belt Journey</p><button onclick="toggleBeltEdit()" id="belt-edit-btn" style="background:transparent;border:1px solid #1a1c22;color:#666;padding:5px 12px;border-radius:6px;cursor:pointer;font-size:13px">Edit</button></div><div id="belt-display"></div><div id="belt-editor" style="display:none"><p style="font-size:14px;color:#888;margin-bottom:12px">Select your current belt:</p><div id="belt-selector" style="display:flex;flex-wrap:wrap;gap:8px;margin-bottom:16px"></div><button onclick="saveBelt()" class="btnPri" style="font-size:14px">Save</button></div></div>';
+      if (typeof renderBelt === 'function') renderBelt();
+    } else {
+      beltSection.innerHTML = '';
+    }
+  }
 
   // ── GOALS ──
   renderProfileGoals();
