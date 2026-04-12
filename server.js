@@ -1277,13 +1277,16 @@ app.get("/api/profiles/:id/checkin", async function(req, res) {
     const pid = req.params.id;
     const date = req.query.date;
     if (!date) return res.status(400).json({ error: "date query param required" });
+    console.log("[Checkin] GET profile=" + pid + " date=" + date);
     const r = await fetch(
       SUPABASE_URL + "/rest/v1/daily_checkins?profile_id=eq." + pid + "&date=eq." + date + "&limit=1",
       { headers: sbHeaders() }
     );
     const rows = await r.json();
+    console.log("[Checkin] GET result:", rows && rows.length ? "found" : "none");
     res.json({ checkin: (rows && rows.length) ? rows[0] : null });
   } catch (e) {
+    console.error("[Checkin] GET error:", e.message);
     res.status(500).json({ error: e.message });
   }
 });
@@ -1301,8 +1304,9 @@ app.post("/api/profiles/:id/checkin", async function(req, res) {
       severity: severity || null,
       checkin_text: checkin_text || null,
     };
+    console.log("[Checkin] POST profile=" + pid + " date=" + date + " energy=" + (energy || "none"));
     const r = await fetch(
-      SUPABASE_URL + "/rest/v1/daily_checkins",
+      SUPABASE_URL + "/rest/v1/daily_checkins?on_conflict=profile_id,date",
       {
         method: "POST",
         headers: sbHeaders("return=representation,resolution=merge-duplicates"),
@@ -1310,9 +1314,11 @@ app.post("/api/profiles/:id/checkin", async function(req, res) {
       }
     );
     const data = await r.json();
+    console.log("[Checkin] Upsert status=" + r.status + " result:", JSON.stringify(data).substring(0, 200));
     if (!r.ok) return res.status(r.status).json({ error: data });
     res.json({ success: true, checkin: data[0] || payload });
   } catch (e) {
+    console.error("[Checkin] POST error:", e.message);
     res.status(500).json({ error: e.message });
   }
 });

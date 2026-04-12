@@ -381,11 +381,9 @@ input[type=range]{width:100%;accent-color:var(--accent)}
         </div>
         <button id="fc-submit-btn" onclick="submitFeelingCheckin()" class="btnPri" style="width:100%;padding:14px;font-size:15px;border-radius:8px;opacity:0.4;pointer-events:none" disabled>Tell My Coach &rarr;</button>
       </div>
-      <div id="feeling-checkin-summary" style="display:none">
-        <div style="display:flex;align-items:center;justify-content:space-between">
-          <div id="fc-summary-text" style="font-size:14px;color:var(--text-sec);line-height:1.5"></div>
-          <button onclick="reopenFeelingCheckin()" style="background:transparent;border:none;color:var(--accent);font-size:13px;cursor:pointer;font-family:DM Sans,sans-serif;padding:4px 8px;white-space:nowrap">Update</button>
-        </div>
+      <div id="feeling-checkin-summary" style="display:none;padding:12px 16px">
+        <div id="fc-summary-text" style="font-size:14px;color:var(--text-sec);line-height:1.6;word-wrap:break-word;overflow-wrap:break-word;margin-bottom:6px"></div>
+        <div style="text-align:right"><button onclick="reopenFeelingCheckin()" style="background:transparent;border:none;color:var(--accent);font-size:13px;cursor:pointer;font-family:DM Sans,sans-serif;padding:4px 8px">Update</button></div>
       </div>
     </div>
     <div id="progress-card" class="card" style="display:none">
@@ -1791,12 +1789,12 @@ function buildCheckinSummary(checkin) {
     var sore = checkin.soreness.join(', ');
     parts.push(sore + (checkin.severity ? ' ' + checkin.severity.toLowerCase() + ' soreness' : ''));
   }
-  if (checkin.text && !checkin.energy && !checkin.soreness.length) {
-    var short = checkin.text.length > 50 ? checkin.text.substring(0, 50) + '...' : checkin.text;
-    parts.push('\uD83D\uDCAC \u201C' + short + '\u201D');
+  if (checkin.text) {
+    parts.push('\uD83D\uDCAC \u201C' + checkin.text + '\u201D');
   }
   return '\u2713 ' + (parts.length ? parts.join(' \u2022 ') : 'Check-in submitted');
 }
+var fcSummaryExpanded = false;
 
 function submitFeelingCheckin() {
   var textEl = document.getElementById('checkin-text');
@@ -1832,7 +1830,18 @@ function submitFeelingCheckin() {
 function showFeelingCheckinSummary() {
   document.getElementById('feeling-checkin-full').style.display = 'none';
   document.getElementById('feeling-checkin-summary').style.display = 'block';
-  document.getElementById('fc-summary-text').innerHTML = '<span style="color:var(--accent)">' + buildCheckinSummary(dailyCheckin) + '</span>';
+  fcSummaryExpanded = false;
+  renderCheckinSummaryText();
+}
+
+function renderCheckinSummaryText() {
+  var full = buildCheckinSummary(dailyCheckin);
+  var el = document.getElementById('fc-summary-text');
+  if (full.length > 200 && !fcSummaryExpanded) {
+    el.innerHTML = '<span style="color:var(--accent)">' + full.substring(0, 200) + '...</span> <a href="javascript:void(0)" onclick="fcSummaryExpanded=true;renderCheckinSummaryText()" style="color:var(--info);font-size:13px;white-space:nowrap">Show more</a>';
+  } else {
+    el.innerHTML = '<span style="color:var(--accent)">' + full + '</span>';
+  }
 }
 
 function reopenFeelingCheckin() {
@@ -1917,19 +1926,23 @@ function checkinDataChanged(a, b) {
 }
 
 function fetchTodayCheckin(silent) {
-  if (!currentProfileId) return;
+  if (!currentProfileId) { console.log('[Checkin] fetchTodayCheckin: no profileId'); return; }
+  console.log('[Checkin] fetchTodayCheckin: fetching, silent=' + silent);
   fetch('/api/profiles/' + currentProfileId + '/checkin?date=' + ds(0))
     .then(function(r) { return r.json(); })
     .then(function(data) {
+      console.log('[Checkin] fetchTodayCheckin result:', data.checkin ? 'found' : 'none', data.checkin ? ('energy=' + data.checkin.energy) : '');
       if (data.checkin) {
         if (!silent || checkinDataChanged(dailyCheckin, data.checkin)) {
+          console.log('[Checkin] applying updated check-in data');
           applyCheckinData(data.checkin);
         }
       } else if (!silent && !loadDailyCheckinFromLocalStorage()) {
         // No check-in anywhere — show input card (already default)
       }
     })
-    .catch(function() {
+    .catch(function(err) {
+      console.warn('[Checkin] fetchTodayCheckin error:', err.message || err);
       if (!silent) loadDailyCheckinFromLocalStorage();
     });
 }
@@ -1953,7 +1966,9 @@ startCheckinPolling();
 
 // Sync check-in and workouts when app comes back into focus
 document.addEventListener('visibilitychange', function() {
+  console.log('[Checkin] visibilitychange fired, hidden=' + document.hidden);
   if (document.hidden || !currentProfileId) return;
+  console.log('[Checkin] refetching check-in and workouts on focus');
   fetchTodayCheckin(true);
   loadWorkouts().then(function() {
     renderLogArea();
