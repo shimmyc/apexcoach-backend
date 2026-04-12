@@ -343,15 +343,11 @@ input[type=range]{width:100%;accent-color:var(--accent)}
     <div id="log-area"></div>
   </div>
 
-  <!-- HISTORY TAB (merged Calendar + Log) -->
+  <!-- HISTORY TAB (Calendar + Sessions stacked) -->
   <div id="tab-history" class="tab stack">
-    <div style="display:flex;gap:4px;margin-bottom:8px">
-      <button id="hist-view-cal" class="navBtn active" onclick="setHistoryView('calendar')" style="flex:1;text-align:center">Calendar</button>
-      <button id="hist-view-list" class="navBtn" onclick="setHistoryView('list')" style="flex:1;text-align:center">List</button>
-    </div>
 
-    <!-- Calendar sub-view -->
-    <div id="history-calendar">
+    <!-- Calendar section (always visible) -->
+    <div>
       <div style="display:flex;gap:4px;margin-bottom:4px">
         <button id="cal-mode-week" class="navBtn active" onclick="setCalMode('week')" style="flex:1;text-align:center">Week</button>
         <button id="cal-mode-month" class="navBtn" onclick="setCalMode('month')" style="flex:1;text-align:center">Month</button>
@@ -381,8 +377,11 @@ input[type=range]{width:100%;accent-color:var(--accent)}
       <div class="card" id="week-breakdown"></div>
     </div>
 
-    <!-- List sub-view -->
-    <div id="history-list" style="display:none">
+    <!-- Sessions section (always visible below calendar) -->
+    <div id="history-list-section">
+      <div style="border-top:1px solid var(--border);padding-top:16px;margin-top:4px">
+        <p class="mono" style="font-size:10px;color:var(--text-dim);letter-spacing:3px;margin-bottom:12px">SESSIONS</p>
+      </div>
       <div class="card" style="border-color:var(--accent-22)">
         <p class="clabel">ask your history</p>
         <div style="display:flex;gap:8px">
@@ -3687,10 +3686,14 @@ function setLogDateFilter(dateStr) {
   var el = document.getElementById('log-date-filter');
   document.getElementById('log-date-filter-text').textContent = '\uD83D\uDCC5 ' + fmtDate;
   el.style.display = 'flex';
-  // Switch to list view within history tab
-  setHistoryView('list');
+  // Make sure we're on history tab
   showTab('history');
   renderLog();
+  // Scroll down to the sessions list
+  setTimeout(function() {
+    var section = document.getElementById('history-list-section');
+    if (section) section.scrollIntoView({ behavior: 'smooth' });
+  }, 100);
 }
 
 function clearLogDateFilter() {
@@ -4206,18 +4209,6 @@ function startPBVoice() {
   pbRecognition.start();
 }
 
-var historyView = 'calendar';
-
-function setHistoryView(view) {
-  historyView = view;
-  document.getElementById('history-calendar').style.display = view === 'calendar' ? 'block' : 'none';
-  document.getElementById('history-list').style.display = view === 'list' ? 'block' : 'none';
-  document.getElementById('hist-view-cal').classList.toggle('active', view === 'calendar');
-  document.getElementById('hist-view-list').classList.toggle('active', view === 'list');
-  if (view === 'calendar') renderCalendar();
-  if (view === 'list') renderLog();
-}
-
 function showTab(name, btn) {
   document.querySelectorAll('.tab').forEach(function(t) { t.classList.remove('active'); });
   // Update desktop nav
@@ -4240,10 +4231,7 @@ function showTab(name, btn) {
   document.querySelectorAll('.bnav-item[data-tab="' + name + '"]').forEach(function(b) { b.classList.add('active'); });
 
   if (name === 'library') loadLibrary();
-  if (name === 'history') {
-    if (historyView === 'calendar') renderCalendar();
-    else renderLog();
-  }
+  if (name === 'history') { renderCalendar(); renderLog(); }
 }
 
 // ── SETTINGS PANEL ───────────────────────────────────────────────────────
