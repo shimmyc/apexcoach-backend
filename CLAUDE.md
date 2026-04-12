@@ -32,15 +32,19 @@ ApexCoach is a personalized AI fitness coaching web app. Users connect their Fit
 
 - Profile selector screen on load (PIN protected)
 
-- 5 tabs: Today, Calendar, Log, Library, Profile
+- 4 tabs: Today, History, Library, Profile + floating action button (+) for Log Workout
+
+- Navigation: bottom tab bar on mobile (below 768px) with FAB center button, top horizontal nav on desktop
 
 - Today tab: Fitbit biometrics + readiness score + progress brief + 3 AI workout options
 
-- Calendar tab: Week/Month toggle view with workout dots
+- History tab: merged Calendar + Log with toggle buttons. Calendar view: Week/Month with workout dots. List view: collapsible workout cards with sort/filter, "Ask Your History" AI search
 
-- Log tab: Full workout history with edit capability
+- Library tab: Exercise dashboard, exercises list, personal records (Chart.js)
 
 - Profile tab: Dynamic from profile_data JSON - goals, injuries, belt tracker (if martial arts), schedule, philosophy
+
+- + button: opens Log Workout modal directly (not a tab)
 
 ## Readiness Formula V3
 
