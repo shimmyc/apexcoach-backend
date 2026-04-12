@@ -22,7 +22,7 @@ ApexCoach is a personalized AI fitness coaching web app. Users connect their Fit
 
 ## Supabase Tables
 
-- profiles: id, name, pin (sha256 hashed), avatar_color, profile_data (jsonb), fitbit_access_token, fitbit_refresh_token, fitbit_expires_at, coaching_brief (text), historical_brief (text), historical_brief_updated_at (timestamp), created_at
+- profiles: id, name, pin (sha256 hashed), avatar_color, profile_data (jsonb), fitbit_access_token, fitbit_refresh_token, fitbit_expires_at, coaching_brief (text), historical_brief (text), historical_brief_updated_at (timestamp), roadmap (text), roadmap_updated_at (timestamp), created_at
 
 - workouts: id, date, type, notes, done, mobility, med, ts, profile_id
 
@@ -113,6 +113,10 @@ Calculated from workoutLog entries where done=true. Counts backwards from today 
 - GET /api/profiles/:id/checkin?date= — get daily feeling check-in for a date
 
 - POST /api/profiles/:id/checkin — upsert daily feeling check-in (syncs across devices)
+
+- GET /api/profiles/:id/roadmap — get saved road map text and timestamp
+
+- POST /api/profiles/:id/roadmap — generate AI road map from profile, goals, workouts
 
 - POST /api/profiles/:id/generate-goal-description — AI generates motivating goal description from title
 
@@ -270,6 +274,34 @@ Goals can be ranked by priority via "Prioritize" button on Profile tab. Desktop:
 - **AI integration**: `goalPriorityContext` injected into fetchAI() after FULL_PROFILE. Instructs AI to weight recommendations toward top goals (#1 ~40%, #2 ~25%, #3 ~15%).
 - **Goal tags in AI response**: Each workout option includes `goal_tags` (array of goal titles targeted) and `goal_reasoning` (how it advances that goal). Rendered as amber pills below workout headline.
 - **Save**: Reordered goals saved via PATCH /api/profiles/:id. Goal progress cache cleared on reorder.
+
+## Personal Road Map
+
+AI-generated 3/6/12-month training plan shown on Profile tab after Coaching Brief card.
+
+- **Endpoints**: `GET /api/profiles/:id/roadmap` returns saved roadmap text + timestamp. `POST /api/profiles/:id/roadmap` generates new roadmap via Claude AI using profile, goals, recent workouts, and coaching brief.
+- **Supabase columns**: `profiles.roadmap` (text), `profiles.roadmap_updated_at` (timestamp)
+- **UI**: "Generate" button on first visit, "Regenerate" (with confirm) after. Rendered via parseMd(). Shows last generated date.
+- **Auto-load**: `loadRoadmap()` called in bootApp() alongside coaching brief fetch.
+- **Sections generated**: Current Status, 30-Day Milestones, 90-Day Milestones, 6-Month Vision, 12-Month Vision, Weekly Blueprint, Biggest Risk.
+
+## Previous Days Navigation
+
+Left/right arrow navigation on Today tab to browse past days.
+
+- **Variable**: `viewingDate` (null = today, otherwise YYYY-MM-DD), `viewingOffset` (0 = today, negative = past)
+- **UI**: `← Yesterday` / `Today` / `→` buttons below date header. Arrow keys also work (left/right).
+- **Past day mode**: Shows amber "Viewing [date]" banner. Hides check-in card, AI recommendation, and progress brief. Shows logged workout for that date (with edit button) or "No workout logged this day". Disables forward button when on today.
+- **Fitbit data**: Server endpoint `GET /api/profiles/:id/daily?date=YYYY-MM-DD` accepts optional date param. `buildDailyData(token, overrideDate)` uses the provided date instead of today.
+
+## Profile Image Crop Tool
+
+Canvas-based crop/zoom/pan interface shown when uploading a profile photo.
+
+- **Flow**: File select → crop modal overlay → adjust → save
+- **Controls**: Zoom slider (1x–3x), drag to pan (mouse + touch), pinch zoom on mobile
+- **Output**: 200x200 JPEG via `canvas.toDataURL('image/jpeg', 0.85)`, stored as `profile_data.avatar_image`
+- **Circle mask**: Canvas arc() + clip() for circular preview matching avatar shape
 
 ## Auto-Format Notes
 

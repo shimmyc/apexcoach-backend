@@ -210,10 +210,10 @@ function dateStr(offsetDays) {
   return d.toISOString().split("T")[0];
 }
 
-async function buildDailyData(token) {
-  const today     = dateStr(0);
-  const yesterday = dateStr(-1);
-  const weekAgo   = dateStr(-7);
+async function buildDailyData(token, overrideDate) {
+  const today     = overrideDate || dateStr(0);
+  const yesterday = overrideDate ? (() => { const d = new Date(overrideDate + 'T12:00:00'); d.setDate(d.getDate() - 1); return d.toISOString().slice(0,10); })() : dateStr(-1);
+  const weekAgo   = overrideDate ? (() => { const d = new Date(overrideDate + 'T12:00:00'); d.setDate(d.getDate() - 7); return d.toISOString().slice(0,10); })() : dateStr(-7);
 
   const results = await Promise.all([
     fitGet("/1.2/user/-/sleep/date/" + today + ".json", token),
@@ -615,7 +615,8 @@ app.get("/api/profiles/:id/daily", async function(req, res) {
   try {
     console.log("[Fitbit] /api/profiles/" + req.params.id + "/daily called - loading tokens from profiles table");
     const token = await getValidProfileToken(req.params.id);
-    const result = await buildDailyData(token);
+    const dateParam = req.query.date || null;
+    const result = await buildDailyData(token, dateParam);
     res.json({ success: true, date: result.date, data: result.data });
   } catch (err) {
     console.error("Error:", err.message);
@@ -1319,6 +1320,95 @@ app.post("/api/profiles/:id/checkin", async function(req, res) {
     res.json({ success: true, checkin: data[0] || payload });
   } catch (e) {
     console.error("[Checkin] POST error:", e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ── ROAD MAP ─────────────────────────────────────────────────────────────
+app.get("/api/profiles/:id/roadmap", async function(req, res) {
+  try {
+    const pid = req.params.id;
+    const r = await fetch(
+      SUPABASE_URL + "/rest/v1/profiles?id=eq." + pid + "&select=roadmap,roadmap_updated_at",
+      { headers: sbHeaders() }
+    );
+    const rows = await r.json();
+    if (!rows || !rows.length) return res.status(404).json({ error: "Profile not found" });
+    res.json({ success: true, roadmap: rows[0].roadmap, roadmap_updated_at: rows[0].roadmap_updated_at });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.post("/api/profiles/:id/roadmap", async function(req, res) {
+  try {
+    const pid = req.params.id;
+    // Fetch profile
+    const pRes = await fetch(SUPABASE_URL + "/rest/v1/profiles?id=eq." + pid, { headers: sbHeaders() });
+    const profiles = await pRes.json();
+    if (!profiles || !profiles.length) return res.status(404).json({ error: "Profile not found" });
+    const profile = profiles[0];
+    const pd = profile.profile_data || {};
+    const goals = pd.goals || [];
+    const brief = (profile.coaching_brief || '').substring(0, 300);
+
+    // Fetch last 30 workouts
+    const wRes = await fetch(SUPABASE_URL + "/rest/v1/workouts?profile_id=eq." + pid + "&order=date.desc&limit=30", { headers: sbHeaders() });
+    const workouts = await wRes.json();
+    const doneCount = (workouts || []).filter(w => w.done).length;
+    const types = {};
+    (workouts || []).forEach(w => { if (w.type) types[w.type] = (types[w.type] || 0) + 1; });
+    const typeStr = Object.entries(types).map(([k,v]) => k + ' x' + v).join(', ') || 'none logged';
+
+    // Build goal context
+    let goalCtx = '';
+    for (let i = 0; i < goals.length; i++) {
+      const g = goals[i];
+      goalCtx += (i + 1) + '. ' + (g.title || 'Untitled') + ' (' + (g.status || 'IN PROGRESS') + ')';
+      if (g.target_value) goalCtx += ' — target: ' + g.target_value + ' ' + (g.unit || '');
+      goalCtx += '\n';
+    }
+
+    const prompt = 'You are a personal fitness coach creating a realistic road map for this athlete based on their current progress and goals.\n\n' +
+      'ATHLETE PROFILE:\n' + (pd.ai_prompt_context || pd.name || 'Athlete') + '\n\n' +
+      'GOAL PRIORITIES AND CURRENT PROGRESS:\n' + (goalCtx || 'No goals set yet.\n') + '\n' +
+      'RECENT CONSISTENCY: ' + doneCount + ' sessions in last 30 days (~' + Math.round(doneCount / 4.3) + '/week). Types: ' + typeStr + '\n\n' +
+      'COACHING BRIEF:\n' + (brief || 'No coaching brief yet.') + '\n\n' +
+      'Generate a realistic road map with:\n\n' +
+      'CURRENT STATUS (1 paragraph):\nWhere they are right now honestly - consistency, progress toward each goal, what\'s working.\n\n' +
+      '30-DAY MILESTONES:\n- 3 specific achievable targets for next 30 days\n- One per top 3 goals\n- Concrete and measurable\n\n' +
+      '90-DAY MILESTONES:\n- 3 specific targets for 90 days\n- Based on realistic progression from current pace\n\n' +
+      '6-MONTH VISION:\n- Where they could realistically be in 6 months\n- If consistent at current pace vs if they hit targets\n\n' +
+      '12-MONTH VISION:\n- Long term projection\n- Which goals could be achieved by then\n\n' +
+      'WEEKLY BLUEPRINT:\n- Ideal weekly training split to hit all goals given priorities\n- e.g. "Tuesday: MMA, Thursday: MMA, Mon/Wed/Fri: rotate between strength and cardio"\n\n' +
+      'BIGGEST RISK:\n- One honest assessment of what could derail progress\n- One specific mitigation strategy\n\n' +
+      'Keep total response under 600 words. Be specific with numbers and dates. Be honest but encouraging. Use markdown formatting with ## headers.';
+
+    console.log("[Roadmap] Generating for profile " + pid);
+    const aiRes = await fetch("https://api.anthropic.com/v1/messages", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "x-api-key": process.env.ANTHROPIC_KEY,
+        "anthropic-version": "2023-06-01",
+      },
+      body: JSON.stringify({ model: "claude-sonnet-4-20250514", max_tokens: 1200, messages: [{ role: "user", content: prompt }] }),
+    });
+    const aiData = await aiRes.json();
+    const roadmap = (aiData.content && aiData.content[0]) ? aiData.content[0].text : '';
+    if (!roadmap) return res.status(500).json({ error: "AI returned empty response" });
+
+    // Save to profiles
+    const now = new Date().toISOString();
+    await fetch(SUPABASE_URL + "/rest/v1/profiles?id=eq." + pid, {
+      method: "PATCH",
+      headers: sbHeaders("return=minimal"),
+      body: JSON.stringify({ roadmap: roadmap, roadmap_updated_at: now }),
+    });
+    console.log("[Roadmap] Saved for profile " + pid);
+    res.json({ success: true, roadmap: roadmap, roadmap_updated_at: now });
+  } catch (e) {
+    console.error("[Roadmap] Error:", e.message);
     res.status(500).json({ error: e.message });
   }
 });

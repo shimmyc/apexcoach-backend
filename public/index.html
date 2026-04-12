@@ -291,6 +291,14 @@ input[type=range]{width:100%;accent-color:var(--accent)}
       <div class="oswald" id="dow" style="font-size:52px;font-weight:600;letter-spacing:1px;color:var(--text-bright)"></div>
       <div class="mono" id="dom" style="font-size:13px;color:var(--text-dim);letter-spacing:2px"></div>
     </div>
+    <div id="day-nav" style="display:flex;align-items:center;justify-content:center;gap:10px;margin:-4px 0 4px">
+      <button onclick="navigateDay(-1)" style="background:transparent;border:1px solid var(--border);color:var(--text-muted);padding:4px 12px;border-radius:6px;cursor:pointer;font-size:13px;font-family:DM Sans,sans-serif">&larr; Yesterday</button>
+      <button onclick="navigateDay(0)" id="day-nav-today" style="background:transparent;border:1px solid var(--accent-33);color:var(--accent);padding:4px 12px;border-radius:6px;cursor:pointer;font-size:13px;font-family:DM Sans,sans-serif">Today</button>
+      <button onclick="navigateDay(1)" id="day-nav-fwd" style="background:transparent;border:1px solid var(--border);color:var(--text-muted);padding:4px 12px;border-radius:6px;cursor:pointer;font-size:13px;font-family:DM Sans,sans-serif" disabled>&rarr;</button>
+    </div>
+    <div id="past-day-banner" style="display:none;background:#f5a62312;border:1px solid #f5a62322;padding:8px 14px;border-radius:6px;text-align:center">
+      <span class="mono" style="font-size:12px;color:#f5a623;letter-spacing:1px" id="past-day-label"></span>
+    </div>
     <div id="status-box" class="card" style="border-color:var(--accent-22)">
       <p class="mono" style="font-size:11px;color:#22c97a;letter-spacing:3px;animation:pulse 1.6s infinite">FETCHING FITBIT DATA...</p>
     </div>
@@ -537,6 +545,14 @@ input[type=range]{width:100%;accent-color:var(--accent)}
     <div id="profile-philosophy"></div>
     <div id="profile-context"></div>
     <div id="coaching-brief-card"></div>
+    <div id="roadmap-card" class="card" style="display:none">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">
+        <p class="clabel" style="margin-bottom:0">&#128506; my road map</p>
+        <button id="roadmap-gen-btn" onclick="generateRoadmap()" style="background:transparent;border:1px solid var(--border-accent);color:var(--text-muted);padding:5px 12px;border-radius:6px;cursor:pointer;font-size:13px">Generate</button>
+      </div>
+      <div id="roadmap-content"></div>
+      <div id="roadmap-updated" class="mono" style="font-size:10px;color:var(--text-dim);margin-top:10px;display:none"></div>
+    </div>
 
     <!-- ACCOUNT (moved to Settings) -->
     <div class="card" style="text-align:center">
@@ -1261,7 +1277,7 @@ function bootApp() {
     syncFitbit();
   });
 
-  // Load coaching briefs
+  // Load coaching briefs and road map
   if (currentProfileId) {
     fetch('/api/profiles/' + currentProfileId + '/brief')
       .then(function(r) { return r.json(); })
@@ -1274,8 +1290,82 @@ function bootApp() {
         }
       })
       .catch(function() {});
+    loadRoadmap();
   }
 }
+
+// ── DAY NAVIGATION ───────────────────────────────────────────────────────
+var viewingDate = null; // null = today, otherwise YYYY-MM-DD
+var viewingOffset = 0;
+
+function dateFromOffset(offset) {
+  var d = new Date();
+  d.setDate(d.getDate() + offset);
+  var y = d.getFullYear(), m = String(d.getMonth()+1).padStart(2,'0'), dd = String(d.getDate()).padStart(2,'0');
+  return y + '-' + m + '-' + dd;
+}
+
+function navigateDay(dir) {
+  if (dir === 0) { viewingOffset = 0; } // go to today
+  else { viewingOffset += dir; }
+  if (viewingOffset > 0) viewingOffset = 0;
+  viewingDate = viewingOffset === 0 ? null : dateFromOffset(viewingOffset);
+  renderDayView();
+}
+
+function renderDayView() {
+  var isToday = !viewingDate;
+  var dateStr = viewingDate || ds(0);
+  var d = new Date(dateStr + 'T12:00:00');
+  document.getElementById('dow').textContent = d.toLocaleDateString('en-US', {weekday:'long'});
+  document.getElementById('dom').textContent = d.toLocaleDateString('en-US', {month:'long', day:'numeric'});
+
+  // Forward button
+  document.getElementById('day-nav-fwd').disabled = isToday;
+
+  // Past day banner
+  var banner = document.getElementById('past-day-banner');
+  if (isToday) {
+    banner.style.display = 'none';
+    // Show today's normal elements
+    document.getElementById('feeling-checkin-card').style.display = (document.getElementById('readiness-card').style.display === 'block' || document.getElementById('checkin-card').style.display === 'block') ? 'block' : '';
+    document.getElementById('ai-card').style.display = '';
+    document.getElementById('progress-card').style.display = '';
+    renderLogArea();
+    return;
+  }
+
+  // Past day mode
+  banner.style.display = 'block';
+  document.getElementById('past-day-label').textContent = '\u2190 Viewing ' + d.toLocaleDateString('en-US', {month:'long', day:'numeric'});
+  // Hide today-only elements
+  document.getElementById('feeling-checkin-card').style.display = 'none';
+  document.getElementById('ai-card').style.display = 'none';
+  document.getElementById('progress-card').style.display = 'none';
+
+  // Show workout for that date
+  var entry = null;
+  for (var i = 0; i < workoutLog.length; i++) {
+    if (workoutLog[i].date === dateStr) { entry = workoutLog[i]; break; }
+  }
+  var logEl = document.getElementById('log-area');
+  if (entry) {
+    var editData = JSON.stringify({id:entry.id,date:entry.date,type:entry.type,notes:entry.notes||'',done:entry.done,mobility:entry.mobility,med:entry.med}).replace(/"/g,"'");
+    logEl.innerHTML = '<div class="loggedPill" style="display:flex;align-items:center;justify-content:space-between">' + (entry.done ? 'done' : 'skipped') + ': ' + entry.type + (entry.mobility ? ' + mobility' : '') + (entry.med ? ' + meditation' : '') + '<button onclick="editWorkout(' + editData + ')" style="background:transparent;border:1px solid var(--accent-33);color:var(--accent);padding:3px 10px;border-radius:4px;cursor:pointer;font-size:11px;font-family:IBM Plex Mono,monospace;margin-left:10px">Edit</button></div>';
+    if (entry.notes) logEl.innerHTML += '<div style="background:var(--bg-input);border:1px solid var(--border);border-radius:8px;padding:12px;margin-top:8px;font-size:13px;color:var(--text-sec);line-height:1.6;white-space:pre-wrap">' + entry.notes + '</div>';
+  } else {
+    logEl.innerHTML = '<p style="color:var(--text-dim);font-size:14px;text-align:center;padding:16px 0">No workout logged this day</p>';
+  }
+}
+
+// Keyboard navigation
+document.addEventListener('keydown', function(e) {
+  if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA' || e.target.tagName === 'SELECT') return;
+  var activeTab = document.querySelector('.tab.active');
+  if (!activeTab || activeTab.id !== 'tab-today') return;
+  if (e.key === 'ArrowLeft') { navigateDay(-1); e.preventDefault(); }
+  else if (e.key === 'ArrowRight' && viewingOffset < 0) { navigateDay(1); e.preventDefault(); }
+});
 
 // ── STARTUP ───────────────────────────────────────────────────────────────
 function applyProfileData(pd) {
@@ -2847,6 +2937,62 @@ function generateBrief() {
     .catch(function() {
       if (btn) { btn.textContent = 'Error - Retry'; btn.disabled = false; }
     });
+}
+
+// ── ROAD MAP ─────────────────────────────────────────────────────────────
+function loadRoadmap() {
+  if (!currentProfileId) return;
+  var card = document.getElementById('roadmap-card');
+  card.style.display = 'block';
+  fetch('/api/profiles/' + currentProfileId + '/roadmap')
+    .then(function(r) { return r.json(); })
+    .then(function(data) {
+      if (data.roadmap) {
+        renderRoadmapContent(data.roadmap, data.roadmap_updated_at);
+        document.getElementById('roadmap-gen-btn').textContent = 'Regenerate';
+      } else {
+        document.getElementById('roadmap-content').innerHTML = '<p style="color:var(--text-dim);font-size:14px;font-style:italic">No road map yet. Tap Generate to create your personalized plan.</p>';
+      }
+    })
+    .catch(function() {});
+}
+
+function generateRoadmap() {
+  if (!currentProfileId) return;
+  var btn = document.getElementById('roadmap-gen-btn');
+  if (btn.textContent === 'Regenerate') {
+    if (!confirm('Regenerate your road map? This will replace the current one.')) return;
+  }
+  btn.textContent = 'Generating...';
+  btn.disabled = true;
+  document.getElementById('roadmap-content').innerHTML = '<p class="mono" style="font-size:11px;color:#22c97a;letter-spacing:3px;animation:pulse 1.6s infinite">BUILDING YOUR ROAD MAP...</p>';
+  fetch('/api/profiles/' + currentProfileId + '/roadmap', { method: 'POST', headers: { 'Content-Type': 'application/json' } })
+    .then(function(r) { return r.json(); })
+    .then(function(data) {
+      if (data.success && data.roadmap) {
+        renderRoadmapContent(data.roadmap, data.roadmap_updated_at);
+        btn.textContent = 'Regenerate';
+        showToast('Road map generated!');
+      } else {
+        document.getElementById('roadmap-content').innerHTML = '<p style="color:#e87;font-size:14px">Failed to generate — <button onclick="generateRoadmap()" style="background:transparent;border:1px solid #333;color:#666;padding:4px 10px;cursor:pointer;border-radius:4px;font-size:12px">Retry</button></p>';
+        btn.textContent = 'Generate';
+      }
+      btn.disabled = false;
+    })
+    .catch(function() {
+      document.getElementById('roadmap-content').innerHTML = '<p style="color:#e87;font-size:14px">Error — <button onclick="generateRoadmap()" style="background:transparent;border:1px solid #333;color:#666;padding:4px 10px;cursor:pointer;border-radius:4px;font-size:12px">Retry</button></p>';
+      btn.textContent = 'Generate';
+      btn.disabled = false;
+    });
+}
+
+function renderRoadmapContent(text, updatedAt) {
+  document.getElementById('roadmap-content').innerHTML = '<div style="font-size:14px;color:var(--text-sec);line-height:1.75">' + parseMd(text) + '</div>';
+  var upEl = document.getElementById('roadmap-updated');
+  if (updatedAt) {
+    upEl.textContent = 'Last generated: ' + new Date(updatedAt).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+    upEl.style.display = 'block';
+  }
 }
 
 function escHtml(s) {
@@ -5453,25 +5599,114 @@ function handleAvatarUpload(input) {
   var file = input.files[0];
   var reader = new FileReader();
   reader.onload = function(e) {
-    var img = new Image();
-    img.onload = function() {
-      var canvas = document.createElement('canvas');
-      canvas.width = 200; canvas.height = 200;
-      var ctx = canvas.getContext('2d');
-      var size = Math.min(img.width, img.height);
-      var sx = (img.width - size) / 2, sy = (img.height - size) / 2;
-      ctx.drawImage(img, sx, sy, size, size, 0, 0, 200, 200);
-      var dataUrl = canvas.toDataURL('image/jpeg', 0.8);
-      var pd = currentProfileData || {};
-      pd.avatar_image = dataUrl;
-      saveProfileDataToServer(pd);
-      updateProfileIcon();
-      renderSettingsContent();
-      showToast('Photo saved');
-    };
-    img.src = e.target.result;
+    openCropModal(e.target.result);
   };
   reader.readAsDataURL(file);
+  input.value = '';
+}
+
+var cropState = { img: null, zoom: 1, panX: 0, panY: 0, dragging: false, startX: 0, startY: 0 };
+
+function openCropModal(src) {
+  cropState = { img: null, zoom: 1, panX: 0, panY: 0, dragging: false, startX: 0, startY: 0 };
+  var existing = document.getElementById('crop-modal');
+  if (existing) existing.remove();
+
+  var modal = document.createElement('div');
+  modal.id = 'crop-modal';
+  modal.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.9);display:flex;flex-direction:column;align-items:center;justify-content:center;z-index:200;padding:20px';
+  modal.innerHTML =
+    '<div style="text-align:center;max-width:320px;width:100%">' +
+    '<p class="oswald" style="font-size:18px;color:var(--text-bright);margin-bottom:16px">Crop Photo</p>' +
+    '<div style="position:relative;width:200px;height:200px;margin:0 auto 16px;border-radius:50%;overflow:hidden;border:2px solid var(--accent-33);cursor:grab;touch-action:none" id="crop-preview">' +
+    '<canvas id="crop-canvas" width="200" height="200" style="width:200px;height:200px"></canvas>' +
+    '</div>' +
+    '<div style="display:flex;align-items:center;gap:10px;margin-bottom:16px">' +
+    '<span class="mono" style="font-size:11px;color:var(--text-dim)">ZOOM</span>' +
+    '<input type="range" id="crop-zoom" min="1" max="3" step="0.05" value="1" style="flex:1" oninput="cropState.zoom=parseFloat(this.value);drawCrop()">' +
+    '</div>' +
+    '<div style="display:flex;gap:10px">' +
+    '<button onclick="saveCrop()" class="btnPri" style="flex:1;padding:12px;font-size:14px">Save Photo</button>' +
+    '<button onclick="document.getElementById(\'crop-modal\').remove()" style="flex:1;background:transparent;border:1px solid var(--border);color:var(--text-muted);padding:12px;border-radius:6px;cursor:pointer;font-size:14px;font-family:DM Sans,sans-serif">Cancel</button>' +
+    '</div></div>';
+  document.body.appendChild(modal);
+
+  var preview = document.getElementById('crop-preview');
+  // Mouse events
+  preview.addEventListener('mousedown', function(e) { cropState.dragging = true; cropState.startX = e.clientX - cropState.panX; cropState.startY = e.clientY - cropState.panY; preview.style.cursor = 'grabbing'; });
+  window.addEventListener('mousemove', cropDrag);
+  window.addEventListener('mouseup', function() { cropState.dragging = false; preview.style.cursor = 'grab'; });
+  // Touch events
+  preview.addEventListener('touchstart', function(e) {
+    if (e.touches.length === 1) { cropState.dragging = true; cropState.startX = e.touches[0].clientX - cropState.panX; cropState.startY = e.touches[0].clientY - cropState.panY; }
+  }, { passive: false });
+  preview.addEventListener('touchmove', function(e) {
+    e.preventDefault();
+    if (cropState.dragging && e.touches.length === 1) {
+      cropState.panX = e.touches[0].clientX - cropState.startX;
+      cropState.panY = e.touches[0].clientY - cropState.startY;
+      drawCrop();
+    } else if (e.touches.length === 2) {
+      // Pinch zoom
+      var dx = e.touches[0].clientX - e.touches[1].clientX;
+      var dy = e.touches[0].clientY - e.touches[1].clientY;
+      var dist = Math.sqrt(dx*dx + dy*dy);
+      if (cropState._lastPinch) {
+        var delta = (dist - cropState._lastPinch) * 0.01;
+        cropState.zoom = Math.max(1, Math.min(3, cropState.zoom + delta));
+        document.getElementById('crop-zoom').value = cropState.zoom;
+        drawCrop();
+      }
+      cropState._lastPinch = dist;
+    }
+  }, { passive: false });
+  preview.addEventListener('touchend', function() { cropState.dragging = false; cropState._lastPinch = null; });
+
+  // Load image
+  cropState.img = new Image();
+  cropState.img.onload = function() { drawCrop(); };
+  cropState.img.src = src;
+}
+
+function cropDrag(e) {
+  if (!cropState.dragging) return;
+  cropState.panX = e.clientX - cropState.startX;
+  cropState.panY = e.clientY - cropState.startY;
+  drawCrop();
+}
+
+function drawCrop() {
+  var canvas = document.getElementById('crop-canvas');
+  if (!canvas || !cropState.img) return;
+  var ctx = canvas.getContext('2d');
+  var img = cropState.img;
+  var z = cropState.zoom;
+  var size = Math.min(img.width, img.height);
+  var drawW = (200 * img.width / size) * z;
+  var drawH = (200 * img.height / size) * z;
+  var x = (200 - drawW) / 2 + cropState.panX;
+  var y = (200 - drawH) / 2 + cropState.panY;
+  ctx.clearRect(0, 0, 200, 200);
+  ctx.save();
+  ctx.beginPath();
+  ctx.arc(100, 100, 100, 0, Math.PI * 2);
+  ctx.clip();
+  ctx.drawImage(img, x, y, drawW, drawH);
+  ctx.restore();
+}
+
+function saveCrop() {
+  var canvas = document.getElementById('crop-canvas');
+  if (!canvas) return;
+  var dataUrl = canvas.toDataURL('image/jpeg', 0.85);
+  var pd = currentProfileData || {};
+  pd.avatar_image = dataUrl;
+  saveProfileDataToServer(pd);
+  updateProfileIcon();
+  renderSettingsContent();
+  document.getElementById('crop-modal').remove();
+  window.removeEventListener('mousemove', cropDrag);
+  showToast('Photo saved');
 }
 function removeAvatar() {
   var pd = currentProfileData || {};
