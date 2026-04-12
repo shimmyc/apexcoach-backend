@@ -2469,8 +2469,9 @@ function fetchAI() {
     goalPriorityContext +
     'WEEKLY SCHEDULE DEFAULTS:\n' + getScheduleText() + '\n\n' +
     rulesBlock +
+    'CRITICAL: Every workout option MUST include goal_tags array with at least one goal title from the priority list, and goal_reasoning explaining the connection. This is required.\n\n' +
     'Respond ONLY with raw JSON, no markdown:\n' +
-    '{"brief":"one sentence overall context for today","options":[{"type":"workout category","headline":"punchy 6-8 word name","duration":45,"intensity":"descriptor","reasoning":"why this fits today, reference numbers","exercises":["exercise + sets/reps","exercise + sets/reps","exercise + sets/reps"],"mobility":"specific focus","goal_tags":["goal title this targets"],"goal_reasoning":"how this workout advances the tagged goal"},{"type":"category","headline":"name","duration":30,"intensity":"descriptor","reasoning":"why this alternative","exercises":["ex","ex","ex"],"mobility":"focus","goal_tags":["goal"],"goal_reasoning":"reason"}' + (aiNumOpts >= 3 ? ',{"type":"category","headline":"name","duration":20,"intensity":"descriptor","reasoning":"why this shorter option","exercises":["ex","ex"],"mobility":"focus","goal_tags":["goal"],"goal_reasoning":"reason"}' : '') + (aiNumOpts >= 4 ? ',{"type":"category","headline":"name","duration":15,"intensity":"descriptor","reasoning":"why this option","exercises":["ex","ex"],"mobility":"focus","goal_tags":["goal"],"goal_reasoning":"reason"}' : '') + ']' + (aiShowMV ? ',"minimum_viable":"genuine 10-15 min fallback"' : '') + ',"warning":"one specific caution based on the data, or null"}';
+    '{"brief":"one sentence overall context based on goal priorities","options":[{"type":"workout category","headline":"punchy name","duration":45,"intensity":"descriptor","goal_tags":["exact goal title from priority list"],"goal_reasoning":"one sentence explaining how this advances that goal","reasoning":"why this fits today based on readiness and data","exercises":["ex + sets/reps","ex + sets/reps","ex + sets/reps"],"mobility":"specific focus"},{"type":"category","headline":"name","duration":30,"intensity":"descriptor","goal_tags":["goal title"],"goal_reasoning":"connection to goal","reasoning":"why this alternative","exercises":["ex","ex","ex"],"mobility":"focus"}' + (aiNumOpts >= 3 ? ',{"type":"category","headline":"name","duration":20,"intensity":"descriptor","goal_tags":["goal title"],"goal_reasoning":"connection","reasoning":"why this shorter option","exercises":["ex","ex"],"mobility":"focus"}' : '') + (aiNumOpts >= 4 ? ',{"type":"category","headline":"name","duration":15,"intensity":"descriptor","goal_tags":["goal"],"goal_reasoning":"connection","reasoning":"why this option","exercises":["ex","ex"],"mobility":"focus"}' : '') + ']' + (aiShowMV ? ',"minimum_viable":"genuine 10-15 min fallback"' : '') + ',"warning":"one specific caution based on the data, or null"}';
 
   // Truncate prompt if too long (>8000 chars)
   if (prompt.length > 8000) {
@@ -2521,8 +2522,9 @@ function fetchAI() {
       goalPriorityContext +
       'WEEKLY SCHEDULE DEFAULTS:\n' + getScheduleText() + '\n\n' +
       rulesBlock +
+      'CRITICAL: Every workout option MUST include goal_tags array with at least one goal title from the priority list, and goal_reasoning explaining the connection. This is required.\n\n' +
       'Respond ONLY with raw JSON, no markdown:\n' +
-      '{"brief":"one sentence overall context for today","options":[{"type":"workout category","headline":"punchy 6-8 word name","duration":45,"intensity":"descriptor","reasoning":"why this fits today, reference numbers","exercises":["exercise + sets/reps","exercise + sets/reps","exercise + sets/reps"],"mobility":"specific focus","goal_tags":["goal title this targets"],"goal_reasoning":"how this workout advances the tagged goal"},{"type":"category","headline":"name","duration":30,"intensity":"descriptor","reasoning":"why this alternative","exercises":["ex","ex","ex"],"mobility":"focus","goal_tags":["goal"],"goal_reasoning":"reason"}' + (aiNumOpts >= 3 ? ',{"type":"category","headline":"name","duration":20,"intensity":"descriptor","reasoning":"why this shorter option","exercises":["ex","ex"],"mobility":"focus","goal_tags":["goal"],"goal_reasoning":"reason"}' : '') + (aiNumOpts >= 4 ? ',{"type":"category","headline":"name","duration":15,"intensity":"descriptor","reasoning":"why this option","exercises":["ex","ex"],"mobility":"focus","goal_tags":["goal"],"goal_reasoning":"reason"}' : '') + ']' + (aiShowMV ? ',"minimum_viable":"genuine 10-15 min fallback"' : '') + ',"warning":"one specific caution based on the data, or null"}';
+      '{"brief":"one sentence overall context based on goal priorities","options":[{"type":"workout category","headline":"punchy name","duration":45,"intensity":"descriptor","goal_tags":["exact goal title from priority list"],"goal_reasoning":"one sentence explaining how this advances that goal","reasoning":"why this fits today based on readiness and data","exercises":["ex + sets/reps","ex + sets/reps","ex + sets/reps"],"mobility":"specific focus"},{"type":"category","headline":"name","duration":30,"intensity":"descriptor","goal_tags":["goal title"],"goal_reasoning":"connection to goal","reasoning":"why this alternative","exercises":["ex","ex","ex"],"mobility":"focus"}' + (aiNumOpts >= 3 ? ',{"type":"category","headline":"name","duration":20,"intensity":"descriptor","goal_tags":["goal title"],"goal_reasoning":"connection","reasoning":"why this shorter option","exercises":["ex","ex"],"mobility":"focus"}' : '') + (aiNumOpts >= 4 ? ',{"type":"category","headline":"name","duration":15,"intensity":"descriptor","goal_tags":["goal"],"goal_reasoning":"connection","reasoning":"why this option","exercises":["ex","ex"],"mobility":"focus"}' : '') + ']' + (aiShowMV ? ',"minimum_viable":"genuine 10-15 min fallback"' : '') + ',"warning":"one specific caution based on the data, or null"}';
   }
 
   console.log('[ApexCoach] AI prompt length:', prompt.length, 'chars');
@@ -3273,6 +3275,11 @@ function saveGoalPriority() {
   showToast('Priority saved!');
   // Clear goal progress cache since order changed
   localStorage.removeItem('ac_goal_progress');
+  // Clear AI cache and regenerate with new priorities
+  var cached = JSON.parse(localStorage.getItem('ac_cache') || '{}');
+  delete cached.aiRec;
+  localStorage.setItem('ac_cache', JSON.stringify(cached));
+  if (document.getElementById('ai-card').style.display === 'block') fetchAI();
 }
 
 function renderGoalPriorityList() {
