@@ -464,10 +464,10 @@ input[type=range]{width:100%;accent-color:var(--accent)}
       </div>
     </div>
 
-    <div id="coaching-brief-card"></div>
     <div id="profile-injuries"></div>
     <div id="profile-philosophy"></div>
     <div id="profile-context"></div>
+    <div id="coaching-brief-card"></div>
 
     <!-- ACCOUNT (moved to Settings) -->
     <div class="card" style="text-align:center">
@@ -594,7 +594,15 @@ input[type=range]{width:100%;accent-color:var(--accent)}
       <button onclick="startVoice()" id="mic-btn" title="Voice input" style="position:absolute;right:10px;top:10px;background:var(--accent-18);border:1px solid var(--accent-33);color:var(--accent);border-radius:6px;padding:6px 10px;cursor:pointer;font-size:14px">🎙</button>
     </div>
     <div id="voice-status" style="font-size:11px;color:#555;font-family:'IBM Plex Mono',monospace;margin-bottom:8px;min-height:16px"></div>
-    <button onclick="formatNotesWithAI()" style="background:#4488bb18;border:1px solid #4488bb33;color:#4488bb;padding:6px 14px;border-radius:6px;font-size:11px;font-family:'IBM Plex Mono',monospace;cursor:pointer;margin-bottom:10px;letter-spacing:1px">✦ AI FORMAT NOTES</button>
+    <div style="display:flex;gap:6px;align-items:center;margin-bottom:10px;flex-wrap:wrap">
+      <button onclick="formatNotesWithAI()" style="background:#4488bb18;border:1px solid #4488bb33;color:#4488bb;padding:5px 12px;border-radius:6px;font-size:11px;font-family:'IBM Plex Mono',monospace;cursor:pointer;letter-spacing:1px">&#10022; AI Format</button>
+      <label style="display:flex;align-items:center;gap:4px;cursor:pointer;margin-left:auto">
+        <span class="mono" style="font-size:10px;color:var(--text-dim)">Auto:</span>
+        <input type="checkbox" id="auto-format-toggle" onchange="toggleAutoFormat(this.checked)" style="accent-color:var(--accent)">
+        <span class="mono" style="font-size:10px;color:var(--text-dim)" id="auto-format-label">OFF</span>
+      </label>
+    </div>
+    <div id="auto-format-hint" style="display:none;font-size:10px;color:var(--text-dim);font-style:italic;margin-bottom:8px;margin-top:-6px">Notes will be auto-formatted on save</div>
     <div style="display:flex;gap:20px;margin-bottom:16px">
       <label style="display:flex;align-items:center;cursor:pointer">
         <input type="checkbox" id="wdone" checked>
@@ -2168,31 +2176,18 @@ function renderProfileTab() {
   var initial = name.charAt(0).toUpperCase();
   var tagline = pd.tagline || '';
 
-  // ── ATHLETE HEADER ──
+  // ── ATHLETE HEADER (clean: photo + name + tagline only) ──
   var h = '<div class="card" style="border-color:var(--accent-33)">';
-  h += '<div style="display:flex;align-items:center;gap:16px;margin-bottom:14px">';
+  h += '<div style="display:flex;align-items:center;gap:16px">';
   if (pd.avatar_image) {
-    h += '<div style="width:52px;height:52px;border-radius:50%;overflow:hidden;border:1px solid var(--accent-33);flex-shrink:0"><img src="' + pd.avatar_image + '" style="width:100%;height:100%;object-fit:cover"></div>';
+    h += '<div style="width:64px;height:64px;border-radius:50%;overflow:hidden;border:1px solid var(--accent-33);flex-shrink:0"><img src="' + pd.avatar_image + '" style="width:100%;height:100%;object-fit:cover"></div>';
   } else {
-    h += '<div style="width:52px;height:52px;border-radius:50%;background:var(--accent-18);border:1px solid var(--accent-33);display:flex;align-items:center;justify-content:center;font-family:Oswald,sans-serif;font-size:20px;font-weight:700;color:var(--accent)">' + initial + '</div>';
+    h += '<div style="width:64px;height:64px;border-radius:50%;background:var(--accent-18);border:1px solid var(--accent-33);display:flex;align-items:center;justify-content:center;font-family:Oswald,sans-serif;font-size:24px;font-weight:700;color:var(--accent)">' + initial + '</div>';
   }
-  h += '<div><div style="font-family:Oswald,sans-serif;font-size:22px;font-weight:600;color:var(--text-bright)">' + name + '</div>';
+  h += '<div><div style="font-family:Oswald,sans-serif;font-size:24px;font-weight:600;color:var(--text-bright)">' + name + '</div>';
   if (tagline) h += '<div class="mono" style="font-size:10px;color:var(--text-muted);letter-spacing:2px">' + tagline.toUpperCase() + '</div>';
-  h += '</div></div>';
-  // Sport/status pills
-  var pills = [];
-  var sports = pd.sports || [];
-  for (var i = 0; i < sports.length; i++) pills.push('<span class="pill pill-blue">' + sports[i].toUpperCase() + '</span>');
-  if (pd.current_belt) pills.push('<span class="pill pill-green">' + pd.current_belt.toUpperCase() + ' BELT</span>');
-  if (pd.experience_level) pills.push('<span class="pill pill-blue">' + pd.experience_level.toUpperCase() + '</span>');
+  h += '</div></div></div>';
   var injuries = pd.injuries || [];
-  for (var i = 0; i < injuries.length; i++) {
-    if (injuries[i].status === 'MANAGING' || injuries[i].status === 'CHRONIC') {
-      pills.push('<span class="pill pill-amber">' + injuries[i].name.toUpperCase() + '</span>');
-    }
-  }
-  if (pills.length) h += '<div style="display:flex;gap:8px;flex-wrap:wrap">' + pills.join('') + '</div>';
-  h += '</div>';
 
   // ── BELT JOURNEY (only if martial arts) ──
   if (pd.martial_arts && pd.current_belt) {
@@ -2515,11 +2510,12 @@ function addGoal() {
   var status = document.getElementById('new-goal-status').value;
   var pd = currentProfileData || {};
   if (!pd.goals) pd.goals = [];
+  var goalIdx = pd.goals.length;
   pd.goals.push({
     type: 'general',
     emoji: '&#127919;',
     title: title,
-    description: desc,
+    description: desc || 'Generating description...',
     status: status,
     target_value: null,
     current_value: null,
@@ -2532,6 +2528,24 @@ function addGoal() {
   saveProfileDataToServer(pd);
   renderGoalEditList();
   renderProfileGoals();
+
+  // Auto-generate description if empty
+  if (!desc && currentProfileId) {
+    fetch('/api/profiles/' + currentProfileId + '/generate-goal-description', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ title: title, type: 'general', profile_name: currentProfileName || 'Athlete' })
+    })
+    .then(function(r) { return r.json(); })
+    .then(function(data) {
+      if (data.success && data.description && pd.goals[goalIdx]) {
+        pd.goals[goalIdx].description = data.description;
+        saveProfileDataToServer(pd);
+        renderProfileGoals();
+      }
+    })
+    .catch(function() {});
+  }
 }
 
 function removeGoal(idx) {
@@ -2736,6 +2750,7 @@ function openModal() {
   document.getElementById('edit-delete-section').style.display = 'none';
   document.querySelector('.modal p.mono').textContent = "LOG TODAY'S WORKOUT";
   document.getElementById('log-modal').style.display = 'flex';
+  initAutoFormatToggle();
 }
 function closeModal() { document.getElementById('log-modal').style.display = 'none'; }
 
@@ -2806,6 +2821,37 @@ function confirmDeleteFromModal() {
 }
 
 function saveWorkout() {
+  var type = document.getElementById('wtype').value;
+  if (!type) return;
+  var notes = document.getElementById('wnotes').value;
+  var autoFormat = localStorage.getItem('ac_auto_format') !== 'false';
+
+  // Auto-format notes if enabled and notes exist
+  if (autoFormat && notes.trim().length > 0 && !editingWorkoutId) {
+    var saveBtn = document.querySelector('.modal .btnPri');
+    if (saveBtn) { saveBtn.textContent = 'Formatting...'; saveBtn.disabled = true; }
+    fetch('/api/ai', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ model: 'claude-sonnet-4-20250514', max_tokens: 600, messages: [{ role: 'user', content: 'Format these workout notes into a clean structured list. Rules:\n- Each exercise on its own line with sets/reps/weight formatted cleanly\n- PRESERVE ALL subjective notes exactly as written\n- Put exercise lines first, then a Notes: section with subjective content\n- Return ONLY the formatted text, no explanation\n\n' + notes }] })
+    })
+    .then(function(r) { return r.json(); })
+    .then(function(data) {
+      var formatted = (data.content && data.content[0]) ? data.content[0].text.trim() : notes;
+      document.getElementById('wnotes').value = formatted;
+      if (saveBtn) { saveBtn.textContent = 'Save'; saveBtn.disabled = false; }
+      doSaveWorkout();
+    })
+    .catch(function() {
+      if (saveBtn) { saveBtn.textContent = 'Save'; saveBtn.disabled = false; }
+      doSaveWorkout();
+    });
+    return;
+  }
+  doSaveWorkout();
+}
+
+function doSaveWorkout() {
   var type = document.getElementById('wtype').value;
   if (!type) return;
   var medDone = document.getElementById('wmed').checked;
@@ -2890,7 +2936,7 @@ var libStats = null;
 var libCharts = {};
 var libFilter = 'all';
 var LIB_COLORS = { 'MMA / Sparring':'#e84545','Strength - Upper':'#4488bb','Strength - Lower':'#4488bb','Strength - Full Body':'#4488bb','Yoga / Mobility':'#9966cc','Conditioning / HIIT':'#f5a623','Mixed Training':'#22c97a','Rest Day':'#555','Active Recovery':'#888','Walking':'#888','PT / Rehab':'#f07020' };
-var CAT_COLORS = { strength:'#4488bb', cardio:'#f5a623', mobility:'#9966cc', mma:'#e84545', rehab:'#f07020', other:'#888' };
+var CAT_COLORS = { strength:'#4488bb', combat:'#e84545', cardio:'#f5a623', mobility:'#9966cc', rehab:'#22c97a', core:'#ff6b35', mma:'#e84545', other:'#555' };
 
 function showLibView(view) {
   libView = view;
@@ -3091,7 +3137,7 @@ function renderLibExercises() {
   if (!el) return;
   if (!libExercises.length && !libStats) { loadLibrary(); return; }
 
-  var cats = ['all','strength','cardio','mobility','mma','rehab','other'];
+  var cats = ['all','strength','combat','cardio','mobility','rehab','core'];
   var html = '<div style="margin-bottom:12px"><input type="text" id="lib-search" placeholder="Search exercises..." oninput="filterLibExercises()" style="width:100%;background:var(--bg-input);border:1px solid var(--border);color:var(--text);padding:10px 14px;border-radius:6px;font-size:14px;outline:none;font-family:DM Sans,sans-serif;margin-bottom:8px">';
   html += '<div style="display:flex;gap:6px;flex-wrap:wrap">';
   for (var i = 0; i < cats.length; i++) {
@@ -3634,6 +3680,24 @@ function startVoice() {
     recognition = null;
   };
   recognition.start();
+}
+
+function toggleAutoFormat(on) {
+  localStorage.setItem('ac_auto_format', on ? 'true' : 'false');
+  var label = document.getElementById('auto-format-label');
+  var hint = document.getElementById('auto-format-hint');
+  if (label) label.textContent = on ? 'ON' : 'OFF';
+  if (hint) hint.style.display = on ? 'block' : 'none';
+}
+
+function initAutoFormatToggle() {
+  var on = localStorage.getItem('ac_auto_format') !== 'false';
+  var toggle = document.getElementById('auto-format-toggle');
+  if (toggle) toggle.checked = on;
+  var label = document.getElementById('auto-format-label');
+  if (label) label.textContent = on ? 'ON' : 'OFF';
+  var hint = document.getElementById('auto-format-hint');
+  if (hint) hint.style.display = on ? 'block' : 'none';
 }
 
 function formatNotesWithAI() {

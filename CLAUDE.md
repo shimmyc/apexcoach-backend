@@ -108,6 +108,8 @@ Calculated from workoutLog entries where done=true. Counts backwards from today 
 
 - POST /api/ai — Anthropic API proxy
 
+- POST /api/profiles/:id/generate-goal-description — AI generates motivating goal description from title
+
 - GET /api/profiles/:id/brief — returns coaching_brief, historical_brief, historical_brief_updated_at
 
 - POST /api/profiles/:id/generate-brief — generates coaching briefs from workout history (two AI calls)
@@ -128,7 +130,7 @@ Both briefs are injected into the daily AI coaching prompt (before FULL_PROFILE)
 
 ## Exercise Library System
 
-Exercises are auto-extracted from workout notes by Claude AI on every workout save and stored in the exercises table. The Library tab has three views:
+Exercises are auto-extracted from workout notes by Claude AI on every workout save and stored in the exercises table. Categories: strength, combat, cardio, mobility, rehab, core, other. The Library tab has three views:
 
 1. **Dashboard** — workout type donut chart (Chart.js), weekly volume bar chart, top 6 exercises grid, quick stats row
 2. **Exercises** — searchable/filterable list of all exercises with category pills, click for detail view with progression chart, session history, and AI insight
@@ -222,6 +224,14 @@ Full-screen settings overlay accessible via gear icon or profile avatar click. S
 ## Environment Variables (on Render)
 
 FITBIT_CLIENT_ID, FITBIT_CLIENT_SECRET, SUPABASE_URL, SUPABASE_KEY, ANTHROPIC_KEY, ADMIN_SECRET
+
+## Auto-Format Notes
+
+Workout notes can be auto-formatted by Claude AI on save. Controlled by `ac_auto_format` in localStorage (default: true). Toggle available in the Log Workout modal toolbar and Settings → AI Coaching. When enabled, notes are formatted into clean structured lists before saving. Falls back to unformatted save on AI error.
+
+## Auto-Generate Goal Description
+
+When adding a goal without a description, the system auto-generates one via `POST /api/profiles/:id/generate-goal-description`. Shows "Generating description..." placeholder while loading, then fills in the AI-generated text.
 
 ## Developer Tools
 

@@ -862,6 +862,23 @@ app.post("/api/profiles/:id/search-history", async function(req, res) {
   }
 });
 
+// ── GOAL DESCRIPTION ──────────────────────────────────────────────────────
+app.post("/api/profiles/:id/generate-goal-description", async function(req, res) {
+  try {
+    var body = req.body;
+    if (!body.title) return res.status(400).json({ success: false, error: "Title required." });
+    var prompt = "Generate a short 1-2 sentence motivating description for this fitness goal. Be specific and personal.\nGoal: " + body.title +
+      (body.type ? "\nType: " + body.type : "") +
+      (body.target_value ? "\nTarget: " + body.target_value + " " + (body.unit || "") : "") +
+      (body.profile_name ? "\nAthlete: " + body.profile_name : "") +
+      "\nReturn ONLY the description text, no quotes, no explanation.";
+    var text = await callAI(prompt, 200);
+    res.json({ success: true, description: text.trim() });
+  } catch (e) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
 // ── EXERCISE LIBRARY ──────────────────────────────────────────────────────
 var CANONICAL_NAMES = {
   'cat and cow': 'Cat-Cow', 'cat cow': 'Cat-Cow', 'cat-cows': 'Cat-Cow',
@@ -905,7 +922,7 @@ app.post("/api/profiles/:id/extract-exercises", async function(req, res) {
 
     console.log("[extract-exercises] Processing notes for profile " + profileId + ": " + body.notes.substring(0, 100) + "...");
 
-    var prompt = "Extract all exercises from these workout notes. For each exercise identify: name (normalized), category (one of: strength/cardio/mobility/mma/rehab/other), sets (number or null), reps (number or null), weight_lbs (number or null), distance_miles (number or null), duration_minutes (number or null), raw_text (original text snippet).\n\nCRITICAL NORMALIZATION RULES:\n- Always use singular form: 'Glute Bridge' not 'Glute Bridges'\n- Capitalize first letter of each word\n- Use hyphens for compound exercises: 'Push-Up', 'Pull-Up', 'Sit-Up', 'Cat-Cow'\n- Cat Cow / Cat-Cow / Cat and Cow → always 'Cat-Cow'\n- Windshield Wiper / Windshield Wipers → always 'Windshield Wiper'\n- Glute Bridge / Glute Bridges → always 'Glute Bridge'\n- Clamshell / Clam Shell / Clamshells → always 'Clamshell'\n- Push-up / Push Up / Pushup → always 'Push-Up'\n- Remove trailing s from plural exercise names\n\nReturn ONLY a JSON array of exercise objects, no explanation.\nExample: [{\"name\":\"Glute Bridge\",\"category\":\"rehab\",\"sets\":3,\"reps\":12,\"weight_lbs\":null,\"distance_miles\":null,\"duration_minutes\":null,\"raw_text\":\"glute bridges 3x12\"}]\nWorkout type: " + (body.type || "unknown") + "\nNotes: " + body.notes;
+    var prompt = "Extract all exercises from these workout notes. For each exercise identify: name (normalized), category (one of: strength/combat/cardio/mobility/rehab/core/other), sets (number or null), reps (number or null), weight_lbs (number or null), distance_miles (number or null), duration_minutes (number or null), raw_text (original text snippet).\n\nCATEGORY GUIDE:\n- strength: weightlifting, resistance, dumbbell/barbell work\n- combat: MMA, boxing, sparring, martial arts, kicks, grappling, BJJ\n- cardio: running, elliptical, jumping jacks, cycling, rowing\n- mobility: stretching, yoga, flexibility work\n- rehab: PT exercises, injury rehab, therapeutic (glute bridge, clamshell, cat-cow, dead bug)\n- core: planks, crunches, ab work, russian twist\n- other: anything else\n\nCRITICAL NORMALIZATION RULES:\n- Always use singular form: 'Glute Bridge' not 'Glute Bridges'\n- Capitalize first letter of each word\n- Use hyphens for compound exercises: 'Push-Up', 'Pull-Up', 'Sit-Up', 'Cat-Cow'\n- Remove trailing s from plural exercise names\n\nReturn ONLY a JSON array of exercise objects, no explanation.\nExample: [{\"name\":\"Glute Bridge\",\"category\":\"rehab\",\"sets\":3,\"reps\":12,\"weight_lbs\":null,\"distance_miles\":null,\"duration_minutes\":null,\"raw_text\":\"glute bridges 3x12\"}]\nWorkout type: " + (body.type || "unknown") + "\nNotes: " + body.notes;
 
     var aiText = await callAI(prompt, 1000);
     console.log("[extract-exercises] Raw AI response: " + (aiText || "(empty)").substring(0, 300));
