@@ -1952,7 +1952,10 @@ function statCard(label, value, sub) {
 }
 
 function fetchAI() {
+  console.log('[ApexCoach] fetchAI: starting request');
   document.getElementById('ai-content').innerHTML = '<p class="mono" style="font-size:12px;color:#22c97a;letter-spacing:3px;animation:pulse 1.6s infinite">ANALYZING YOUR DATA...</p>';
+
+  try {
   var recent = '';
   var slice = workoutLog.slice(-10);
   for (var i = 0; i < slice.length; i++) {
@@ -2043,6 +2046,12 @@ function fetchAI() {
   var wkLoc = aiSettings.workoutLocation || 'Both';
   var maxDur = aiSettings.maxDuration || 60;
   var prefTime = aiSettings.preferredTime || 'Any';
+
+  // Build prompt sections that can be truncated
+  var truncatedCoachingBrief = coachingBrief || '';
+  var truncatedExerciseContext = recentExerciseContext || '';
+  var truncatedHistoricalBrief = historicalBrief || '';
+
   var prompt = 'You are ApexCoach, an elite personal AI coach for ' + athleteName + '. You know everything about them. Give ' + aiNumOpts + ' specific, data-driven workout options for today, ordered by best fit first.\n\n' +
     'COACHING STYLE: ' + aiTone + ' tone. ' + aiLang + ' language. Detail level: ' + aiDetail + '.\n' +
     'AVAILABLE EQUIPMENT: ' + equipStr + '\n' +
@@ -2051,33 +2060,117 @@ function fetchAI() {
     'CURRENT WORKOUT STREAK: ' + currentStreak + ' days' + (currentStreak >= 7 ? ' (impressive consistency!)' : '') + '\n' +
     dataBlock + '\n' +
     'RECENT 10-DAY LOG:\n' + recent + '\n\n' +
-    (historicalBrief ? 'HISTORICAL TRAINING SUMMARY:\n' + historicalBrief + '\n\n' : '') +
-    (coachingBrief ? 'RECENT COACHING BRIEF:\n' + coachingBrief + '\n\n' : '') +
-    (recentExerciseContext || '') +
+    (truncatedHistoricalBrief ? 'HISTORICAL TRAINING SUMMARY:\n' + truncatedHistoricalBrief + '\n\n' : '') +
+    (truncatedCoachingBrief ? 'RECENT COACHING BRIEF:\n' + truncatedCoachingBrief + '\n\n' : '') +
+    truncatedExerciseContext +
     'FULL ATHLETE PROFILE:\n' + FULL_PROFILE + '\n\n' +
     'WEEKLY SCHEDULE DEFAULTS:\n' + getScheduleText() + '\n\n' +
     rulesBlock +
     'Respond ONLY with raw JSON, no markdown:\n' +
     '{"brief":"one sentence overall context for today","options":[{"type":"workout category","headline":"punchy 6-8 word name","duration":45,"intensity":"descriptor","reasoning":"why this fits today, reference numbers","exercises":["exercise + sets/reps","exercise + sets/reps","exercise + sets/reps"],"mobility":"specific focus"},{"type":"category","headline":"name","duration":30,"intensity":"descriptor","reasoning":"why this alternative","exercises":["ex","ex","ex"],"mobility":"focus"}' + (aiNumOpts >= 3 ? ',{"type":"category","headline":"name","duration":20,"intensity":"descriptor","reasoning":"why this shorter option","exercises":["ex","ex"],"mobility":"focus"}' : '') + (aiNumOpts >= 4 ? ',{"type":"category","headline":"name","duration":15,"intensity":"descriptor","reasoning":"why this option","exercises":["ex","ex"],"mobility":"focus"}' : '') + ']' + (aiShowMV ? ',"minimum_viable":"genuine 10-15 min fallback"' : '') + ',"warning":"one specific caution based on the data, or null"}';
 
+  // Truncate prompt if too long (>8000 chars)
+  if (prompt.length > 8000) {
+    console.log('[ApexCoach] fetchAI: prompt too long (' + prompt.length + ' chars), truncating...');
+    // Step 1: Truncate coaching brief to 500 chars
+    if (truncatedCoachingBrief.length > 500) {
+      truncatedCoachingBrief = truncatedCoachingBrief.substring(0, 500) + '...';
+      console.log('[ApexCoach] fetchAI: truncated coaching brief to 500 chars');
+    }
+    // Step 2: Truncate exercise history to last 5 only
+    if (libExercises && libExercises.length) {
+      var exLines5 = [];
+      var topEx5 = libExercises.slice(0, 5);
+      for (var ei5 = 0; ei5 < topEx5.length; ei5++) {
+        var ex5 = topEx5[ei5];
+        var lastSess5 = ex5.sessions && ex5.sessions[0];
+        var line5 = '- ' + ex5.name + ': ' + ex5.count + 'x logged';
+        if (lastSess5) {
+          line5 += ', last ' + lastSess5.date;
+          if (lastSess5.sets) line5 += ' ' + lastSess5.sets + 's';
+          if (lastSess5.reps) line5 += 'x' + lastSess5.reps + 'r';
+          if (lastSess5.weight_lbs) line5 += ' @' + lastSess5.weight_lbs + 'lbs';
+        }
+        if (ex5.best_weight) line5 += ', best ' + ex5.best_weight + 'lbs';
+        exLines5.push(line5);
+      }
+      truncatedExerciseContext = exLines5.length ? 'RECENT EXERCISE HISTORY:\n' + exLines5.join('\n') + '\n\n' : '';
+      console.log('[ApexCoach] fetchAI: truncated exercise history to 5 exercises');
+    }
+    // Step 3: Remove historical brief entirely if still too long
+    truncatedHistoricalBrief = '';
+    console.log('[ApexCoach] fetchAI: removed historical brief to reduce prompt size');
+
+    // Rebuild prompt with truncated sections
+    prompt = 'You are ApexCoach, an elite personal AI coach for ' + athleteName + '. You know everything about them. Give ' + aiNumOpts + ' specific, data-driven workout options for today, ordered by best fit first.\n\n' +
+      'COACHING STYLE: ' + aiTone + ' tone. ' + aiLang + ' language. Detail level: ' + aiDetail + '.\n' +
+      'AVAILABLE EQUIPMENT: ' + equipStr + '\n' +
+      'WORKOUT LOCATION: ' + wkLoc + '. MAX DURATION: ' + (maxDur ? maxDur + ' min' : 'no limit') + '. PREFERRED TIME: ' + prefTime + '.\n\n' +
+      'TODAY: ' + today + '\n' +
+      'CURRENT WORKOUT STREAK: ' + currentStreak + ' days' + (currentStreak >= 7 ? ' (impressive consistency!)' : '') + '\n' +
+      dataBlock + '\n' +
+      'RECENT 10-DAY LOG:\n' + recent + '\n\n' +
+      (truncatedHistoricalBrief ? 'HISTORICAL TRAINING SUMMARY:\n' + truncatedHistoricalBrief + '\n\n' : '') +
+      (truncatedCoachingBrief ? 'RECENT COACHING BRIEF:\n' + truncatedCoachingBrief + '\n\n' : '') +
+      truncatedExerciseContext +
+      'FULL ATHLETE PROFILE:\n' + FULL_PROFILE + '\n\n' +
+      'WEEKLY SCHEDULE DEFAULTS:\n' + getScheduleText() + '\n\n' +
+      rulesBlock +
+      'Respond ONLY with raw JSON, no markdown:\n' +
+      '{"brief":"one sentence overall context for today","options":[{"type":"workout category","headline":"punchy 6-8 word name","duration":45,"intensity":"descriptor","reasoning":"why this fits today, reference numbers","exercises":["exercise + sets/reps","exercise + sets/reps","exercise + sets/reps"],"mobility":"specific focus"},{"type":"category","headline":"name","duration":30,"intensity":"descriptor","reasoning":"why this alternative","exercises":["ex","ex","ex"],"mobility":"focus"}' + (aiNumOpts >= 3 ? ',{"type":"category","headline":"name","duration":20,"intensity":"descriptor","reasoning":"why this shorter option","exercises":["ex","ex"],"mobility":"focus"}' : '') + (aiNumOpts >= 4 ? ',{"type":"category","headline":"name","duration":15,"intensity":"descriptor","reasoning":"why this option","exercises":["ex","ex"],"mobility":"focus"}' : '') + ']' + (aiShowMV ? ',"minimum_viable":"genuine 10-15 min fallback"' : '') + ',"warning":"one specific caution based on the data, or null"}';
+  }
+
+  console.log('[ApexCoach] AI prompt length:', prompt.length, 'chars');
+  console.log('[ApexCoach] fetchAI: prompt ready, length=' + prompt.length);
+
+  // 30 second timeout
+  var controller = new AbortController();
+  var timeoutId = setTimeout(function() { controller.abort(); }, 30000);
+
   fetch('/api/ai', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ model: 'claude-sonnet-4-20250514', max_tokens: 1800, messages: [{ role: 'user', content: prompt }] })
+    body: JSON.stringify({ model: 'claude-sonnet-4-20250514', max_tokens: 1800, messages: [{ role: 'user', content: prompt }] }),
+    signal: controller.signal
   })
-  .then(function(r) { return r.json(); })
+  .then(function(r) {
+    clearTimeout(timeoutId);
+    console.log('[ApexCoach] fetchAI: response received, status=' + r.status);
+    if (!r.ok) throw new Error('Server returned ' + r.status);
+    return r.json();
+  })
   .then(function(data) {
+    console.log('[ApexCoach] fetchAI: parsing response');
+    if (data.error) throw new Error(data.error.message || data.error || 'AI returned an error');
     var raw = (data.content && data.content[0]) ? data.content[0].text : '{}';
     var cleaned = raw.indexOf('{') >= 0 ? raw.substring(raw.indexOf('{'), raw.lastIndexOf('}') + 1) : '{}';
-    aiRec = JSON.parse(cleaned);
+    try {
+      aiRec = JSON.parse(cleaned);
+    } catch (parseErr) {
+      console.error('[ApexCoach] fetchAI: JSON parse failed:', parseErr.message, 'Raw:', raw.substring(0, 200));
+      throw new Error('Failed to parse AI response');
+    }
+    // Normalize: if old single-object format (no options array), wrap it
+    if (!aiRec.options && aiRec.type && aiRec.headline) {
+      aiRec = { brief: aiRec.brief || '', options: [aiRec], warning: aiRec.warning || null };
+    }
     var cached = JSON.parse(localStorage.getItem('ac_cache') || '{}');
     cached.aiRec = aiRec;
     localStorage.setItem('ac_cache', JSON.stringify(cached));
+    console.log('[ApexCoach] fetchAI: done');
     renderAI();
   })
   .catch(function(e) {
-    document.getElementById('ai-content').innerHTML = '<p style="color:#e87;font-size:15px">AI error - <button onclick="fetchAI()" style="background:transparent;border:1px solid #333;color:#666;padding:6px 14px;cursor:pointer;border-radius:4px;font-size:13px">Retry</button></p>';
+    clearTimeout(timeoutId);
+    var msg = e.name === 'AbortError' ? 'Request timed out (30s)' : (e.message || 'Unknown error');
+    console.error('[ApexCoach] fetchAI: error -', msg);
+    document.getElementById('ai-content').innerHTML = '<div style="text-align:center;padding:20px 0"><p style="color:#e87;font-size:15px;margin-bottom:12px">Unable to load recommendation</p><p style="color:var(--text-dim);font-size:13px;margin-bottom:16px">' + msg + '</p><button onclick="fetchAI()" style="background:transparent;border:1px solid #333;color:var(--text-sec);padding:8px 20px;cursor:pointer;border-radius:6px;font-size:14px;font-family:DM Sans,sans-serif">Retry</button></div>';
   });
+
+  } catch (outerErr) {
+    console.error('[ApexCoach] fetchAI: unexpected error -', outerErr);
+    document.getElementById('ai-content').innerHTML = '<div style="text-align:center;padding:20px 0"><p style="color:#e87;font-size:15px;margin-bottom:12px">Unable to load recommendation</p><p style="color:var(--text-dim);font-size:13px;margin-bottom:16px">' + (outerErr.message || 'Unexpected error') + '</p><button onclick="fetchAI()" style="background:transparent;border:1px solid #333;color:var(--text-sec);padding:8px 20px;cursor:pointer;border-radius:6px;font-size:14px;font-family:DM Sans,sans-serif">Retry</button></div>';
+  }
 }
 
 var expandedOption = 0;
@@ -2116,8 +2209,15 @@ function prefillLogFromAI(type, headline, exercises, mobility) {
 function renderAI() {
   if (!aiRec) return;
   var t = TIERS[readiness.tier];
+  // Handle old single-object format (no options array)
+  if (!aiRec.options && aiRec.type && aiRec.headline) {
+    aiRec = { brief: aiRec.brief || '', options: [aiRec], warning: aiRec.warning || null };
+  }
   var opts = aiRec.options || [];
-  if (!opts.length) return;
+  if (!opts.length) {
+    document.getElementById('ai-content').innerHTML = '<div style="text-align:center;padding:20px 0"><p style="color:#e87;font-size:15px;margin-bottom:12px">Unable to load recommendation</p><p style="color:var(--text-dim);font-size:13px;margin-bottom:16px">AI response was empty or unreadable</p><button onclick="fetchAI()" style="background:transparent;border:1px solid #333;color:var(--text-sec);padding:8px 20px;cursor:pointer;border-radius:6px;font-size:14px;font-family:DM Sans,sans-serif">Retry</button></div>';
+    return;
+  }
 
   var html = '';
   if (aiRec.brief) {

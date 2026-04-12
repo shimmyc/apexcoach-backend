@@ -1273,7 +1273,11 @@ app.get("/api/profiles/:id/exercises/:name", async function(req, res) {
 
 // ── AI PROXY ──────────────────────────────────────────────────────────────
 app.post("/api/ai", async function(req, res) {
+  const bodySize = JSON.stringify(req.body).length;
+  console.log("[AI] Request received, body size=" + bodySize + " bytes");
   try {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 25000);
     const response = await fetch("https://api.anthropic.com/v1/messages", {
       method: "POST",
       headers: {
@@ -1282,11 +1286,20 @@ app.post("/api/ai", async function(req, res) {
         "anthropic-version": "2023-06-01",
       },
       body: JSON.stringify(req.body),
+      signal: controller.signal,
     });
+    clearTimeout(timeoutId);
+    console.log("[AI] Anthropic response status=" + response.status);
     const data = await response.json();
     res.json(data);
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    if (err.name === "AbortError") {
+      console.error("[AI] Anthropic API timed out after 25s");
+      res.status(504).json({ error: { message: "AI request timed out (25s)" } });
+    } else {
+      console.error("[AI] Error:", err.message);
+      res.status(500).json({ error: { message: err.message } });
+    }
   }
 });
 
