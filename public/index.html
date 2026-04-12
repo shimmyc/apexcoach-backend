@@ -119,6 +119,10 @@ input[type=range]{width:100%;accent-color:var(--accent)}
 .del-confirm-modal{position:fixed;inset:0;background:rgba(0,0,0,.92);display:flex;align-items:center;justify-content:center;z-index:150;padding:20px}
 .equip-tag{display:inline-flex;align-items:center;gap:6px;background:var(--accent-10);border:1px solid var(--accent-33);color:var(--accent);padding:4px 10px;border-radius:14px;font-size:12px;font-family:'IBM Plex Mono',monospace}
 .equip-tag button{background:none;border:none;color:var(--accent);cursor:pointer;font-size:14px;padding:0;line-height:1}
+.log-card-detail{max-height:0;overflow:hidden;transition:max-height .25s ease,opacity .2s ease;opacity:0}
+.log-card-detail.open{max-height:500px;opacity:1}
+.log-card-chevron{transition:transform .2s ease;display:inline-block}
+.log-card-chevron.open{transform:rotate(180deg)}
 
 /* ── TABLET ─────────────────────────────────────────────────────────── */
 @media(max-width:768px){
@@ -347,6 +351,23 @@ input[type=range]{width:100%;accent-color:var(--accent)}
       <div class="mono" style="font-size:10px;color:var(--text-dim);margin-top:6px">Try: "How many MMA sessions this month?" · "When did my groin last flare up?"</div>
       <div id="history-answer" style="display:none;margin-top:12px;padding:14px;background:var(--bg-input);border-radius:8px;border:1px solid var(--accent-22)"></div>
     </div>
+    <div id="log-date-filter" style="display:none;background:var(--accent-10);border:1px solid var(--accent-22);border-radius:6px;padding:10px 14px;display:none;align-items:center;justify-content:space-between;margin-bottom:4px">
+      <span id="log-date-filter-text" class="mono" style="font-size:12px;color:var(--accent)"></span>
+      <button onclick="clearLogDateFilter()" style="background:transparent;border:none;color:var(--accent);cursor:pointer;font-size:16px;padding:0 4px">&times;</button>
+    </div>
+    <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:8px">
+      <select id="log-sort" onchange="renderLog()" style="background:var(--bg-input);border:1px solid var(--border);color:var(--text-sec);padding:6px 10px;border-radius:4px;font-size:12px;font-family:IBM Plex Mono,monospace;margin-bottom:0;width:auto">
+        <option value="newest">Newest First</option>
+        <option value="oldest">Oldest First</option>
+        <option value="type">By Type</option>
+      </select>
+      <div style="display:flex;gap:4px;flex-wrap:wrap">
+        <button onclick="setLogFilter('all')" class="log-filter-btn active" data-filter="all" style="font-size:11px;padding:4px 10px;border-radius:4px;border:1px solid var(--border-accent);background:var(--accent-10);color:var(--accent);cursor:pointer;font-family:IBM Plex Mono,monospace">All</button>
+        <button onclick="setLogFilter('week')" class="log-filter-btn" data-filter="week" style="font-size:11px;padding:4px 10px;border-radius:4px;border:1px solid var(--border-accent);background:transparent;color:var(--text-muted);cursor:pointer;font-family:IBM Plex Mono,monospace">Week</button>
+        <button onclick="setLogFilter('month')" class="log-filter-btn" data-filter="month" style="font-size:11px;padding:4px 10px;border-radius:4px;border:1px solid var(--border-accent);background:transparent;color:var(--text-muted);cursor:pointer;font-family:IBM Plex Mono,monospace">Month</button>
+        <button onclick="setLogFilter('year')" class="log-filter-btn" data-filter="year" style="font-size:11px;padding:4px 10px;border-radius:4px;border:1px solid var(--border-accent);background:transparent;color:var(--text-muted);cursor:pointer;font-family:IBM Plex Mono,monospace">Year</button>
+      </div>
+    </div>
     <p class="mono" id="log-count" style="font-size:9px;color:#333;letter-spacing:3px">HISTORY - 0 SESSIONS</p>
     <div id="log-entries"></div>
   </div>
@@ -550,6 +571,18 @@ input[type=range]{width:100%;accent-color:var(--accent)}
     <div style="display:flex;gap:8px;justify-content:flex-end">
       <button class="btnSec" onclick="closeModal()">Cancel</button>
       <button class="btnPri" onclick="saveWorkout()">Save</button>
+    </div>
+    <div id="edit-delete-section" style="display:none;margin-top:16px;padding-top:16px;border-top:1px solid var(--border)">
+      <div id="edit-delete-initial">
+        <button onclick="showDeleteConfirm()" style="width:100%;background:transparent;border:1px solid #e8454533;color:#e84545;padding:10px;border-radius:6px;cursor:pointer;font-size:13px;font-family:DM Sans,sans-serif">Delete Workout</button>
+      </div>
+      <div id="edit-delete-confirm" style="display:none">
+        <p style="font-size:13px;color:#e84545;text-align:center;margin-bottom:10px">Are you sure? This cannot be undone.</p>
+        <div style="display:flex;gap:8px;justify-content:center">
+          <button onclick="hideDeleteConfirm()" class="btnSec" style="font-size:13px">Cancel</button>
+          <button onclick="confirmDeleteFromModal()" style="background:#e84545;color:#fff;border:none;padding:10px 20px;border-radius:6px;cursor:pointer;font-size:13px;font-weight:700">Delete</button>
+        </div>
+      </div>
     </div>
   </div>
 </div>
@@ -2647,6 +2680,9 @@ function editWorkout(entry) {
   var fmtDate = d.toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric', year: 'numeric' });
   document.getElementById('wdate-display').textContent = fmtDate;
   document.querySelector('.modal p.mono').textContent = 'EDIT WORKOUT \u2014 ' + fmtDate.toUpperCase();
+  document.getElementById('edit-delete-section').style.display = 'block';
+  document.getElementById('edit-delete-initial').style.display = 'block';
+  document.getElementById('edit-delete-confirm').style.display = 'none';
   document.getElementById('log-modal').style.display = 'flex';
 }
 
@@ -2656,6 +2692,7 @@ function openModal() {
   // Show date picker, hide read-only
   document.getElementById('wdate-picker').style.display = 'block';
   document.getElementById('wdate-readonly').style.display = 'none';
+  document.getElementById('edit-delete-section').style.display = 'none';
   document.querySelector('.modal p.mono').textContent = "LOG TODAY'S WORKOUT";
   document.getElementById('log-modal').style.display = 'flex';
 }
@@ -2703,16 +2740,28 @@ function updateWorkoutInSupabase(id, entry) {
 }
 
 function deleteWorkout(id) {
-  if (!confirm('Delete this workout? This cannot be undone.')) return;
-  // Remove from local array
   workoutLog = workoutLog.filter(function(w) { return w.id !== id; });
   localStorage.setItem('ac_log', JSON.stringify(workoutLog));
-  // Delete from server
   fetch('/api/workouts/' + id, { method: 'DELETE' }).catch(function(e) { console.error('Delete error:', e); });
-  // Re-render
   renderLogArea();
   renderWeek();
   renderLog();
+}
+
+function showDeleteConfirm() {
+  document.getElementById('edit-delete-initial').style.display = 'none';
+  document.getElementById('edit-delete-confirm').style.display = 'block';
+}
+function hideDeleteConfirm() {
+  document.getElementById('edit-delete-initial').style.display = 'block';
+  document.getElementById('edit-delete-confirm').style.display = 'none';
+}
+function confirmDeleteFromModal() {
+  if (!editingWorkoutId) return;
+  deleteWorkout(editingWorkoutId);
+  closeModal();
+  editingWorkoutId = null;
+  editingWorkoutDate = null;
 }
 
 function saveWorkout() {
@@ -3358,6 +3407,7 @@ function renderCalDetail() {
   if (entry.med) h += '<span style="font-family:IBM Plex Mono,monospace;font-size:11px;color:#9966cc;background:#9966cc12;padding:3px 10px;border-radius:4px">Meditated</span>';
   h += '</div>';
   if (entry.notes) h += '<p style="font-size:14px;color:var(--text-muted);line-height:1.7;font-style:italic">' + entry.notes + '</p>';
+  h += '<div style="margin-top:8px;text-align:right"><button onclick="setLogDateFilter(\'' + calDetailDate + '\')" style="background:transparent;border:1px solid var(--accent-33);color:var(--accent);padding:4px 12px;border-radius:4px;cursor:pointer;font-size:11px;font-family:IBM Plex Mono,monospace">View in Log</button></div>';
   h += '</div>';
   el.innerHTML = h;
   el.style.display = 'block';
@@ -3506,18 +3556,6 @@ function renderCalBreakdown(types, label) {
 // Keep old name as alias for any callers
 function renderWeek() { renderCalendar(); }
 
-function renderLog() {
-  var sorted = workoutLog.slice().reverse().slice(0, 60);
-  document.getElementById('log-count').textContent = 'HISTORY - ' + workoutLog.length + ' SESSIONS';
-  if (!sorted.length) { document.getElementById('log-entries').innerHTML = '<p style="color:#2a2c30;font-style:italic;text-align:center;padding:40px 0;font-size:14px">No sessions yet. Start with today!</p>'; return; }
-  var html = '';
-  for (var i = 0; i < sorted.length; i++) {
-    var w = sorted[i];
-    html += '<div class="card" style="padding:12px 16px;margin-bottom:10px"><div class="mono" style="font-size:10px;color:#333;margin-bottom:4px">' + w.date + '</div><div style="font-weight:500;font-size:15px;margin-bottom:4px;color:#ddd">' + w.type + '</div><div class="mono" style="font-size:11px">' + (w.done ? '<span style="color:#22c97a">completed</span>' : '<span style="color:#e84545">skipped</span>') + (w.mobility ? '<span style="color:#4488bb"> + mobility</span>' : '') + (w.med ? '<span style="color:#9966cc"> + meditation</span>' : '') + '</div>' + (w.notes ? '<p style="font-size:12px;color:#444;margin-top:5px;font-style:italic">' + w.notes + '</p>' : '') + '</div>';
-  }
-  document.getElementById('log-entries').innerHTML = html;
-}
-
 // ── VOICE INPUT ───────────────────────────────────────────────────────────
 var recognition = null;
 function startVoice() {
@@ -3581,40 +3619,129 @@ function formatNotesWithAI() {
   .catch(function() { document.getElementById('voice-status').textContent = 'Format failed - notes unchanged'; });
 }
 
-// ── RENDER LOG - with formatted notes display ──────────────────────────────
+// ── RENDER LOG - with collapsed cards ─────────────────────────────────────
+var expandedCards = {};
+var logFilter = 'all';
+var logDateFilter = null;
+
+function setLogFilter(f) {
+  logFilter = f;
+  logDateFilter = null;
+  document.getElementById('log-date-filter').style.display = 'none';
+  document.querySelectorAll('.log-filter-btn').forEach(function(b) {
+    var active = b.getAttribute('data-filter') === f;
+    b.style.background = active ? 'var(--accent-10)' : 'transparent';
+    b.style.color = active ? 'var(--accent)' : 'var(--text-muted)';
+    b.classList.toggle('active', active);
+  });
+  renderLog();
+}
+
+function setLogDateFilter(dateStr) {
+  logDateFilter = dateStr;
+  logFilter = 'all';
+  var d = new Date(dateStr + 'T12:00:00');
+  var fmtDate = d.toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric' });
+  var el = document.getElementById('log-date-filter');
+  document.getElementById('log-date-filter-text').textContent = 'Showing ' + fmtDate;
+  el.style.display = 'flex';
+  // Switch to log tab
+  var logBtn = document.querySelectorAll('header nav .navBtn')[2];
+  showTab('log', logBtn);
+  renderLog();
+}
+
+function clearLogDateFilter() {
+  logDateFilter = null;
+  document.getElementById('log-date-filter').style.display = 'none';
+  renderLog();
+}
+
+function toggleLogCard(cardId) {
+  if (expandedCards[cardId]) delete expandedCards[cardId];
+  else expandedCards[cardId] = true;
+  var detail = document.getElementById('lc-detail-' + cardId);
+  var chevron = document.getElementById('lc-chev-' + cardId);
+  if (detail) detail.classList.toggle('open');
+  if (chevron) chevron.classList.toggle('open');
+}
+
 function renderLog() {
-  var sorted = workoutLog.slice(0, 60);
-  document.getElementById('log-count').textContent = 'HISTORY - ' + workoutLog.length + ' SESSIONS';
-  if (!sorted.length) { document.getElementById('log-entries').innerHTML = '<p style="color:#2a2c30;font-style:italic;text-align:center;padding:40px 0;font-size:15px">No sessions yet. Start with today!</p>'; return; }
+  var now = new Date();
+  var todayStr = ds(0);
+  var filtered = workoutLog.filter(function(w) {
+    if (logDateFilter) return w.date === logDateFilter;
+    if (logFilter === 'all') return true;
+    var d = new Date(w.date + 'T12:00:00');
+    if (logFilter === 'week') { var diff = (now - d) / 86400000; return diff < 7; }
+    if (logFilter === 'month') return d.getMonth() === now.getMonth() && d.getFullYear() === now.getFullYear();
+    if (logFilter === 'year') return d.getFullYear() === now.getFullYear();
+    return true;
+  });
+
+  var sortMode = (document.getElementById('log-sort') || {}).value || 'newest';
+  filtered.sort(function(a, b) {
+    if (sortMode === 'oldest') return a.date < b.date ? -1 : a.date > b.date ? 1 : (a.ts || 0) - (b.ts || 0);
+    if (sortMode === 'type') return a.type < b.type ? -1 : a.type > b.type ? 1 : (b.date > a.date ? 1 : -1);
+    return b.date > a.date ? 1 : b.date < a.date ? -1 : (b.ts || 0) - (a.ts || 0);
+  });
+
+  var countLabel = logDateFilter ? 'SHOWING 1 DATE' : logFilter !== 'all' ? filtered.length + ' SESSIONS (' + logFilter.toUpperCase() + ')' : 'HISTORY - ' + workoutLog.length + ' SESSIONS';
+  document.getElementById('log-count').textContent = countLabel;
+
+  if (!filtered.length) {
+    document.getElementById('log-entries').innerHTML = '<p style="color:var(--text-dim);font-style:italic;text-align:center;padding:40px 0;font-size:15px">No sessions found.</p>';
+    return;
+  }
+
   var html = '';
-  for (var i = 0; i < sorted.length; i++) {
-    var w = sorted[i];
+  var limit = Math.min(filtered.length, 60);
+  for (var i = 0; i < limit; i++) {
+    var w = filtered[i];
+    var cardId = w.id || ('d' + w.date + i);
+    var isOpen = !!expandedCards[cardId];
+    var highlight = logDateFilter && w.date === logDateFilter;
+
+    // Notes formatting
     var notesHTML = '';
     if (w.notes) {
       var lines = w.notes.split(/\n/).filter(function(l) { return l.trim(); });
       if (lines.length > 1) {
         notesHTML = '<ul style="margin-top:8px;padding-left:18px;list-style:disc">' +
-          lines.map(function(l) { return '<li style="font-size:13px;color:#666;line-height:1.8;padding:1px 0">' + l.trim() + '</li>'; }).join('') +
-          '</ul>';
+          lines.map(function(l) { return '<li style="font-size:13px;color:var(--text-sec);line-height:1.8;padding:1px 0">' + l.trim() + '</li>'; }).join('') + '</ul>';
       } else {
-        notesHTML = '<p style="font-size:13px;color:#555;margin-top:6px;font-style:italic;line-height:1.65">' + w.notes + '</p>';
+        notesHTML = '<p style="font-size:13px;color:var(--text-muted);margin-top:6px;font-style:italic;line-height:1.65">' + w.notes + '</p>';
       }
     }
+
     var editData = JSON.stringify({id:w.id,date:w.date,type:w.type,notes:w.notes||'',done:w.done,mobility:w.mobility,med:w.med}).replace(/"/g,"'");
-    html += '<div class="card" style="padding:16px 20px;margin-bottom:10px">' +
-      '<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px">' +
-        '<div class="mono" style="font-size:12px;color:var(--text-muted)">' + w.date + '</div>' +
-        '<div style="display:flex;gap:6px;align-items:center">' +
-          (w.done ? '<span style="font-family:IBM Plex Mono,monospace;font-size:11px;color:#22c97a;background:#22c97a12;padding:3px 10px;border-radius:4px">Done</span>' : '<span style="font-family:IBM Plex Mono,monospace;font-size:11px;color:#e84545;background:#e8454512;padding:3px 10px;border-radius:4px">Skipped</span>') +
-          (w.mobility ? '<span style="font-family:IBM Plex Mono,monospace;font-size:11px;color:#4488bb;background:#4488bb12;padding:3px 10px;border-radius:4px">Mobility</span>' : '') +
-          (w.med ? '<span style="font-family:IBM Plex Mono,monospace;font-size:11px;color:#9966cc;background:#9966cc12;padding:3px 10px;border-radius:4px">Meditated</span>' : '') +
-          '<button onclick="editWorkout(' + editData + ')" style="background:transparent;border:1px solid var(--border-accent);color:var(--text-muted);padding:3px 12px;border-radius:4px;cursor:pointer;font-size:12px;margin-left:4px">Edit</button>' +
-          (w.id ? '<button onclick="deleteWorkout(' + w.id + ')" style="background:transparent;border:1px solid #e8454533;color:#e84545;padding:3px 8px;border-radius:4px;cursor:pointer;font-size:12px" title="Delete">&times;</button>' : '') +
-        '</div>' +
-      '</div>' +
-      '<div style="font-weight:600;font-size:18px;color:var(--text-bright);margin-bottom:6px">' + w.type + '</div>' +
-      notesHTML +
-      '</div>';
+
+    html += '<div class="card" style="padding:14px 16px;margin-bottom:8px;cursor:pointer' + (highlight ? ';border-color:var(--accent-44)' : '') + '" onclick="toggleLogCard(\'' + cardId + '\')">';
+    // Collapsed header row
+    html += '<div style="display:flex;align-items:center;justify-content:space-between">';
+    html += '<div style="flex:1;min-width:0">';
+    html += '<div class="mono" style="font-size:11px;color:var(--text-dim);margin-bottom:2px">' + w.date + '</div>';
+    html += '<div style="font-weight:600;font-size:16px;color:var(--text-bright)">' + w.type + '</div>';
+    html += '</div>';
+    html += '<div style="display:flex;align-items:center;gap:8px">';
+    html += w.done ? '<span class="mono" style="font-size:10px;color:#22c97a;background:#22c97a12;padding:2px 8px;border-radius:3px">Done</span>' : '<span class="mono" style="font-size:10px;color:#e84545;background:#e8454512;padding:2px 8px;border-radius:3px">Skip</span>';
+    html += '<span id="lc-chev-' + cardId + '" class="log-card-chevron' + (isOpen ? ' open' : '') + '" style="color:var(--text-dim);font-size:12px">&#9660;</span>';
+    html += '</div></div>';
+
+    // Expandable detail section
+    html += '<div id="lc-detail-' + cardId + '" class="log-card-detail' + (isOpen ? ' open' : '') + '">';
+    html += '<div style="margin-top:10px;padding-top:10px;border-top:1px solid var(--border)">';
+    // Pills
+    html += '<div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:8px">';
+    if (w.mobility) html += '<span class="mono" style="font-size:10px;color:#4488bb;background:#4488bb12;padding:2px 8px;border-radius:3px">Mobility</span>';
+    if (w.med) html += '<span class="mono" style="font-size:10px;color:#9966cc;background:#9966cc12;padding:2px 8px;border-radius:3px">Meditated</span>';
+    html += '</div>';
+    // Notes
+    if (w.notes) html += notesHTML;
+    // Edit button
+    html += '<div style="margin-top:10px"><button onclick="event.stopPropagation();editWorkout(' + editData + ')" style="background:transparent;border:1px solid var(--border-accent);color:var(--text-muted);padding:6px 16px;border-radius:4px;cursor:pointer;font-size:12px;font-family:DM Sans,sans-serif">Edit</button></div>';
+    html += '</div></div>';
+    html += '</div>';
   }
   document.getElementById('log-entries').innerHTML = html;
 }
