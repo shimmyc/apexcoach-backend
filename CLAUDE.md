@@ -110,6 +110,8 @@ Calculated from workoutLog entries where done=true. Counts backwards from today 
 
 - POST /api/profiles/:id/generate-goal-description — AI generates motivating goal description from title
 
+- POST /api/profiles/:id/goal-progress — calculates progress for all goals using workout data + AI deduction
+
 - GET /api/profiles/:id/brief — returns coaching_brief, historical_brief, historical_brief_updated_at
 
 - POST /api/profiles/:id/generate-brief — generates coaching briefs from workout history (two AI calls)
@@ -224,6 +226,19 @@ Full-screen settings overlay accessible via gear icon or profile avatar click. S
 ## Environment Variables (on Render)
 
 FITBIT_CLIENT_ID, FITBIT_CLIENT_SECRET, SUPABASE_URL, SUPABASE_KEY, ANTHROPIC_KEY, ADMIN_SECRET
+
+## Goal Progress System
+
+Smart goal progress tracking via `POST /api/profiles/:id/goal-progress`. Each goal type is calculated differently:
+
+- **strength** — queries exercises for max weight matching goal keywords, auto-tracked
+- **distance** — AI estimates readiness from cardio data, steps, and training patterns
+- **consistency** — counts relevant workout types in last 30 days vs target
+- **habit** — counts meditation days in last 30 days
+- **skill** — maps current belt to position 1-13 out of 13
+- **general** — AI estimates from recent workout patterns, or manual self-rating 0-100%
+
+All goals have a manual override button (✏️) for updating progress directly. Results cached in localStorage for 6 hours (ac_goal_progress), invalidated after every workout save. Source icons: 🤖 AI estimate, ⚡ auto-tracked, ✋ manual.
 
 ## Auto-Format Notes
 

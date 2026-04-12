@@ -862,6 +862,131 @@ app.post("/api/profiles/:id/search-history", async function(req, res) {
   }
 });
 
+// ── GOAL PROGRESS ─────────────────────────────────────────────────────────
+app.post("/api/profiles/:id/goal-progress", async function(req, res) {
+  try {
+    var profileId = req.params.id;
+    var body = req.body;
+    var goals = body.goals || [];
+    var workouts = body.workoutLog || [];
+    var exercises = body.exercises || [];
+    var steps = body.fitbitSteps || 0;
+    var currentBelt = body.current_belt || null;
+    var medDays = body.medDays || 0;
+
+    var results = [];
+    for (var gi = 0; gi < goals.length; gi++) {
+      var g = goals[gi];
+      var r = { index: gi, pct: 0, label: '', auto_tracked: false, source: 'manual', reasoning: '' };
+
+      if (g.type === 'strength') {
+        var keywords = (g.title || '').toLowerCase().split(/\s+/);
+        var maxW = 0;
+        exercises.forEach(function(ex) {
+          var nameL = (ex.name || '').toLowerCase();
+          if (keywords.some(function(k) { return k.length > 3 && nameL.indexOf(k) >= 0; }) && ex.weight_lbs) {
+            if (ex.weight_lbs > maxW) maxW = ex.weight_lbs;
+          }
+        });
+        if (g.target_value && maxW) {
+          r.pct = Math.min(100, Math.round((maxW / g.target_value) * 100));
+          r.label = 'Best: ' + maxW + 'lbs / ' + g.target_value + 'lbs';
+          r.auto_tracked = true; r.source = 'auto';
+        } else if (g.current_value != null && g.target_value) {
+          r.pct = Math.min(100, Math.round((g.current_value / g.target_value) * 100));
+          r.label = g.current_value + ' / ' + g.target_value + (g.unit ? ' ' + g.unit : '');
+          r.source = 'manual';
+        }
+      } else if (g.type === 'distance') {
+        var totalDist = 0;
+        var longestCardio = 0;
+        var weeklyCardio = 0;
+        var legExercises = [];
+        exercises.forEach(function(ex) {
+          if (ex.distance_miles) totalDist += ex.distance_miles;
+          if (ex.duration_minutes && (ex.category === 'cardio' || ex.category === 'other')) {
+            if (ex.duration_minutes > longestCardio) longestCardio = ex.duration_minutes;
+          }
+        });
+        workouts.forEach(function(w) {
+          if (w.done && (w.type.indexOf('Conditioning') >= 0 || w.type.indexOf('Walking') >= 0)) weeklyCardio++;
+        });
+        weeklyCardio = workouts.length > 0 ? Math.round(weeklyCardio / (workouts.length / 7)) : 0;
+        var manualVal = g.current_value || 0;
+
+        try {
+          var aiPrompt = "Athlete goal: " + g.title + " (" + (g.target_value || '?') + " " + (g.unit || 'miles') + ").\nTraining data last 90 days:\n- Longest cardio session: " + longestCardio + " minutes\n- Weekly cardio sessions: " + weeklyCardio + " avg\n- Daily steps avg: " + steps + "\n- Distance logged: " + totalDist + " miles\n- Manual progress reported: " + manualVal + " " + (g.unit || '') + "\nEstimate 0-100% readiness. Return JSON only: {\"readiness_pct\": number, \"reasoning\": \"1 sentence\"}";
+          var aiText = await callAI(aiPrompt, 200);
+          var aiJson = JSON.parse(aiText.substring(aiText.indexOf('{'), aiText.lastIndexOf('}') + 1));
+          r.pct = Math.min(100, aiJson.readiness_pct || 0);
+          r.reasoning = aiJson.reasoning || '';
+          r.label = 'AI estimate: ' + r.pct + '%' + (totalDist ? ' | ' + totalDist.toFixed(1) + ' mi logged' : '');
+          r.auto_tracked = true; r.source = 'ai';
+        } catch (e) {
+          if (manualVal && g.target_value) {
+            r.pct = Math.min(100, Math.round((manualVal / g.target_value) * 100));
+            r.label = manualVal + ' / ' + g.target_value + ' ' + (g.unit || '');
+            r.source = 'manual';
+          }
+        }
+      } else if (g.type === 'consistency') {
+        var count = 0;
+        var thirtyDaysAgo = new Date(); thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
+        var cutoff = thirtyDaysAgo.toISOString().slice(0, 10);
+        workouts.forEach(function(w) {
+          if (w.done && w.date >= cutoff) {
+            var typeLow = (w.type || '').toLowerCase();
+            var titleLow = (g.title || '').toLowerCase();
+            if (titleLow.indexOf('mma') >= 0 && typeLow.indexOf('mma') >= 0) count++;
+            else if (titleLow.indexOf('cardio') >= 0 && (typeLow.indexOf('conditioning') >= 0 || typeLow.indexOf('cardio') >= 0)) count++;
+            else if (titleLow.indexOf('stamina') >= 0 && (typeLow.indexOf('mma') >= 0 || typeLow.indexOf('conditioning') >= 0 || typeLow.indexOf('cardio') >= 0)) count++;
+            else count++;
+          }
+        });
+        var target = (g.target_value || 4) * 4;
+        r.pct = Math.min(100, Math.round((count / target) * 100));
+        r.label = count + ' sessions this month / ' + target + ' target';
+        r.auto_tracked = true; r.source = 'auto';
+      } else if (g.type === 'habit') {
+        r.pct = Math.min(100, Math.round((medDays / 30) * 100));
+        r.label = medDays + '/30 days this month';
+        r.auto_tracked = true; r.source = 'auto';
+      } else if (g.type === 'skill') {
+        var beltIds = ['white','yellow','orange','red','green1','green2','blue1','blue2','purple','brown1','brown2','brown3','black'];
+        var beltIdx = beltIds.indexOf(currentBelt || 'white') + 1;
+        r.pct = Math.round((beltIdx / 13) * 100);
+        r.label = (currentBelt || 'white') + ' \u2192 Black Belt (' + beltIdx + '/13)';
+        r.auto_tracked = true; r.source = 'auto';
+      } else {
+        // general goals - AI estimate
+        if (g.current_value != null && g.current_value > 0) {
+          r.pct = Math.min(100, g.current_value);
+          r.label = 'Self-rated: ' + g.current_value + '%';
+          r.source = 'manual';
+        } else {
+          try {
+            var recentLog = workouts.slice(0, 10).map(function(w) { return w.date + ': ' + w.type + (w.notes ? ' (' + w.notes.substring(0, 50) + ')' : ''); }).join('\n');
+            var aiP = "Athlete goal: " + g.title + ".\nRecent workouts:\n" + recentLog + "\nEstimate 0-100% progress. Be conservative.\nReturn JSON only: {\"estimate_pct\": number, \"reasoning\": \"1 sentence\"}";
+            var aiT = await callAI(aiP, 200);
+            var aiJ = JSON.parse(aiT.substring(aiT.indexOf('{'), aiT.lastIndexOf('}') + 1));
+            r.pct = Math.min(100, aiJ.estimate_pct || 0);
+            r.reasoning = aiJ.reasoning || '';
+            r.label = 'AI estimate: ' + r.pct + '%';
+            r.source = 'ai';
+          } catch (e) {
+            r.label = 'No data yet';
+          }
+        }
+      }
+      results.push(r);
+    }
+    res.json({ success: true, progress: results });
+  } catch (e) {
+    console.error("goal-progress error:", e);
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
 // ── GOAL DESCRIPTION ──────────────────────────────────────────────────────
 app.post("/api/profiles/:id/generate-goal-description", async function(req, res) {
   try {

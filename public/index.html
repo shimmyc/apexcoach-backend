@@ -445,7 +445,10 @@ input[type=range]{width:100%;accent-color:var(--accent)}
     <div class="card">
       <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">
         <p class="clabel" style="margin-bottom:0">goals &amp; milestones</p>
-        <button onclick="toggleGoalEdit()" id="goal-edit-btn" style="background:transparent;border:1px solid var(--border-accent);color:var(--text-muted);padding:5px 12px;border-radius:6px;cursor:pointer;font-size:13px">Edit</button>
+        <div style="display:flex;gap:6px">
+          <button onclick="refreshGoalProgress()" style="background:transparent;border:1px solid var(--border-accent);color:var(--text-dim);padding:5px 10px;border-radius:6px;cursor:pointer;font-size:12px" title="Refresh progress">&#8635;</button>
+          <button onclick="toggleGoalEdit()" id="goal-edit-btn" style="background:transparent;border:1px solid var(--border-accent);color:var(--text-muted);padding:5px 12px;border-radius:6px;cursor:pointer;font-size:13px">Edit</button>
+        </div>
       </div>
       <div id="goals-display" class="goalsGrid"></div>
       <div id="goals-editor" style="display:none;margin-top:14px">
@@ -2419,6 +2422,8 @@ function searchHistory() {
     });
 }
 
+var goalProgressCache = null;
+
 function renderProfileGoals() {
   var pd = currentProfileData || {};
   var pGoals = pd.goals || [];
@@ -2427,21 +2432,47 @@ function renderProfileGoals() {
     return;
   }
   var statusColors = { 'IN PROGRESS': '#f5a623', 'LONG GAME': '#4488bb', 'DONE': '#22c97a', 'HABIT': '#9966cc', 'PAUSED': '#555' };
+
+  // Check cache
+  var cached = null;
+  try {
+    var raw = localStorage.getItem('ac_goal_progress');
+    if (raw) {
+      var parsed = JSON.parse(raw);
+      if (parsed.ts && Date.now() - parsed.ts < 6 * 3600000) cached = parsed.progress;
+    }
+  } catch (e) {}
+
   var html = '';
   for (var i = 0; i < pGoals.length; i++) {
     var g = pGoals[i];
     var sc = statusColors[g.status] || '#f5a623';
     var isMed = g.type === 'habit' && g.title && g.title.toLowerCase().indexOf('meditat') >= 0;
-    html += '<div style="background:var(--bg-input);border:1px solid var(--border);border-radius:8px;padding:16px">';
-    html += '<div style="font-size:22px;margin-bottom:8px">' + (g.emoji || '🎯') + '</div>';
+    var prog = cached && cached[i] ? cached[i] : null;
+
+    html += '<div style="background:var(--bg-input);border:1px solid var(--border);border-radius:8px;padding:16px;position:relative">';
+    // Edit button
+    html += '<button onclick="openGoalUpdate(' + i + ')" style="position:absolute;top:10px;right:10px;background:transparent;border:none;color:var(--text-dim);cursor:pointer;font-size:14px;padding:2px" title="Update progress">&#9998;</button>';
+    html += '<div style="font-size:22px;margin-bottom:8px">' + (g.emoji || '\uD83C\uDFAF') + '</div>';
     html += '<div style="font-size:15px;font-weight:600;color:var(--text-bright);margin-bottom:5px">' + (g.title || '') + '</div>';
-    html += '<div style="font-size:15px;color:var(--text-muted);line-height:1.6;margin-bottom:10px">' + (g.description || '') + '</div>';
-    // Tracker bar for goals with target/current values
-    if (g.tracker && g.target_value && g.current_value != null) {
+    if (g.description) html += '<div style="font-size:13px;color:var(--text-muted);line-height:1.6;margin-bottom:10px">' + g.description + '</div>';
+
+    // Progress bar
+    if (prog) {
+      var sourceIcon = prog.source === 'ai' ? '\uD83E\uDD16' : prog.source === 'auto' ? '\u26A1' : '\u270B';
+      html += '<div style="margin-bottom:8px"><div class="bar-track" style="height:6px"><div class="bar-fill" style="width:' + prog.pct + '%;background:' + sc + '"></div></div>';
+      html += '<div style="display:flex;justify-content:space-between;align-items:center;margin-top:4px"><span class="mono" style="font-size:10px;color:var(--text-muted)">' + sourceIcon + ' ' + (prog.label || prog.pct + '%') + '</span><span class="mono" style="font-size:12px;color:' + sc + ';font-weight:700">' + prog.pct + '%</span></div>';
+      if (prog.reasoning) html += '<div class="mono" style="font-size:9px;color:var(--text-dim);margin-top:2px;font-style:italic">' + prog.reasoning + '</div>';
+      html += '</div>';
+    } else if (g.tracker && g.target_value && g.current_value != null) {
       var pct = Math.min(100, Math.round((g.current_value / g.target_value) * 100));
-      html += '<div style="margin-bottom:8px"><div class="bar-track"><div class="bar-fill" style="width:' + pct + '%;background:' + sc + '"></div></div>';
+      html += '<div style="margin-bottom:8px"><div class="bar-track" style="height:6px"><div class="bar-fill" style="width:' + pct + '%;background:' + sc + '"></div></div>';
       html += '<div class="mono" style="font-size:10px;color:#555;margin-top:3px">' + g.current_value + ' / ' + g.target_value + (g.unit ? ' ' + g.unit : '') + ' (' + pct + '%)</div></div>';
+    } else {
+      // Skeleton loading placeholder
+      html += '<div id="goal-prog-' + i + '" style="margin-bottom:8px"><div class="bar-track" style="height:6px"><div class="bar-fill" style="width:0%;background:var(--border);animation:pulse 1.6s infinite"></div></div><div class="mono" style="font-size:10px;color:var(--text-dim);margin-top:3px;animation:pulse 1.6s infinite">Calculating...</div></div>';
     }
+
     if (isMed) {
       html += '<div id="med-status" class="mono" style="font-size:11px;color:#555;letter-spacing:1px;cursor:pointer" onclick="toggleMeditation()">TAP TO LOG TODAY</div>';
     } else {
@@ -2451,6 +2482,116 @@ function renderProfileGoals() {
   }
   document.getElementById('goals-display').innerHTML = html;
   if (typeof renderMeditationStatus === 'function') renderMeditationStatus();
+
+  // Fetch progress if not cached
+  if (!cached && currentProfileId && pGoals.length) fetchGoalProgress();
+}
+
+function fetchGoalProgress() {
+  if (!currentProfileId) return;
+  var pd = currentProfileData || {};
+  var pGoals = pd.goals || [];
+  if (!pGoals.length) return;
+
+  var medCount = 0;
+  var thirtyAgo = new Date(); thirtyAgo.setDate(thirtyAgo.getDate() - 30);
+  var cutoff30 = thirtyAgo.toISOString().slice(0, 10);
+  medLog.forEach(function(d) { if (d >= cutoff30) medCount++; });
+
+  fetch('/api/profiles/' + currentProfileId + '/goal-progress', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      goals: pGoals,
+      workoutLog: workoutLog.slice(0, 90),
+      exercises: (libExercises || []).reduce(function(a, e) { return a.concat(e.sessions || []); }, []),
+      fitbitSteps: fitData && fitData.steps ? fitData.steps : 0,
+      current_belt: pd.current_belt || null,
+      medDays: medCount
+    })
+  })
+  .then(function(r) { return r.json(); })
+  .then(function(data) {
+    if (data.success && data.progress) {
+      goalProgressCache = data.progress;
+      localStorage.setItem('ac_goal_progress', JSON.stringify({ ts: Date.now(), progress: data.progress }));
+      renderProfileGoals();
+    }
+  })
+  .catch(function(e) { console.error('[Goals] Progress fetch error:', e); });
+}
+
+function refreshGoalProgress() {
+  localStorage.removeItem('ac_goal_progress');
+  goalProgressCache = null;
+  fetchGoalProgress();
+}
+
+function openGoalUpdate(idx) {
+  var pd = currentProfileData || {};
+  var g = (pd.goals || [])[idx];
+  if (!g) return;
+
+  var existing = document.getElementById('goal-update-popover');
+  if (existing) existing.remove();
+
+  var pop = document.createElement('div');
+  pop.id = 'goal-update-popover';
+  pop.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.85);display:flex;align-items:center;justify-content:center;z-index:120;padding:20px';
+  pop.onclick = function(e) { if (e.target === pop) pop.remove(); };
+
+  var inner = '';
+  inner += '<div style="background:var(--bg-card);border:1px solid var(--border-accent);border-radius:12px;padding:24px;max-width:360px;width:100%" onclick="event.stopPropagation()">';
+  inner += '<div class="oswald" style="font-size:18px;color:var(--text-bright);margin-bottom:16px">Update: ' + (g.title || '') + '</div>';
+
+  if (g.type === 'distance') {
+    inner += '<label class="mono" style="font-size:11px;color:var(--text-muted);display:block;margin-bottom:6px">Current distance (' + (g.unit || 'miles') + ')</label>';
+    inner += '<input type="number" id="goal-update-val" value="' + (g.current_value || 0) + '" step="0.1" style="width:100%;background:var(--bg-input);border:1px solid var(--border);color:var(--text);padding:10px;border-radius:6px;font-size:16px;margin-bottom:12px">';
+  } else if (g.type === 'general') {
+    inner += '<label class="mono" style="font-size:11px;color:var(--text-muted);display:block;margin-bottom:6px">Self-rated progress (0-100%)</label>';
+    inner += '<input type="range" id="goal-update-val" min="0" max="100" value="' + (g.current_value || 0) + '" oninput="document.getElementById(\'goal-slider-val\').textContent=this.value+\'%\'" style="margin-bottom:4px">';
+    inner += '<div id="goal-slider-val" class="mono" style="font-size:14px;color:var(--accent);text-align:center;margin-bottom:12px">' + (g.current_value || 0) + '%</div>';
+  } else if (g.type === 'strength') {
+    inner += '<label class="mono" style="font-size:11px;color:var(--text-muted);display:block;margin-bottom:6px">Current best (' + (g.unit || 'lbs') + ')</label>';
+    inner += '<input type="number" id="goal-update-val" value="' + (g.current_value || 0) + '" step="1" style="width:100%;background:var(--bg-input);border:1px solid var(--border);color:var(--text);padding:10px;border-radius:6px;font-size:16px;margin-bottom:12px">';
+  } else if (g.type === 'skill') {
+    inner += '<label class="mono" style="font-size:11px;color:var(--text-muted);display:block;margin-bottom:6px">Current belt</label>';
+    inner += '<select id="goal-update-val" style="margin-bottom:12px">';
+    for (var bi = 0; bi < BELTS.length; bi++) inner += '<option value="' + BELTS[bi].id + '"' + (BELTS[bi].id === pd.current_belt ? ' selected' : '') + '>' + BELTS[bi].label + '</option>';
+    inner += '</select>';
+  } else {
+    inner += '<p class="mono" style="font-size:12px;color:var(--text-muted)">This goal is auto-calculated from your workout data.</p>';
+  }
+
+  inner += '<div style="display:flex;gap:8px;justify-content:flex-end;margin-top:8px">';
+  inner += '<button onclick="document.getElementById(\'goal-update-popover\').remove()" class="btnSec" style="font-size:13px">Cancel</button>';
+  if (g.type !== 'consistency' && g.type !== 'habit') {
+    inner += '<button onclick="saveGoalUpdate(' + idx + ')" class="btnPri" style="font-size:13px">Save</button>';
+  }
+  inner += '</div></div>';
+
+  pop.innerHTML = inner;
+  document.body.appendChild(pop);
+}
+
+function saveGoalUpdate(idx) {
+  var pd = currentProfileData || {};
+  var g = (pd.goals || [])[idx];
+  if (!g) return;
+  var val = document.getElementById('goal-update-val');
+  if (!val) return;
+
+  if (g.type === 'skill') {
+    pd.current_belt = val.value;
+  } else {
+    g.current_value = parseFloat(val.value) || 0;
+  }
+
+  saveProfileDataToServer(pd);
+  localStorage.removeItem('ac_goal_progress');
+  var pop = document.getElementById('goal-update-popover');
+  if (pop) pop.remove();
+  renderProfileGoals();
 }
 
 // ── GOAL EDITING ─────────────────────────────────────────────────────────
@@ -2932,6 +3073,8 @@ function doSaveWorkout() {
       })
       .catch(function() {});
   }
+  // Invalidate goal progress cache after workout save
+  localStorage.removeItem('ac_goal_progress');
 }
 
 // ── EXERCISE LIBRARY ──────────────────────────────────────────────────────
