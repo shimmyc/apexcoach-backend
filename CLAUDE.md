@@ -118,6 +118,20 @@ Calculated from workoutLog entries where done=true. Counts backwards from today 
 
 - POST /api/profiles/:id/search-history — natural language search across all workout history
 
+## Daily Feeling Check-In
+
+Optional daily check-in card on Today tab, shown between readiness card and AI recommendation. Available for both Fitbit and manual check-in users after their readiness score loads.
+
+- **Energy**: 5-level tap selection (Drained / Low / Okay / Good / High)
+- **Body Soreness**: Multi-select body parts (Neck, Shoulders, Upper Back, Lower Back, Core/Abs, Hips/Groin, Quads/IT Band, Knees, None)
+- **Severity**: Single select when body parts selected (Mild / Moderate / Significant)
+- **Free text**: Optional textarea with voice input via startCheckinVoice()
+- **Submit**: "Tell My Coach" button, disabled until at least one input provided
+- **Collapsed state**: After submit, collapses to summary pill with "Update" link to re-open
+- **localStorage**: Stored as `ac_checkin` with `{date, energy, soreness[], severity, text}`. Resets daily (date mismatch = fresh card)
+- **AI injection**: `buildCheckinContext()` builds context string injected into fetchAI() prompt after readiness data. Instructs AI to avoid sore body areas and reduce intensity if energy is low. Free text gets additional AI parsing instruction.
+- **Re-trigger**: Submitting check-in re-fetches AI recommendation if AI card is already visible
+
 ## Coaching Memory System (Three-Tier)
 
 Three-tier AI memory system stored in Supabase profiles table:
@@ -220,6 +234,7 @@ Full-screen settings overlay accessible via gear icon or profile avatar click. S
 - ac_tracking_prefs — JSON: weeklyTarget (1-7), showMeditation (bool), showMobility (bool), calendarDefault (week/month)
 - ac_profile_id, ac_profile_name, ac_profile_color, ac_profile_data — profile cache
 - ac_cache, ac_cache_date — Fitbit/check-in data cache
+- ac_checkin — daily feeling check-in (date + energy + soreness + severity + text), resets daily
 - ac_schedule — weekly schedule
 - ac_belt — current belt level
 

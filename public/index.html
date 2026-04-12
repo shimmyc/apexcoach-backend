@@ -95,6 +95,10 @@ input[type=range]{width:100%;accent-color:var(--accent)}
 .ci-btn .ci-label{font-size:10px;color:var(--text-muted);font-family:'IBM Plex Mono',monospace;letter-spacing:0.5px}
 .ci-btn.selected .ci-label{color:var(--accent)}
 @media(max-width:700px){.ci-btn{padding:8px 2px}.ci-btn .ci-emoji{font-size:22px}.ci-btn .ci-label{font-size:9px}}
+.fc-row{display:flex;gap:6px;flex-wrap:wrap}
+.fc-pill{background:var(--bg-input);border:1px solid var(--border);border-radius:20px;padding:8px 14px;font-size:13px;color:var(--text-muted);cursor:pointer;font-family:'DM Sans',sans-serif;transition:all .2s;white-space:nowrap}
+.fc-pill:hover{border-color:var(--accent-44)}
+.fc-pill.active{border-color:var(--accent);background:var(--accent-10);color:var(--accent)}
 .toast{position:fixed;bottom:30px;left:50%;transform:translateX(-50%);background:var(--bg-card);color:var(--accent);border:1px solid var(--accent-33);padding:10px 24px;border-radius:8px;font-family:'IBM Plex Mono',monospace;font-size:13px;letter-spacing:1px;z-index:200;pointer-events:none;animation:toastIn .25s ease,toastOut .25s ease 1.2s forwards}
 .settings-overlay{position:fixed;inset:0;background:var(--bg);z-index:50;display:none;flex-direction:column;overflow:hidden}
 .settings-overlay.open{display:flex}
@@ -332,6 +336,58 @@ input[type=range]{width:100%;accent-color:var(--accent)}
     </div>
     <div id="streak-card" style="display:none"></div>
     <div id="readiness-card" class="card" style="display:none"></div>
+    <div id="feeling-checkin-card" class="card" style="display:none;background:#0d1018;border-color:#22c97a22">
+      <div id="feeling-checkin-full">
+        <p class="clabel">how are you feeling today?</p>
+        <div style="margin-bottom:14px">
+          <p class="mono" style="font-size:11px;color:var(--text-muted);letter-spacing:2px;margin-bottom:8px">ENERGY</p>
+          <div class="fc-row" id="fc-energy">
+            <button class="fc-pill" onclick="fcSelectEnergy(this)" data-val="Drained">&#x1FAB6; Drained</button>
+            <button class="fc-pill" onclick="fcSelectEnergy(this)" data-val="Low">&#128547; Low</button>
+            <button class="fc-pill" onclick="fcSelectEnergy(this)" data-val="Okay">&#128528; Okay</button>
+            <button class="fc-pill" onclick="fcSelectEnergy(this)" data-val="Good">&#9889; Good</button>
+            <button class="fc-pill" onclick="fcSelectEnergy(this)" data-val="High">&#128293; High</button>
+          </div>
+        </div>
+        <div style="margin-bottom:14px">
+          <p class="mono" style="font-size:11px;color:var(--text-muted);letter-spacing:2px;margin-bottom:8px">BODY SORENESS <span style="font-size:9px;color:var(--text-dim);letter-spacing:1px">(tap all that apply)</span></p>
+          <div class="fc-row" id="fc-soreness">
+            <button class="fc-pill" onclick="fcToggleSoreness(this)" data-val="Neck">Neck</button>
+            <button class="fc-pill" onclick="fcToggleSoreness(this)" data-val="Shoulders">Shoulders</button>
+            <button class="fc-pill" onclick="fcToggleSoreness(this)" data-val="Upper Back">Upper Back</button>
+            <button class="fc-pill" onclick="fcToggleSoreness(this)" data-val="Lower Back">Lower Back</button>
+            <button class="fc-pill" onclick="fcToggleSoreness(this)" data-val="Core/Abs">Core/Abs</button>
+            <button class="fc-pill" onclick="fcToggleSoreness(this)" data-val="Hips/Groin">Hips/Groin</button>
+            <button class="fc-pill" onclick="fcToggleSoreness(this)" data-val="Quads/IT Band">Quads/IT Band</button>
+            <button class="fc-pill" onclick="fcToggleSoreness(this)" data-val="Knees">Knees</button>
+            <button class="fc-pill" onclick="fcToggleSoreness(this)" data-val="None">None</button>
+          </div>
+        </div>
+        <div id="fc-severity-row" style="display:none;margin-bottom:14px">
+          <p class="mono" style="font-size:11px;color:var(--text-muted);letter-spacing:2px;margin-bottom:8px">SORENESS SEVERITY</p>
+          <div class="fc-row" id="fc-severity">
+            <button class="fc-pill" onclick="fcSelectSeverity(this)" data-val="Mild">Mild — just aware of it</button>
+            <button class="fc-pill" onclick="fcSelectSeverity(this)" data-val="Moderate">Moderate — affects movement</button>
+            <button class="fc-pill" onclick="fcSelectSeverity(this)" data-val="Significant">Significant — limiting</button>
+          </div>
+        </div>
+        <div style="margin-bottom:14px">
+          <p class="mono" style="font-size:11px;color:var(--text-dim);letter-spacing:1px;margin-bottom:6px">Or describe in your own words:</p>
+          <div style="position:relative">
+            <textarea id="checkin-text" placeholder="e.g. 'neck is stiff, feeling tired but motivated'" style="width:100%;min-height:48px;background:var(--bg-input);border:1px solid var(--border);border-radius:8px;color:var(--text);font-size:14px;padding:10px 44px 10px 12px;resize:vertical;font-family:DM Sans,sans-serif;box-sizing:border-box" oninput="fcValidate()"></textarea>
+            <button id="checkin-mic-btn" onclick="startCheckinVoice()" style="position:absolute;right:8px;top:8px;background:transparent;border:1px solid var(--border);color:var(--text-muted);width:32px;height:32px;border-radius:50%;cursor:pointer;font-size:16px" title="Voice input">&#127908;</button>
+          </div>
+          <div id="checkin-voice-status" class="mono" style="font-size:10px;color:var(--text-dim);margin-top:4px;min-height:14px"></div>
+        </div>
+        <button id="fc-submit-btn" onclick="submitFeelingCheckin()" class="btnPri" style="width:100%;padding:14px;font-size:15px;border-radius:8px;opacity:0.4;pointer-events:none" disabled>Tell My Coach &rarr;</button>
+      </div>
+      <div id="feeling-checkin-summary" style="display:none">
+        <div style="display:flex;align-items:center;justify-content:space-between">
+          <div id="fc-summary-text" style="font-size:14px;color:var(--text-sec);line-height:1.5"></div>
+          <button onclick="reopenFeelingCheckin()" style="background:transparent;border:none;color:var(--accent);font-size:13px;cursor:pointer;font-family:DM Sans,sans-serif;padding:4px 8px;white-space:nowrap">Update</button>
+        </div>
+      </div>
+    </div>
     <div id="progress-card" class="card" style="display:none">
       <p class="clabel">progress brief</p>
       <div id="progress-content"></div>
@@ -1502,6 +1558,7 @@ function showManualCheckin(reason) {
       renderManualReadiness();
       document.getElementById('checkin-inputs').style.display = 'none';
       document.getElementById('checkin-result').style.display = 'block';
+      showFeelingCheckinCard();
       document.getElementById('ai-card').style.display = 'block';
       document.getElementById('progress-card').style.display = 'block';
       if (c.progressRec) { progressRec = c.progressRec; renderProgress(); } else { fetchProgress(); }
@@ -1584,6 +1641,7 @@ function submitCheckin() {
   document.getElementById('checkin-inputs').style.display = 'none';
   document.getElementById('checkin-result').style.display = 'block';
   renderManualReadiness();
+  showFeelingCheckinCard();
   renderLogArea();
 
   // Fetch AI and progress
@@ -1647,6 +1705,223 @@ function redoCheckin() {
   document.getElementById('progress-card').style.display = 'none';
   var allBtns = document.getElementById('checkin-card').querySelectorAll('.ci-btn');
   for (var i = 0; i < allBtns.length; i++) allBtns[i].classList.remove('selected');
+}
+
+// ── DAILY FEELING CHECK-IN ───────────────────────────────────────────────
+var dailyCheckin = null;
+var fcState = { energy: '', soreness: [], severity: '', text: '' };
+
+function fcSelectEnergy(el) {
+  var pills = document.querySelectorAll('#fc-energy .fc-pill');
+  for (var i = 0; i < pills.length; i++) pills[i].classList.remove('active');
+  el.classList.add('active');
+  fcState.energy = el.getAttribute('data-val');
+  fcValidate();
+}
+
+function fcToggleSoreness(el) {
+  var val = el.getAttribute('data-val');
+  if (val === 'None') {
+    // Clear all others, select None
+    fcState.soreness = [];
+    var pills = document.querySelectorAll('#fc-soreness .fc-pill');
+    for (var i = 0; i < pills.length; i++) pills[i].classList.remove('active');
+    el.classList.add('active');
+    document.getElementById('fc-severity-row').style.display = 'none';
+    fcState.severity = '';
+  } else {
+    // Deselect "None" if selected
+    var nonePill = document.querySelector('#fc-soreness .fc-pill[data-val="None"]');
+    if (nonePill) nonePill.classList.remove('active');
+    // Toggle this pill
+    var idx = fcState.soreness.indexOf(val);
+    if (idx >= 0) {
+      fcState.soreness.splice(idx, 1);
+      el.classList.remove('active');
+    } else {
+      fcState.soreness.push(val);
+      el.classList.add('active');
+    }
+    // Show/hide severity
+    document.getElementById('fc-severity-row').style.display = fcState.soreness.length ? 'block' : 'none';
+    if (!fcState.soreness.length) fcState.severity = '';
+  }
+  fcValidate();
+}
+
+function fcSelectSeverity(el) {
+  var pills = document.querySelectorAll('#fc-severity .fc-pill');
+  for (var i = 0; i < pills.length; i++) pills[i].classList.remove('active');
+  el.classList.add('active');
+  fcState.severity = el.getAttribute('data-val');
+  fcValidate();
+}
+
+function fcValidate() {
+  var textEl = document.getElementById('checkin-text');
+  fcState.text = textEl ? textEl.value.trim() : '';
+  var hasInput = fcState.energy || fcState.soreness.length > 0 || fcState.text;
+  var btn = document.getElementById('fc-submit-btn');
+  if (hasInput) {
+    btn.disabled = false;
+    btn.style.opacity = '1';
+    btn.style.pointerEvents = 'auto';
+  } else {
+    btn.disabled = true;
+    btn.style.opacity = '0.4';
+    btn.style.pointerEvents = 'none';
+  }
+}
+
+function buildCheckinContext(checkin) {
+  var parts = [];
+  if (checkin.energy) parts.push('Energy: ' + checkin.energy);
+  if (checkin.soreness && checkin.soreness.length > 0) {
+    parts.push('Soreness: ' + checkin.soreness.join(', ') + (checkin.severity ? ' (' + checkin.severity + ')' : ''));
+  }
+  if (checkin.text) parts.push('Note: "' + checkin.text + '"');
+  return parts.join(' | ');
+}
+
+function buildCheckinSummary(checkin) {
+  var parts = [];
+  var emojiMap = { Drained: '\u{1FAB6}', Low: '\uD83D\uDE13', Okay: '\uD83D\uDE10', Good: '\u26A1', High: '\uD83D\uDD25' };
+  if (checkin.energy) parts.push((emojiMap[checkin.energy] || '') + ' ' + checkin.energy + ' energy');
+  if (checkin.soreness && checkin.soreness.length > 0) {
+    var sore = checkin.soreness.join(', ');
+    parts.push(sore + (checkin.severity ? ' ' + checkin.severity.toLowerCase() + ' soreness' : ''));
+  }
+  if (checkin.text && !checkin.energy && !checkin.soreness.length) {
+    var short = checkin.text.length > 50 ? checkin.text.substring(0, 50) + '...' : checkin.text;
+    parts.push('\uD83D\uDCAC \u201C' + short + '\u201D');
+  }
+  return '\u2713 ' + (parts.length ? parts.join(' \u2022 ') : 'Check-in submitted');
+}
+
+function submitFeelingCheckin() {
+  var textEl = document.getElementById('checkin-text');
+  fcState.text = textEl ? textEl.value.trim() : '';
+  dailyCheckin = {
+    date: ds(0),
+    energy: fcState.energy,
+    soreness: fcState.soreness.slice(),
+    severity: fcState.severity,
+    text: fcState.text
+  };
+  localStorage.setItem('ac_checkin', JSON.stringify(dailyCheckin));
+  showFeelingCheckinSummary();
+  // Re-trigger AI with check-in context
+  if (document.getElementById('ai-card').style.display === 'block') fetchAI();
+}
+
+function showFeelingCheckinSummary() {
+  document.getElementById('feeling-checkin-full').style.display = 'none';
+  document.getElementById('feeling-checkin-summary').style.display = 'block';
+  document.getElementById('fc-summary-text').innerHTML = '<span style="color:var(--accent)">' + buildCheckinSummary(dailyCheckin) + '</span>';
+}
+
+function reopenFeelingCheckin() {
+  document.getElementById('feeling-checkin-full').style.display = 'block';
+  document.getElementById('feeling-checkin-summary').style.display = 'none';
+  // Restore selections from state
+  restoreFcSelections();
+}
+
+function restoreFcSelections() {
+  // Restore energy
+  if (fcState.energy) {
+    var ePills = document.querySelectorAll('#fc-energy .fc-pill');
+    for (var i = 0; i < ePills.length; i++) {
+      if (ePills[i].getAttribute('data-val') === fcState.energy) ePills[i].classList.add('active');
+      else ePills[i].classList.remove('active');
+    }
+  }
+  // Restore soreness
+  var sPills = document.querySelectorAll('#fc-soreness .fc-pill');
+  for (var i = 0; i < sPills.length; i++) {
+    var val = sPills[i].getAttribute('data-val');
+    if (fcState.soreness.indexOf(val) >= 0) sPills[i].classList.add('active');
+    else sPills[i].classList.remove('active');
+  }
+  document.getElementById('fc-severity-row').style.display = fcState.soreness.length ? 'block' : 'none';
+  // Restore severity
+  if (fcState.severity) {
+    var svPills = document.querySelectorAll('#fc-severity .fc-pill');
+    for (var i = 0; i < svPills.length; i++) {
+      if (svPills[i].getAttribute('data-val') === fcState.severity) svPills[i].classList.add('active');
+      else svPills[i].classList.remove('active');
+    }
+  }
+  // Restore text
+  var textEl = document.getElementById('checkin-text');
+  if (textEl && fcState.text) textEl.value = fcState.text;
+  fcValidate();
+}
+
+function loadDailyCheckin() {
+  var stored = localStorage.getItem('ac_checkin');
+  if (!stored) return;
+  try {
+    var data = JSON.parse(stored);
+    if (data.date !== ds(0)) {
+      localStorage.removeItem('ac_checkin');
+      return;
+    }
+    dailyCheckin = data;
+    fcState.energy = data.energy || '';
+    fcState.soreness = data.soreness || [];
+    fcState.severity = data.severity || '';
+    fcState.text = data.text || '';
+    showFeelingCheckinSummary();
+  } catch (e) {
+    localStorage.removeItem('ac_checkin');
+  }
+}
+
+function showFeelingCheckinCard() {
+  var card = document.getElementById('feeling-checkin-card');
+  if (!card) return;
+  card.style.display = 'block';
+  loadDailyCheckin();
+}
+
+var checkinRecognition = null;
+function startCheckinVoice() {
+  var SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+  if (!SR) {
+    document.getElementById('checkin-voice-status').textContent = 'Voice not supported in this browser. Use Chrome.';
+    return;
+  }
+  if (checkinRecognition) { checkinRecognition.stop(); checkinRecognition = null; document.getElementById('checkin-mic-btn').textContent = '\uD83C\uDF99'; return; }
+  checkinRecognition = new SR();
+  checkinRecognition.continuous = true;
+  checkinRecognition.interimResults = true;
+  checkinRecognition.lang = 'en-US';
+  var existing = document.getElementById('checkin-text').value;
+  document.getElementById('checkin-mic-btn').textContent = '\u23F9';
+  document.getElementById('checkin-voice-status').textContent = 'Listening...';
+  checkinRecognition.onresult = function(e) {
+    var interim = '';
+    var finalT = '';
+    for (var i = e.resultIndex; i < e.results.length; i++) {
+      if (e.results[i].isFinal) finalT += e.results[i][0].transcript;
+      else interim += e.results[i][0].transcript;
+    }
+    document.getElementById('checkin-text').value = existing + (existing ? ' ' : '') + finalT;
+    document.getElementById('checkin-voice-status').textContent = interim ? 'Hearing: ' + interim : 'Listening...';
+    fcValidate();
+  };
+  checkinRecognition.onerror = function(e) {
+    document.getElementById('checkin-voice-status').textContent = 'Error: ' + e.error;
+    document.getElementById('checkin-mic-btn').textContent = '\uD83C\uDF99';
+    checkinRecognition = null;
+  };
+  checkinRecognition.onend = function() {
+    document.getElementById('checkin-mic-btn').textContent = '\uD83C\uDF99';
+    document.getElementById('checkin-voice-status').textContent = '';
+    checkinRecognition = null;
+  };
+  checkinRecognition.start();
 }
 
 var CACHE_MAX_AGE = 2 * 60 * 60 * 1000; // 2 hours
@@ -1919,6 +2194,7 @@ function renderReadiness() {
     '<div style="display:inline-block;border:1px solid ' + hexA(t.color,'44') + ';background:' + hexA(t.color,'15') + ';color:' + t.color + ';padding:4px 14px;border-radius:4px;font-family:IBM Plex Mono,monospace;font-size:11px;letter-spacing:3px;margin-bottom:18px">' + t.label + ' ' + t.range + '</div>' +
     barsHTML + vitalsHTML + sleepStagesHTML + zonesHTML + hrvHTML;
 
+  showFeelingCheckinCard();
   document.getElementById('ai-card').style.display = 'block';
   document.getElementById('progress-card').style.display = 'block';
   document.getElementById('progress-content').innerHTML = '<p class="mono" style="font-size:11px;color:#22c97a;letter-spacing:3px;animation:pulse 1.6s infinite">ANALYZING PROGRESS...</p>';
@@ -2054,6 +2330,17 @@ function fetchAI() {
   var truncatedExerciseContext = recentExerciseContext || '';
   var truncatedHistoricalBrief = historicalBrief || '';
 
+  // Daily feeling check-in context
+  var checkinBlock = '';
+  if (dailyCheckin && dailyCheckin.date === ds(0)) {
+    checkinBlock = 'DAILY CHECK-IN: ' + buildCheckinContext(dailyCheckin) + '\n' +
+      'IMPORTANT: Adjust recommendation based on check-in. If soreness reported in a body area, AVOID exercises that stress that area. If energy is low, reduce intensity even if readiness score is high.\n';
+    if (dailyCheckin.text) {
+      checkinBlock += 'Parse this check-in text and extract: energy level, sore body parts, and mood. Then use this to modify the workout recommendation accordingly.\n';
+    }
+    checkinBlock += '\n';
+  }
+
   var prompt = 'You are ApexCoach, an elite personal AI coach for ' + athleteName + '. You know everything about them. Give ' + aiNumOpts + ' specific, data-driven workout options for today, ordered by best fit first.\n\n' +
     'COACHING STYLE: ' + aiTone + ' tone. ' + aiLang + ' language. Detail level: ' + aiDetail + '.\n' +
     'AVAILABLE EQUIPMENT: ' + equipStr + '\n' +
@@ -2061,6 +2348,7 @@ function fetchAI() {
     'TODAY: ' + today + '\n' +
     'CURRENT WORKOUT STREAK: ' + currentStreak + ' days' + (currentStreak >= 7 ? ' (impressive consistency!)' : '') + '\n' +
     dataBlock + '\n' +
+    checkinBlock +
     'RECENT 10-DAY LOG:\n' + recent + '\n\n' +
     (truncatedHistoricalBrief ? 'HISTORICAL TRAINING SUMMARY:\n' + truncatedHistoricalBrief + '\n\n' : '') +
     (truncatedCoachingBrief ? 'RECENT COACHING BRIEF:\n' + truncatedCoachingBrief + '\n\n' : '') +
@@ -2111,6 +2399,7 @@ function fetchAI() {
       'TODAY: ' + today + '\n' +
       'CURRENT WORKOUT STREAK: ' + currentStreak + ' days' + (currentStreak >= 7 ? ' (impressive consistency!)' : '') + '\n' +
       dataBlock + '\n' +
+      checkinBlock +
       'RECENT 10-DAY LOG:\n' + recent + '\n\n' +
       (truncatedHistoricalBrief ? 'HISTORICAL TRAINING SUMMARY:\n' + truncatedHistoricalBrief + '\n\n' : '') +
       (truncatedCoachingBrief ? 'RECENT COACHING BRIEF:\n' + truncatedCoachingBrief + '\n\n' : '') +
