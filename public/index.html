@@ -501,10 +501,18 @@ input[type=range]{width:100%;accent-color:var(--accent)}
         <p class="clabel" style="margin-bottom:0">goals &amp; milestones</p>
         <div style="display:flex;gap:6px">
           <button onclick="refreshGoalProgress()" style="background:transparent;border:1px solid var(--border-accent);color:var(--text-dim);padding:5px 10px;border-radius:6px;cursor:pointer;font-size:12px" title="Refresh progress">&#8635;</button>
+          <button onclick="enterGoalPriorityMode()" id="goal-priority-btn" style="background:transparent;border:1px solid var(--border-accent);color:var(--text-muted);padding:5px 12px;border-radius:6px;cursor:pointer;font-size:13px">Prioritize</button>
           <button onclick="toggleGoalEdit()" id="goal-edit-btn" style="background:transparent;border:1px solid var(--border-accent);color:var(--text-muted);padding:5px 12px;border-radius:6px;cursor:pointer;font-size:13px">Edit</button>
         </div>
       </div>
       <div id="goals-display" class="goalsGrid"></div>
+      <div id="goals-priority" style="display:none;margin-top:14px">
+        <div id="goals-priority-list" style="display:flex;flex-direction:column;gap:8px;margin-bottom:14px"></div>
+        <div style="display:flex;gap:8px">
+          <button onclick="saveGoalPriority()" class="btnPri" style="flex:1;font-size:14px;padding:12px">Save Priority</button>
+          <button onclick="cancelGoalPriority()" style="flex:1;background:transparent;border:1px solid var(--border);color:var(--text-muted);padding:12px;border-radius:6px;cursor:pointer;font-size:14px;font-family:DM Sans,sans-serif">Cancel</button>
+        </div>
+      </div>
       <div id="goals-editor" style="display:none;margin-top:14px">
         <div id="goals-edit-list" style="display:flex;flex-direction:column;gap:8px;margin-bottom:14px"></div>
         <div style="border-top:1px solid var(--border);padding-top:14px">
@@ -2433,6 +2441,18 @@ function fetchAI() {
     checkinBlock += '\n';
   }
 
+  // Build goal priority context
+  var goalPriorityContext = '';
+  var profileGoals = (currentProfileData && currentProfileData.goals) || [];
+  if (profileGoals.length) {
+    goalPriorityContext = 'GOAL PRIORITIES (most to least important):\n';
+    for (var gi = 0; gi < profileGoals.length; gi++) {
+      var pg = profileGoals[gi];
+      goalPriorityContext += (gi + 1) + '. ' + pg.title + (pg.target_value ? ' (target: ' + pg.target_value + ' ' + (pg.unit || '') + ')' : '') + '\n';
+    }
+    goalPriorityContext += '\nIMPORTANT: Weight workout recommendations toward top-ranked goals. Goal #1 should influence ~40% of recommendations, #2 ~25%, #3 ~15%, remaining goals share rest. Always mention which goal each workout option targets.\n\n';
+  }
+
   var prompt = 'You are ApexCoach, an elite personal AI coach for ' + athleteName + '. You know everything about them. Give ' + aiNumOpts + ' specific, data-driven workout options for today, ordered by best fit first.\n\n' +
     'COACHING STYLE: ' + aiTone + ' tone. ' + aiLang + ' language. Detail level: ' + aiDetail + '.\n' +
     'AVAILABLE EQUIPMENT: ' + equipStr + '\n' +
@@ -2446,10 +2466,11 @@ function fetchAI() {
     (truncatedCoachingBrief ? 'RECENT COACHING BRIEF:\n' + truncatedCoachingBrief + '\n\n' : '') +
     truncatedExerciseContext +
     'FULL ATHLETE PROFILE:\n' + FULL_PROFILE + '\n\n' +
+    goalPriorityContext +
     'WEEKLY SCHEDULE DEFAULTS:\n' + getScheduleText() + '\n\n' +
     rulesBlock +
     'Respond ONLY with raw JSON, no markdown:\n' +
-    '{"brief":"one sentence overall context for today","options":[{"type":"workout category","headline":"punchy 6-8 word name","duration":45,"intensity":"descriptor","reasoning":"why this fits today, reference numbers","exercises":["exercise + sets/reps","exercise + sets/reps","exercise + sets/reps"],"mobility":"specific focus"},{"type":"category","headline":"name","duration":30,"intensity":"descriptor","reasoning":"why this alternative","exercises":["ex","ex","ex"],"mobility":"focus"}' + (aiNumOpts >= 3 ? ',{"type":"category","headline":"name","duration":20,"intensity":"descriptor","reasoning":"why this shorter option","exercises":["ex","ex"],"mobility":"focus"}' : '') + (aiNumOpts >= 4 ? ',{"type":"category","headline":"name","duration":15,"intensity":"descriptor","reasoning":"why this option","exercises":["ex","ex"],"mobility":"focus"}' : '') + ']' + (aiShowMV ? ',"minimum_viable":"genuine 10-15 min fallback"' : '') + ',"warning":"one specific caution based on the data, or null"}';
+    '{"brief":"one sentence overall context for today","options":[{"type":"workout category","headline":"punchy 6-8 word name","duration":45,"intensity":"descriptor","reasoning":"why this fits today, reference numbers","exercises":["exercise + sets/reps","exercise + sets/reps","exercise + sets/reps"],"mobility":"specific focus","goal_tags":["goal title this targets"],"goal_reasoning":"how this workout advances the tagged goal"},{"type":"category","headline":"name","duration":30,"intensity":"descriptor","reasoning":"why this alternative","exercises":["ex","ex","ex"],"mobility":"focus","goal_tags":["goal"],"goal_reasoning":"reason"}' + (aiNumOpts >= 3 ? ',{"type":"category","headline":"name","duration":20,"intensity":"descriptor","reasoning":"why this shorter option","exercises":["ex","ex"],"mobility":"focus","goal_tags":["goal"],"goal_reasoning":"reason"}' : '') + (aiNumOpts >= 4 ? ',{"type":"category","headline":"name","duration":15,"intensity":"descriptor","reasoning":"why this option","exercises":["ex","ex"],"mobility":"focus","goal_tags":["goal"],"goal_reasoning":"reason"}' : '') + ']' + (aiShowMV ? ',"minimum_viable":"genuine 10-15 min fallback"' : '') + ',"warning":"one specific caution based on the data, or null"}';
 
   // Truncate prompt if too long (>8000 chars)
   if (prompt.length > 8000) {
@@ -2497,10 +2518,11 @@ function fetchAI() {
       (truncatedCoachingBrief ? 'RECENT COACHING BRIEF:\n' + truncatedCoachingBrief + '\n\n' : '') +
       truncatedExerciseContext +
       'FULL ATHLETE PROFILE:\n' + FULL_PROFILE + '\n\n' +
+      goalPriorityContext +
       'WEEKLY SCHEDULE DEFAULTS:\n' + getScheduleText() + '\n\n' +
       rulesBlock +
       'Respond ONLY with raw JSON, no markdown:\n' +
-      '{"brief":"one sentence overall context for today","options":[{"type":"workout category","headline":"punchy 6-8 word name","duration":45,"intensity":"descriptor","reasoning":"why this fits today, reference numbers","exercises":["exercise + sets/reps","exercise + sets/reps","exercise + sets/reps"],"mobility":"specific focus"},{"type":"category","headline":"name","duration":30,"intensity":"descriptor","reasoning":"why this alternative","exercises":["ex","ex","ex"],"mobility":"focus"}' + (aiNumOpts >= 3 ? ',{"type":"category","headline":"name","duration":20,"intensity":"descriptor","reasoning":"why this shorter option","exercises":["ex","ex"],"mobility":"focus"}' : '') + (aiNumOpts >= 4 ? ',{"type":"category","headline":"name","duration":15,"intensity":"descriptor","reasoning":"why this option","exercises":["ex","ex"],"mobility":"focus"}' : '') + ']' + (aiShowMV ? ',"minimum_viable":"genuine 10-15 min fallback"' : '') + ',"warning":"one specific caution based on the data, or null"}';
+      '{"brief":"one sentence overall context for today","options":[{"type":"workout category","headline":"punchy 6-8 word name","duration":45,"intensity":"descriptor","reasoning":"why this fits today, reference numbers","exercises":["exercise + sets/reps","exercise + sets/reps","exercise + sets/reps"],"mobility":"specific focus","goal_tags":["goal title this targets"],"goal_reasoning":"how this workout advances the tagged goal"},{"type":"category","headline":"name","duration":30,"intensity":"descriptor","reasoning":"why this alternative","exercises":["ex","ex","ex"],"mobility":"focus","goal_tags":["goal"],"goal_reasoning":"reason"}' + (aiNumOpts >= 3 ? ',{"type":"category","headline":"name","duration":20,"intensity":"descriptor","reasoning":"why this shorter option","exercises":["ex","ex"],"mobility":"focus","goal_tags":["goal"],"goal_reasoning":"reason"}' : '') + (aiNumOpts >= 4 ? ',{"type":"category","headline":"name","duration":15,"intensity":"descriptor","reasoning":"why this option","exercises":["ex","ex"],"mobility":"focus","goal_tags":["goal"],"goal_reasoning":"reason"}' : '') + ']' + (aiShowMV ? ',"minimum_viable":"genuine 10-15 min fallback"' : '') + ',"warning":"one specific caution based on the data, or null"}';
   }
 
   console.log('[ApexCoach] AI prompt length:', prompt.length, 'chars');
@@ -2623,9 +2645,20 @@ function renderAI() {
     html += '<span class="mono" style="font-size:12px;color:var(--text-muted)">' + o.duration + 'min - ' + o.intensity + '</span>';
     html += '</div>';
     html += '<div class="oswald" style="font-size:20px;font-weight:600;color:var(--text-bright);margin-bottom:4px">' + o.headline + '</div>';
-    html += '<div class="mono" style="font-size:12px;color:var(--text-muted);margin-bottom:' + (isExpanded ? '12' : '0') + 'px">' + o.type + '</div>';
+    html += '<div class="mono" style="font-size:12px;color:var(--text-muted);margin-bottom:' + ((o.goal_tags && o.goal_tags.length) ? '8' : (isExpanded ? '12' : '0')) + 'px">' + o.type + '</div>';
+    // Goal tags
+    if (o.goal_tags && o.goal_tags.length) {
+      html += '<div style="display:flex;flex-wrap:wrap;gap:5px;margin-bottom:' + (isExpanded ? '10' : '0') + 'px">';
+      for (var gt = 0; gt < o.goal_tags.length; gt++) {
+        html += '<span style="font-size:11px;color:#f5a623;background:#f5a62312;border:1px solid #f5a62322;padding:2px 8px;border-radius:10px;font-family:IBM Plex Mono,monospace">&rarr; ' + o.goal_tags[gt] + '</span>';
+      }
+      html += '</div>';
+    }
 
     if (isExpanded) {
+      if (o.goal_reasoning) {
+        html += '<p style="font-size:13px;color:#c8a060;font-style:italic;line-height:1.6;margin-bottom:10px">' + o.goal_reasoning + '</p>';
+      }
       html += '<p style="font-size:14px;color:var(--text-sec);line-height:1.75;margin-bottom:12px">' + o.reasoning + '</p>';
       var exes = o.exercises || [];
       html += '<div style="margin-bottom:10px">';
@@ -2934,6 +2967,13 @@ function renderProfileGoals() {
     var prog = cached && cached[i] ? cached[i] : null;
 
     html += '<div style="background:var(--bg-input);border:1px solid var(--border);border-radius:8px;padding:16px;position:relative">';
+    // Priority indicator (only if >1 goal)
+    if (pGoals.length > 1) {
+      var prioNum = g.priority || (i + 1);
+      var prioColors = ['#22c97a', '#f5a623', '#4488bb'];
+      var prioC = prioColors[prioNum - 1] || 'var(--text-dim)';
+      html += '<div style="position:absolute;top:10px;left:10px;width:22px;height:22px;border-radius:50%;background:' + hexA(prioC,'18') + ';border:1px solid ' + hexA(prioC,'44') + ';display:flex;align-items:center;justify-content:center;font-family:Oswald,sans-serif;font-size:11px;font-weight:700;color:' + prioC + '">' + prioNum + '</div>';
+    }
     // Edit button
     html += '<button onclick="openGoalUpdate(' + i + ')" style="position:absolute;top:10px;right:10px;background:transparent;border:none;color:var(--text-dim);cursor:pointer;font-size:14px;padding:2px" title="Update progress">&#9998;</button>';
     html += '<div style="font-size:22px;margin-bottom:8px">' + (g.emoji || '\uD83C\uDFAF') + '</div>';
@@ -3192,6 +3232,123 @@ function updateGoalStatus(idx, newStatus) {
   pd.goals[idx].status = newStatus;
   saveProfileDataToServer(pd);
   renderProfileGoals();
+}
+
+// ── GOAL PRIORITY RANKING ────────────────────────────────────────────────
+var goalPriorityOrder = [];
+var goalDragIdx = -1;
+
+function enterGoalPriorityMode() {
+  var pd = currentProfileData || {};
+  var goals = pd.goals || [];
+  if (goals.length < 2) { showToast('Need at least 2 goals to prioritize'); return; }
+  goalPriorityOrder = goals.map(function(g, i) { return i; });
+  document.getElementById('goals-display').style.display = 'none';
+  document.getElementById('goals-priority').style.display = 'block';
+  document.getElementById('goal-priority-btn').style.display = 'none';
+  document.getElementById('goal-edit-btn').style.display = 'none';
+  renderGoalPriorityList();
+}
+
+function cancelGoalPriority() {
+  document.getElementById('goals-display').style.display = '';
+  document.getElementById('goals-priority').style.display = 'none';
+  document.getElementById('goal-priority-btn').style.display = '';
+  document.getElementById('goal-edit-btn').style.display = '';
+}
+
+function saveGoalPriority() {
+  var pd = currentProfileData || {};
+  var goals = pd.goals || [];
+  var reordered = [];
+  for (var i = 0; i < goalPriorityOrder.length; i++) {
+    var g = goals[goalPriorityOrder[i]];
+    g.priority = i + 1;
+    reordered.push(g);
+  }
+  pd.goals = reordered;
+  saveProfileDataToServer(pd);
+  cancelGoalPriority();
+  renderProfileGoals();
+  showToast('Priority saved!');
+  // Clear goal progress cache since order changed
+  localStorage.removeItem('ac_goal_progress');
+}
+
+function renderGoalPriorityList() {
+  var pd = currentProfileData || {};
+  var goals = pd.goals || [];
+  var el = document.getElementById('goals-priority-list');
+  var prioColors = ['#22c97a', '#f5a623', '#4488bb', '#9966cc', '#777', '#555'];
+  var isMobile = window.innerWidth < 768;
+  var html = '';
+  for (var i = 0; i < goalPriorityOrder.length; i++) {
+    var gi = goalPriorityOrder[i];
+    var g = goals[gi];
+    var pc = prioColors[i] || '#444';
+    html += '<div class="gp-item" data-idx="' + i + '" draggable="' + (isMobile ? 'false' : 'true') + '" ' +
+      (isMobile ? '' : 'ondragstart="gpDragStart(event,' + i + ')" ondragover="gpDragOver(event)" ondrop="gpDrop(event,' + i + ')" ondragend="gpDragEnd()" ') +
+      'style="display:flex;align-items:center;gap:10px;background:var(--bg-input);border:1px solid var(--border);border-radius:8px;padding:12px;transition:border-color .2s">';
+    // Priority number
+    html += '<div style="width:28px;height:28px;border-radius:50%;background:' + hexA(pc,'20') + ';border:1px solid ' + hexA(pc,'44') + ';display:flex;align-items:center;justify-content:center;font-family:Oswald,sans-serif;font-size:14px;font-weight:700;color:' + pc + ';flex-shrink:0">' + (i + 1) + '</div>';
+    // Drag handle (desktop) or arrows (mobile)
+    if (isMobile) {
+      html += '<div style="display:flex;flex-direction:column;gap:2px;flex-shrink:0">';
+      html += '<button onclick="gpMoveUp(' + i + ')" style="background:transparent;border:1px solid var(--border);color:var(--text-muted);width:28px;height:22px;border-radius:4px;cursor:pointer;font-size:12px;padding:0"' + (i === 0 ? ' disabled style="opacity:0.3;background:transparent;border:1px solid var(--border);color:var(--text-muted);width:28px;height:22px;border-radius:4px;cursor:default;font-size:12px;padding:0"' : '') + '>&uarr;</button>';
+      html += '<button onclick="gpMoveDown(' + i + ')" style="background:transparent;border:1px solid var(--border);color:var(--text-muted);width:28px;height:22px;border-radius:4px;cursor:pointer;font-size:12px;padding:0"' + (i === goalPriorityOrder.length - 1 ? ' disabled style="opacity:0.3;background:transparent;border:1px solid var(--border);color:var(--text-muted);width:28px;height:22px;border-radius:4px;cursor:default;font-size:12px;padding:0"' : '') + '>&darr;</button>';
+      html += '</div>';
+    } else {
+      html += '<span style="cursor:grab;font-size:18px;color:var(--text-dim);flex-shrink:0;user-select:none" title="Drag to reorder">&#9776;</span>';
+    }
+    // Goal info
+    html += '<div style="flex:1;min-width:0">';
+    html += '<div style="font-size:15px;font-weight:600;color:var(--text-bright);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">' + (g.emoji || '&#127919;') + ' ' + (g.title || 'Untitled') + '</div>';
+    html += '</div>';
+    html += '</div>';
+  }
+  el.innerHTML = html;
+}
+
+function gpMoveUp(idx) {
+  if (idx <= 0) return;
+  var tmp = goalPriorityOrder[idx];
+  goalPriorityOrder[idx] = goalPriorityOrder[idx - 1];
+  goalPriorityOrder[idx - 1] = tmp;
+  renderGoalPriorityList();
+}
+
+function gpMoveDown(idx) {
+  if (idx >= goalPriorityOrder.length - 1) return;
+  var tmp = goalPriorityOrder[idx];
+  goalPriorityOrder[idx] = goalPriorityOrder[idx + 1];
+  goalPriorityOrder[idx + 1] = tmp;
+  renderGoalPriorityList();
+}
+
+function gpDragStart(e, idx) {
+  goalDragIdx = idx;
+  e.dataTransfer.effectAllowed = 'move';
+  e.target.style.opacity = '0.5';
+}
+
+function gpDragOver(e) {
+  e.preventDefault();
+  e.dataTransfer.dropEffect = 'move';
+}
+
+function gpDrop(e, dropIdx) {
+  e.preventDefault();
+  if (goalDragIdx < 0 || goalDragIdx === dropIdx) return;
+  var item = goalPriorityOrder.splice(goalDragIdx, 1)[0];
+  goalPriorityOrder.splice(dropIdx, 0, item);
+  goalDragIdx = -1;
+  renderGoalPriorityList();
+}
+
+function gpDragEnd() {
+  goalDragIdx = -1;
+  var items = document.querySelectorAll('.gp-item');
+  for (var i = 0; i < items.length; i++) items[i].style.opacity = '1';
 }
 
 function saveProfileDataToServer(pd) {
