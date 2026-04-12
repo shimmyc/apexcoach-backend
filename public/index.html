@@ -1907,29 +1907,60 @@ function loadDailyCheckinFromLocalStorage() {
   }
 }
 
+function checkinDataChanged(a, b) {
+  if (!a && !b) return false;
+  if (!a || !b) return true;
+  return (a.energy || '') !== (b.energy || '') ||
+    (a.severity || '') !== (b.severity || '') ||
+    (a.checkin_text || a.text || '') !== (b.checkin_text || b.text || '') ||
+    JSON.stringify(a.soreness || []) !== JSON.stringify(b.soreness || []);
+}
+
+function fetchTodayCheckin(silent) {
+  if (!currentProfileId) return;
+  fetch('/api/profiles/' + currentProfileId + '/checkin?date=' + ds(0))
+    .then(function(r) { return r.json(); })
+    .then(function(data) {
+      if (data.checkin) {
+        if (!silent || checkinDataChanged(dailyCheckin, data.checkin)) {
+          applyCheckinData(data.checkin);
+        }
+      } else if (!silent && !loadDailyCheckinFromLocalStorage()) {
+        // No check-in anywhere — show input card (already default)
+      }
+    })
+    .catch(function() {
+      if (!silent) loadDailyCheckinFromLocalStorage();
+    });
+}
+
 function showFeelingCheckinCard() {
   var card = document.getElementById('feeling-checkin-card');
   if (!card) return;
   card.style.display = 'block';
-  // Try Supabase first, fall back to localStorage
-  if (currentProfileId) {
-    fetch('/api/profiles/' + currentProfileId + '/checkin?date=' + ds(0))
-      .then(function(r) { return r.json(); })
-      .then(function(data) {
-        if (data.checkin) {
-          applyCheckinData(data.checkin);
-        } else if (!loadDailyCheckinFromLocalStorage()) {
-          // No check-in anywhere — show input card (already default)
-        }
-      })
-      .catch(function() {
-        // Network error — fall back to localStorage
-        loadDailyCheckinFromLocalStorage();
-      });
-  } else {
-    loadDailyCheckinFromLocalStorage();
-  }
+  fetchTodayCheckin(false);
 }
+
+// Poll for check-in updates every 5 minutes
+var _fcPollId = null;
+function startCheckinPolling() {
+  if (_fcPollId) clearInterval(_fcPollId);
+  _fcPollId = setInterval(function() {
+    if (currentProfileId && dailyCheckin) fetchTodayCheckin(true);
+  }, 5 * 60 * 1000);
+}
+startCheckinPolling();
+
+// Sync check-in and workouts when app comes back into focus
+document.addEventListener('visibilitychange', function() {
+  if (document.hidden || !currentProfileId) return;
+  fetchTodayCheckin(true);
+  loadWorkouts().then(function() {
+    renderLogArea();
+    if (typeof renderCalendar === 'function') renderCalendar();
+    if (typeof renderSessionsList === 'function') renderSessionsList();
+  });
+});
 
 var checkinRecognition = null;
 function startCheckinVoice() {
