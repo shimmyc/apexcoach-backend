@@ -4087,24 +4087,15 @@ function saveWorkout() {
   var notes = document.getElementById('wnotes').value;
   var autoFormat = localStorage.getItem('ac_auto_format') !== 'false';
 
-  // Auto-format notes if enabled and notes exist
+  // If auto-format is on and there are notes, format first then save
   if (autoFormat && notes.trim().length > 0 && !editingWorkoutId) {
-    var saveBtn = document.querySelector('.modal .btnPri');
+    var saveBtn = document.querySelector('#log-modal .btnPri');
     if (saveBtn) { saveBtn.textContent = 'Formatting...'; saveBtn.disabled = true; }
-    fetch('/api/ai', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ model: 'claude-sonnet-4-20250514', max_tokens: 600, messages: [{ role: 'user', content: 'Format these workout notes into a clean structured list. Rules:\n- Each exercise on its own line with sets/reps/weight formatted cleanly\n- PRESERVE ALL subjective notes exactly as written\n- Put exercise lines first, then a Notes: section with subjective content\n- Return ONLY the formatted text, no explanation\n\n' + notes }] })
-    })
-    .then(function(r) { return r.json(); })
-    .then(function(data) {
-      var formatted = (data.content && data.content[0]) ? data.content[0].text.trim() : notes;
-      document.getElementById('wnotes').value = formatted;
-      if (saveBtn) { saveBtn.textContent = 'Save'; saveBtn.disabled = false; }
+
+    formatNotesWithAI().then(function() {
       doSaveWorkout();
-    })
-    .catch(function() {
-      if (saveBtn) { saveBtn.textContent = 'Save'; saveBtn.disabled = false; }
+    }).catch(function() {
+      // Format failed — save with original notes
       doSaveWorkout();
     });
     return;
@@ -4113,6 +4104,10 @@ function saveWorkout() {
 }
 
 function doSaveWorkout() {
+  // Reset save button state
+  var saveBtn = document.querySelector('#log-modal .btnPri');
+  if (saveBtn) { saveBtn.textContent = 'Save'; saveBtn.disabled = false; }
+
   var type = document.getElementById('wtype').value;
   if (!type) return;
   var medDone = document.getElementById('wmed').checked;
@@ -4965,10 +4960,9 @@ function initAutoFormatToggle() {
 
 function formatNotesWithAI() {
   var notes = document.getElementById('wnotes').value;
-  if (!notes.trim()) return;
-  var type = document.getElementById('wtype').value;
+  if (!notes.trim()) return Promise.resolve();
   document.getElementById('voice-status').textContent = 'Formatting with AI...';
-  fetch('/api/ai', {
+  return fetch('/api/ai', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
