@@ -129,6 +129,53 @@ input[type=range]{width:100%;accent-color:var(--accent)}
 .log-card-chevron{transition:transform .2s ease;display:inline-block}
 .log-card-chevron.open{transform:rotate(180deg)}
 
+/* ── FULL-PAGE ONBOARDING / PROFILE BUILDER ──────────────────────── */
+.ob-overlay{position:fixed;inset:0;background:#080a0f;z-index:100;display:flex;flex-direction:column;overflow:hidden}
+.ob-header{height:60px;display:flex;align-items:center;justify-content:space-between;padding:0 20px;flex-shrink:0;position:relative}
+.ob-back{background:none;border:none;color:#888;font-size:22px;cursor:pointer;padding:8px;min-width:40px;min-height:44px;display:flex;align-items:center}
+.ob-progress-text{font-family:'IBM Plex Mono',monospace;font-size:13px;color:#888;letter-spacing:1px}
+.ob-skip{background:none;border:none;color:#888;font-size:14px;cursor:pointer;padding:8px 12px;font-family:'DM Sans',sans-serif;min-height:44px}
+.ob-skip:hover{color:#ccc}
+.ob-progress-bar{position:absolute;bottom:0;left:0;right:0;height:3px;background:#1a1c22}
+.ob-progress-fill{height:100%;background:#22c97a;transition:width .4s cubic-bezier(.4,0,.2,1)}
+.ob-viewport{flex:1;overflow:hidden;position:relative}
+.ob-slide-track{display:flex;width:100%;height:100%;transition:transform 300ms ease}
+.ob-slide{min-width:100%;height:100%;display:flex;flex-direction:column;align-items:center;justify-content:flex-start;padding:40px 20px 120px;overflow-y:auto}
+.ob-emoji{font-size:48px;margin-bottom:16px;line-height:1}
+.ob-title{font-family:'Oswald',sans-serif;font-size:28px;color:#fff;text-align:center;font-weight:600;margin-bottom:10px;line-height:1.3}
+.ob-subtitle{font-size:15px;color:#888;text-align:center;line-height:1.6;max-width:480px;margin-bottom:28px}
+.ob-answer-area{width:100%;max-width:480px}
+.ob-textarea{width:100%;background:#0d0f16;border:1px solid #1a1c22;color:#e0e0e0;padding:16px;padding-right:50px;border-radius:12px;font-size:16px;font-family:'DM Sans',sans-serif;resize:none;outline:none;min-height:52px;line-height:1.5;transition:border-color .2s}
+.ob-textarea:focus{border-color:#22c97a}
+.ob-textarea::placeholder{color:#444}
+.ob-textarea-wrap{position:relative;width:100%}
+.ob-mic{position:absolute;right:12px;bottom:12px;background:#22c97a18;border:1px solid #22c97a33;color:#22c97a;border-radius:8px;padding:6px 10px;cursor:pointer;font-size:16px;min-width:40px;min-height:40px;display:flex;align-items:center;justify-content:center}
+.ob-pills{display:flex;flex-wrap:wrap;gap:10px;width:100%;max-width:480px}
+.ob-pill{background:#0d0f16;border:2px solid #1a1c22;color:#ccc;border-radius:14px;cursor:pointer;font-size:15px;font-family:'DM Sans',sans-serif;transition:all .2s;text-align:center;min-height:52px;display:flex;align-items:center;justify-content:center;padding:12px 20px}
+.ob-pill:hover{border-color:#22c97a44}
+.ob-pill.selected{border-color:#22c97a;background:#22c97a18;color:#22c97a}
+.ob-pill-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;width:100%;max-width:480px}
+.ob-pill-full{width:100%}
+.ob-footer{position:fixed;bottom:0;left:0;right:0;padding:12px 20px 20px;background:linear-gradient(transparent,#080a0f 30%);z-index:101}
+.ob-continue{width:100%;max-width:480px;margin:0 auto;display:block;height:52px;background:#22c97a;color:#040605;border:none;border-radius:12px;font-size:16px;font-weight:700;cursor:pointer;font-family:'DM Sans',sans-serif;transition:opacity .2s}
+.ob-continue:disabled{opacity:.3;cursor:default}
+.ob-welcome{display:flex;flex-direction:column;align-items:center;justify-content:center;height:100%;text-align:center;padding:40px 20px}
+.ob-gen-screen{display:flex;flex-direction:column;align-items:center;justify-content:center;height:100%;text-align:center;padding:40px 20px}
+@keyframes obPulse{0%,100%{transform:scale(1)}50%{transform:scale(1.15)}}
+.ob-gen-emoji{font-size:64px;animation:obPulse 2s ease-in-out infinite}
+.ob-gen-bar{width:240px;height:4px;background:#1a1c22;border-radius:2px;overflow:hidden;margin-top:24px}
+.ob-gen-fill{height:100%;background:#22c97a;border-radius:2px;transition:width .3s linear}
+.ob-pin-screen{display:flex;flex-direction:column;align-items:center;justify-content:center;height:100%;padding:40px 20px}
+.ob-pin-boxes{display:flex;gap:12px;margin-bottom:24px}
+.ob-pin-box{width:56px;height:72px;background:#0d0f16;border:2px solid #1a1c22;border-radius:12px;font-size:28px;color:#fff;text-align:center;font-family:'IBM Plex Mono',monospace;outline:none;caret-color:transparent}
+.ob-pin-box:focus{border-color:#22c97a}
+.ob-pin-box.filled{border-color:#22c97a44}
+.ob-pin-label{font-size:13px;color:#888;margin-bottom:10px;font-family:'IBM Plex Mono',monospace;letter-spacing:1px}
+.ob-success-screen{display:flex;flex-direction:column;align-items:center;justify-content:center;height:100%;padding:40px 20px;text-align:center}
+@keyframes obBounce{0%{transform:scale(0)}50%{transform:scale(1.2)}100%{transform:scale(1)}}
+.ob-success-emoji{font-size:64px;animation:obBounce .5s ease}
+.ob-device-input{margin-top:12px;width:100%;max-width:480px}
+
 /* ── BOTTOM NAV (mobile) ──────────────────────────────────────────── */
 @media(max-width:768px){
   .desktop-nav{display:none}
@@ -223,21 +270,9 @@ input[type=range]{width:100%;accent-color:var(--accent)}
   </div>
 </div>
 
-<!-- ONBOARDING -->
-<div id="onboard-screen" style="display:none;min-height:100vh;padding:40px 20px;max-width:600px;margin:0 auto">
-  <div style="text-align:center;margin-bottom:30px">
-    <span class="logo" style="font-size:28px">APEX</span><span class="logosub" style="font-size:11px;color:var(--accent-44)">COACH</span>
-    <p class="mono" style="font-size:12px;color:var(--text-dim);letter-spacing:2px;margin-top:8px">NEW PROFILE SETUP</p>
-  </div>
-  <div id="onboard-chat" style="display:flex;flex-direction:column;gap:12px;margin-bottom:20px"></div>
-  <div id="onboard-input-area" style="display:flex;gap:8px;align-items:flex-end">
-    <div style="flex:1;position:relative">
-      <textarea id="onboard-input" rows="3" placeholder="Type your answer..." style="width:100%;background:var(--bg-input);border:1px solid var(--border-accent);color:var(--text);padding:14px 44px 14px 14px;border-radius:8px;font-size:16px;outline:none;font-family:'DM Sans',sans-serif;resize:none;line-height:1.5;overflow-y:hidden" onkeydown="if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();submitOnboardAnswer()}" oninput="autoExpandOnboard(this)"></textarea>
-      <button onclick="startOnboardVoice()" id="onboard-mic" style="position:absolute;right:8px;top:10px;background:var(--accent-18);border:1px solid var(--accent-33);color:var(--accent);border-radius:6px;padding:6px 10px;cursor:pointer;font-size:14px">🎙</button>
-    </div>
-    <button onclick="submitOnboardAnswer()" class="btnPri" style="padding:14px 20px;font-size:15px">Send</button>
-  </div>
-  <div id="onboard-status" class="mono" style="font-size:11px;color:#555;margin-top:8px;min-height:18px"></div>
+<!-- ONBOARDING (full-page paginated) -->
+<div id="onboard-screen" class="ob-overlay" style="display:none">
+  <!-- filled dynamically by onboarding JS -->
 </div>
 
 <!-- APP SHELL -->
@@ -743,26 +778,9 @@ input[type=range]{width:100%;accent-color:var(--accent)}
   </div>
 </div>
 
-<!-- BUILD PROFILE MODAL -->
-<div class="overlay" id="profile-builder-modal" style="display:none" onclick="closeProfileBuilder()">
-  <div class="modal" onclick="event.stopPropagation()" style="max-width:560px;max-height:90vh;display:flex;flex-direction:column">
-    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;flex-shrink:0">
-      <p class="mono" style="font-size:12px;color:#22c97a;letter-spacing:3px" id="pb-title">BUILD YOUR PROFILE</p>
-      <button onclick="closeProfileBuilder()" style="background:transparent;border:none;color:#555;font-size:20px;cursor:pointer;padding:4px 8px">&times;</button>
-    </div>
-    <div id="pb-section-select" style="display:flex;flex-direction:column;gap:8px;flex-shrink:0"></div>
-    <div id="pb-chat" style="display:none;flex:1;overflow-y:auto;flex-direction:column;gap:12px;margin-bottom:14px;padding-right:4px"></div>
-    <div id="pb-input-area" style="display:none;flex-shrink:0">
-      <div style="display:flex;gap:8px">
-        <div style="flex:1;position:relative">
-          <input id="pb-input" type="text" placeholder="Type your answer..." style="width:100%;background:var(--bg-input);border:1px solid var(--border-accent);color:var(--text);padding:14px 44px 14px 14px;border-radius:8px;font-size:15px;outline:none;font-family:'DM Sans',sans-serif" onkeyup="if(event.key==='Enter')submitPBAnswer()">
-          <button onclick="startPBVoice()" id="pb-mic" style="position:absolute;right:8px;top:8px;background:var(--accent-18);border:1px solid var(--accent-33);color:var(--accent);border-radius:6px;padding:6px 10px;cursor:pointer;font-size:14px">&#127908;</button>
-        </div>
-        <button onclick="submitPBAnswer()" class="btnPri" style="padding:14px 20px;font-size:15px">Send</button>
-      </div>
-      <div id="pb-status" class="mono" style="font-size:11px;color:#555;margin-top:6px;min-height:16px"></div>
-    </div>
-  </div>
+<!-- BUILD PROFILE (full-page paginated) -->
+<div id="profile-builder-screen" class="ob-overlay" style="display:none">
+  <!-- filled dynamically by profile builder JS -->
 </div>
 
 <!-- CHANGE PIN MODAL -->
@@ -903,7 +921,7 @@ var AVATAR_COLORS = ['#22c97a','#4488bb','#f5a623','#9966cc','#e84545','#f07020'
 
 function showScreen(name) {
   document.getElementById('profile-screen').style.display = name === 'profiles' ? 'flex' : 'none';
-  document.getElementById('onboard-screen').style.display = name === 'onboard' ? 'block' : 'none';
+  document.getElementById('onboard-screen').style.display = name === 'onboard' ? 'flex' : 'none';
   document.getElementById('app-shell').style.display = name === 'app' ? '' : 'none';
 }
 
@@ -1056,183 +1074,419 @@ function updateProfileIcon() {
   }
 }
 
-// ── ONBOARDING ────────────────────────────────────────────────────────────
-var onboardStep = 0;
-var onboardAnswers = {};
-var onboardRecognition = null;
-var ONBOARD_QUESTIONS = [
-  { key: 'name', q: "What's your name?" },
-  { key: 'goals', q: "What's your main fitness goal right now? (e.g. lose weight, build muscle, run a 5k, get my black belt — anything goes)" },
-  { key: 'injuries', q: "Any injuries or physical limitations I should always know about? If none, just say none." },
-  { key: 'days', q: "How many days a week can you realistically commit to training?" },
-  { key: 'fitbit', q: "Do you have a Fitbit? (yes/no)" },
+// ── ONBOARDING (full-page paginated) ──────────────────────────────────────
+var onboardingAnswers = { name:'', goal:'', injuries:'', days:0, tracker:'', trackerDevice:'', experience:'', schedule:'' };
+var obStep = -1; // -1=welcome, 0-6=questions, 7=generating, 8=pin, 9=success
+var obRecognition = null;
+var OB_QUESTIONS = [
+  { key:'name', emoji:'\uD83D\uDC4B', title:"What's your name?", subtitle:"We'll use this to personalize your experience", input:'textarea-single', required:true },
+  { key:'goal', emoji:'\uD83C\uDFAF', title:"What's your #1 fitness goal right now?", subtitle:"Could be anything \u2014 lose weight, build muscle, run a 5k, get your black belt, hike a mountain. The more specific the better!", input:'textarea', required:true },
+  { key:'injuries', emoji:'\uD83E\uDE7A', title:"Any injuries or physical limitations?", subtitle:"This helps your AI coach keep you safe. Include anything that affects how you train \u2014 even old injuries that flare up occasionally. Type \u2018none\u2019 if you\u2019re all good!", input:'textarea', required:true },
+  { key:'days', emoji:'\uD83D\uDCC5', title:"How many days per week can you realistically train?", subtitle:"Be honest \u2014 we\u2019ll build around your actual life, not an ideal version of it", input:'pills-grid', options:['1 day','2 days','3 days','4 days','5 days','6 days'], required:true },
+  { key:'tracker', emoji:'\u231A', title:"Do you have a fitness tracker?", subtitle:"Connecting a tracker unlocks your personalized readiness score, sleep analysis, and HRV tracking", input:'pills-full', options:['Yes, I have a Fitbit','Yes, different device','No tracker yet'], required:true, followUp:{ trigger:'Yes, different device', key:'trackerDevice', placeholder:'Which device? (Apple Watch, Garmin, Whoop, Samsung, other)' } },
+  { key:'experience', emoji:'\uD83D\uDCAA', title:"How would you describe your fitness experience?", subtitle:"No judgment \u2014 this helps calibrate your AI recommendations", input:'pills-full', options:['\uD83C\uDF31 Just starting out','\uD83C\uDFC3 Some experience (1-2 years)','\uD83D\uDCAA Pretty athletic (3+ years)','\uD83C\uDFC6 Very experienced / former athlete'], required:true },
+  { key:'schedule', emoji:'\uD83D\uDDD3', title:"Any fixed training days in your schedule?", subtitle:"For example \u2018Tuesday and Thursday are my MMA days\u2019. Skip if your schedule is flexible", input:'textarea', required:false, skippable:true }
 ];
-var onboardDynamicQueue = [];
 
 function startOnboarding() {
   showScreen('onboard');
-  onboardStep = 0;
-  onboardAnswers = {};
-  onboardDynamicQueue = [];
-  document.getElementById('onboard-chat').innerHTML = '';
-  document.getElementById('onboard-status').textContent = '';
-  askOnboardQuestion();
+  onboardingAnswers = { name:'', goal:'', injuries:'', days:0, tracker:'', trackerDevice:'', experience:'', schedule:'' };
+  obStep = -1;
+  if (obRecognition) { obRecognition.stop(); obRecognition = null; }
+  obRender();
 }
 
-function askOnboardQuestion() {
-  // Check dynamic queue first
-  if (onboardDynamicQueue.length > 0) {
-    var dq = onboardDynamicQueue[0];
-    var chat = document.getElementById('onboard-chat');
-    chat.innerHTML += '<div style="background:#22c97a10;border:1px solid #22c97a22;border-radius:10px;padding:12px 16px;max-width:80%;align-self:flex-start"><p style="font-size:15px;color:#22c97a;line-height:1.6">' + dq.q + '</p></div>';
-    chat.scrollTop = chat.scrollHeight;
-    document.getElementById('onboard-input').value = '';
-    document.getElementById('onboard-input').focus();
-    return;
-  }
-  if (onboardStep >= ONBOARD_QUESTIONS.length) {
-    finishOnboarding();
-    return;
-  }
-  var q = ONBOARD_QUESTIONS[onboardStep];
-  var chat = document.getElementById('onboard-chat');
-  chat.innerHTML += '<div style="background:#22c97a10;border:1px solid #22c97a22;border-radius:10px;padding:12px 16px;max-width:80%;align-self:flex-start"><p style="font-size:15px;color:#22c97a;line-height:1.6">' + q.q + '</p></div>';
-  chat.scrollTop = chat.scrollHeight;
-  document.getElementById('onboard-input').value = '';
-  document.getElementById('onboard-input').focus();
+function obRender() {
+  var el = document.getElementById('onboard-screen');
+  if (obStep === -1) { obRenderWelcome(el); return; }
+  if (obStep === 7) { obRenderGenerating(el); return; }
+  if (obStep === 8) { obRenderPin(el); return; }
+  if (obStep === 9) { obRenderSuccess(el); return; }
+  obRenderQuestions(el);
 }
 
-function autoExpandOnboard(el) {
-  el.style.height = 'auto';
-  var maxRows = 6;
-  var lineH = parseFloat(getComputedStyle(el).lineHeight) || 24;
-  var maxH = lineH * maxRows + 28;
-  el.style.height = Math.min(el.scrollHeight, maxH) + 'px';
+function obRenderWelcome(el) {
+  el.innerHTML = '<div class="ob-welcome">' +
+    '<div style="margin-bottom:24px"><span class="logo" style="font-size:42px">APEX</span><span class="logosub" style="font-size:14px;color:#22c97a66">COACH</span></div>' +
+    '<p style="font-size:18px;color:#888;margin-bottom:8px">Your personal AI fitness coach</p>' +
+    '<p style="font-size:15px;color:#555;line-height:1.6;max-width:320px">Let\u2019s build your coaching profile.<br>Takes about 2 minutes.</p>' +
+    '<div style="position:fixed;bottom:0;left:0;right:0;padding:12px 20px 20px;background:linear-gradient(transparent,#080a0f 30%)">' +
+    '<button class="ob-continue" onclick="obStep=0;obRender()">Get Started \u2192</button></div></div>';
 }
 
-function submitOnboardAnswer() {
-  var input = document.getElementById('onboard-input');
-  var answer = input.value.trim();
-  if (!answer) return;
+function obRenderQuestions(el) {
+  var total = OB_QUESTIONS.length;
+  var q = OB_QUESTIONS[obStep];
+  // Header
+  var h = '<div class="ob-header">';
+  h += obStep > 0 ? '<button class="ob-back" onclick="obGoBack()">\u2190</button>' : '<span style="min-width:40px"></span>';
+  h += '<div style="text-align:center"><span class="ob-progress-text">' + (obStep+1) + ' of ' + total + '</span></div>';
+  h += q.skippable ? '<button class="ob-skip" onclick="obSkip()">Skip</button>' : '<span style="min-width:40px"></span>';
+  h += '<div class="ob-progress-bar"><div class="ob-progress-fill" style="width:' + ((obStep+1)/total*100) + '%"></div></div>';
+  h += '</div>';
 
-  var chat = document.getElementById('onboard-chat');
-  chat.innerHTML += '<div style="background:#0d0f16;border:1px solid #0e1016;border-radius:10px;padding:12px 16px;max-width:80%;align-self:flex-end"><p style="font-size:15px;color:#ddd;line-height:1.6">' + answer + '</p></div>';
-  input.value = '';
-
-  // Handle dynamic queue answers
-  if (onboardDynamicQueue.length > 0) {
-    var dq = onboardDynamicQueue.shift();
-    onboardAnswers[dq.key] = answer;
-    if (dq.onAnswer) dq.onAnswer(answer);
-    setTimeout(askOnboardQuestion, 400);
-    return;
+  // Build all slides
+  h += '<div class="ob-viewport"><div class="ob-slide-track" id="ob-track" style="transform:translateX(-' + (obStep*100) + '%)">';
+  for (var i = 0; i < total; i++) {
+    var qi = OB_QUESTIONS[i];
+    h += '<div class="ob-slide">';
+    h += '<div class="ob-emoji">' + qi.emoji + '</div>';
+    h += '<h2 class="ob-title">' + qi.title + '</h2>';
+    h += '<p class="ob-subtitle">' + qi.subtitle + '</p>';
+    h += '<div class="ob-answer-area">';
+    h += obBuildInput(qi, i);
+    h += '</div></div>';
   }
+  h += '</div></div>';
 
-  var q = ONBOARD_QUESTIONS[onboardStep];
-  onboardAnswers[q.key] = answer;
+  // Footer
+  var hasAnswer = obHasAnswer(obStep);
+  h += '<div class="ob-footer"><button class="ob-continue" id="ob-cont-btn"' + (q.required && !hasAnswer ? ' disabled' : '') + ' onclick="obNext()">Continue \u2192</button></div>';
+  el.innerHTML = h;
 
-  // After fitbit question: if no, ask about other trackers
-  if (q.key === 'fitbit' && !/yes|y|fitbit/i.test(answer)) {
-    onboardDynamicQueue.push({
-      key: 'wearable',
-      q: "Do you have any other fitness tracker? (Apple Watch, Garmin, Samsung, Whoop, or other)",
-      onAnswer: function(ans) {
-        var hasOther = !/no|none|nope|n\/a/i.test(ans);
-        if (hasOther) {
-          onboardAnswers.wearable = ans;
-          onboardDynamicQueue.push({
-            key: 'wearable_ack',
-            q: "We're adding support for more devices soon! For now we'll use a daily check-in to personalize your recommendations. You'll be able to connect your device when support is added. Sound good?",
-            onAnswer: function() { /* just acknowledge */ }
-          });
-        } else {
-          onboardAnswers.wearable = null;
-        }
+  // Focus textarea if applicable
+  var ta = document.getElementById('ob-ta-' + obStep);
+  if (ta) setTimeout(function(){ ta.focus(); }, 350);
+
+  // Setup keyboard handler
+  obSetupKeyboard();
+  obSetupViewport();
+
+  // Show follow-up device input if needed
+  if (q.followUp && onboardingAnswers[q.key] === q.followUp.trigger) {
+    var dv = document.getElementById('ob-device-wrap-' + obStep);
+    if (dv) dv.style.display = 'block';
+  }
+}
+
+function obBuildInput(qi, idx) {
+  var val = onboardingAnswers[qi.key] || '';
+  if (qi.input === 'textarea-single' || qi.input === 'textarea') {
+    var minH = qi.input === 'textarea-single' ? '52px' : '120px';
+    var h = '<div class="ob-textarea-wrap">';
+    h += '<textarea class="ob-textarea" id="ob-ta-' + idx + '" placeholder="Type your answer..." style="min-height:' + minH + '" oninput="obAutoExpand(this);obCheckContinue()">' + val + '</textarea>';
+    h += '<button class="ob-mic" onclick="obStartVoice(' + idx + ')" id="ob-mic-' + idx + '">\uD83C\uDF99</button>';
+    h += '</div>';
+    if (qi.followUp) {
+      var dvVal = onboardingAnswers[qi.followUp.key] || '';
+      h += '<div class="ob-device-input" id="ob-device-wrap-' + idx + '" style="display:none">';
+      h += '<div class="ob-textarea-wrap" style="margin-top:12px"><textarea class="ob-textarea" id="ob-device-ta-' + idx + '" placeholder="' + qi.followUp.placeholder + '" style="min-height:52px" oninput="obAutoExpand(this);obCheckContinue()">' + dvVal + '</textarea></div>';
+      h += '</div>';
+    }
+    return h;
+  }
+  if (qi.input === 'pills-grid') {
+    var h = '<div class="ob-pill-grid">';
+    for (var j = 0; j < qi.options.length; j++) {
+      var sel = (val === qi.options[j]) ? ' selected' : '';
+      h += '<div class="ob-pill' + sel + '" onclick="obSelectPill(this,' + idx + ',\'' + qi.options[j] + '\')">' + qi.options[j] + '</div>';
+    }
+    h += '</div>';
+    return h;
+  }
+  if (qi.input === 'pills-full') {
+    var h = '<div class="ob-pills" style="flex-direction:column">';
+    for (var j = 0; j < qi.options.length; j++) {
+      var sel = (val === qi.options[j]) ? ' selected' : '';
+      h += '<div class="ob-pill ob-pill-full' + sel + '" style="min-height:56px" onclick="obSelectPill(this,' + idx + ',\'' + qi.options[j].replace(/'/g,"\\&#39;") + '\')">' + qi.options[j] + '</div>';
+    }
+    h += '</div>';
+    if (qi.followUp) {
+      var dvVal = onboardingAnswers[qi.followUp.key] || '';
+      h += '<div class="ob-device-input" id="ob-device-wrap-' + idx + '" style="display:none">';
+      h += '<div class="ob-textarea-wrap" style="margin-top:12px"><textarea class="ob-textarea" id="ob-device-ta-' + idx + '" placeholder="' + qi.followUp.placeholder + '" style="min-height:52px" oninput="obAutoExpand(this);obCheckContinue()">' + dvVal + '</textarea></div>';
+      h += '</div>';
+    }
+    return h;
+  }
+  return '';
+}
+
+function obSelectPill(pill, idx, value) {
+  var qi = OB_QUESTIONS[idx];
+  // Deselect siblings
+  var siblings = pill.parentElement.querySelectorAll('.ob-pill');
+  for (var i = 0; i < siblings.length; i++) siblings[i].classList.remove('selected');
+  pill.classList.add('selected');
+  onboardingAnswers[qi.key] = value;
+  // Show/hide follow-up
+  if (qi.followUp) {
+    var wrap = document.getElementById('ob-device-wrap-' + idx);
+    if (wrap) {
+      if (value === qi.followUp.trigger) {
+        wrap.style.display = 'block';
+        var ta = document.getElementById('ob-device-ta-' + idx);
+        if (ta) setTimeout(function(){ ta.focus(); }, 100);
+      } else {
+        wrap.style.display = 'none';
+        onboardingAnswers[qi.followUp.key] = '';
       }
-    });
+    }
   }
-
-  onboardStep++;
-  setTimeout(askOnboardQuestion, 400);
+  obCheckContinue();
 }
 
-function startOnboardVoice() {
+function obAutoExpand(el) {
+  el.style.height = 'auto';
+  el.style.height = Math.min(el.scrollHeight, 240) + 'px';
+}
+
+function obHasAnswer(step) {
+  var qi = OB_QUESTIONS[step];
+  var val = onboardingAnswers[qi.key];
+  if (qi.input === 'textarea-single' || qi.input === 'textarea') {
+    var ta = document.getElementById('ob-ta-' + step);
+    if (ta) val = ta.value.trim();
+  }
+  return val && val.length > 0;
+}
+
+function obCheckContinue() {
+  var btn = document.getElementById('ob-cont-btn');
+  if (!btn) return;
+  var qi = OB_QUESTIONS[obStep];
+  if (!qi.required) { btn.disabled = false; return; }
+  // Save current textarea value
+  var ta = document.getElementById('ob-ta-' + obStep);
+  if (ta) onboardingAnswers[qi.key] = ta.value.trim();
+  // Save device textarea
+  if (qi.followUp) {
+    var dta = document.getElementById('ob-device-ta-' + obStep);
+    if (dta) onboardingAnswers[qi.followUp.key] = dta.value.trim();
+  }
+  btn.disabled = !obHasAnswer(obStep);
+}
+
+function obSaveCurrentAnswer() {
+  if (obStep < 0 || obStep >= OB_QUESTIONS.length) return;
+  var qi = OB_QUESTIONS[obStep];
+  var ta = document.getElementById('ob-ta-' + obStep);
+  if (ta) onboardingAnswers[qi.key] = ta.value.trim();
+  if (qi.followUp) {
+    var dta = document.getElementById('ob-device-ta-' + obStep);
+    if (dta) onboardingAnswers[qi.followUp.key] = dta.value.trim();
+  }
+  // For days question, parse number
+  if (qi.key === 'days' && onboardingAnswers.days) {
+    var n = parseInt(String(onboardingAnswers.days));
+    if (!isNaN(n)) onboardingAnswers.days = n;
+  }
+}
+
+function obNext() {
+  obSaveCurrentAnswer();
+  var qi = OB_QUESTIONS[obStep];
+  if (qi.required && !obHasAnswer(obStep)) return;
+  obStep++;
+  if (obStep >= OB_QUESTIONS.length) { obStep = 7; obRender(); return; }
+  obRender();
+}
+
+function obGoBack() {
+  obSaveCurrentAnswer();
+  if (obStep > 0) { obStep--; obRender(); }
+}
+
+function obSkip() {
+  var qi = OB_QUESTIONS[obStep];
+  onboardingAnswers[qi.key] = '';
+  obStep++;
+  if (obStep >= OB_QUESTIONS.length) { obStep = 7; obRender(); return; }
+  obRender();
+}
+
+function obSetupKeyboard() {
+  var tas = document.querySelectorAll('#onboard-screen .ob-textarea');
+  for (var i = 0; i < tas.length; i++) {
+    tas[i].onkeydown = function(e) {
+      if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); obNext(); }
+    };
+  }
+}
+
+function obSetupViewport() {
+  if (window.visualViewport) {
+    window.visualViewport.onresize = function() {
+      var footer = document.querySelector('#onboard-screen .ob-footer');
+      if (!footer) return;
+      var kbH = window.innerHeight - window.visualViewport.height;
+      footer.style.bottom = kbH + 'px';
+    };
+  }
+}
+
+function obStartVoice(idx) {
   var SR = window.SpeechRecognition || window.webkitSpeechRecognition;
-  if (!SR) { document.getElementById('onboard-status').textContent = 'Voice not supported — use Chrome.'; return; }
-  if (onboardRecognition) { onboardRecognition.stop(); onboardRecognition = null; document.getElementById('onboard-mic').textContent = '🎙'; return; }
-  onboardRecognition = new SR();
-  onboardRecognition.continuous = false;
-  onboardRecognition.interimResults = true;
-  onboardRecognition.lang = 'en-US';
-  document.getElementById('onboard-mic').textContent = '⏹';
-  document.getElementById('onboard-status').textContent = 'Listening...';
-  onboardRecognition.onresult = function(e) {
-    var transcript = '';
-    for (var i = 0; i < e.results.length; i++) { transcript = e.results[i][0].transcript; }
-    document.getElementById('onboard-input').value = transcript;
-    if (e.results[0].isFinal) document.getElementById('onboard-status').textContent = 'Got it — press Send or keep talking.';
+  if (!SR) return;
+  var mic = document.getElementById('ob-mic-' + idx);
+  var ta = document.getElementById('ob-ta-' + idx);
+  if (obRecognition) { obRecognition.stop(); obRecognition = null; if (mic) mic.textContent = '\uD83C\uDF99'; return; }
+  obRecognition = new SR();
+  obRecognition.continuous = false;
+  obRecognition.interimResults = true;
+  obRecognition.lang = 'en-US';
+  if (mic) mic.textContent = '\u23F9';
+  obRecognition.onresult = function(e) {
+    var t = '';
+    for (var i = 0; i < e.results.length; i++) t = e.results[i][0].transcript;
+    if (ta) { ta.value = t; obAutoExpand(ta); obCheckContinue(); }
   };
-  onboardRecognition.onerror = function() { document.getElementById('onboard-status').textContent = ''; document.getElementById('onboard-mic').textContent = '🎙'; onboardRecognition = null; };
-  onboardRecognition.onend = function() { document.getElementById('onboard-mic').textContent = '🎙'; onboardRecognition = null; };
-  onboardRecognition.start();
+  obRecognition.onerror = function() { if (mic) mic.textContent = '\uD83C\uDF99'; obRecognition = null; };
+  obRecognition.onend = function() { if (mic) mic.textContent = '\uD83C\uDF99'; obRecognition = null; };
+  obRecognition.start();
 }
 
-function finishOnboarding() {
-  var chat = document.getElementById('onboard-chat');
-  chat.innerHTML += '<div style="background:#22c97a10;border:1px solid #22c97a22;border-radius:10px;padding:12px 16px;max-width:80%;align-self:flex-start"><p class="mono" style="font-size:12px;color:#22c97a;letter-spacing:2px;animation:pulse 1.6s infinite">BUILDING YOUR PROFILE...</p></div>';
-  document.getElementById('onboard-input-area').style.display = 'none';
+// ── GENERATING SCREEN ──
+var obGeneratedProfile = null;
+function obRenderGenerating(el) {
+  el.innerHTML = '<div class="ob-gen-screen">' +
+    '<div class="ob-gen-emoji">\uD83E\uDDE0</div>' +
+    '<h2 class="ob-title" style="margin-top:20px">Building your personalized profile...</h2>' +
+    '<p class="ob-subtitle">Analyzing your goals and creating your AI coaching brief</p>' +
+    '<div class="ob-gen-bar"><div class="ob-gen-fill" id="ob-gen-fill" style="width:0%"></div></div></div>';
 
-  // Ask AI to build profile_data from answers
-  var prompt = 'Generate a fitness coaching profile from these onboarding answers. Create reasonable goals, a basic schedule, and coaching principles based on what they shared. Be generous in interpreting their answers — if they mention an injury, create an injury entry. If they mention a goal, create a structured goal with estimated targets. Return ONLY raw JSON, no markdown.\n\n' +
-    'Name: ' + (onboardAnswers.name || '') + '\n' +
-    'Main goal: ' + (onboardAnswers.goals || '') + '\n' +
-    'Injuries/limitations: ' + (onboardAnswers.injuries || 'none') + '\n' +
-    'Training days per week: ' + (onboardAnswers.days || '3') + '\n' +
-    'Has Fitbit: ' + (onboardAnswers.fitbit || 'no') + '\n' +
-    'Other wearable: ' + (onboardAnswers.wearable || 'none') + '\n\n' +
+  // Animate progress bar
+  var fill = document.getElementById('ob-gen-fill');
+  var pct = 0;
+  var genTimer = setInterval(function() {
+    pct += 1;
+    if (pct > 90) clearInterval(genTimer);
+    if (fill) fill.style.width = pct + '%';
+  }, 110);
+
+  // Determine tracker values
+  var hasFitbit = onboardingAnswers.tracker === 'Yes, I have a Fitbit';
+  var wearableVal = 'null';
+  if (onboardingAnswers.tracker === 'Yes, different device' && onboardingAnswers.trackerDevice) {
+    wearableVal = '"' + String(onboardingAnswers.trackerDevice).replace(/"/g, '') + '"';
+  } else if (onboardingAnswers.tracker === 'No tracker yet') {
+    wearableVal = 'null';
+  }
+  var daysNum = typeof onboardingAnswers.days === 'number' ? onboardingAnswers.days : (parseInt(String(onboardingAnswers.days)) || 3);
+
+  // Map experience
+  var expMap = {'\uD83C\uDF31 Just starting out':'beginner','\uD83C\uDFC3 Some experience (1-2 years)':'intermediate','\uD83D\uDCAA Pretty athletic (3+ years)':'athletic','\uD83C\uDFC6 Very experienced / former athlete':'advanced'};
+  var expLevel = expMap[onboardingAnswers.experience] || 'intermediate';
+
+  var prompt = 'Generate a fitness coaching profile from these onboarding answers. Create reasonable goals, a basic schedule, and coaching principles based on what they shared. Be generous in interpreting their answers \u2014 if they mention an injury, create an injury entry. If they mention a goal, create a structured goal with estimated targets. Return ONLY raw JSON, no markdown.\n\n' +
+    'Name: ' + (onboardingAnswers.name || '') + '\n' +
+    'Main goal: ' + (onboardingAnswers.goal || '') + '\n' +
+    'Injuries/limitations: ' + (onboardingAnswers.injuries || 'none') + '\n' +
+    'Training days per week: ' + daysNum + '\n' +
+    'Experience level: ' + expLevel + '\n' +
+    'Has Fitbit: ' + (hasFitbit ? 'yes' : 'no') + '\n' +
+    'Other wearable: ' + (onboardingAnswers.trackerDevice || 'none') + '\n' +
+    'Fixed schedule: ' + (onboardingAnswers.schedule || 'flexible') + '\n\n' +
     'Return this EXACT structure (fill in all fields from the answers, infer sensible defaults for anything not mentioned):\n' +
-    '{"name":"their name","tagline":"2-3 word role e.g. Runner & Yogi","avatar_color":"#hex based on personality","sports":["list"],"martial_arts":true/false,"martial_arts_style":"MMA/BJJ/etc or null","current_belt":"white/blue/etc or null","goals":[{"type":"strength|distance|consistency|habit|skill|general","emoji":"emoji","title":"name","description":"brief","status":"IN PROGRESS|LONG GAME|DONE|HABIT|PAUSED","target_value":null,"current_value":null,"unit":"lbs|miles|days|sessions or null","tracker":false}],"injuries":[{"name":"name","status":"MANAGING|CHRONIC|REHABBING|MONITOR","description":"brief","triggers":"what worsens it or null"}],"experience_level":"beginner|intermediate|athletic|advanced","schedule":{"mon":"Flexible","tue":"...","wed":"...","thu":"...","fri":"...","sat":"...","sun":"..."},"weekly_target":' + (parseInt(onboardAnswers.days) || 3) + ',"biggest_obstacle":"","life_context":{"family":null,"work":null,"other":null},"philosophy":["principle 1","principle 2","principle 3"],"fitbit":' + (/yes|y|fitbit/i.test(onboardAnswers.fitbit || '') ? 'true' : 'false') + ',"wearable":' + (onboardAnswers.wearable ? ('"' + String(onboardAnswers.wearable).replace(/"/g, '') + '"') : 'null') + ',"ai_prompt_context":"2-3 paragraph summary of this person for the AI coach to use. Keep it focused and practical.","onboarding_complete":true,"profile_sections_completed":["basic"]}';
+    '{"name":"their name","tagline":"2-3 word role e.g. Runner & Yogi","avatar_color":"#hex based on personality","sports":["list"],"martial_arts":true/false,"martial_arts_style":"MMA/BJJ/etc or null","current_belt":"white/blue/etc or null","goals":[{"type":"strength|distance|consistency|habit|skill|general","emoji":"emoji","title":"name","description":"brief","status":"IN PROGRESS|LONG GAME|DONE|HABIT|PAUSED","target_value":null,"current_value":null,"unit":"lbs|miles|days|sessions or null","tracker":false}],"injuries":[{"name":"name","status":"MANAGING|CHRONIC|REHABBING|MONITOR","description":"brief","triggers":"what worsens it or null"}],"experience_level":"' + expLevel + '","schedule":{"mon":"Flexible","tue":"...","wed":"...","thu":"...","fri":"...","sat":"...","sun":"..."},"weekly_target":' + daysNum + ',"biggest_obstacle":"","life_context":{"family":null,"work":null,"other":null},"philosophy":["principle 1","principle 2","principle 3"],"fitbit":' + (hasFitbit ? 'true' : 'false') + ',"wearable":' + wearableVal + ',"ai_prompt_context":"2-3 paragraph summary of this person for the AI coach to use. Keep it focused and practical.","onboarding_complete":true,"profile_sections_completed":["basic"]}';
 
   fetch('/api/ai', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ model: 'claude-sonnet-4-20250514', max_tokens: 2000, messages: [{ role: 'user', content: prompt }] })
   }).then(function(r) { return r.json(); }).then(function(data) {
+    clearInterval(genTimer);
+    if (fill) fill.style.width = '100%';
     var raw = (data.content && data.content[0]) ? data.content[0].text : '{}';
     var cleaned = raw.indexOf('{') >= 0 ? raw.substring(raw.indexOf('{'), raw.lastIndexOf('}') + 1) : '{}';
-    var profileData = JSON.parse(cleaned);
-
-    // Now ask for PIN
-    chat.innerHTML += '<div style="background:#22c97a10;border:1px solid #22c97a22;border-radius:10px;padding:12px 16px;max-width:80%;align-self:flex-start"><p style="font-size:15px;color:#22c97a;line-height:1.6">Profile ready! Choose a 4-digit PIN to secure it:</p></div>';
-    document.getElementById('onboard-input-area').style.display = 'flex';
-    document.getElementById('onboard-input').type = 'password';
-    document.getElementById('onboard-input').maxLength = 4;
-    document.getElementById('onboard-input').inputMode = 'numeric';
-    document.getElementById('onboard-input').placeholder = '4-digit PIN';
-
-    // Replace submit handler for PIN
-    document.getElementById('onboard-input').onkeyup = function(e) { if (e.key === 'Enter') saveNewProfile(profileData); };
-    document.querySelector('#onboard-input-area .btnPri').onclick = function() { saveNewProfile(profileData); };
+    obGeneratedProfile = JSON.parse(cleaned);
+    setTimeout(function() { obStep = 8; obRender(); }, 600);
   }).catch(function() {
-    chat.innerHTML += '<div style="background:#e8454510;border:1px solid #e8454522;border-radius:10px;padding:12px 16px"><p style="color:#e87;font-size:14px">Error generating profile. Please try again.</p></div>';
-    document.getElementById('onboard-input-area').style.display = 'flex';
+    clearInterval(genTimer);
+    el.innerHTML = '<div class="ob-gen-screen">' +
+      '<p style="color:#e87;font-size:16px;margin-bottom:20px">Error generating profile. Please try again.</p>' +
+      '<button class="ob-continue" style="max-width:300px" onclick="obStep=7;obRender()">Retry</button></div>';
   });
 }
 
-function saveNewProfile(profileData) {
-  var pin = document.getElementById('onboard-input').value;
-  if (pin.length !== 4 || !/^\d{4}$/.test(pin)) {
-    document.getElementById('onboard-status').textContent = 'PIN must be exactly 4 digits.';
-    return;
+// ── PIN SCREEN ──
+function obRenderPin(el) {
+  var h = '<div class="ob-pin-screen">';
+  h += '<div class="ob-emoji">\uD83D\uDD10</div>';
+  h += '<h2 class="ob-title" style="margin-top:16px">Create your PIN</h2>';
+  h += '<p class="ob-subtitle">4 digits to keep your profile private</p>';
+  h += '<p class="ob-pin-label">Enter PIN</p>';
+  h += '<div class="ob-pin-boxes" id="ob-pin1">';
+  for (var i = 0; i < 4; i++) h += '<input class="ob-pin-box" type="tel" maxlength="1" inputmode="numeric" pattern="[0-9]*" oninput="obPinInput(this,\'pin1\',' + i + ')" onkeydown="obPinKey(event,this,\'pin1\',' + i + ')">';
+  h += '</div>';
+  h += '<p class="ob-pin-label">Confirm PIN</p>';
+  h += '<div class="ob-pin-boxes" id="ob-pin2">';
+  for (var i = 0; i < 4; i++) h += '<input class="ob-pin-box" type="tel" maxlength="1" inputmode="numeric" pattern="[0-9]*" oninput="obPinInput(this,\'pin2\',' + i + ')" onkeydown="obPinKey(event,this,\'pin2\',' + i + ')">';
+  h += '</div>';
+  h += '<p id="ob-pin-error" style="color:#e84545;font-size:13px;min-height:20px;margin-bottom:8px"></p>';
+  h += '<button class="ob-continue" style="max-width:480px" id="ob-pin-submit" onclick="obSubmitPin()" disabled>Create Profile</button>';
+  h += '</div>';
+  el.innerHTML = h;
+  // Focus first box
+  var boxes = document.querySelectorAll('#ob-pin1 .ob-pin-box');
+  if (boxes[0]) setTimeout(function(){ boxes[0].focus(); }, 100);
+}
+
+function obPinInput(input, group, idx) {
+  var v = input.value.replace(/[^0-9]/g, '');
+  input.value = v ? v[0] : '';
+  if (v) {
+    input.classList.add('filled');
+    var boxes = document.querySelectorAll('#ob-' + group + ' .ob-pin-box');
+    if (idx < 3 && boxes[idx+1]) boxes[idx+1].focus();
+    else if (group === 'pin1' && idx === 3) {
+      var b2 = document.querySelectorAll('#ob-pin2 .ob-pin-box');
+      if (b2[0]) b2[0].focus();
+    }
+  } else {
+    input.classList.remove('filled');
   }
-  document.getElementById('onboard-status').textContent = 'Saving...';
+  obCheckPinMatch();
+}
+
+function obPinKey(e, input, group, idx) {
+  if (e.key === 'Backspace' && !input.value && idx > 0) {
+    var boxes = document.querySelectorAll('#ob-' + group + ' .ob-pin-box');
+    if (boxes[idx-1]) { boxes[idx-1].focus(); boxes[idx-1].value = ''; boxes[idx-1].classList.remove('filled'); }
+  }
+}
+
+function obGetPin(group) {
+  var boxes = document.querySelectorAll('#ob-' + group + ' .ob-pin-box');
+  var pin = '';
+  for (var i = 0; i < boxes.length; i++) pin += boxes[i].value;
+  return pin;
+}
+
+function obCheckPinMatch() {
+  var p1 = obGetPin('pin1'), p2 = obGetPin('pin2');
+  var btn = document.getElementById('ob-pin-submit');
+  var err = document.getElementById('ob-pin-error');
+  if (p1.length === 4 && p2.length === 4) {
+    if (p1 === p2) {
+      if (btn) btn.disabled = false;
+      if (err) err.textContent = '';
+      // Auto-submit
+      setTimeout(function() { obSubmitPin(); }, 200);
+    } else {
+      if (btn) btn.disabled = true;
+      if (err) err.textContent = 'PINs don\u2019t match';
+    }
+  } else {
+    if (btn) btn.disabled = true;
+    if (err) err.textContent = '';
+  }
+}
+
+function obSubmitPin() {
+  var pin = obGetPin('pin1');
+  if (pin.length !== 4 || !/^\d{4}$/.test(pin)) return;
+  var btn = document.getElementById('ob-pin-submit');
+  if (btn) { btn.disabled = true; btn.textContent = 'Saving...'; }
+
+  var profileData = obGeneratedProfile || {};
   var color = AVATAR_COLORS[Math.floor(Math.random() * AVATAR_COLORS.length)];
 
   fetch('/api/profiles', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
-      name: onboardAnswers.name || 'Athlete',
+      name: onboardingAnswers.name || 'Athlete',
       pin: pin,
       avatar_color: color,
       profile_data: profileData,
@@ -1255,11 +1509,23 @@ function saveNewProfile(profileData) {
         schedule = profileData.schedule_defaults;
         localStorage.setItem('ac_schedule', JSON.stringify(schedule));
       }
-      bootApp();
+      obStep = 9; obRender();
     } else {
-      document.getElementById('onboard-status').textContent = data.error || 'Error saving profile.';
+      var err = document.getElementById('ob-pin-error');
+      if (err) err.textContent = data.error || 'Error saving profile.';
+      if (btn) { btn.disabled = false; btn.textContent = 'Create Profile'; }
     }
   });
+}
+
+// ── SUCCESS SCREEN ──
+function obRenderSuccess(el) {
+  el.innerHTML = '<div class="ob-success-screen">' +
+    '<div class="ob-success-emoji">\uD83C\uDF89</div>' +
+    '<h2 class="ob-title" style="margin-top:20px">Welcome, ' + (onboardingAnswers.name || 'Athlete') + '!</h2>' +
+    '<p class="ob-subtitle">Your AI coach is ready</p>' +
+    '<div style="position:fixed;bottom:0;left:0;right:0;padding:12px 20px 20px;background:linear-gradient(transparent,#080a0f 30%)">' +
+    '<button class="ob-continue" onclick="bootApp()">Let\u2019s go \u2192</button></div></div>';
 }
 
 // ── DEV ROADMAP (long-press logo) ─────────────────────────────────────────
@@ -4938,96 +5204,108 @@ function renderProfileCompletenessCard() {
   return h;
 }
 
-// ── DEEP PROFILE BUILDER ──────────────────────────────────────────────────
+// ── DEEP PROFILE BUILDER (full-page paginated) ──────────────────────────
 var PB_SECTIONS = [
   {
-    id: 'goals', label: 'Goals & Milestones', icon: '&#127919;',
+    id: 'goals', label: 'Goals & Milestones', icon: '\uD83C\uDFAF',
     questions: [
-      { key: 'all_goals', q: "List out all of your fitness goals — big and small, short-term and long-term. Don't hold back, just dump everything you want to work toward.", hint: "Examples: 'lose 20lbs, bench 200, run a 5k, get my purple belt, do 10 pullups, touch my toes, meditate daily' — anything counts" },
-      { key: 'six_month', q: "What does success look like for you in 6 months? Be as specific as you can — numbers are great if you have them.", hint: "For example: 'I want to bench 200lbs', 'run a 5k in under 30 minutes', 'lose 20 pounds', 'get my purple belt'" },
-      { key: 'milestones', q: "Are there any milestone moments you're training toward? A trip, event, competition, wedding, reunion?", hint: "These help me prioritize what to focus on and when" },
-      { key: 'priorities', q: "On a scale of 1-5, how important is each of these to you right now?\n(1) Building strength\n(2) Losing weight\n(3) Better endurance\n(4) Flexibility/mobility\n(5) Sport performance\n(6) Mental health/stress relief", hint: "Just give me numbers like: 1=5, 2=3, 3=4, 4=2, 5=1, 6=4" },
+      { key: 'all_goals', emoji: '\uD83C\uDFAF', title: "What are all your fitness goals?", subtitle: "Big and small, short-term and long-term. Don\u2019t hold back \u2014 dump everything you want to work toward.", input: 'textarea' },
+      { key: 'six_month', emoji: '\uD83D\uDCC8', title: "What does success look like in 6 months?", subtitle: "Be as specific as you can \u2014 numbers are great if you have them.", input: 'textarea' },
+      { key: 'milestones', emoji: '\uD83C\uDFC1', title: "Any milestone moments you\u2019re training toward?", subtitle: "A trip, event, competition, wedding, reunion? These help prioritize what to focus on and when.", input: 'textarea' },
+      { key: 'priorities', emoji: '\uD83D\uDCCA', title: "Rate each area 1-5 for importance right now", subtitle: "(1) Building strength (2) Losing weight (3) Better endurance (4) Flexibility/mobility (5) Sport performance (6) Mental health/stress relief", input: 'textarea' },
     ]
   },
   {
-    id: 'injuries', label: 'Injuries & Health', icon: '&#129657;',
+    id: 'injuries', label: 'Injuries & Health', icon: '\uD83E\uDE7A',
     questions: [
-      { key: 'injuries_list', q: "Do you have any current or past injuries?", hint: "Include anything that affects how you train — even old injuries that flare up occasionally" },
+      { key: 'injuries_list', emoji: '\uD83E\uDE7A', title: "Do you have any current or past injuries?", subtitle: "Include anything that affects how you train \u2014 even old injuries that flare up occasionally.", input: 'textarea' },
     ],
     injuryFollowUps: [
-      { key: 'onset', q: "When did {injury} start? Was it sudden (like an accident) or gradual?", hint: "e.g. 'car accident Dec 2022' or 'gradually over the last 2 years'" },
-      { key: 'pain', q: "On a typical day, what's the pain like for {injury}? (0=no pain, 10=severe)", hint: "Think about your average day, not your worst day" },
-      { key: 'triggers', q: "What makes {injury} worse? What movements, activities, or situations trigger it?", hint: "e.g. 'high kicks', 'sitting for long periods', 'carrying heavy bags'" },
-      { key: 'management', q: "Are you currently doing anything to manage {injury}? PT, exercises, avoiding certain movements?", hint: "This helps me know what's already working for you" },
-      { key: 'training_impact', q: "Does {injury} affect your training? If so, how?", hint: "e.g. 'can't do squats', 'have to modify pushups', 'flares up after running'" },
+      { key: 'onset', emoji: '\uD83D\uDCC5', titleTpl: "When did {injury} start?", subtitle: "Was it sudden (like an accident) or gradual?", input: 'textarea' },
+      { key: 'pain', emoji: '\uD83D\uDCA2', titleTpl: "What\u2019s the pain like for {injury}?", subtitle: "On a typical day, 0=no pain, 10=severe. Think about your average day.", input: 'textarea' },
+      { key: 'triggers', emoji: '\u26A0\uFE0F', titleTpl: "What makes {injury} worse?", subtitle: "Movements, activities, or situations that trigger it.", input: 'textarea' },
+      { key: 'management', emoji: '\uD83D\uDC8A', titleTpl: "How do you manage {injury}?", subtitle: "PT, exercises, avoiding certain movements? This helps me know what\u2019s working.", input: 'textarea' },
+      { key: 'training_impact', emoji: '\uD83C\uDFCB', titleTpl: "Does {injury} affect your training?", subtitle: "e.g. \u2018can\u2019t do squats\u2019, \u2018have to modify pushups\u2019, \u2018flares up after running\u2019", input: 'textarea' },
     ]
   },
   {
-    id: 'training', label: 'Training Background', icon: '&#127947;',
+    id: 'training', label: 'Training Background', icon: '\uD83C\uDFCB',
     questions: [
-      { key: 'experience', q: "How long have you been training consistently? (weeks/months/years)", hint: "Count any form of regular physical activity, not just gym work" },
-      { key: 'enjoy_dread', q: "What types of workouts do you actually enjoy? What do you dread?", hint: "Be honest — if you hate running, I won't make you run. There are always alternatives." },
-      { key: 'best_period', q: "Describe your best ever training period — what were you doing, how often, how did you feel?", hint: "This helps me understand what works for your body and schedule" },
-      { key: 'fall_off', q: "What has made you stop or fall off track in the past?", hint: "Common answers: injury, travel, work stress, lost motivation, no time — no judgment here" },
+      { key: 'experience', emoji: '\u23F1', title: "How long have you been training consistently?", subtitle: "Weeks, months, years \u2014 count any form of regular physical activity.", input: 'textarea' },
+      { key: 'enjoy_dread', emoji: '\uD83D\uDE0D', title: "What workouts do you enjoy vs dread?", subtitle: "Be honest \u2014 if you hate running, I won\u2019t make you run. There are always alternatives.", input: 'textarea' },
+      { key: 'best_period', emoji: '\u2B50', title: "Describe your best ever training period", subtitle: "What were you doing, how often, how did you feel?", input: 'textarea' },
+      { key: 'fall_off', emoji: '\uD83D\uDCA8', title: "What has made you stop or fall off track?", subtitle: "Injury, travel, work stress, lost motivation, no time \u2014 no judgment here.", input: 'textarea' },
     ]
   },
   {
-    id: 'lifestyle', label: 'Lifestyle & Schedule', icon: '&#128197;',
+    id: 'lifestyle', label: 'Lifestyle & Schedule', icon: '\uD83D\uDCC5',
     questions: [
-      { key: 'typical_day', q: "Walk me through a typical weekday and a typical weekend day.", hint: "I want to understand when you have time and energy to train — morning person? Evening? Lunch breaks?" },
-      { key: 'job', q: "What's your job like physically? (desk job, on your feet all day, physical labor, unpredictable)", hint: "This affects your recovery and what kind of training makes sense" },
-      { key: 'home', q: "Tell me about your home situation — do you have kids, a partner who trains with you, time constraints?", hint: "No judgment — I just want to build something realistic for your actual life" },
-      { key: 'equipment', q: "What equipment do you have access to? (home gym, commercial gym, just bodyweight, etc)", hint: "This determines what exercises I can recommend" },
+      { key: 'typical_day', emoji: '\u2600\uFE0F', title: "Walk me through a typical day", subtitle: "Weekday and weekend \u2014 when do you have time and energy to train?", input: 'textarea' },
+      { key: 'job', emoji: '\uD83D\uDCBC', title: "What\u2019s your job like physically?", subtitle: "Desk job, on your feet all day, physical labor, unpredictable?", input: 'textarea' },
+      { key: 'home', emoji: '\uD83C\uDFE0', title: "Tell me about your home situation", subtitle: "Kids, partner who trains with you, time constraints? Just want to build something realistic.", input: 'textarea' },
+      { key: 'equipment', emoji: '\uD83D\uDD27', title: "What equipment do you have access to?", subtitle: "Home gym, commercial gym, just bodyweight, etc.", input: 'textarea' },
     ]
   },
   {
-    id: 'mindset', label: 'Mindset & Motivation', icon: '&#129504;',
+    id: 'mindset', label: 'Mindset & Motivation', icon: '\uD83E\uDDE0',
     questions: [
-      { key: 'why_now', q: "Why now? What made you decide to focus on your fitness at this point in your life?", hint: "Understanding your 'why' helps me give you better coaching on hard days" },
-      { key: 'consistency', q: "When you've been most consistent with training, what kept you going?", hint: "Knowing your motivational patterns helps me keep you on track" },
-      { key: 'bad_week', q: "What does a bad week look like for you? What throws you off?", hint: "I want to help you plan for the hard weeks, not just the easy ones" },
+      { key: 'why_now', emoji: '\uD83D\uDD25', title: "Why now?", subtitle: "What made you decide to focus on fitness at this point in your life? Understanding your \u2018why\u2019 helps on hard days.", input: 'textarea' },
+      { key: 'consistency', emoji: '\uD83D\uDD17', title: "What keeps you consistent?", subtitle: "When you\u2019ve been most consistent, what kept you going?", input: 'textarea' },
+      { key: 'bad_week', emoji: '\uD83C\uDF27', title: "What does a bad week look like?", subtitle: "What throws you off? I want to help you plan for the hard weeks.", input: 'textarea' },
     ]
   }
 ];
 
 var pbCurrentSection = null;
-var pbCurrentStep = 0;
+var pbStep = 0;
 var pbAnswers = {};
 var pbInjuries = [];
 var pbInjuryIdx = 0;
 var pbInjuryFollowUpIdx = 0;
 var pbInInjuryFollowUp = false;
 var pbRecognition = null;
+var pbAllQuestions = []; // flattened question list for current section
 
 function openProfileBuilder() {
-  document.getElementById('profile-builder-modal').style.display = 'flex';
+  var el = document.getElementById('profile-builder-screen');
+  el.style.display = 'flex';
   pbCurrentSection = null;
-  renderPBSectionSelect();
+  pbRenderSectionSelect(el);
 }
 
 function closeProfileBuilder() {
-  document.getElementById('profile-builder-modal').style.display = 'none';
+  document.getElementById('profile-builder-screen').style.display = 'none';
   pbCurrentSection = null;
   if (pbRecognition) { pbRecognition.stop(); pbRecognition = null; }
 }
 
-function renderPBSectionSelect() {
+function pbRenderSectionSelect(el) {
+  if (!el) el = document.getElementById('profile-builder-screen');
   var pd = currentProfileData || {};
   var completed = pd.profile_sections_completed || [];
-  document.getElementById('pb-section-select').style.display = 'flex';
-  document.getElementById('pb-chat').style.display = 'none';
-  document.getElementById('pb-input-area').style.display = 'none';
-  document.getElementById('pb-title').textContent = 'BUILD YOUR PROFILE';
-  var h = '<p style="font-size:14px;color:#888;line-height:1.6;margin-bottom:8px">Choose a section to complete. Each one takes 2-5 minutes and makes your coaching smarter.</p>';
+  var h = '<div class="ob-header"><button class="ob-back" onclick="closeProfileBuilder()">\u2190</button><div style="text-align:center"><span class="ob-progress-text">BUILD YOUR PROFILE</span></div><span style="min-width:40px"></span></div>';
+  h += '<div style="flex:1;overflow-y:auto;padding:20px"><div style="max-width:480px;margin:0 auto">';
+  h += '<p style="font-size:15px;color:#888;line-height:1.6;margin-bottom:16px;text-align:center">Choose a section to complete. Each one takes 2\u20135 minutes and makes your coaching smarter.</p>';
   for (var i = 0; i < PB_SECTIONS.length; i++) {
     var s = PB_SECTIONS[i];
     var isDone = completed.indexOf(s.id) >= 0;
-    h += '<button onclick="startPBSection(\'' + s.id + '\')" class="pb-section-btn' + (isDone ? ' done' : '') + '">';
+    h += '<button onclick="startPBSection(\'' + s.id + '\')" class="pb-section-btn" style="margin-bottom:8px;min-height:56px' + (isDone ? ';border-color:#22c97a33;color:#22c97a' : '') + '">';
     h += '<span>' + s.icon + '  ' + s.label + '</span>';
-    h += isDone ? '<span class="mono" style="font-size:10px;letter-spacing:2px">&#10003; DONE</span>' : '<span class="mono" style="font-size:10px;color:#555;letter-spacing:1px">START</span>';
+    h += isDone ? '<span class="mono" style="font-size:10px;letter-spacing:2px;color:#22c97a">\u2713 DONE</span>' : '<span class="mono" style="font-size:10px;color:#555;letter-spacing:1px">START</span>';
     h += '</button>';
   }
-  document.getElementById('pb-section-select').innerHTML = h;
+  h += '</div></div>';
+  el.innerHTML = h;
+}
+
+function pbBuildQuestionList() {
+  pbAllQuestions = [];
+  var sec = pbCurrentSection;
+  for (var i = 0; i < sec.questions.length; i++) {
+    var q = sec.questions[i];
+    pbAllQuestions.push({ key: q.key, emoji: q.emoji, title: q.title, subtitle: q.subtitle, input: q.input || 'textarea' });
+  }
+  // Injury follow-ups are added dynamically after answering injuries_list
 }
 
 function startPBSection(sectionId) {
@@ -5036,124 +5314,172 @@ function startPBSection(sectionId) {
     if (PB_SECTIONS[i].id === sectionId) { pbCurrentSection = PB_SECTIONS[i]; break; }
   }
   if (!pbCurrentSection) return;
-  pbCurrentStep = 0;
+  pbStep = 0;
   pbAnswers = {};
   pbInjuries = [];
   pbInjuryIdx = 0;
   pbInjuryFollowUpIdx = 0;
   pbInInjuryFollowUp = false;
-  document.getElementById('pb-section-select').style.display = 'none';
-  document.getElementById('pb-chat').style.display = 'flex';
-  document.getElementById('pb-chat').innerHTML = '';
-  document.getElementById('pb-input-area').style.display = 'block';
-  document.getElementById('pb-status').textContent = '';
-  document.getElementById('pb-title').textContent = pbCurrentSection.label.toUpperCase();
-  document.getElementById('pb-input').value = '';
-  document.getElementById('pb-input').type = 'text';
-  document.getElementById('pb-input').maxLength = 5000;
-  document.getElementById('pb-input').placeholder = 'Type your answer...';
-  askPBQuestion();
+  pbBuildQuestionList();
+  pbRender();
 }
 
-function askPBQuestion() {
-  var chat = document.getElementById('pb-chat');
-  var q, hint;
-  if (pbCurrentSection.id === 'injuries' && pbInInjuryFollowUp) {
-    var fu = pbCurrentSection.injuryFollowUps[pbInjuryFollowUpIdx];
-    var injName = pbInjuries[pbInjuryIdx] || 'this injury';
-    q = fu.q.replace(/\{injury\}/g, injName);
-    hint = fu.hint;
-  } else {
-    if (pbCurrentStep >= pbCurrentSection.questions.length) {
-      finishPBSection();
-      return;
-    }
-    var qObj = pbCurrentSection.questions[pbCurrentStep];
-    q = qObj.q;
-    hint = qObj.hint;
-  }
-  var h = '<div class="pb-chat-q"><p style="font-size:15px;color:#22c97a;line-height:1.6;white-space:pre-line">' + q + '</p>';
-  if (hint) h += '<p class="pb-hint">' + hint + '</p>';
+function pbRender() {
+  var el = document.getElementById('profile-builder-screen');
+  if (pbStep >= pbAllQuestions.length) { pbFinishSection(el); return; }
+
+  var total = pbAllQuestions.length;
+  var q = pbAllQuestions[pbStep];
+
+  var h = '<div class="ob-header">';
+  h += pbStep > 0 ? '<button class="ob-back" onclick="pbGoBack()">\u2190</button>' : '<button class="ob-back" onclick="pbBackToSections()">\u2190</button>';
+  h += '<div style="text-align:center"><span class="ob-progress-text">' + (pbStep+1) + ' of ' + total + '</span></div>';
+  h += '<span style="min-width:40px"></span>';
+  h += '<div class="ob-progress-bar"><div class="ob-progress-fill" style="width:' + ((pbStep+1)/total*100) + '%"></div></div>';
   h += '</div>';
-  chat.innerHTML += h;
-  chat.scrollTop = chat.scrollHeight;
-  document.getElementById('pb-input').value = '';
-  document.getElementById('pb-input').focus();
+
+  h += '<div class="ob-viewport"><div class="ob-slide-track" style="transform:translateX(-' + (pbStep*100) + '%)">';
+  for (var i = 0; i < total; i++) {
+    var qi = pbAllQuestions[i];
+    var val = pbAnswers[qi.key] || '';
+    h += '<div class="ob-slide">';
+    h += '<div class="ob-emoji">' + qi.emoji + '</div>';
+    h += '<h2 class="ob-title">' + qi.title + '</h2>';
+    h += '<p class="ob-subtitle">' + qi.subtitle + '</p>';
+    h += '<div class="ob-answer-area"><div class="ob-textarea-wrap">';
+    h += '<textarea class="ob-textarea" id="pb-ta-' + i + '" placeholder="Type your answer..." style="min-height:120px" oninput="obAutoExpand(this);pbCheckContinue()">' + val + '</textarea>';
+    h += '<button class="ob-mic" onclick="pbStartVoice(' + i + ')" id="pb-mic-' + i + '">\uD83C\uDF99</button>';
+    h += '</div></div></div>';
+  }
+  h += '</div></div>';
+
+  var hasVal = (pbAnswers[q.key] || '').length > 0;
+  h += '<div class="ob-footer"><button class="ob-continue" id="pb-cont-btn"' + (!hasVal ? ' disabled' : '') + ' onclick="pbNext()">Continue \u2192</button></div>';
+  el.innerHTML = h;
+
+  var ta = document.getElementById('pb-ta-' + pbStep);
+  if (ta) setTimeout(function(){ ta.focus(); }, 350);
+  pbSetupKeyboard();
+  if (window.visualViewport) {
+    window.visualViewport.onresize = function() {
+      var footer = document.querySelector('#profile-builder-screen .ob-footer');
+      if (!footer) return;
+      footer.style.bottom = (window.innerHeight - window.visualViewport.height) + 'px';
+    };
+  }
 }
 
-function submitPBAnswer() {
-  var input = document.getElementById('pb-input');
-  var answer = input.value.trim();
-  if (!answer) return;
-  var chat = document.getElementById('pb-chat');
-  chat.innerHTML += '<div class="pb-chat-a"><p style="font-size:15px;color:#ddd;line-height:1.6">' + answer + '</p></div>';
-  input.value = '';
+function pbCheckContinue() {
+  var ta = document.getElementById('pb-ta-' + pbStep);
+  var q = pbAllQuestions[pbStep];
+  if (ta) pbAnswers[q.key] = ta.value.trim();
+  var btn = document.getElementById('pb-cont-btn');
+  if (btn) btn.disabled = !(pbAnswers[q.key] || '').length;
+}
 
-  if (pbCurrentSection.id === 'injuries' && pbInInjuryFollowUp) {
-    var fu = pbCurrentSection.injuryFollowUps[pbInjuryFollowUpIdx];
-    var injKey = pbInjuries[pbInjuryIdx] + '_' + fu.key;
-    pbAnswers[injKey] = answer;
-    pbInjuryFollowUpIdx++;
-    if (pbInjuryFollowUpIdx >= pbCurrentSection.injuryFollowUps.length) {
-      pbInjuryIdx++;
-      pbInjuryFollowUpIdx = 0;
-      if (pbInjuryIdx >= pbInjuries.length) {
-        pbInInjuryFollowUp = false;
-        pbCurrentStep++;
-        setTimeout(askPBQuestion, 400);
-        return;
+function pbSaveCurrent() {
+  if (pbStep < 0 || pbStep >= pbAllQuestions.length) return;
+  var ta = document.getElementById('pb-ta-' + pbStep);
+  if (ta) pbAnswers[pbAllQuestions[pbStep].key] = ta.value.trim();
+}
+
+function pbNext() {
+  pbSaveCurrent();
+  var q = pbAllQuestions[pbStep];
+  if (!(pbAnswers[q.key] || '').length) return;
+
+  // Handle injury follow-ups: after injuries_list, inject follow-up questions
+  if (pbCurrentSection.id === 'injuries' && q.key === 'injuries_list' && !pbInInjuryFollowUp) {
+    var answer = pbAnswers[q.key];
+    var lower = answer.toLowerCase().trim();
+    if (lower !== 'none' && lower !== 'no' && lower !== 'nope' && lower !== 'n/a' && lower !== 'nothing') {
+      var parts = answer.split(/,|\band\b|\n/).map(function(s) { return s.trim(); }).filter(function(s) { return s.length > 0; });
+      if (parts.length > 0) {
+        pbInjuries = parts;
+        pbInInjuryFollowUp = true;
+        // Inject follow-up questions into pbAllQuestions after current position
+        var fups = pbCurrentSection.injuryFollowUps || [];
+        var insertAt = pbStep + 1;
+        for (var ii = 0; ii < parts.length; ii++) {
+          for (var fi = 0; fi < fups.length; fi++) {
+            var fu = fups[fi];
+            pbAllQuestions.splice(insertAt, 0, {
+              key: parts[ii] + '_' + fu.key,
+              emoji: fu.emoji,
+              title: fu.titleTpl.replace(/\{injury\}/g, parts[ii]),
+              subtitle: fu.subtitle,
+              input: 'textarea'
+            });
+            insertAt++;
+          }
+        }
       }
     }
-    setTimeout(askPBQuestion, 400);
-    return;
   }
 
-  var qObj = pbCurrentSection.questions[pbCurrentStep];
-  pbAnswers[qObj.key] = answer;
-
-  // For injuries section, parse injury names and start follow-ups
-  if (pbCurrentSection.id === 'injuries' && qObj.key === 'injuries_list') {
-    var lower = answer.toLowerCase().trim();
-    if (lower === 'none' || lower === 'no' || lower === 'nope' || lower === 'n/a' || lower === 'nothing') {
-      pbCurrentStep++;
-      setTimeout(askPBQuestion, 400);
-      return;
-    }
-    // Parse injuries — split by comma, "and", newline
-    var parts = answer.split(/,|\band\b|\n/).map(function(s) { return s.trim(); }).filter(function(s) { return s.length > 0; });
-    if (parts.length > 0) {
-      pbInjuries = parts;
-      pbInjuryIdx = 0;
-      pbInjuryFollowUpIdx = 0;
-      pbInInjuryFollowUp = true;
-      chat.innerHTML += '<div class="pb-chat-q"><p style="font-size:14px;color:#22c97a;line-height:1.6">Got it — let me ask a few follow-up questions about each one so I can coach around them properly.</p></div>';
-      setTimeout(askPBQuestion, 600);
-      return;
-    }
-  }
-
-  pbCurrentStep++;
-  setTimeout(askPBQuestion, 400);
+  pbStep++;
+  pbRender();
 }
 
-function finishPBSection() {
-  var chat = document.getElementById('pb-chat');
-  chat.innerHTML += '<div class="pb-chat-q"><p class="mono" style="font-size:12px;color:#22c97a;letter-spacing:2px;animation:pulse 1.6s infinite">UPDATING YOUR PROFILE...</p></div>';
-  document.getElementById('pb-input-area').style.display = 'none';
-  chat.scrollTop = chat.scrollHeight;
+function pbGoBack() {
+  pbSaveCurrent();
+  if (pbStep > 0) { pbStep--; pbRender(); }
+}
+
+function pbBackToSections() {
+  pbRenderSectionSelect();
+}
+
+function pbSetupKeyboard() {
+  var tas = document.querySelectorAll('#profile-builder-screen .ob-textarea');
+  for (var i = 0; i < tas.length; i++) {
+    tas[i].onkeydown = function(e) {
+      if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); pbNext(); }
+    };
+  }
+}
+
+function pbStartVoice(idx) {
+  var SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+  if (!SR) return;
+  var mic = document.getElementById('pb-mic-' + idx);
+  var ta = document.getElementById('pb-ta-' + idx);
+  if (pbRecognition) { pbRecognition.stop(); pbRecognition = null; if (mic) mic.textContent = '\uD83C\uDF99'; return; }
+  pbRecognition = new SR();
+  pbRecognition.continuous = false;
+  pbRecognition.interimResults = true;
+  pbRecognition.lang = 'en-US';
+  if (mic) mic.textContent = '\u23F9';
+  pbRecognition.onresult = function(e) {
+    var t = '';
+    for (var i = 0; i < e.results.length; i++) t = e.results[i][0].transcript;
+    if (ta) { ta.value = t; obAutoExpand(ta); pbCheckContinue(); }
+  };
+  pbRecognition.onerror = function() { if (mic) mic.textContent = '\uD83C\uDF99'; pbRecognition = null; };
+  pbRecognition.onend = function() { if (mic) mic.textContent = '\uD83C\uDF99'; pbRecognition = null; };
+  pbRecognition.start();
+}
+
+function pbFinishSection(el) {
+  if (!el) el = document.getElementById('profile-builder-screen');
+  el.innerHTML = '<div class="ob-gen-screen">' +
+    '<div class="ob-gen-emoji">\uD83E\uDDE0</div>' +
+    '<h2 class="ob-title" style="margin-top:20px">Updating your profile...</h2>' +
+    '<p class="ob-subtitle">Analyzing your answers for ' + pbCurrentSection.label.toLowerCase() + '</p>' +
+    '<div class="ob-gen-bar"><div class="ob-gen-fill" id="pb-gen-fill" style="width:0%"></div></div></div>';
+
+  var fill = document.getElementById('pb-gen-fill');
+  var pct = 0;
+  var timer = setInterval(function() { pct += 1; if (pct > 90) clearInterval(timer); if (fill) fill.style.width = pct + '%'; }, 110);
 
   var pd = currentProfileData || {};
   var answersText = '';
   var keys = Object.keys(pbAnswers);
-  for (var i = 0; i < keys.length; i++) {
-    answersText += keys[i] + ': ' + pbAnswers[keys[i]] + '\n';
-  }
+  for (var i = 0; i < keys.length; i++) answersText += keys[i] + ': ' + pbAnswers[keys[i]] + '\n';
 
-  var existingJSON = JSON.stringify(pd);
   var sectionId = pbCurrentSection.id;
-
   var prompt = 'You are updating a fitness coaching profile with new information from a deep-dive questionnaire. The user completed the "' + sectionId + '" section.\n\n' +
-    'EXISTING PROFILE DATA:\n' + existingJSON + '\n\n' +
+    'EXISTING PROFILE DATA:\n' + JSON.stringify(pd) + '\n\n' +
     'NEW ANSWERS FROM USER:\n' + answersText + '\n\n' +
     'INSTRUCTIONS:\n' +
     '- Merge this new information into the existing profile_data\n' +
@@ -5164,7 +5490,7 @@ function finishPBSection() {
     '- For the "mindset" section: update philosophy array, add motivation_why, consistency_drivers, bad_week_triggers\n' +
     '- Always update ai_prompt_context to include the new information\n' +
     '- Add "' + sectionId + '" to the profile_sections_completed array (keep existing entries)\n' +
-    '- Do NOT remove any existing data — only add or enhance\n' +
+    '- Do NOT remove any existing data \u2014 only add or enhance\n' +
     '- Return ONLY the complete updated profile_data JSON, no markdown, no explanation';
 
   fetch('/api/ai', {
@@ -5174,66 +5500,44 @@ function finishPBSection() {
   })
   .then(function(r) { return r.json(); })
   .then(function(data) {
+    clearInterval(timer);
+    if (fill) fill.style.width = '100%';
     var raw = (data.content && data.content[0]) ? data.content[0].text : '{}';
     var cleaned = raw.indexOf('{') >= 0 ? raw.substring(raw.indexOf('{'), raw.lastIndexOf('}') + 1) : '{}';
     var updatedData = JSON.parse(cleaned);
-
-    // Ensure sections_completed is properly set
     var sections = updatedData.profile_sections_completed || [];
     if (sections.indexOf(sectionId) < 0) sections.push(sectionId);
     updatedData.profile_sections_completed = sections;
 
-    // Save to server
     return fetch('/api/profiles/' + currentProfileId, {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ profile_data: updatedData })
     }).then(function(r2) { return r2.json(); }).then(function(saveData) {
-      if (saveData.success && saveData.profile) {
-        currentProfileData = saveData.profile.profile_data;
-      } else {
-        currentProfileData = updatedData;
-      }
+      if (saveData.success && saveData.profile) currentProfileData = saveData.profile.profile_data;
+      else currentProfileData = updatedData;
       localStorage.setItem('ac_profile_data', JSON.stringify(currentProfileData));
       if (currentProfileData.ai_prompt_context) FULL_PROFILE = currentProfileData.ai_prompt_context;
       renderProfileTab();
 
-      chat.innerHTML += '<div class="pb-chat-q"><p style="font-size:15px;color:#22c97a;line-height:1.6">Done! Your ' + pbCurrentSection.label.toLowerCase() + ' section is now saved.</p></div>';
-      chat.scrollTop = chat.scrollHeight;
-
-      // Show back button
       setTimeout(function() {
-        chat.innerHTML += '<div style="display:flex;gap:8px;margin-top:8px;align-self:center"><button onclick="renderPBSectionSelect()" class="btnPri" style="font-size:14px;padding:10px 20px">Continue Building</button><button onclick="closeProfileBuilder()" class="btnSec" style="font-size:14px;padding:10px 20px">Done For Now</button></div>';
-        chat.scrollTop = chat.scrollHeight;
-      }, 500);
+        el.innerHTML = '<div class="ob-success-screen">' +
+          '<div class="ob-success-emoji">\u2705</div>' +
+          '<h2 class="ob-title" style="margin-top:20px">' + pbCurrentSection.label + ' saved!</h2>' +
+          '<p class="ob-subtitle">Your coaching just got smarter.</p>' +
+          '<div style="display:flex;flex-direction:column;gap:10px;max-width:480px;width:100%;margin-top:20px">' +
+          '<button class="ob-continue" onclick="pbRenderSectionSelect()">Continue Building</button>' +
+          '<button class="ob-continue" style="background:transparent;border:1px solid #1a1c22;color:#888" onclick="closeProfileBuilder()">Done For Now</button>' +
+          '</div></div>';
+      }, 600);
     });
   })
   .catch(function(e) {
-    chat.innerHTML += '<div class="pb-chat-q"><p style="color:#e87;font-size:14px">Error updating profile: ' + e.message + '. Your answers were saved locally — try again later.</p></div>';
-    document.getElementById('pb-input-area').style.display = 'block';
-    chat.scrollTop = chat.scrollHeight;
+    clearInterval(timer);
+    el.innerHTML = '<div class="ob-gen-screen">' +
+      '<p style="color:#e87;font-size:16px;margin-bottom:20px">Error updating profile: ' + e.message + '</p>' +
+      '<button class="ob-continue" style="max-width:300px" onclick="pbRender()">Try Again</button></div>';
   });
-}
-
-function startPBVoice() {
-  var SR = window.SpeechRecognition || window.webkitSpeechRecognition;
-  if (!SR) { document.getElementById('pb-status').textContent = 'Voice not supported — use Chrome.'; return; }
-  if (pbRecognition) { pbRecognition.stop(); pbRecognition = null; document.getElementById('pb-mic').innerHTML = '&#127908;'; return; }
-  pbRecognition = new SR();
-  pbRecognition.continuous = false;
-  pbRecognition.interimResults = true;
-  pbRecognition.lang = 'en-US';
-  document.getElementById('pb-mic').textContent = '\u23F9';
-  document.getElementById('pb-status').textContent = 'Listening...';
-  pbRecognition.onresult = function(e) {
-    var transcript = '';
-    for (var i = 0; i < e.results.length; i++) { transcript = e.results[i][0].transcript; }
-    document.getElementById('pb-input').value = transcript;
-    if (e.results[0].isFinal) document.getElementById('pb-status').textContent = 'Got it — press Send or keep talking.';
-  };
-  pbRecognition.onerror = function() { document.getElementById('pb-status').textContent = ''; document.getElementById('pb-mic').innerHTML = '&#127908;'; pbRecognition = null; };
-  pbRecognition.onend = function() { document.getElementById('pb-mic').innerHTML = '&#127908;'; pbRecognition = null; };
-  pbRecognition.start();
 }
 
 function showTab(name, btn) {

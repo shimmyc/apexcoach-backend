@@ -30,6 +30,20 @@ ApexCoach is a personalized AI fitness coaching web app. Users connect their Fit
 
 - daily_checkins: id, profile_id, date (text, YYYY-MM-DD), energy (text), soreness (text[]), severity (text), checkin_text (text), created_at. UNIQUE(profile_id, date) for upsert.
 
+## Onboarding Flow (Full-Page Paginated)
+
+New users go through a 7-question full-screen paginated onboarding flow:
+
+- **Screens**: Welcome → 7 Questions → Generating → PIN Creation → Success → Dashboard
+- **Questions**: Name, Goal, Injuries, Training Days (pill selector), Fitness Tracker (pill selector w/ follow-up), Experience Level (pill selector), Schedule (optional/skippable)
+- **onboardingAnswers object**: `{ name, goal, injuries, days, tracker, trackerDevice, experience, schedule }`
+- **UI**: Full-screen overlay (#080a0f bg), slide animations (300ms ease), progress bar (green fill), back navigation with answer preservation
+- **PIN creation**: 4-digit bank-style boxes (auto-advance, confirm match, auto-submit)
+- **Generating screen**: Pulsing brain emoji, fake progress bar (10s fill), AI profile generation via /api/ai
+- **Voice input**: Mic button (🎙) in textarea bottom-right corner on every textarea question
+- **Keyboard**: Enter submits (Shift+Enter for newline), visualViewport API for mobile keyboard handling
+- **Deep Profile Builder**: Same full-page paginated style used for profile builder sections (Goals, Injuries, Training, Lifestyle, Mindset) on Profile tab. Launched from "Build Profile" completeness card. Uses `#profile-builder-screen` overlay.
+
 ## App Structure (public/index.html)
 
 - Profile selector screen on load (PIN protected)
