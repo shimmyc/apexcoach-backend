@@ -1098,7 +1098,7 @@ var OB_QUESTIONS = [
   { key:'name', emoji:'\uD83D\uDC4B', title:"What's your name?", subtitle:"We'll use this to personalize your experience", input:'textarea-single', required:true },
   { key:'goal', emoji:'\uD83C\uDFAF', title:"What's your #1 fitness goal right now?", subtitle:"Could be anything \u2014 lose weight, build muscle, run a 5k, get your black belt, hike a mountain. The more specific the better!", input:'textarea', required:true },
   { key:'injuries', emoji:'\uD83E\uDE7A', title:"Any injuries or physical limitations?", subtitle:"This helps your AI coach keep you safe. Include anything that affects how you train \u2014 even old injuries that flare up occasionally. Type \u2018none\u2019 if you\u2019re all good!", input:'textarea', required:true },
-  { key:'days', emoji:'\uD83D\uDCC5', title:"How many days per week can you realistically train?", subtitle:"Be honest \u2014 we\u2019ll build around your actual life, not an ideal version of it", input:'pills-grid', options:['1 day','2 days','3 days','4 days','5 days','6 days'], required:true },
+  { key:'days', emoji:'\uD83D\uDCC5', title:"How many days per week can you realistically train?", subtitle:"Be honest \u2014 we\u2019ll build around your actual life, not an ideal version of it", input:'pills-grid', options:['1 day','2 days','3 days','4 days','5 days','6 days','7 days'], required:true },
   { key:'tracker', emoji:'\u231A', title:"Do you have a fitness tracker?", subtitle:"Connecting a tracker unlocks your personalized readiness score, sleep analysis, and HRV tracking", input:'pills-full', options:['Yes, I have a Fitbit','Yes, different device','No tracker yet'], required:true, followUp:{ trigger:'Yes, different device', key:'trackerDevice', placeholder:'Which device? (Apple Watch, Garmin, Whoop, Samsung, other)' } },
   { key:'experience', emoji:'\uD83D\uDCAA', title:"How would you describe your fitness experience?", subtitle:"No judgment \u2014 this helps calibrate your AI recommendations", input:'pills-full', options:['\uD83C\uDF31 Just starting out','\uD83C\uDFC3 Some experience (1-2 years)','\uD83D\uDCAA Pretty athletic (3+ years)','\uD83C\uDFC6 Very experienced / former athlete'], required:true },
   { key:'schedule', emoji:'\uD83D\uDDD3', title:"Any fixed training days in your schedule?", subtitle:"For example \u2018Tuesday and Thursday are my MMA days\u2019. Skip if your schedule is flexible", input:'textarea', required:false, skippable:true }
@@ -1260,6 +1260,8 @@ function obHasAnswer(step) {
     var ta = document.getElementById('ob-ta-' + step);
     if (ta) val = ta.value.trim();
   }
+  // Handle numbers (e.g. days=3) and strings
+  if (typeof val === 'number') return val > 0;
   return val && val.length > 0;
 }
 
