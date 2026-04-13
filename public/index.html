@@ -140,24 +140,26 @@ input[type=range]{width:100%;accent-color:var(--accent)}
 .ob-progress-fill{height:100%;background:#22c97a;transition:width .4s cubic-bezier(.4,0,.2,1)}
 .ob-viewport{flex:1;overflow:hidden;position:relative}
 .ob-slide-track{display:flex;width:100%;height:100%;transition:transform 300ms ease}
-.ob-slide{min-width:100%;height:100%;display:flex;flex-direction:column;align-items:center;justify-content:flex-start;padding:40px 20px 120px;overflow-y:auto}
-.ob-emoji{font-size:48px;margin-bottom:16px;line-height:1}
+.ob-slide{min-width:100%;height:100%;display:flex;flex-direction:column;align-items:center;justify-content:center;padding:0 40px 80px;overflow-y:auto}
+.ob-emoji{font-size:48px;margin-bottom:24px;line-height:1}
 .ob-title{font-family:'Oswald',sans-serif;font-size:28px;color:#fff;text-align:center;font-weight:600;margin-bottom:10px;line-height:1.3}
-.ob-subtitle{font-size:15px;color:#888;text-align:center;line-height:1.6;max-width:480px;margin-bottom:28px}
-.ob-answer-area{width:100%;max-width:480px}
-.ob-textarea{width:100%;background:#0d0f16;border:1px solid #1a1c22;color:#e0e0e0;padding:16px;padding-right:50px;border-radius:12px;font-size:16px;font-family:'DM Sans',sans-serif;resize:none;outline:none;min-height:52px;line-height:1.5;transition:border-color .2s}
+.ob-subtitle{font-size:15px;color:#888;text-align:center;line-height:1.6;max-width:560px;margin-bottom:28px}
+.ob-answer-area{width:100%;max-width:560px}
+.ob-textarea{width:100%;background:#0d0f16;border:1px solid #1a1c22;color:#e0e0e0;padding:16px 56px 16px 16px;border-radius:12px;font-size:16px;font-family:'DM Sans',sans-serif;resize:none;outline:none;min-height:160px;line-height:1.5;transition:border-color .2s}
+.ob-textarea.ob-ta-single{min-height:52px}
 .ob-textarea:focus{border-color:#22c97a}
 .ob-textarea::placeholder{color:#444}
 .ob-textarea-wrap{position:relative;width:100%}
-.ob-mic{position:absolute;right:12px;bottom:12px;background:#22c97a18;border:1px solid #22c97a33;color:#22c97a;border-radius:8px;padding:6px 10px;cursor:pointer;font-size:16px;min-width:40px;min-height:40px;display:flex;align-items:center;justify-content:center}
-.ob-pills{display:flex;flex-wrap:wrap;gap:10px;width:100%;max-width:480px}
+.ob-mic{position:absolute;right:12px;bottom:12px;background:#22c97a18;border:1px solid #22c97a33;color:#22c97a;border-radius:8px;width:36px;height:36px;cursor:pointer;font-size:16px;display:flex;align-items:center;justify-content:center;padding:0}
+.ob-pills{display:flex;flex-wrap:wrap;gap:10px;width:100%;max-width:560px}
 .ob-pill{background:#0d0f16;border:2px solid #1a1c22;color:#ccc;border-radius:14px;cursor:pointer;font-size:15px;font-family:'DM Sans',sans-serif;transition:all .2s;text-align:center;min-height:52px;display:flex;align-items:center;justify-content:center;padding:12px 20px}
 .ob-pill:hover{border-color:#22c97a44}
 .ob-pill.selected{border-color:#22c97a;background:#22c97a18;color:#22c97a}
-.ob-pill-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;width:100%;max-width:480px}
+.ob-pill-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;width:100%;max-width:560px}
 .ob-pill-full{width:100%}
 .ob-footer{position:fixed;bottom:0;left:0;right:0;padding:12px 20px 20px;background:linear-gradient(transparent,#080a0f 30%);z-index:101}
-.ob-continue{width:100%;max-width:480px;margin:0 auto;display:block;height:52px;background:#22c97a;color:#040605;border:none;border-radius:12px;font-size:16px;font-weight:700;cursor:pointer;font-family:'DM Sans',sans-serif;transition:opacity .2s}
+.ob-footer.ob-footer-inline{position:relative;bottom:auto;left:auto;right:auto;padding:16px 0 0;background:none;margin-top:16px}
+.ob-continue{width:100%;max-width:560px;margin:0 auto;display:block;height:52px;background:#22c97a;color:#040605;border:none;border-radius:12px;font-size:16px;font-weight:700;cursor:pointer;font-family:'DM Sans',sans-serif;transition:opacity .2s}
 .ob-continue:disabled{opacity:.3;cursor:default}
 .ob-welcome{display:flex;flex-direction:column;align-items:center;justify-content:center;height:100%;text-align:center;padding:40px 20px}
 .ob-gen-screen{display:flex;flex-direction:column;align-items:center;justify-content:center;height:100%;text-align:center;padding:40px 20px}
@@ -174,7 +176,21 @@ input[type=range]{width:100%;accent-color:var(--accent)}
 .ob-success-screen{display:flex;flex-direction:column;align-items:center;justify-content:center;height:100%;padding:40px 20px;text-align:center}
 @keyframes obBounce{0%{transform:scale(0)}50%{transform:scale(1.2)}100%{transform:scale(1)}}
 .ob-success-emoji{font-size:64px;animation:obBounce .5s ease}
-.ob-device-input{margin-top:12px;width:100%;max-width:480px}
+.ob-device-input{margin-top:12px;width:100%;max-width:560px}
+/* Desktop onboarding */
+@media(min-width:769px){
+  .ob-textarea{min-height:200px}
+  .ob-slide{padding:0 40px 80px}
+}
+/* Mobile onboarding */
+@media(max-width:768px){
+  .ob-slide{padding:0 24px 80px}
+  .ob-title{font-size:26px}
+  .ob-subtitle{font-size:14px}
+  .ob-textarea{min-height:140px}
+  .ob-answer-area,.ob-pills,.ob-pill-grid,.ob-device-input,.ob-subtitle{max-width:100%}
+  .ob-continue{max-width:100%}
+}
 
 /* ── BOTTOM NAV (mobile) ──────────────────────────────────────────── */
 @media(max-width:768px){
@@ -1125,23 +1141,29 @@ function obRenderQuestions(el) {
   h += '<div class="ob-progress-bar"><div class="ob-progress-fill" style="width:' + ((obStep+1)/total*100) + '%"></div></div>';
   h += '</div>';
 
-  // Build all slides
-  h += '<div class="ob-viewport"><div class="ob-slide-track" id="ob-track" style="transform:translateX(-' + (obStep*100) + '%)">';
+  // Build all slides inside a scrollable content area
+  h += '<div id="onboard-content" class="ob-viewport" style="overflow-y:auto"><div class="ob-slide-track" id="ob-track" style="transform:translateX(-' + (obStep*100) + '%);height:auto;min-height:100%">';
   for (var i = 0; i < total; i++) {
     var qi = OB_QUESTIONS[i];
-    h += '<div class="ob-slide">';
+    h += '<div class="ob-slide" style="height:auto;min-height:100%">';
     h += '<div class="ob-emoji">' + qi.emoji + '</div>';
     h += '<h2 class="ob-title">' + qi.title + '</h2>';
     h += '<p class="ob-subtitle">' + qi.subtitle + '</p>';
     h += '<div class="ob-answer-area">';
     h += obBuildInput(qi, i);
-    h += '</div></div>';
+    h += '</div>';
+    // Inline footer inside the slide (shown when keyboard is open)
+    if (i === obStep) {
+      var hasAnswer = obHasAnswer(obStep);
+      h += '<div class="ob-footer ob-footer-inline" id="ob-footer-inline" style="display:none;max-width:560px;width:100%"><button class="ob-continue"' + (q.required && !hasAnswer ? ' disabled' : '') + ' onclick="obNext()">Continue \u2192</button></div>';
+    }
+    h += '</div>';
   }
   h += '</div></div>';
 
-  // Footer
+  // Fixed footer (shown when keyboard is closed)
   var hasAnswer = obHasAnswer(obStep);
-  h += '<div class="ob-footer"><button class="ob-continue" id="ob-cont-btn"' + (q.required && !hasAnswer ? ' disabled' : '') + ' onclick="obNext()">Continue \u2192</button></div>';
+  h += '<div class="ob-footer" id="onboard-footer"><button class="ob-continue" id="ob-cont-btn"' + (q.required && !hasAnswer ? ' disabled' : '') + ' onclick="obNext()">Continue \u2192</button></div>';
   el.innerHTML = h;
 
   // Focus textarea if applicable
@@ -1162,9 +1184,9 @@ function obRenderQuestions(el) {
 function obBuildInput(qi, idx) {
   var val = onboardingAnswers[qi.key] || '';
   if (qi.input === 'textarea-single' || qi.input === 'textarea') {
-    var minH = qi.input === 'textarea-single' ? '52px' : '120px';
+    var singleClass = qi.input === 'textarea-single' ? ' ob-ta-single' : '';
     var h = '<div class="ob-textarea-wrap">';
-    h += '<textarea class="ob-textarea" id="ob-ta-' + idx + '" placeholder="Type your answer..." style="min-height:' + minH + '" oninput="obAutoExpand(this);obCheckContinue()">' + val + '</textarea>';
+    h += '<textarea class="ob-textarea' + singleClass + '" id="ob-ta-' + idx + '" placeholder="Type your answer..." oninput="obAutoExpand(this);obCheckContinue()">' + val + '</textarea>';
     h += '<button class="ob-mic" onclick="obStartVoice(' + idx + ')" id="ob-mic-' + idx + '">\uD83C\uDF99</button>';
     h += '</div>';
     if (qi.followUp) {
@@ -1242,10 +1264,7 @@ function obHasAnswer(step) {
 }
 
 function obCheckContinue() {
-  var btn = document.getElementById('ob-cont-btn');
-  if (!btn) return;
   var qi = OB_QUESTIONS[obStep];
-  if (!qi.required) { btn.disabled = false; return; }
   // Save current textarea value
   var ta = document.getElementById('ob-ta-' + obStep);
   if (ta) onboardingAnswers[qi.key] = ta.value.trim();
@@ -1254,7 +1273,10 @@ function obCheckContinue() {
     var dta = document.getElementById('ob-device-ta-' + obStep);
     if (dta) onboardingAnswers[qi.followUp.key] = dta.value.trim();
   }
-  btn.disabled = !obHasAnswer(obStep);
+  var dis = qi.required ? !obHasAnswer(obStep) : false;
+  // Update both fixed and inline continue buttons
+  var btns = document.querySelectorAll('#onboard-screen .ob-continue');
+  for (var i = 0; i < btns.length; i++) btns[i].disabled = dis;
 }
 
 function obSaveCurrentAnswer() {
@@ -1307,10 +1329,22 @@ function obSetupKeyboard() {
 function obSetupViewport() {
   if (window.visualViewport) {
     window.visualViewport.onresize = function() {
-      var footer = document.querySelector('#onboard-screen .ob-footer');
-      if (!footer) return;
-      var kbH = window.innerHeight - window.visualViewport.height;
-      footer.style.bottom = kbH + 'px';
+      var fixedFooter = document.getElementById('onboard-footer');
+      var inlineFooter = document.getElementById('ob-footer-inline');
+      var content = document.getElementById('onboard-content');
+      if (!fixedFooter) return;
+      var keyboardHeight = window.innerHeight - window.visualViewport.height;
+      if (keyboardHeight > 100) {
+        // Keyboard is open — hide fixed footer, show inline one
+        fixedFooter.style.display = 'none';
+        if (inlineFooter) inlineFooter.style.display = 'block';
+        if (content) content.style.paddingBottom = '0px';
+      } else {
+        // Keyboard closed — show fixed footer, hide inline one
+        fixedFooter.style.display = '';
+        if (inlineFooter) inlineFooter.style.display = 'none';
+        if (content) content.style.paddingBottom = '';
+      }
     };
   }
 }
@@ -5338,23 +5372,28 @@ function pbRender() {
   h += '<div class="ob-progress-bar"><div class="ob-progress-fill" style="width:' + ((pbStep+1)/total*100) + '%"></div></div>';
   h += '</div>';
 
-  h += '<div class="ob-viewport"><div class="ob-slide-track" style="transform:translateX(-' + (pbStep*100) + '%)">';
+  h += '<div id="pb-content" class="ob-viewport" style="overflow-y:auto"><div class="ob-slide-track" style="transform:translateX(-' + (pbStep*100) + '%);height:auto;min-height:100%">';
   for (var i = 0; i < total; i++) {
     var qi = pbAllQuestions[i];
     var val = pbAnswers[qi.key] || '';
-    h += '<div class="ob-slide">';
+    h += '<div class="ob-slide" style="height:auto;min-height:100%">';
     h += '<div class="ob-emoji">' + qi.emoji + '</div>';
     h += '<h2 class="ob-title">' + qi.title + '</h2>';
     h += '<p class="ob-subtitle">' + qi.subtitle + '</p>';
     h += '<div class="ob-answer-area"><div class="ob-textarea-wrap">';
-    h += '<textarea class="ob-textarea" id="pb-ta-' + i + '" placeholder="Type your answer..." style="min-height:120px" oninput="obAutoExpand(this);pbCheckContinue()">' + val + '</textarea>';
+    h += '<textarea class="ob-textarea" id="pb-ta-' + i + '" placeholder="Type your answer..." oninput="obAutoExpand(this);pbCheckContinue()">' + val + '</textarea>';
     h += '<button class="ob-mic" onclick="pbStartVoice(' + i + ')" id="pb-mic-' + i + '">\uD83C\uDF99</button>';
-    h += '</div></div></div>';
+    h += '</div></div>';
+    if (i === pbStep) {
+      var hasVal = (pbAnswers[q.key] || '').length > 0;
+      h += '<div class="ob-footer ob-footer-inline" id="pb-footer-inline" style="display:none;max-width:560px;width:100%"><button class="ob-continue"' + (!hasVal ? ' disabled' : '') + ' onclick="pbNext()">Continue \u2192</button></div>';
+    }
+    h += '</div>';
   }
   h += '</div></div>';
 
   var hasVal = (pbAnswers[q.key] || '').length > 0;
-  h += '<div class="ob-footer"><button class="ob-continue" id="pb-cont-btn"' + (!hasVal ? ' disabled' : '') + ' onclick="pbNext()">Continue \u2192</button></div>';
+  h += '<div class="ob-footer" id="pb-footer"><button class="ob-continue" id="pb-cont-btn"' + (!hasVal ? ' disabled' : '') + ' onclick="pbNext()">Continue \u2192</button></div>';
   el.innerHTML = h;
 
   var ta = document.getElementById('pb-ta-' + pbStep);
@@ -5362,9 +5401,17 @@ function pbRender() {
   pbSetupKeyboard();
   if (window.visualViewport) {
     window.visualViewport.onresize = function() {
-      var footer = document.querySelector('#profile-builder-screen .ob-footer');
-      if (!footer) return;
-      footer.style.bottom = (window.innerHeight - window.visualViewport.height) + 'px';
+      var fixedFooter = document.getElementById('pb-footer');
+      var inlineFooter = document.getElementById('pb-footer-inline');
+      if (!fixedFooter) return;
+      var kbH = window.innerHeight - window.visualViewport.height;
+      if (kbH > 100) {
+        fixedFooter.style.display = 'none';
+        if (inlineFooter) inlineFooter.style.display = 'block';
+      } else {
+        fixedFooter.style.display = '';
+        if (inlineFooter) inlineFooter.style.display = 'none';
+      }
     };
   }
 }
@@ -5373,8 +5420,9 @@ function pbCheckContinue() {
   var ta = document.getElementById('pb-ta-' + pbStep);
   var q = pbAllQuestions[pbStep];
   if (ta) pbAnswers[q.key] = ta.value.trim();
-  var btn = document.getElementById('pb-cont-btn');
-  if (btn) btn.disabled = !(pbAnswers[q.key] || '').length;
+  var dis = !(pbAnswers[q.key] || '').length;
+  var btns = document.querySelectorAll('#profile-builder-screen .ob-continue');
+  for (var i = 0; i < btns.length; i++) btns[i].disabled = dis;
 }
 
 function pbSaveCurrent() {
