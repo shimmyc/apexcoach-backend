@@ -293,6 +293,7 @@ Left/right arrow navigation on Today tab to browse past days.
 - **UI**: `← Yesterday` / `Today` / `→` buttons below date header. Arrow keys also work (left/right).
 - **Past day mode**: Shows amber "Viewing [date]" banner. Hides check-in card, AI recommendation, and progress brief. Shows logged workout for that date (with edit button) or "No workout logged this day". Disables forward button when on today.
 - **Fitbit data**: Server endpoint `GET /api/profiles/:id/daily?date=YYYY-MM-DD` accepts optional date param. `buildDailyData(token, overrideDate)` uses the provided date instead of today.
+- **Known issue**: UI navigation works but historical Fitbit data does not load for past dates. The server needs debugging to properly fetch and cache historical Fitbit data for specific past dates. Workout log for past dates works fine.
 
 ## Profile Image Crop Tool
 
