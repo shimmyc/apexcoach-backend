@@ -145,12 +145,12 @@ input[type=range]{width:100%;accent-color:var(--accent)}
 .ob-title{font-family:'Oswald',sans-serif;font-size:28px;color:#fff;text-align:center;font-weight:600;margin-bottom:10px;line-height:1.3}
 .ob-subtitle{font-size:15px;color:#888;text-align:center;line-height:1.6;max-width:560px;margin-bottom:28px}
 .ob-answer-area{width:100%;max-width:560px}
-.ob-textarea{width:100%;background:#0d0f16;border:1px solid #1a1c22;color:#e0e0e0;padding:16px 56px 16px 16px;border-radius:12px;font-size:16px;font-family:'DM Sans',sans-serif;resize:none;outline:none;min-height:160px;line-height:1.5;transition:border-color .2s}
+.ob-textarea{width:100%;box-sizing:border-box;background:#0d0f16;border:1px solid #1a1c22;color:#e0e0e0;padding:16px 56px 16px 16px;border-radius:12px;font-size:16px;font-family:'DM Sans',sans-serif;resize:none;outline:none;min-height:160px;line-height:1.5;transition:border-color .2s}
 .ob-textarea.ob-ta-single{min-height:52px}
 .ob-textarea:focus{border-color:#22c97a}
 .ob-textarea::placeholder{color:#444}
-.ob-textarea-wrap{position:relative;width:100%}
-.ob-mic{position:absolute;right:12px;bottom:12px;background:#22c97a18;border:1px solid #22c97a33;color:#22c97a;border-radius:8px;width:36px;height:36px;cursor:pointer;font-size:16px;display:flex;align-items:center;justify-content:center;padding:0}
+.ob-textarea-wrap{position:relative;display:block;width:100%}
+.ob-mic{position:absolute;bottom:12px;right:12px;width:36px;height:36px;z-index:2;background:#22c97a18;border:1px solid #22c97a33;color:#22c97a;border-radius:8px;cursor:pointer;font-size:16px;display:flex;align-items:center;justify-content:center;padding:0}
 .ob-pills{display:flex;flex-wrap:wrap;gap:10px;width:100%;max-width:560px}
 .ob-pill{background:#0d0f16;border:2px solid #1a1c22;color:#ccc;border-radius:14px;cursor:pointer;font-size:15px;font-family:'DM Sans',sans-serif;transition:all .2s;text-align:center;min-height:52px;display:flex;align-items:center;justify-content:center;padding:12px 20px}
 .ob-pill:hover{border-color:#22c97a44}
