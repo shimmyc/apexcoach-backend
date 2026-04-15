@@ -4105,9 +4105,12 @@ function confirmDeleteFromModal() {
   editingWorkoutDate = null;
 }
 
+var _savingWorkout = false;
 function saveWorkout() {
+  if (_savingWorkout) return;
   var notes = document.getElementById('wnotes').value;
   if (!notes.trim()) return;
+  _savingWorkout = true;
   var autoFormat = localStorage.getItem('ac_auto_format') !== 'false';
   var saveBtn = document.querySelector('#log-modal .btnPri');
 
@@ -4165,6 +4168,7 @@ function doSaveWorkout() {
   }
 
   function finishSave(type) {
+    _savingWorkout = false;
     if (saveBtn) { saveBtn.textContent = 'Save'; saveBtn.disabled = false; }
     var entry = {
       type: type,
@@ -4407,8 +4411,11 @@ function renderLibDashboard() {
     html += '</div></div>';
   }
 
-  // Reformat titles button
-  html += '<div style="margin-top:16px;text-align:center"><button onclick="reformatAllTitles()" id="reformat-titles-btn" style="background:transparent;border:1px solid var(--accent-33);color:var(--accent);padding:10px 20px;border-radius:6px;cursor:pointer;font-size:13px;font-family:DM Sans,sans-serif">&#10024; Reformat Workout Titles</button></div>';
+  // Maintenance buttons
+  html += '<div style="margin-top:16px;display:flex;gap:10px;justify-content:center;flex-wrap:wrap">';
+  html += '<button onclick="reformatAllTitles()" id="reformat-titles-btn" style="background:transparent;border:1px solid var(--accent-33);color:var(--accent);padding:10px 20px;border-radius:6px;cursor:pointer;font-size:13px;font-family:DM Sans,sans-serif">&#10024; Reformat Titles</button>';
+  html += '<button onclick="dedupeWorkouts()" id="dedupe-btn" style="background:transparent;border:1px solid #f5a62333;color:#f5a623;padding:10px 20px;border-radius:6px;cursor:pointer;font-size:13px;font-family:DM Sans,sans-serif">Remove Duplicates</button>';
+  html += '</div>';
 
   el.innerHTML = html;
 
@@ -4430,11 +4437,11 @@ function reformatAllTitles() {
       if (data.success) {
         if (btn) btn.textContent = 'Updated ' + data.updated + ' of ' + data.total + ' titles!';
         // Reload workout log to reflect new titles
-        fetch('/api/workouts?profile_id=' + currentProfileId)
+        fetch('/api/workouts?profile_id=' + currentProfileId + '&limit=200')
           .then(function(r) { return r.json(); })
           .then(function(wkData) {
-            if (Array.isArray(wkData)) {
-              workoutLog = wkData;
+            if (wkData.success && Array.isArray(wkData.workouts)) {
+              workoutLog = wkData.workouts;
               localStorage.setItem('ac_log', JSON.stringify(workoutLog));
               renderLog();
               renderLogArea();
@@ -4448,6 +4455,44 @@ function reformatAllTitles() {
     })
     .catch(function(err) {
       if (btn) btn.textContent = 'Error: ' + err.message;
+    });
+}
+
+function dedupeWorkouts() {
+  if (!currentProfileId) return;
+  var btn = document.getElementById('dedupe-btn');
+  if (btn) { btn.textContent = 'Checking...'; btn.disabled = true; }
+  fetch('/api/profiles/' + currentProfileId + '/dedupe-workouts', { method: 'POST' })
+    .then(function(r) { return r.json(); })
+    .then(function(data) {
+      if (data.success) {
+        if (data.deleted > 0) {
+          if (btn) btn.textContent = 'Removed ' + data.deleted + ' duplicates!';
+          // Reload workouts
+          fetch('/api/workouts?profile_id=' + currentProfileId + '&limit=200')
+            .then(function(r) { return r.json(); })
+            .then(function(wkData) {
+              if (wkData.success && Array.isArray(wkData.workouts)) {
+                workoutLog = wkData.workouts;
+                localStorage.setItem('ac_log', JSON.stringify(workoutLog));
+                renderLog();
+                renderLogArea();
+                renderCalendar();
+                loadLibrary();
+              }
+            });
+        } else {
+          if (btn) btn.textContent = 'No duplicates found';
+        }
+      } else {
+        if (btn) btn.textContent = 'Error';
+      }
+      setTimeout(function() {
+        if (btn) { btn.textContent = 'Remove Duplicates'; btn.disabled = false; }
+      }, 3000);
+    })
+    .catch(function(err) {
+      if (btn) { btn.textContent = 'Error'; btn.disabled = false; }
     });
 }
 

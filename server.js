@@ -726,6 +726,45 @@ app.post("/api/profiles/:id/reformat-titles", async function(req, res) {
   }
 });
 
+// ── DEDUPLICATE WORKOUTS ──────────────────────────────────────────────────
+app.post("/api/profiles/:id/dedupe-workouts", async function(req, res) {
+  try {
+    var profileId = req.params.id;
+    var wr = await fetch(SUPABASE_URL + "/rest/v1/workouts?profile_id=eq." + profileId + "&select=id,date,ts,type,notes&order=date.desc,ts.desc&limit=10000", { headers: sbHeaders() });
+    var workouts = await wr.json();
+    if (!Array.isArray(workouts)) workouts = [];
+
+    // Group by date+ts to find true duplicates (same date AND same timestamp)
+    var seen = {};
+    var dupeIds = [];
+    for (var i = 0; i < workouts.length; i++) {
+      var w = workouts[i];
+      var key = w.date + '|' + (w.ts || 0);
+      if (seen[key]) {
+        // Keep the first one (earlier in the array = higher ID typically), delete this one
+        dupeIds.push(w.id);
+      } else {
+        seen[key] = w.id;
+      }
+    }
+
+    console.log("[dedupe] Found " + dupeIds.length + " duplicate workouts for profile " + profileId);
+    var deleted = 0;
+    for (var j = 0; j < dupeIds.length; j++) {
+      var dr = await fetch(SUPABASE_URL + "/rest/v1/workouts?id=eq." + dupeIds[j], {
+        method: "DELETE",
+        headers: sbHeaders("return=minimal"),
+      });
+      if (dr.ok) deleted++;
+    }
+    console.log("[dedupe] Deleted " + deleted + " duplicates");
+    res.json({ success: true, duplicates_found: dupeIds.length, deleted: deleted });
+  } catch (e) {
+    console.error("[dedupe] Error:", e);
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
 // ── MEDITATION LOG ─────────────────────────────────────────────────────────
 app.get("/api/meditations", async function(req, res) {
   try {
