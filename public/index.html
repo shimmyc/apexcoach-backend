@@ -733,23 +733,17 @@ input[type=range]{width:100%;accent-color:var(--accent)}
       <p class="mono" style="font-size:10px;color:#555;letter-spacing:2px;margin-bottom:6px">DATE</p>
       <div id="wdate-display" class="mono" style="font-size:14px;color:var(--text-sec);background:var(--bg-input);border:1px solid var(--border);padding:11px 14px;border-radius:6px"></div>
     </div>
-    <select id="wtype">
-      <option value="">Choose type...</option>
-      <option>Mixed Training</option>
-      <option>MMA / Sparring</option>
-      <option>Strength - Upper</option>
-      <option>Strength - Lower</option>
-      <option>Strength - Full Body</option>
-      <option>Conditioning / HIIT</option>
-      <option>Yoga / Mobility</option>
-      <option>PT / Rehab</option>
-      <option>Active Recovery</option>
-      <option>Walking</option>
-      <option>Rest Day</option>
-    </select>
+    <input type="hidden" id="wtype" value="">
+    <p class="mono" style="font-size:10px;color:var(--text-dim);letter-spacing:2px;margin-bottom:6px">WHAT DID YOU DO TODAY?</p>
     <div style="position:relative">
-      <textarea id="wnotes" rows="4" placeholder="Notes — how did it feel, any pain, energy level... or use the mic button" style="padding-right:44px"></textarea>
+      <textarea id="wnotes" rows="6" placeholder="Describe your workout... e.g. 'Started with cat-cow and glute bridges, then 20 min elliptical, finished with dumbbell curls 3x12 at 22.5lbs'" style="padding-right:44px;min-height:160px"></textarea>
       <button onclick="startVoice()" id="mic-btn" title="Voice input" style="position:absolute;right:10px;top:10px;background:var(--accent-18);border:1px solid var(--accent-33);color:var(--accent);border-radius:6px;padding:6px 10px;cursor:pointer;font-size:14px">🎙</button>
+    </div>
+    <div style="display:flex;gap:6px;align-items:center;margin-bottom:8px;flex-wrap:wrap">
+      <span class="mono" style="font-size:10px;color:var(--text-dim)">Quick log:</span>
+      <button onclick="document.getElementById('wnotes').value='MMA training session';document.getElementById('wnotes').focus()" style="background:var(--bg-input);border:1px solid var(--border);color:var(--text-sec);padding:4px 10px;border-radius:4px;cursor:pointer;font-size:12px">🥋 MMA</button>
+      <button onclick="document.getElementById('wnotes').value='Walking';document.getElementById('wnotes').focus()" style="background:var(--bg-input);border:1px solid var(--border);color:var(--text-sec);padding:4px 10px;border-radius:4px;cursor:pointer;font-size:12px">🚶 Walk</button>
+      <button onclick="document.getElementById('wnotes').value='Rest day';document.getElementById('wnotes').focus()" style="background:var(--bg-input);border:1px solid var(--border);color:var(--text-sec);padding:4px 10px;border-radius:4px;cursor:pointer;font-size:12px">😴 Rest Day</button>
     </div>
     <div id="voice-status" style="font-size:11px;color:#555;font-family:'IBM Plex Mono',monospace;margin-bottom:8px;min-height:16px"></div>
     <div style="display:flex;gap:6px;align-items:center;margin-bottom:10px;flex-wrap:wrap">
@@ -4037,9 +4031,15 @@ function saveWorkoutToSupabase(entry) {
   })
   .then(function(r) { return r.json(); })
   .then(function(data) {
-    if (data.success && entry.notes && entry.notes.trim() && currentProfileId) {
+    if (data.success) {
       var wk = Array.isArray(data.workout) ? data.workout[0] : data.workout;
       var wkId = wk && wk.id ? wk.id : null;
+      // Update local entry with server ID for stable card references
+      if (wkId && !entry.id) {
+        entry.id = wkId;
+        localStorage.setItem('ac_log', JSON.stringify(workoutLog));
+      }
+      if (entry.notes && entry.notes.trim() && currentProfileId) {
       console.log('[ApexCoach] Auto-extracting exercises from workout notes...');
       fetch('/api/profiles/' + currentProfileId + '/extract-exercises', {
         method: 'POST',
@@ -4055,6 +4055,7 @@ function saveWorkoutToSupabase(entry) {
         }
       })
       .catch(function(e) { console.error('[ApexCoach] Exercise extraction error:', e); });
+      }
     }
   })
   .catch(function(e) { console.error('Save error:', e); });
@@ -4094,15 +4095,15 @@ function confirmDeleteFromModal() {
 }
 
 function saveWorkout() {
-  var type = document.getElementById('wtype').value;
-  if (!type) return;
   var notes = document.getElementById('wnotes').value;
+  if (!notes.trim()) return;
   var autoFormat = localStorage.getItem('ac_auto_format') !== 'false';
+  var saveBtn = document.querySelector('#log-modal .btnPri');
 
   // If auto-format is on and there are notes, format first then save
   if (autoFormat && notes.trim().length > 0 && !editingWorkoutId) {
-    var saveBtn = document.querySelector('#log-modal .btnPri');
     if (saveBtn) { saveBtn.textContent = 'Formatting...'; saveBtn.disabled = true; }
+    console.log('[ApexCoach] Auto-format triggered, notes length:', notes.length);
 
     formatNotesWithAI().then(function() {
       doSaveWorkout();
@@ -4116,87 +4117,117 @@ function saveWorkout() {
 }
 
 function doSaveWorkout() {
-  // Reset save button state
   var saveBtn = document.querySelector('#log-modal .btnPri');
-  if (saveBtn) { saveBtn.textContent = 'Save'; saveBtn.disabled = false; }
-
-  var type = document.getElementById('wtype').value;
-  if (!type) return;
+  var notes = document.getElementById('wnotes').value;
+  if (!notes.trim()) { if (saveBtn) { saveBtn.textContent = 'Save'; saveBtn.disabled = false; } return; }
   var medDone = document.getElementById('wmed').checked;
   var dateEl = document.getElementById('wdate');
   var entryDate = editingWorkoutId && editingWorkoutDate ? editingWorkoutDate : (dateEl && dateEl.value === 'yesterday' ? ds(-1) : ds(0));
-  var entry = {
-    type: type,
-    notes: document.getElementById('wnotes').value,
-    done: document.getElementById('wdone').checked,
-    mobility: document.getElementById('wmob').checked,
-    med: medDone,
-    ts: Date.now()
-  };
 
+  // For edits, use existing type; for new workouts, AI generates it
   if (editingWorkoutId) {
-    // Edit mode — only update fields, preserve original date
-    var editUpdate = Object.assign({}, entry);
-    var found = false;
-    for (var i = 0; i < workoutLog.length; i++) {
-      if (workoutLog[i].id === editingWorkoutId) {
-        workoutLog[i] = Object.assign(workoutLog[i], editUpdate);
-        found = true;
-        break;
-      }
-    }
-    if (!found) {
+    var existingType = document.getElementById('wtype').value || 'Workout';
+    finishSave(existingType);
+  } else {
+    // AI-generate workout title from notes
+    if (saveBtn) { saveBtn.textContent = 'Saving...'; saveBtn.disabled = true; }
+    console.log('[ApexCoach] Generating AI title for notes length:', notes.length);
+    fetch('/api/ai', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model: 'claude-sonnet-4-20250514',
+        max_tokens: 100,
+        messages: [{ role: 'user', content: 'Generate a short workout title (3-5 words max) for this session. Return ONLY the title, nothing else. Examples: "Mixed Training", "Upper Body Strength", "MMA + Mobility", "Recovery Walk", "Full Body Circuit"\n\nWorkout notes: ' + notes }]
+      })
+    })
+    .then(function(r) { return r.json(); })
+    .then(function(data) {
+      var title = (data.content && data.content[0]) ? data.content[0].text.trim().replace(/^["']|["']$/g, '') : 'Workout';
+      console.log('[ApexCoach] AI generated title:', title);
+      finishSave(title);
+    })
+    .catch(function(err) {
+      console.log('[ApexCoach] AI title failed, using fallback:', err);
+      finishSave('Workout');
+    });
+  }
+
+  function finishSave(type) {
+    if (saveBtn) { saveBtn.textContent = 'Save'; saveBtn.disabled = false; }
+    var entry = {
+      type: type,
+      notes: document.getElementById('wnotes').value,
+      done: document.getElementById('wdone').checked,
+      mobility: document.getElementById('wmob').checked,
+      med: medDone,
+      ts: Date.now()
+    };
+
+    if (editingWorkoutId) {
+      // Edit mode — only update fields, preserve original date
+      var editUpdate = Object.assign({}, entry);
+      var found = false;
       for (var i = 0; i < workoutLog.length; i++) {
-        if (workoutLog[i].date === entryDate) {
+        if (workoutLog[i].id === editingWorkoutId) {
           workoutLog[i] = Object.assign(workoutLog[i], editUpdate);
           found = true;
           break;
         }
       }
-    }
-    // PATCH existing on server — never POST, don't send date
-    updateWorkoutInSupabase(editingWorkoutId, editUpdate);
-  } else {
-    // New workout — POST to server
-    entry.date = entryDate;
-    workoutLog.unshift(entry);
-    saveWorkoutToSupabase(entry);
-  }
-
-  localStorage.setItem('ac_log', JSON.stringify(workoutLog));
-  if (medDone && medLog.indexOf(ds(0)) < 0) { medLog.push(ds(0)); renderMeditationStatus(); }
-  closeModal();
-  document.getElementById('wtype').value = '';
-  document.getElementById('wnotes').value = '';
-  document.getElementById('wdone').checked = true;
-  document.getElementById('wmob').checked = false;
-  document.getElementById('wmed').checked = false;
-  if(dateEl) dateEl.value='today';
-  document.getElementById('voice-status').textContent = '';
-  editingWorkoutId = null;
-  renderLogArea();
-  renderWeek();
-  renderLog();
-  calculateStreak();
-  renderStreak();
-  if (readiness && fitData) fetchAI();
-
-  // Regenerate coaching brief in background
-  if (currentProfileId) {
-    fetch('/api/profiles/' + currentProfileId + '/generate-brief', { method: 'POST' })
-      .then(function(r) { return r.json(); })
-      .then(function(data) {
-        if (data.success) {
-          coachingBrief = data.coaching_brief || '';
-          historicalBrief = data.historical_brief || historicalBrief;
-          renderCoachingBrief();
-          console.log('[ApexCoach] Coaching brief updated');
+      if (!found) {
+        for (var i = 0; i < workoutLog.length; i++) {
+          if (workoutLog[i].date === entryDate) {
+            workoutLog[i] = Object.assign(workoutLog[i], editUpdate);
+            found = true;
+            break;
+          }
         }
-      })
-      .catch(function() {});
+      }
+      // PATCH existing on server — never POST, don't send date
+      updateWorkoutInSupabase(editingWorkoutId, editUpdate);
+    } else {
+      // New workout — POST to server
+      entry.date = entryDate;
+      workoutLog.unshift(entry);
+      saveWorkoutToSupabase(entry);
+    }
+
+    localStorage.setItem('ac_log', JSON.stringify(workoutLog));
+    if (medDone && medLog.indexOf(ds(0)) < 0) { medLog.push(ds(0)); renderMeditationStatus(); }
+    closeModal();
+    document.getElementById('wtype').value = '';
+    document.getElementById('wnotes').value = '';
+    document.getElementById('wdone').checked = true;
+    document.getElementById('wmob').checked = false;
+    document.getElementById('wmed').checked = false;
+    if(dateEl) dateEl.value='today';
+    document.getElementById('voice-status').textContent = '';
+    editingWorkoutId = null;
+    renderLogArea();
+    renderWeek();
+    renderLog();
+    calculateStreak();
+    renderStreak();
+    if (readiness && fitData) fetchAI();
+
+    // Regenerate coaching brief in background
+    if (currentProfileId) {
+      fetch('/api/profiles/' + currentProfileId + '/generate-brief', { method: 'POST' })
+        .then(function(r) { return r.json(); })
+        .then(function(data) {
+          if (data.success) {
+            coachingBrief = data.coaching_brief || '';
+            historicalBrief = data.historical_brief || historicalBrief;
+            renderCoachingBrief();
+            console.log('[ApexCoach] Coaching brief updated');
+          }
+        })
+        .catch(function() {});
+    }
+    // Invalidate goal progress cache after workout save
+    localStorage.removeItem('ac_goal_progress');
   }
-  // Invalidate goal progress cache after workout save
-  localStorage.removeItem('ac_goal_progress');
 }
 
 // ── EXERCISE LIBRARY ──────────────────────────────────────────────────────
@@ -4973,6 +5004,7 @@ function initAutoFormatToggle() {
 function formatNotesWithAI() {
   var notes = document.getElementById('wnotes').value;
   if (!notes.trim()) return Promise.resolve();
+  console.log('[ApexCoach] formatNotesWithAI called, notes length:', notes.length);
   document.getElementById('voice-status').textContent = 'Formatting with AI...';
   return fetch('/api/ai', {
     method: 'POST',
@@ -4988,9 +5020,15 @@ function formatNotesWithAI() {
     var formatted = (data.content && data.content[0]) ? data.content[0].text.trim() : notes;
     document.getElementById('wnotes').value = formatted;
     document.getElementById('voice-status').textContent = 'Formatted!';
+    console.log('[ApexCoach] Auto-format complete');
     setTimeout(function() { document.getElementById('voice-status').textContent = ''; }, 2000);
+    return formatted;
   })
-  .catch(function() { document.getElementById('voice-status').textContent = 'Format failed - notes unchanged'; });
+  .catch(function(err) {
+    console.log('[ApexCoach] Format failed:', err);
+    document.getElementById('voice-status').textContent = 'Format failed - notes unchanged';
+    return Promise.reject(err);
+  });
 }
 
 // ── RENDER LOG - with collapsed cards ─────────────────────────────────────

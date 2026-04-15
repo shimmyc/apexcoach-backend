@@ -60,7 +60,7 @@ New users go through a 7-question full-screen paginated onboarding flow:
 
 - Profile tab: Dynamic from profile_data JSON - goals, injuries, belt tracker (if martial arts), schedule, philosophy
 
-- + button: opens Log Workout modal directly (not a tab)
+- + button: opens Log Workout modal directly (not a tab) — no type dropdown, just a notes textarea with voice input and quick-log shortcuts (MMA, Walk, Rest Day). Workout type/title is AI-generated from notes on save.
 
 ## Readiness Formula V3
 
@@ -330,6 +330,10 @@ Three-phase plan for exercise demonstrations and AI form coaching:
 ## Auto-Format Notes
 
 Workout notes can be auto-formatted by Claude AI on save. Controlled by `ac_auto_format` in localStorage (default: true). Toggle available in the Log Workout modal toolbar and Settings → AI Coaching. When enabled, notes are formatted into clean structured lists before saving. Falls back to unformatted save on AI error.
+
+## AI-Generated Workout Titles
+
+The Log Workout modal has no manual type/title selector. Instead, users describe their workout in a free-text textarea ("What did you do today?"). On save, an AI call generates a short 3-5 word title (e.g. "Upper Body Strength", "MMA + Mobility") from the notes. The title is stored in the `type` column of the workouts table — no schema change needed. Quick-log shortcut buttons (🥋 MMA, 🚶 Walk, 😴 Rest Day) pre-fill the textarea with starter text. If AI title generation fails, "Workout" is used as fallback. When editing an existing workout, the original AI-generated title is preserved.
 
 ## Auto-Generate Goal Description
 
