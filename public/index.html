@@ -907,24 +907,7 @@ var TIERS = {
   recovery: { label:'RECOVERY ONLY',  color:'#e84545', range:'0-45'   }
 };
 
-var FULL_PROFILE = 'ATHLETE: Shimmy Castle, Hoffman Estates IL. New dad (baby Noam). Wedding musician - gigs mean long standing days, heavy bag carrying, late nights, unpredictable schedule.\n\n' +
-'MMA BACKGROUND: Blue belt (level 2 of 2). Training 4.5 years on/off. 10-month break for pubic osteitis + new baby. Goes 1-2x/week when consistent. Goal: black belt (purple, 3x brown, then black - roughly 30% of the journey complete).\n\n' +
-'GOALS:\n' +
-'1. Mountain hike 6-8 miles with baby Noam on back - no stopping\n' +
-'2. Black belt in MMA\n' +
-'3. Build visible muscle - look stronger, functional size not bulk\n' +
-'4. Fix posture permanently - anterior pelvic tilt, forward head, rounded shoulders\n' +
-'5. Better stamina - full MMA rounds without gassing\n' +
-'6. Daily meditation habit\n\n' +
-'INJURIES AND HEALTH:\n' +
-'1. PUBIC OSTEITIS (primary, active): Onset Oct 2024 wedding gig. XR/MRI clear but inflamed pubic symphysis. Right side historically worse, occasional left flares. Triggers: dynamic hip movements, high kicks, heavy loads, long standing days, weddings. Currently managed - minimal discomfort most days after 13+ weeks of PT. NEVER push into sharp pubic pain.\n' +
-'2. RIGHT QUAD/IT BAND (chronic): Several years. Burning/tearing sensation with big stretches or sitting. Caused by quad dominance and glute inhibition. Quads fire before glutes. Right side much tighter than left.\n' +
-'3. CONCUSSION HISTORY (Dec 2022 car accident): Dizziness and nausea with spins and rotational movements. AVOID spin drills. Flag if dizziness increases.\n' +
-'4. UPPER TRAP/NECK/UPPER BACK (chronic): Tightness from car accident + heavy pedalboard bag carrying. Did PT, improved but never fully resolved. Aggravated by poor bag strap positioning.\n' +
-'5. ANTERIOR PELVIC TILT: Glutes underactive (right worse), adductors compensating, quads overused. Core rib-cage control improving. Right foot pronation - now wearing Saucony and Mizuno shoes.\n\n' +
-'REHAB HISTORY: 13+ weeks of structured PT. Key exercises that work: glute bridges, dead bugs, clamshells, 90/90 hip rotations, figure-4 stretch, cat-cow, quadruped rock-backs, dead hangs. Exercises to be careful with: side planks (modify to knees if groin irritated), split squats (tight/pinchy), Frankenstein kicks (avoid - causes quad burning).\n\n' +
-'TRAINING PHILOSOPHY: Consistency over intensity. Never miss twice. Always have a minimum viable option (10 min counts). Train movement patterns. Pain is information - sharp pubic or quad pain = back off. Life happens with baby, gigs, illness - adapt and return.\n\n' +
-'BIGGEST OBSTACLE: Consistency and finding time. When MMA is on the calendar it gets done. Baby disrupts sleep regularly.';
+var FULL_PROFILE = '';
 
 // ── PROFILE SYSTEM ────────────────────────────────────────────────────────
 var currentProfileId = null;
@@ -1062,14 +1045,31 @@ function submitChangePin() {
 }
 
 function switchProfile() {
+  // Clear all localStorage keys for this profile
   localStorage.removeItem('ac_profile_id');
   localStorage.removeItem('ac_profile_name');
   localStorage.removeItem('ac_profile_color');
   localStorage.removeItem('ac_profile_data');
   localStorage.removeItem('ac_cache');
   localStorage.removeItem('ac_cache_date');
+  localStorage.removeItem('ac_goal_progress');
+  // Clear all in-memory cached data so nothing leaks between profiles
   currentProfileId = null;
   currentProfileData = null;
+  FULL_PROFILE = '';
+  coachingBrief = '';
+  historicalBrief = '';
+  briefUpdatedAt = null;
+  aiRec = null;
+  progressRec = null;
+  workoutLog = [];
+  fitData = null;
+  readiness = null;
+  currentStreak = 0;
+  previousStreak = 0;
+  streakLoggedToday = false;
+  dailyCheckin = null;
+  manualCheckinContext = null;
   loadProfileSelector();
 }
 
@@ -2743,6 +2743,17 @@ function statCard(label, value, sub) {
 
 function fetchAI() {
   console.log('[ApexCoach] fetchAI: starting request');
+
+  // Safety check: ensure we have valid profile data for the current user
+  if (!currentProfileData || !currentProfileData.name) {
+    console.error('[ApexCoach] fetchAI: no profile data loaded!');
+    return;
+  }
+
+  // Ensure FULL_PROFILE is always from the current profile, never stale/hardcoded
+  FULL_PROFILE = (currentProfileData.ai_prompt_context || currentProfileData.full_profile || '');
+  console.log('[ApexCoach] fetchAI using profile:', currentProfileData.name);
+
   document.getElementById('ai-content').innerHTML = '<p class="mono" style="font-size:12px;color:#22c97a;letter-spacing:3px;animation:pulse 1.6s infinite">ANALYZING YOUR DATA...</p>';
 
   try {
@@ -2816,11 +2827,9 @@ function fetchAI() {
       '- Yesterday zones: Peak ' + (pz.peak || 0) + 'min, Cardio ' + (pz.cardio || 0) + 'min, Fat Burn ' + (pz.fatBurn || 0) + 'min\n' +
       '- Steps yesterday: ' + (fitData.steps ? fitData.steps.toLocaleString() : '?') + '\n';
     rulesBlock = 'IMPORTANT RULES:\n' +
-      '- NEVER suggest exercises that cause sharp pubic pain\n' +
-      '- AVOID spin drills (concussion history causes dizziness)\n' +
+      '- NEVER suggest exercises that aggravate any listed injuries\n' +
       '- ALWAYS include a mobility/posture component in each option\n' +
       '- If readiness under 60: recovery-focused options only, no heavy loading\n' +
-      '- Always account for whether a gig day happened recently\n' +
       '- Reference actual HRV vs 7-day average in reasoning\n' +
       '- Provide 3 distinct options: best fit, alternative, and a shorter option\n\n';
   }
@@ -3916,7 +3925,8 @@ function fetchProgress() {
   var lastDone = workoutLog.filter(function(w) { return w.done; }).slice(0, 3);
   var lastTypes = lastDone.map(function(w) { return w.type.split(' - ')[0].split(' /')[0].trim(); });
 
-  var prompt = 'You are ApexCoach analyzing Shimmy\'s training trend. Be direct and honest. No fluff.\n\n' +
+  var progressName = (currentProfileData && currentProfileData.name) || currentProfileName || 'this athlete';
+  var prompt = 'You are ApexCoach analyzing ' + progressName + '\'s training trend. Be direct and honest. No fluff.\n\n' +
     'LAST 14 DAYS LOG:\n' + log14 + '\n' +
     'THIS WEEK DONE: ' + week1done + ' sessions. LAST WEEK DONE: ' + week2done + ' sessions. TARGET: 3-4x/week.\n' +
     'LAST 3 COMPLETED SESSION TYPES: ' + (lastTypes.join(', ') || 'none') + '\n\n' +
@@ -4721,7 +4731,7 @@ function buildDayCell(dateStr, dayNum, isToday, entry) {
   var border = entry && entry.done ? 'var(--accent-33)' : isToday ? 'var(--accent-22)' : 'var(--border)';
   var sel = calDetailDate === dateStr;
   if (sel) border = 'var(--accent-66)';
-  var click = entry ? ' onclick="toggleCalDetail(\'' + dateStr + '\')" style="cursor:pointer;' : ' style="';
+  var click = entry ? ' onclick="setLogDateFilter(\'' + dateStr + '\')" style="cursor:pointer;' : ' style="';
   var h = '<div' + click + 'background:' + bg + ';border:1px solid ' + border + ';border-radius:8px;padding:6px 2px;text-align:center;min-height:56px">';
   h += '<div class="oswald" style="font-size:16px;color:' + (isToday ? 'var(--text-bright)' : 'var(--text-muted)') + ';margin-bottom:2px">' + dayNum + '</div>';
   if (entry) {
@@ -5004,6 +5014,12 @@ function setLogFilter(f) {
 function setLogDateFilter(dateStr) {
   logDateFilter = dateStr;
   logFilter = 'all';
+  // Close calendar detail popup if open
+  calDetailDate = null;
+  var calDetail = document.getElementById('cal-detail');
+  if (calDetail) calDetail.style.display = 'none';
+  // Clear previous expanded state - renderLog will auto-expand when logDateFilter is set
+  expandedCards = {};
   var d = new Date(dateStr + 'T12:00:00');
   var fmtDate = d.toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric' });
   var el = document.getElementById('log-date-filter');
@@ -5021,6 +5037,7 @@ function setLogDateFilter(dateStr) {
 
 function clearLogDateFilter() {
   logDateFilter = null;
+  expandedCards = {};
   document.getElementById('log-date-filter').style.display = 'none';
   renderLog();
 }
@@ -5067,7 +5084,7 @@ function renderLog() {
   for (var i = 0; i < limit; i++) {
     var w = filtered[i];
     var cardId = w.id || ('d' + w.date + i);
-    var isOpen = !!expandedCards[cardId];
+    var isOpen = logDateFilter ? true : !!expandedCards[cardId];
     var highlight = logDateFilter && w.date === logDateFilter;
 
     // Notes formatting
