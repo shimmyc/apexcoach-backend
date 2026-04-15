@@ -26,7 +26,7 @@ ApexCoach is a personalized AI fitness coaching web app. Users connect their Fit
 
 - workouts: id, date, type, notes, done, mobility, med, ts, profile_id
 
-- exercises: id, profile_id, workout_id, date, name, category (strength/cardio/mobility/mma/rehab/other), sets, reps, weight_lbs, distance_miles, duration_minutes, notes, raw_text, created_at
+- exercises: id, profile_id, workout_id, date, name, category (strength/cardio/martial_arts/mind_body/rehab/sports/other), main_category (same as category, normalized), subcategory (specific sub-type), sets, reps, weight_lbs, distance_miles, duration_minutes, notes, raw_text, created_at
 
 - daily_checkins: id, profile_id, date (text, YYYY-MM-DD), energy (text), soreness (text[]), severity (text), checkin_text (text), created_at. UNIQUE(profile_id, date) for upsert.
 
@@ -170,22 +170,36 @@ Both briefs are injected into the daily AI coaching prompt (before FULL_PROFILE)
 
 ## Exercise Library System
 
-Exercises are auto-extracted from workout notes by Claude AI on every workout save and stored in the exercises table. Categories: strength, combat, cardio, mobility, rehab, core, other. The Library tab has three views:
+Exercises are auto-extracted from workout notes by Claude AI on every workout save and stored in the exercises table with a two-level category taxonomy. The Library tab has three views:
 
-1. **Dashboard** — workout type donut chart (Chart.js), weekly volume bar chart, top 6 exercises grid, quick stats row
-2. **Exercises** — searchable/filterable list of all exercises with category pills, click for detail view with progression chart, session history, and AI insight
+1. **Dashboard** — workout type donut chart (Chart.js), weekly volume bar chart, exercise category breakdown bars, top 6 exercises grid, quick stats row
+2. **Exercises** — searchable list with two-level filter pills (main category → subcategory), click for detail view with progression chart, session history, and AI insight
 3. **Records** — personal records (heaviest lift, most reps, longest distance), all-time aggregated stats
 
+### Workout Taxonomy (two-level hierarchy)
+
+Main categories and their subcategories:
+- **strength**: upper body, lower body, core, full body, calisthenics, olympic lifting, powerlifting
+- **cardio**: machine (elliptical/treadmill/etc), outdoor (running/walking/hiking), class, hiit, jump rope, general
+- **martial_arts**: striking (boxing/kickboxing/muay thai), grappling (bjj/wrestling/judo), mma, general
+- **sports**: team, racket, water, winter, general
+- **mind_body**: yoga, pilates, stretching, meditation, breathwork
+- **rehab**: physical therapy, foam rolling, active recovery, general
+- **other**: general
+
+Exercises table stores both `main_category` (top level) and `subcategory` (specific sub-type). The `category` column remains for backwards compatibility and mirrors `main_category`.
+
 ### Endpoints
-- `POST /api/profiles/:id/extract-exercises` — AI extracts exercises from workout notes, inserts into exercises table
-- `GET /api/profiles/:id/exercises` — all exercises grouped by name with counts, filtered by ?name= or ?category=
-- `GET /api/profiles/:id/exercises/stats` — aggregate stats (type frequency, top exercises, PRs, weekly volume)
+- `POST /api/profiles/:id/extract-exercises` — AI extracts exercises from workout notes, inserts with main_category and subcategory
+- `GET /api/profiles/:id/exercises` — grouped by name with counts, filtered by ?name=, ?category=, ?main_category=, ?subcategory=
+- `GET /api/profiles/:id/exercises/stats` — aggregate stats including category_breakdown and subcategory_breakdown
 - `GET /api/profiles/:id/exercises/:name` — full history for one exercise with PR data
 
 ### Auto-Extraction
 - Triggered silently after every workout save (if notes exist)
 - "Import History" button on Library tab backfills from existing workouts
 - Exercise names are normalized by AI (e.g., "glute bridges 3x12" → "Glute Bridge")
+- CANONICAL_NAMES maps common variations, CATEGORY_OVERRIDES and SUBCATEGORY_MAP assign correct categories
 - Top 10 recent exercises injected into daily AI coaching prompt
 
 ## Current Primary User
@@ -333,7 +347,7 @@ Workout notes can be auto-formatted by Claude AI on save. Controlled by `ac_auto
 
 ## AI-Generated Workout Titles
 
-The Log Workout modal has no manual type/title selector. Instead, users describe their workout in a free-text textarea ("What did you do today?"). On save, an AI call generates a short 3-5 word title (e.g. "Upper Body Strength", "MMA + Mobility") from the notes. The title is stored in the `type` column of the workouts table — no schema change needed. Quick-log shortcut buttons (🥋 MMA, 🚶 Walk, 😴 Rest Day) pre-fill the textarea with starter text. If AI title generation fails, "Workout" is used as fallback. When editing an existing workout, the original AI-generated title is preserved.
+The Log Workout modal has no manual type/title selector. Instead, users describe their workout in a free-text textarea ("What did you do today?"). On save, an AI call categorizes the workout using the full taxonomy hierarchy (see Exercise Library System section). Format: `[Main] ([Sub]) + [Main] ([Sub])` — e.g. "Rehab (PT) + Cardio (Elliptical, 20min) + Strength (Upper Body)". Maximum 8 words, max 3 categories (uses "Mixed Training" if more). The title is stored in the `type` column of the workouts table. Quick-log shortcut buttons (🥋 MMA, 🚶 Walk, 😴 Rest Day) pre-fill the textarea with starter text. If AI title generation fails, "Workout" is used as fallback. When editing an existing workout, the original AI-generated title is preserved.
 
 ## Auto-Generate Goal Description
 

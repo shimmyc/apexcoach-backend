@@ -4145,7 +4145,7 @@ function doSaveWorkout() {
       body: JSON.stringify({
         model: 'claude-sonnet-4-20250514',
         max_tokens: 100,
-        messages: [{ role: 'user', content: 'Categorize this workout into a short type label using this format: [Primary Category] ([Subcategory]) and [Secondary Category] if applicable.\n\nCategories to use:\n- Strength (Upper Body / Lower Body / Full Body / Core)\n- Cardio (Running / Elliptical / Cycling / HIIT / General)\n- Martial Arts (MMA / BJJ / Boxing / Kickboxing / General)\n- Mobility (Yoga / Stretching / General)\n- Rehab (PT / Recovery / General)\n- Mixed Training\n- Rest Day\n- Walk\n\nExamples:\n"Strength (Lower Body) and Mobility"\n"Cardio (Elliptical) and Rehab"\n"Martial Arts (MMA) and Strength (Core)"\n"Mobility (Yoga)"\n"Strength (Full Body)"\n\nReturn ONLY the label, nothing else. Maximum 6 words.\n\nWorkout notes: ' + notes }]
+        messages: [{ role: 'user', content: 'Analyze these workout notes and generate a workout label using this exact hierarchy. Format: \'[Main] ([Sub]) + [Main] ([Sub])\' for multiple activities.\n\nTAXONOMY:\nSTRENGTH:\n- Upper Body: Chest, Back, Shoulders, Biceps, Triceps, Arms\n- Lower Body: Quads, Hamstrings, Glutes, Calves, Legs\n- Core: Abs, Obliques, Lower Back\n- Full Body\n- Calisthenics (bodyweight only)\n- Olympic Lifting\n- Powerlifting\n\nCARDIO:\n- Machine: Elliptical, Treadmill, Stairmaster, Rowing Machine, Stationary Bike, Ski Erg, Air Bike\n- Outdoor: Running, Walking, Hiking, Cycling, Swimming (open water)\n- Class: Spin, Zumba, Aerobics, Dance, Step\n- HIIT\n- Jump Rope\n- General\n\nMARTIAL ARTS:\n- Striking: Boxing, Kickboxing, Muay Thai, Karate, Taekwondo\n- Grappling: BJJ, Wrestling, Judo, Jiu Jitsu\n- MMA (Mixed)\n- General\n\nSPORTS:\n- Team: Basketball, Soccer, Football, Baseball, Volleyball, Hockey\n- Racket: Tennis, Pickleball, Racquetball, Squash, Badminton\n- Water: Swimming, Surfing, Kayaking, Paddleboard\n- Winter: Skiing, Snowboarding, Ice Skating\n- Golf, Gymnastics, Rock Climbing, Bowling, General\n\nMIND & BODY:\n- Yoga: Hot Yoga, Vinyasa, Restorative, Power Yoga\n- Pilates\n- Stretching\n- Breathwork\n- Meditation\n\nREHAB & RECOVERY:\n- Physical Therapy\n- Foam Rolling\n- Cold Therapy\n- Massage\n- Active Recovery\n- General\n\nMIXED TRAINING:\n- Use when session has 3+ different main categories\n- Still list the sub-components\n\nREST:\n- Full Rest\n- Light Activity\n\nRULES:\n- Scan ALL activities mentioned in the notes\n- List each distinct activity type\n- Use \'+\' to separate multiple categories\n- Maximum 3 categories shown (use \'Mixed Training\' if more)\n- Always include specific sub-category in parentheses\n- If duration mentioned, note it: \'Cardio (Elliptical, 20min)\'\n\nEXAMPLES:\n\'cat-cow, glute bridges, 20min elliptical, dumbbell curls 3x12\' → \'Rehab (PT) + Cardio (Elliptical, 20min) + Strength (Upper Body)\'\n\'MMA sparring, shadowboxing, bag work\' → \'Martial Arts (MMA)\'\n\'yoga flow, meditation\' → \'Mind & Body (Yoga) + Meditation\'\n\'squats, lunges, deadlifts, running 2 miles\' → \'Strength (Lower Body) + Cardio (Outdoor, Running)\'\n\'rest day, light stretching\' → \'Rest + Mind & Body (Stretching)\'\n\nReturn ONLY the label. Maximum 8 words total.\nWorkout notes: ' + notes }]
       })
     })
     .then(function(r) { return r.json(); })
@@ -4242,9 +4242,18 @@ var libView = 'dashboard';
 var libExercises = [];
 var libStats = null;
 var libCharts = {};
-var libFilter = 'all';
-var LIB_COLORS = { 'MMA / Sparring':'#e84545','Strength - Upper':'#4488bb','Strength - Lower':'#4488bb','Strength - Full Body':'#4488bb','Yoga / Mobility':'#9966cc','Conditioning / HIIT':'#f5a623','Mixed Training':'#22c97a','Rest Day':'#555','Active Recovery':'#888','Walking':'#888','PT / Rehab':'#f07020' };
-var CAT_COLORS = { strength:'#4488bb', combat:'#e84545', cardio:'#f5a623', mobility:'#9966cc', rehab:'#22c97a', core:'#ff6b35', mma:'#e84545', other:'#555' };
+var LIB_COLORS = { 'Strength':'#4488bb','Cardio':'#f5a623','Martial Arts':'#e84545','Sports':'#22c97a','Mind & Body':'#9966cc','Rehab & Recovery':'#f07020','Mixed Training':'#22c97a','Rest':'#555','Other':'#888' };
+var CAT_COLORS = { strength:'#4488bb', cardio:'#f5a623', martial_arts:'#e84545', sports:'#22c97a', mind_body:'#9966cc', rehab:'#f07020', mixed:'#22c97a', rest:'#555', other:'#888', combat:'#e84545', core:'#ff6b35', mobility:'#9966cc' };
+var libMainFilter = 'all';
+var libSubFilter = 'all';
+var SUBCATEGORY_PILLS = {
+  strength: ['all','upper body','lower body','core','full body','calisthenics','olympic lifting','powerlifting'],
+  cardio: ['all','machine','outdoor','class','hiit','jump rope','general'],
+  martial_arts: ['all','striking','grappling','mma','general'],
+  mind_body: ['all','yoga','pilates','stretching','meditation','breathwork'],
+  rehab: ['all','physical therapy','active recovery','foam rolling','general'],
+  sports: ['all','team','racket','water','winter','general']
+};
 
 function showLibView(view) {
   libView = view;
@@ -4355,16 +4364,40 @@ function renderLibDashboard() {
   // Volume chart
   html += '<div class="card" style="margin-bottom:16px"><p class="clabel">weekly training volume</p><canvas id="lib-volume" style="max-height:200px"></canvas></div>';
 
+  // Category breakdown
+  var catBd = libStats.category_breakdown || {};
+  var catLabels = { strength:'Strength', cardio:'Cardio', martial_arts:'Martial Arts', sports:'Sports', mind_body:'Mind & Body', rehab:'Rehab', other:'Other' };
+  var catKeys = Object.keys(catBd).sort(function(a, b) { return catBd[b] - catBd[a]; });
+  if (catKeys.length) {
+    var totalEx = 0;
+    catKeys.forEach(function(k) { totalEx += catBd[k]; });
+    html += '<div class="card" style="margin-bottom:16px"><p class="clabel">exercise categories</p>';
+    for (var ci = 0; ci < catKeys.length; ci++) {
+      var ck = catKeys[ci];
+      var cCount = catBd[ck];
+      var cPct = totalEx ? Math.round(cCount / totalEx * 100) : 0;
+      var cColor = CAT_COLORS[ck] || '#888';
+      var cLabel = catLabels[ck] || ck.replace('_', ' ');
+      html += '<div onclick="setLibMainFilter(\'' + ck + '\');showLibView(\'exercises\')" style="display:flex;align-items:center;gap:10px;margin-bottom:8px;cursor:pointer">';
+      html += '<div style="width:90px;font-size:13px;color:var(--text-sec)">' + cLabel + '</div>';
+      html += '<div style="flex:1;background:var(--bg);border-radius:4px;height:20px;overflow:hidden"><div style="height:100%;width:' + cPct + '%;background:' + cColor + '44;border-radius:4px;min-width:2px"></div></div>';
+      html += '<span class="mono" style="font-size:11px;color:var(--text-muted);width:60px;text-align:right">' + cCount + ' (' + cPct + '%)</span>';
+      html += '</div>';
+    }
+    html += '</div>';
+  }
+
   // Top exercises grid
   var topEx = (libStats.top_exercises || []).slice(0, 6);
   if (topEx.length) {
     html += '<div class="card"><p class="clabel">top exercises</p><div style="display:grid;grid-template-columns:repeat(2,1fr);gap:10px">';
     for (var i = 0; i < topEx.length; i++) {
       var ex = topEx[i];
-      var cc = CAT_COLORS[ex.category] || '#888';
+      var mc = ex.main_category || ex.category || 'other';
+      var cc = CAT_COLORS[mc] || '#888';
       html += '<div onclick="showExerciseDetail(\'' + escAttr(ex.name) + '\')" style="background:var(--bg-input);border:1px solid var(--border);border-radius:8px;padding:12px;cursor:pointer">' +
         '<div style="font-size:15px;color:var(--text);font-weight:500;margin-bottom:4px">' + escHtml(ex.name) + '</div>' +
-        '<span class="mono" style="font-size:9px;color:' + cc + ';letter-spacing:1px;text-transform:uppercase;background:' + cc + '18;padding:2px 6px;border-radius:3px">' + ex.category + '</span>' +
+        '<span class="mono" style="font-size:9px;color:' + cc + ';letter-spacing:1px;text-transform:uppercase;background:' + cc + '18;padding:2px 6px;border-radius:3px">' + mc.replace('_', ' ') + '</span>' +
         '<div class="mono" style="font-size:11px;color:var(--text-muted);margin-top:6px">' + ex.count + 'x logged</div></div>';
     }
     html += '</div></div>';
@@ -4387,7 +4420,20 @@ function renderDonutChart() {
   var freq = libStats.workout_type_frequency;
   var labels = Object.keys(freq);
   var values = labels.map(function(k) { return freq[k]; });
-  var colors = labels.map(function(k) { return LIB_COLORS[k] || '#888'; });
+  var colors = labels.map(function(k) {
+    if (LIB_COLORS[k]) return LIB_COLORS[k];
+    // Fuzzy match: check if the workout type label starts with a known category
+    var kl = k.toLowerCase();
+    if (kl.indexOf('strength') >= 0) return '#4488bb';
+    if (kl.indexOf('cardio') >= 0) return '#f5a623';
+    if (kl.indexOf('martial') >= 0 || kl.indexOf('mma') >= 0 || kl.indexOf('boxing') >= 0) return '#e84545';
+    if (kl.indexOf('mind') >= 0 || kl.indexOf('yoga') >= 0 || kl.indexOf('meditation') >= 0) return '#9966cc';
+    if (kl.indexOf('rehab') >= 0 || kl.indexOf('recovery') >= 0) return '#f07020';
+    if (kl.indexOf('sport') >= 0) return '#22c97a';
+    if (kl.indexOf('rest') >= 0) return '#555';
+    if (kl.indexOf('mixed') >= 0) return '#22c97a';
+    return '#888';
+  });
   var total = values.reduce(function(a,b) { return a+b; }, 0);
 
   libCharts.donut = new Chart(canvas, {
@@ -4445,25 +4491,55 @@ function renderLibExercises() {
   if (!el) return;
   if (!libExercises.length && !libStats) { loadLibrary(); return; }
 
-  var cats = ['all','strength','combat','cardio','mobility','rehab','core'];
+  var mainCats = ['all','strength','cardio','martial_arts','sports','mind_body','rehab','other'];
+  var mainLabels = { all:'All', strength:'Strength', cardio:'Cardio', martial_arts:'Martial Arts', sports:'Sports', mind_body:'Mind & Body', rehab:'Rehab', other:'Other' };
   var html = '<div style="margin-bottom:12px"><input type="text" id="lib-search" placeholder="Search exercises..." oninput="filterLibExercises()" style="width:100%;background:var(--bg-input);border:1px solid var(--border);color:var(--text);padding:10px 14px;border-radius:6px;font-size:14px;outline:none;font-family:DM Sans,sans-serif;margin-bottom:8px">';
-  html += '<div style="display:flex;gap:6px;flex-wrap:wrap">';
-  for (var i = 0; i < cats.length; i++) {
-    var c = cats[i];
+  // Main category pills
+  html += '<div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:6px">';
+  for (var i = 0; i < mainCats.length; i++) {
+    var c = mainCats[i];
     var cc = c === 'all' ? 'var(--accent)' : (CAT_COLORS[c] || '#888');
-    html += '<button onclick="libFilter=\'' + c + '\';filterLibExercises()" class="lib-cat-btn' + (libFilter === c ? ' active' : '') + '" style="font-size:11px;padding:5px 12px;border-radius:4px;border:1px solid ' + cc + '33;background:' + (libFilter === c ? cc + '22' : 'transparent') + ';color:' + cc + ';cursor:pointer;font-family:IBM Plex Mono,monospace;letter-spacing:1px;text-transform:uppercase">' + c + '</button>';
+    html += '<button onclick="setLibMainFilter(\'' + c + '\')" class="lib-cat-btn' + (libMainFilter === c ? ' active' : '') + '" style="font-size:11px;padding:5px 12px;border-radius:4px;border:1px solid ' + cc + '33;background:' + (libMainFilter === c ? cc + '22' : 'transparent') + ';color:' + cc + ';cursor:pointer;font-family:IBM Plex Mono,monospace;letter-spacing:1px">' + mainLabels[c] + '</button>';
   }
-  html += '</div></div>';
+  html += '</div>';
+  // Subcategory pills (appear when a main category is selected)
+  if (libMainFilter !== 'all' && SUBCATEGORY_PILLS[libMainFilter]) {
+    var subs = SUBCATEGORY_PILLS[libMainFilter];
+    var mainColor = CAT_COLORS[libMainFilter] || '#888';
+    html += '<div style="display:flex;gap:5px;flex-wrap:wrap;padding-left:8px;margin-bottom:6px">';
+    for (var j = 0; j < subs.length; j++) {
+      var s = subs[j];
+      var isActive = libSubFilter === s;
+      var label = s === 'all' ? 'All ' + mainLabels[libMainFilter] : s.charAt(0).toUpperCase() + s.slice(1);
+      html += '<button onclick="setLibSubFilter(\'' + s + '\')" style="font-size:10px;padding:4px 10px;border-radius:4px;border:1px solid ' + mainColor + '22;background:' + (isActive ? mainColor + '18' : 'transparent') + ';color:' + (isActive ? mainColor : 'var(--text-dim)') + ';cursor:pointer;font-family:IBM Plex Mono,monospace">' + label + '</button>';
+    }
+    html += '</div>';
+  }
+  html += '</div>';
   html += '<div id="lib-exercise-list"></div>';
   el.innerHTML = html;
   filterLibExercises();
+}
+
+function setLibMainFilter(cat) {
+  libMainFilter = cat;
+  libSubFilter = 'all';
+  renderLibExercises();
+}
+
+function setLibSubFilter(sub) {
+  libSubFilter = sub;
+  renderLibExercises();
 }
 
 function filterLibExercises() {
   var search = (document.getElementById('lib-search') || {}).value || '';
   search = search.toLowerCase();
   var filtered = libExercises.filter(function(ex) {
-    if (libFilter !== 'all' && ex.category !== libFilter) return false;
+    var mc = ex.main_category || ex.category || 'other';
+    var sc = ex.subcategory || 'general';
+    if (libMainFilter !== 'all' && mc !== libMainFilter) return false;
+    if (libSubFilter !== 'all' && sc !== libSubFilter) return false;
     if (search && ex.name.toLowerCase().indexOf(search) < 0) return false;
     return true;
   });
@@ -4475,13 +4551,16 @@ function filterLibExercises() {
   var html = '';
   for (var i = 0; i < filtered.length; i++) {
     var ex = filtered[i];
-    var cc = CAT_COLORS[ex.category] || '#888';
+    var mc = ex.main_category || ex.category || 'other';
+    var sc = ex.subcategory || '';
+    var cc = CAT_COLORS[mc] || '#888';
     var bestStr = '';
     if (ex.best_weight) bestStr = ex.best_weight + ' lbs';
     else if (ex.best_reps) bestStr = ex.best_reps + ' reps';
     html += '<div onclick="showExerciseDetail(\'' + escAttr(ex.name) + '\')" style="display:flex;align-items:center;justify-content:space-between;padding:12px;background:var(--bg-input);border:1px solid var(--border);border-radius:8px;margin-bottom:6px;cursor:pointer">' +
       '<div><div style="font-size:15px;color:var(--text);font-weight:500">' + escHtml(ex.name) + '</div>' +
-      '<div style="display:flex;gap:6px;align-items:center;margin-top:4px"><span class="mono" style="font-size:9px;color:' + cc + ';letter-spacing:1px;text-transform:uppercase;background:' + cc + '18;padding:1px 6px;border-radius:3px">' + ex.category + '</span>' +
+      '<div style="display:flex;gap:6px;align-items:center;margin-top:4px"><span class="mono" style="font-size:9px;color:' + cc + ';letter-spacing:1px;text-transform:uppercase;background:' + cc + '18;padding:1px 6px;border-radius:3px">' + mc.replace('_', ' ') + '</span>' +
+      (sc && sc !== 'general' ? '<span class="mono" style="font-size:9px;color:var(--text-dim);background:var(--bg);padding:1px 6px;border-radius:3px">' + sc + '</span>' : '') +
       '<span class="mono" style="font-size:10px;color:var(--text-dim)">' + ex.count + 'x</span>' +
       (ex.last_date ? '<span class="mono" style="font-size:10px;color:var(--text-dim)">last ' + ex.last_date + '</span>' : '') + '</div></div>' +
       (bestStr ? '<div class="mono" style="font-size:12px;color:var(--text-muted)">' + bestStr + '</div>' : '') + '</div>';
@@ -4727,33 +4806,39 @@ function toggleCalDetail(dateStr) {
 function catColor(type) {
   if (!type) return '#333';
   var t = type.toLowerCase();
-  if (t.indexOf('mma') >= 0 || t.indexOf('sparring') >= 0) return '#22c97a';
+  if (t.indexOf('martial') >= 0 || t.indexOf('mma') >= 0 || t.indexOf('boxing') >= 0 || t.indexOf('bjj') >= 0) return '#e84545';
   if (t.indexOf('strength') >= 0) return '#4488bb';
-  if (t.indexOf('conditioning') >= 0 || t.indexOf('hiit') >= 0) return '#f5a623';
-  if (t.indexOf('yoga') >= 0 || t.indexOf('mobility') >= 0) return '#9966cc';
-  if (t.indexOf('pt') >= 0 || t.indexOf('rehab') >= 0) return '#44bbaa';
-  if (t.indexOf('rest') >= 0 || t.indexOf('walking') >= 0) return '#555';
-  if (t.indexOf('mixed') >= 0) return '#f07020';
-  if (t.indexOf('active') >= 0) return '#666';
+  if (t.indexOf('cardio') >= 0 || t.indexOf('hiit') >= 0 || t.indexOf('elliptical') >= 0) return '#f5a623';
+  if (t.indexOf('mind') >= 0 || t.indexOf('yoga') >= 0 || t.indexOf('meditation') >= 0 || t.indexOf('pilates') >= 0) return '#9966cc';
+  if (t.indexOf('rehab') >= 0 || t.indexOf('recovery') >= 0 || t.indexOf('pt') >= 0) return '#f07020';
+  if (t.indexOf('sport') >= 0) return '#22c97a';
+  if (t.indexOf('rest') >= 0) return '#555';
+  if (t.indexOf('walk') >= 0) return '#888';
+  if (t.indexOf('mixed') >= 0) return '#22c97a';
   return '#888';
 }
 
 function catAbbrev(type) {
   if (!type) return '';
   var t = type.toLowerCase();
-  if (t.indexOf('mma') >= 0) return 'MMA';
+  if (t.indexOf('martial') >= 0 || t.indexOf('mma') >= 0) return 'MMA';
+  if (t.indexOf('boxing') >= 0 || t.indexOf('striking') >= 0) return 'BOX';
+  if (t.indexOf('bjj') >= 0 || t.indexOf('grappling') >= 0) return 'BJJ';
   if (t.indexOf('upper') >= 0) return 'UPR';
   if (t.indexOf('lower') >= 0) return 'LWR';
   if (t.indexOf('full body') >= 0) return 'FBD';
+  if (t.indexOf('core') >= 0) return 'COR';
   if (t.indexOf('strength') >= 0) return 'STR';
-  if (t.indexOf('conditioning') >= 0 || t.indexOf('hiit') >= 0) return 'HIT';
-  if (t.indexOf('yoga') >= 0 || t.indexOf('mobility') >= 0) return 'YGA';
-  if (t.indexOf('pt') >= 0 || t.indexOf('rehab') >= 0) return 'PT';
+  if (t.indexOf('cardio') >= 0 || t.indexOf('hiit') >= 0) return 'CRD';
+  if (t.indexOf('yoga') >= 0) return 'YGA';
+  if (t.indexOf('mind') >= 0 || t.indexOf('meditation') >= 0) return 'ZEN';
+  if (t.indexOf('pilates') >= 0) return 'PIL';
+  if (t.indexOf('rehab') >= 0 || t.indexOf('pt') >= 0) return 'PT';
   if (t.indexOf('rest') >= 0) return 'RST';
-  if (t.indexOf('walking') >= 0) return 'WLK';
+  if (t.indexOf('walk') >= 0) return 'WLK';
   if (t.indexOf('mixed') >= 0) return 'MIX';
-  if (t.indexOf('active') >= 0) return 'REC';
-  if (t.indexOf('meditation') >= 0) return 'MED';
+  if (t.indexOf('sport') >= 0) return 'SPT';
+  if (t.indexOf('recovery') >= 0) return 'REC';
   return type.substring(0, 3).toUpperCase();
 }
 

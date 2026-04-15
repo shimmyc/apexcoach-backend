@@ -1025,13 +1025,42 @@ var CANONICAL_NAMES = {
 };
 
 var CATEGORY_OVERRIDES = {
-  'Plank': 'core', 'Crunch': 'core', 'Sit-Up': 'core', 'Leg Raise': 'core',
-  'Mountain Climber': 'core', 'Dead Bug': 'core', 'Bird Dog': 'core',
-  'Ab Wheel': 'core', 'Russian Twist': 'core', 'Windshield Wiper': 'core',
+  'Plank': 'strength', 'Crunch': 'strength', 'Sit-Up': 'strength', 'Leg Raise': 'strength',
+  'Mountain Climber': 'strength', 'Dead Bug': 'rehab', 'Bird Dog': 'rehab',
+  'Ab Wheel': 'strength', 'Russian Twist': 'strength', 'Windshield Wiper': 'strength',
   'Push-Up': 'strength', 'Pull-Up': 'strength', 'Chin-Up': 'strength', 'Dip': 'strength',
-  'Burpee': 'cardio', 'Jumping Jack': 'cardio',
+  'Burpee': 'cardio', 'Jumping Jack': 'cardio', 'Jump Rope': 'cardio',
   'Glute Bridge': 'rehab', 'Clamshell': 'rehab', 'Cat-Cow': 'rehab', 'Hip Flexor Stretch': 'rehab',
-  'Boxing': 'combat', 'Sparring': 'combat',
+  'Foam Rolling': 'rehab', 'Foam Roll': 'rehab',
+  'Boxing': 'martial_arts', 'Sparring': 'martial_arts', 'Shadow Boxing': 'martial_arts',
+  'Bag Work': 'martial_arts', 'Pad Work': 'martial_arts',
+  'Elliptical': 'cardio', 'Treadmill': 'cardio', 'Stairmaster': 'cardio',
+  'Rowing Machine': 'cardio', 'Stationary Bike': 'cardio',
+  'Running': 'cardio', 'Walking': 'cardio', 'Hiking': 'cardio',
+  'Yoga': 'mind_body', 'Pilates': 'mind_body', 'Stretching': 'mind_body',
+  'Meditation': 'mind_body', 'Breathwork': 'mind_body',
+  'Squat': 'strength', 'Lunge': 'strength', 'Deadlift': 'strength',
+  'Bench Press': 'strength', 'Overhead Press': 'strength',
+};
+
+var SUBCATEGORY_MAP = {
+  'Plank': 'core', 'Crunch': 'core', 'Sit-Up': 'core', 'Leg Raise': 'core',
+  'Mountain Climber': 'core', 'Ab Wheel': 'core', 'Russian Twist': 'core', 'Windshield Wiper': 'core',
+  'Dead Bug': 'physical therapy', 'Bird Dog': 'physical therapy',
+  'Push-Up': 'upper body', 'Pull-Up': 'upper body', 'Chin-Up': 'upper body', 'Dip': 'upper body',
+  'Dumbbell Row': 'upper body', 'Bicep Curl': 'upper body', 'Bench Press': 'upper body', 'Overhead Press': 'upper body',
+  'Squat': 'lower body', 'Lunge': 'lower body', 'Deadlift': 'lower body',
+  'Burpee': 'hiit', 'Jumping Jack': 'hiit', 'Jump Rope': 'jump rope',
+  'Glute Bridge': 'physical therapy', 'Clamshell': 'physical therapy',
+  'Cat-Cow': 'physical therapy', 'Hip Flexor Stretch': 'physical therapy',
+  'Foam Rolling': 'foam rolling', 'Foam Roll': 'foam rolling',
+  'Boxing': 'striking', 'Shadow Boxing': 'striking', 'Bag Work': 'striking', 'Pad Work': 'striking',
+  'Sparring': 'mma',
+  'Elliptical': 'machine', 'Treadmill': 'machine', 'Stairmaster': 'machine',
+  'Rowing Machine': 'machine', 'Stationary Bike': 'machine',
+  'Running': 'outdoor', 'Walking': 'outdoor', 'Hiking': 'outdoor',
+  'Yoga': 'yoga', 'Pilates': 'pilates', 'Stretching': 'stretching',
+  'Meditation': 'meditation', 'Breathwork': 'breathwork',
 };
 
 function normalizeExerciseName(name) {
@@ -1047,7 +1076,20 @@ function normalizeExerciseName(name) {
 
 function normalizeCategory(name, aiCategory) {
   if (CATEGORY_OVERRIDES[name]) return CATEGORY_OVERRIDES[name];
+  // Map old categories to new taxonomy
+  if (aiCategory === 'combat' || aiCategory === 'mma') return 'martial_arts';
+  if (aiCategory === 'mobility') return 'mind_body';
+  if (aiCategory === 'core') return 'strength';
   return aiCategory || 'other';
+}
+
+function getSubcategory(name, aiCategory, mainCategory) {
+  if (SUBCATEGORY_MAP[name]) return SUBCATEGORY_MAP[name];
+  // Infer from old AI category
+  if (aiCategory === 'core') return 'core';
+  if (aiCategory === 'combat' || aiCategory === 'mma') return 'general';
+  if (aiCategory === 'mobility') return 'stretching';
+  return 'general';
 }
 
 app.post("/api/profiles/:id/extract-exercises", async function(req, res) {
@@ -1090,13 +1132,18 @@ app.post("/api/profiles/:id/extract-exercises", async function(req, res) {
       var ex = exercises[i];
       if (!ex.name) continue;
       ex.name = normalizeExerciseName(ex.name);
-      ex.category = normalizeCategory(ex.name, ex.category);
+      var aiCat = ex.category;
+      ex.category = normalizeCategory(ex.name, aiCat);
+      ex.main_category = ex.category;
+      ex.subcategory = getSubcategory(ex.name, aiCat, ex.category);
       var insertBody = {
         profile_id: parseInt(profileId),
         workout_id: body.workout_id ? parseInt(body.workout_id) : null,
         date: body.date,
         name: ex.name,
         category: ex.category,
+        main_category: ex.main_category,
+        subcategory: ex.subcategory,
         sets: ex.sets || null,
         reps: ex.reps || null,
         weight_lbs: ex.weight_lbs || null,
@@ -1131,6 +1178,8 @@ app.get("/api/profiles/:id/exercises", async function(req, res) {
     var url = SUPABASE_URL + "/rest/v1/exercises?profile_id=eq." + profileId + "&select=*&order=date.desc";
     if (req.query.name) url += "&name=eq." + encodeURIComponent(req.query.name);
     if (req.query.category) url += "&category=eq." + encodeURIComponent(req.query.category);
+    if (req.query.main_category) url += "&main_category=eq." + encodeURIComponent(req.query.main_category);
+    if (req.query.subcategory) url += "&subcategory=eq." + encodeURIComponent(req.query.subcategory);
     if (req.query.limit) url += "&limit=" + req.query.limit;
     else url += "&limit=5000";
     var r = await fetch(url, { headers: sbHeaders() });
@@ -1142,7 +1191,7 @@ app.get("/api/profiles/:id/exercises", async function(req, res) {
     for (var i = 0; i < exercises.length; i++) {
       var ex = exercises[i];
       if (!grouped[ex.name]) {
-        grouped[ex.name] = { name: ex.name, category: ex.category, count: 0, last_date: null, best_weight: null, best_reps: null, sessions: [] };
+        grouped[ex.name] = { name: ex.name, category: ex.category, main_category: ex.main_category || ex.category, subcategory: ex.subcategory || 'general', count: 0, last_date: null, best_weight: null, best_reps: null, sessions: [] };
       }
       var g = grouped[ex.name];
       g.count++;
@@ -1180,10 +1229,26 @@ app.get("/api/profiles/:id/exercises/stats", async function(req, res) {
     // Top exercises
     var exCount = {};
     allEx.forEach(function(ex) {
-      if (!exCount[ex.name]) exCount[ex.name] = { name: ex.name, category: ex.category, count: 0 };
+      if (!exCount[ex.name]) exCount[ex.name] = { name: ex.name, category: ex.category, main_category: ex.main_category || ex.category, subcategory: ex.subcategory || 'general', count: 0 };
       exCount[ex.name].count++;
     });
     var topEx = Object.values(exCount).sort(function(a, b) { return b.count - a.count; }).slice(0, 10);
+
+    // Category breakdown (main_category counts)
+    var catBreakdown = {};
+    allEx.forEach(function(ex) {
+      var mc = ex.main_category || ex.category || 'other';
+      catBreakdown[mc] = (catBreakdown[mc] || 0) + 1;
+    });
+
+    // Subcategory breakdown
+    var subBreakdown = {};
+    allEx.forEach(function(ex) {
+      var mc = ex.main_category || ex.category || 'other';
+      var sc = ex.subcategory || 'general';
+      if (!subBreakdown[mc]) subBreakdown[mc] = {};
+      subBreakdown[mc][sc] = (subBreakdown[mc][sc] || 0) + 1;
+    });
 
     // Personal records
     var prs = {};
@@ -1242,6 +1307,8 @@ app.get("/api/profiles/:id/exercises/stats", async function(req, res) {
         total_sets: totalSets,
         total_reps: totalReps,
         total_weight: Math.round(totalWeight),
+        category_breakdown: catBreakdown,
+        subcategory_breakdown: subBreakdown,
       },
     });
   } catch (e) {
