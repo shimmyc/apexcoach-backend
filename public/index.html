@@ -125,7 +125,7 @@ input[type=range]{width:100%;accent-color:var(--accent)}
 .equip-tag{display:inline-flex;align-items:center;gap:6px;background:var(--accent-10);border:1px solid var(--accent-33);color:var(--accent);padding:4px 10px;border-radius:14px;font-size:12px;font-family:'IBM Plex Mono',monospace}
 .equip-tag button{background:none;border:none;color:var(--accent);cursor:pointer;font-size:14px;padding:0;line-height:1}
 .log-card-detail{max-height:0;overflow:hidden;transition:max-height .25s ease,opacity .2s ease;opacity:0}
-.log-card-detail.open{max-height:500px;opacity:1}
+.log-card-detail.open{max-height:2000px;opacity:1}
 .log-card-chevron{transition:transform .2s ease;display:inline-block}
 .log-card-chevron.open{transform:rotate(180deg)}
 
@@ -1668,8 +1668,7 @@ function renderDayView() {
   }
   var logEl = document.getElementById('log-area');
   if (entry) {
-    var editData = JSON.stringify({id:entry.id,date:entry.date,type:entry.type,notes:entry.notes||'',done:entry.done,mobility:entry.mobility,med:entry.med}).replace(/"/g,"'");
-    logEl.innerHTML = '<div class="loggedPill" style="display:flex;align-items:center;justify-content:space-between">' + (entry.done ? 'done' : 'skipped') + ': ' + entry.type + (entry.mobility ? ' + mobility' : '') + (entry.med ? ' + meditation' : '') + '<button onclick="editWorkout(' + editData + ')" style="background:transparent;border:1px solid var(--accent-33);color:var(--accent);padding:3px 10px;border-radius:4px;cursor:pointer;font-size:11px;font-family:IBM Plex Mono,monospace;margin-left:10px">Edit</button></div>';
+    logEl.innerHTML = '<div class="loggedPill" style="display:flex;align-items:center;justify-content:space-between">' + (entry.done ? 'done' : 'skipped') + ': ' + entry.type + (entry.mobility ? ' + mobility' : '') + (entry.med ? ' + meditation' : '') + '<button onclick="editWorkoutById(\'' + (entry.id || '') + '\')" style="background:transparent;border:1px solid var(--accent-33);color:var(--accent);padding:3px 10px;border-radius:4px;cursor:pointer;font-size:11px;font-family:IBM Plex Mono,monospace;margin-left:10px">Edit</button></div>';
     if (entry.notes) logEl.innerHTML += '<div style="background:var(--bg-input);border:1px solid var(--border);border-radius:8px;padding:12px;margin-top:8px;font-size:13px;color:var(--text-sec);line-height:1.6;white-space:pre-wrap">' + entry.notes + '</div>';
   } else {
     logEl.innerHTML = '<p style="color:var(--text-dim);font-size:14px;text-align:center;padding:16px 0">No workout logged this day</p>';
@@ -3977,8 +3976,7 @@ function renderLogArea() {
   }
   var el = document.getElementById('log-area');
   if (todayEntry) {
-    var editData = JSON.stringify({id:todayEntry.id,date:todayEntry.date,type:todayEntry.type,notes:todayEntry.notes||'',done:todayEntry.done,mobility:todayEntry.mobility,med:todayEntry.med}).replace(/"/g,"'");
-    el.innerHTML = '<div class="loggedPill" style="display:flex;align-items:center;justify-content:space-between">done: ' + todayEntry.type + (todayEntry.mobility ? ' + mobility' : '') + (todayEntry.med ? ' + meditation' : '') + '<button onclick="editWorkout(' + editData + ')" style="background:transparent;border:1px solid var(--accent-33);color:var(--accent);padding:3px 10px;border-radius:4px;cursor:pointer;font-size:11px;font-family:IBM Plex Mono,monospace;margin-left:10px">Edit</button></div>';
+    el.innerHTML = '<div class="loggedPill" style="display:flex;align-items:center;justify-content:space-between">done: ' + todayEntry.type + (todayEntry.mobility ? ' + mobility' : '') + (todayEntry.med ? ' + meditation' : '') + '<button onclick="editWorkoutById(\'' + (todayEntry.id || '') + '\')" style="background:transparent;border:1px solid var(--accent-33);color:var(--accent);padding:3px 10px;border-radius:4px;cursor:pointer;font-size:11px;font-family:IBM Plex Mono,monospace;margin-left:10px">Edit</button></div>';
   } else {
     el.innerHTML = '<button class="logBtn" onclick="openModal()">+ log today\'s workout</button>';
   }
@@ -3986,6 +3984,15 @@ function renderLogArea() {
 
 var editingWorkoutId = null;
 var editingWorkoutDate = null;
+
+function editWorkoutById(id) {
+  var entry = null;
+  for (var i = 0; i < workoutLog.length; i++) {
+    if (String(workoutLog[i].id) === String(id)) { entry = workoutLog[i]; break; }
+  }
+  if (!entry) return;
+  editWorkout(entry);
+}
 
 function editWorkout(entry) {
   editingWorkoutId = entry.id || null;
@@ -4138,7 +4145,7 @@ function doSaveWorkout() {
       body: JSON.stringify({
         model: 'claude-sonnet-4-20250514',
         max_tokens: 100,
-        messages: [{ role: 'user', content: 'Generate a short workout title (3-5 words max) for this session. Return ONLY the title, nothing else. Examples: "Mixed Training", "Upper Body Strength", "MMA + Mobility", "Recovery Walk", "Full Body Circuit"\n\nWorkout notes: ' + notes }]
+        messages: [{ role: 'user', content: 'Categorize this workout into a short type label using this format: [Primary Category] ([Subcategory]) and [Secondary Category] if applicable.\n\nCategories to use:\n- Strength (Upper Body / Lower Body / Full Body / Core)\n- Cardio (Running / Elliptical / Cycling / HIIT / General)\n- Martial Arts (MMA / BJJ / Boxing / Kickboxing / General)\n- Mobility (Yoga / Stretching / General)\n- Rehab (PT / Recovery / General)\n- Mixed Training\n- Rest Day\n- Walk\n\nExamples:\n"Strength (Lower Body) and Mobility"\n"Cardio (Elliptical) and Rehab"\n"Martial Arts (MMA) and Strength (Core)"\n"Mobility (Yoga)"\n"Strength (Full Body)"\n\nReturn ONLY the label, nothing else. Maximum 6 words.\n\nWorkout notes: ' + notes }]
       })
     })
     .then(function(r) { return r.json(); })
@@ -5137,7 +5144,7 @@ function renderLog() {
       }
     }
 
-    var editData = JSON.stringify({id:w.id,date:w.date,type:w.type,notes:w.notes||'',done:w.done,mobility:w.mobility,med:w.med}).replace(/"/g,"'");
+    var editId = w.id || '';
 
     html += '<div class="card" style="padding:14px 16px;margin-bottom:8px;cursor:pointer' + (highlight ? ';border-color:var(--accent-44)' : '') + '" onclick="toggleLogCard(\'' + cardId + '\')">';
     // Collapsed header row
@@ -5161,8 +5168,8 @@ function renderLog() {
     html += '</div>';
     // Notes
     if (w.notes) html += notesHTML;
-    // Edit button
-    html += '<div style="margin-top:10px"><button onclick="event.stopPropagation();editWorkout(' + editData + ')" style="background:transparent;border:1px solid var(--border-accent);color:var(--text-muted);padding:6px 16px;border-radius:4px;cursor:pointer;font-size:12px;font-family:DM Sans,sans-serif">Edit</button></div>';
+    // Edit button - uses editWorkoutById to avoid inline JSON quote issues
+    html += '<div style="margin-top:10px"><button onclick="event.stopPropagation();editWorkoutById(\'' + editId + '\')" style="background:transparent;border:1px solid var(--border-accent);color:var(--text-muted);padding:10px 20px;border-radius:4px;cursor:pointer;font-size:13px;font-family:DM Sans,sans-serif;min-height:44px">Edit</button></div>';
     html += '</div></div>';
     html += '</div>';
   }
