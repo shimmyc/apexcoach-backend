@@ -681,6 +681,51 @@ app.delete("/api/workouts/:id", async function(req, res) {
   }
 });
 
+// ── REFORMAT WORKOUT TITLES ───────────────────────────────────────────────
+app.post("/api/profiles/:id/reformat-titles", async function(req, res) {
+  try {
+    var profileId = req.params.id;
+    // Fetch all workouts with notes
+    var wr = await fetch(SUPABASE_URL + "/rest/v1/workouts?profile_id=eq." + profileId + "&notes=neq.&notes=not.is.null&select=id,type,notes,date&order=date.desc&limit=10000", { headers: sbHeaders() });
+    var workouts = await wr.json();
+    if (!Array.isArray(workouts)) workouts = [];
+    // Filter to only those with actual notes content
+    workouts = workouts.filter(function(w) { return w.notes && w.notes.trim().length > 0; });
+    console.log("[reformat-titles] Found " + workouts.length + " workouts with notes for profile " + profileId);
+
+    var updated = 0;
+    var batchSize = 5;
+    for (var i = 0; i < workouts.length; i += batchSize) {
+      var batch = workouts.slice(i, i + batchSize);
+      var promises = batch.map(async function(w) {
+        try {
+          var titlePrompt = "Analyze these workout notes and generate a workout label using this exact hierarchy. Format: '[Main] ([Sub]) + [Main] ([Sub])' for multiple activities.\n\nTAXONOMY:\nSTRENGTH: Upper Body, Lower Body, Core, Full Body, Calisthenics, Olympic Lifting, Powerlifting\nCARDIO: Machine (Elliptical/Treadmill/Stairmaster/Rowing/Bike), Outdoor (Running/Walking/Hiking/Cycling), Class, HIIT, Jump Rope\nMARTIAL ARTS: Striking (Boxing/Kickboxing/Muay Thai), Grappling (BJJ/Wrestling/Judo), MMA\nSPORTS: Team, Racket, Water, Winter, Golf, Gymnastics, Rock Climbing\nMIND & BODY: Yoga, Pilates, Stretching, Breathwork, Meditation\nREHAB & RECOVERY: Physical Therapy, Foam Rolling, Active Recovery\nMIXED TRAINING: 3+ categories\nREST: Full Rest, Light Activity\n\nRULES: Use '+' separator. Max 3 categories. Include sub-category in parentheses. If duration mentioned note it.\n\nReturn ONLY the label. Maximum 8 words.\nWorkout notes: " + w.notes;
+          var title = await callAI(titlePrompt, 100);
+          title = title.trim().replace(/^["']|["']$/g, "");
+          if (!title || title.length > 80) title = w.type || "Workout";
+          // Update in Supabase
+          await fetch(SUPABASE_URL + "/rest/v1/workouts?id=eq." + w.id, {
+            method: "PATCH",
+            headers: sbHeaders("return=minimal"),
+            body: JSON.stringify({ type: title }),
+          });
+          updated++;
+          return title;
+        } catch (e) {
+          console.error("[reformat-titles] Error on workout " + w.id + ":", e.message);
+          return null;
+        }
+      });
+      await Promise.all(promises);
+    }
+    console.log("[reformat-titles] Updated " + updated + "/" + workouts.length + " titles");
+    res.json({ success: true, updated: updated, total: workouts.length });
+  } catch (e) {
+    console.error("[reformat-titles] Error:", e);
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
 // ── MEDITATION LOG ─────────────────────────────────────────────────────────
 app.get("/api/meditations", async function(req, res) {
   try {

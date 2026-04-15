@@ -4045,6 +4045,10 @@ function saveWorkoutToSupabase(entry) {
       if (wkId && !entry.id) {
         entry.id = wkId;
         localStorage.setItem('ac_log', JSON.stringify(workoutLog));
+        // Re-render so edit buttons have the real ID
+        renderLog();
+        renderLogArea();
+        console.log('[ApexCoach] Workout ID assigned:', wkId);
       }
       if (entry.notes && entry.notes.trim() && currentProfileId) {
       console.log('[ApexCoach] Auto-extracting exercises from workout notes...');
@@ -4403,6 +4407,9 @@ function renderLibDashboard() {
     html += '</div></div>';
   }
 
+  // Reformat titles button
+  html += '<div style="margin-top:16px;text-align:center"><button onclick="reformatAllTitles()" id="reformat-titles-btn" style="background:transparent;border:1px solid var(--accent-33);color:var(--accent);padding:10px 20px;border-radius:6px;cursor:pointer;font-size:13px;font-family:DM Sans,sans-serif">&#10024; Reformat Workout Titles</button></div>';
+
   el.innerHTML = html;
 
   // Render charts after DOM update
@@ -4410,6 +4417,38 @@ function renderLibDashboard() {
     renderDonutChart();
     renderVolumeChart();
   }, 50);
+}
+
+function reformatAllTitles() {
+  if (!currentProfileId) return;
+  if (!confirm('This will update all your workout titles to use the new category format. Continue?')) return;
+  var btn = document.getElementById('reformat-titles-btn');
+  if (btn) { btn.textContent = 'Updating...'; btn.disabled = true; }
+  fetch('/api/profiles/' + currentProfileId + '/reformat-titles', { method: 'POST' })
+    .then(function(r) { return r.json(); })
+    .then(function(data) {
+      if (data.success) {
+        if (btn) btn.textContent = 'Updated ' + data.updated + ' of ' + data.total + ' titles!';
+        // Reload workout log to reflect new titles
+        fetch('/api/workouts?profile_id=' + currentProfileId)
+          .then(function(r) { return r.json(); })
+          .then(function(wkData) {
+            if (Array.isArray(wkData)) {
+              workoutLog = wkData;
+              localStorage.setItem('ac_log', JSON.stringify(workoutLog));
+              renderLog();
+              renderLogArea();
+              renderCalendar();
+              loadLibrary();
+            }
+          });
+      } else {
+        if (btn) btn.textContent = 'Error: ' + (data.error || 'Unknown');
+      }
+    })
+    .catch(function(err) {
+      if (btn) btn.textContent = 'Error: ' + err.message;
+    });
 }
 
 function renderDonutChart() {
