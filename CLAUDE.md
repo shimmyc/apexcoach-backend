@@ -226,13 +226,17 @@ Shimmy Castle - blue belt MMA, wedding musician, new dad. Injuries: pubic osteit
 
 - Manual check-in: supported (sleep/energy/pain emoji selectors → simplified readiness score capped at 85)
 
-- Google Fit / Garmin: planned, have public APIs, buildable
+- **Google Health Connect (HIGH PRIORITY, next integration)**: Android API supporting Samsung, Pixel, OnePlus, most Android 14+ devices. Direct API — no Open Wearables needed. Covers steps, HRV, sleep, heart rate, workouts.
 
-- Apple Watch: requires iOS app bridge, longer term
+- **Open Wearables (Phase 2)**: Unified API for all wearables. Deploy on Railway ($5/mo). Android SDK ready now, iOS needs companion app. Long-term replacement for individual integrations. Supports: Samsung, Garmin, Whoop, Oura, Polar, Suunto, Apple Health (via iOS app).
 
-- Whoop: API is invite-only, not yet accessible
+- Samsung Health: available via Samsung Health Data SDK (Android only, Galaxy devices)
 
-- Samsung Health: requires partnership approval
+- Apple Watch / HealthKit: requires iOS companion app + Apple Developer Account ($99/yr). Use Open Wearables iOS SDK when ready.
+
+- Garmin Connect API: public API, buildable without Open Wearables
+
+- Whoop: API is invite-only, apply for access
 
 profile_data.fitbit = true/false
 
@@ -341,13 +345,17 @@ Three-phase plan for exercise demonstrations and AI form coaching:
 - **Phase 3 — Real-Time Form Coaching**: Google MediaPipe or TensorFlow.js detects 33 body landmarks in-browser. Pose landmark data (not raw video) sent to Claude for interpretation. Camera analyzes every 3-5 seconds with on-screen feedback and audio cues. Privacy-preserving — no video leaves the device.
 - **Content partnerships**: License exclusive video content for Pro subscribers with revenue share model.
 
+## Voice Input (Planned Upgrade)
+
+Currently uses Web Speech API (browser built-in dictation). Planned upgrade to OpenAI Whisper API for significantly better accuracy, especially for fitness/medical terminology. Cost: ~$0.006/minute (essentially free for personal use). Implementation: record audio as blob, POST to Whisper API endpoint, return transcript. Will replace `startVoice()` / `startCheckinVoice()` browser speech recognition.
+
 ## Auto-Format Notes
 
 Workout notes can be auto-formatted by Claude AI on save. Controlled by `ac_auto_format` in localStorage (default: true). Toggle available in the Log Workout modal toolbar and Settings → AI Coaching. When enabled, notes are formatted into clean structured lists before saving. Falls back to unformatted save on AI error.
 
 ## AI-Generated Workout Titles
 
-The Log Workout modal has no manual type/title selector. Instead, users describe their workout in a free-text textarea ("What did you do today?"). On save, an AI call categorizes the workout using the full taxonomy hierarchy (see Exercise Library System section). Format: `[Main] ([Sub]) + [Main] ([Sub])` — e.g. "Rehab (PT) + Cardio (Elliptical, 20min) + Strength (Upper Body)". Maximum 8 words, max 3 categories (uses "Mixed Training" if more). The title is stored in the `type` column of the workouts table. Quick-log shortcut buttons (🥋 MMA, 🚶 Walk, 😴 Rest Day) pre-fill the textarea with starter text. If AI title generation fails, "Workout" is used as fallback. When editing an existing workout, the original AI-generated title is preserved.
+The Log Workout modal has no manual type/title selector. Instead, users describe their workout in a free-text textarea ("What did you do today?"). On save, an AI call categorizes the workout using the full taxonomy hierarchy (see Exercise Library System section). Format: `[Main] ([Sub]) + [Main] ([Sub])` — e.g. "Rehab (PT) + Cardio (Elliptical, 20min) + Strength (Upper Body)". Maximum 8 words, max 3 categories (uses "Mixed Training" if more). The title is stored in the `type` column of the workouts table. Quick-log shortcut buttons (🥋 MMA, 🚶 Walk, 😴 Rest Day) pre-fill the textarea with starter text. If AI title generation fails, "Workout" is used as fallback. When editing an existing workout, if the notes are changed the AI title is automatically regenerated in the background and the workout card is re-rendered with the new title. The `generateWorkoutTitle(notes)` function is extracted as a reusable function called from both new saves and edits.
 
 ## Auto-Generate Goal Description
 

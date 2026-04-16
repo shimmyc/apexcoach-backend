@@ -643,11 +643,18 @@ input[type=range]{width:100%;accent-color:var(--accent)}
         <p style="font-size:11px;letter-spacing:2px;color:#4488bb;margin:10px 0 0;font-weight:700">DESIGN</p>
         <label style="display:flex;align-items:start;gap:8px;font-size:14px;color:#ccc"><input type="checkbox" disabled style="margin-top:4px"> Theme redesign &mdash; unique visual identity per theme beyond color (card styles, typography, borders, shadows, spacing). Apex Dark: sleek minimal · Midnight: Bloomberg terminal, monospace · Carbon: brutalist, sharp corners · Forest: organic, rounded, earthy · Arctic: clean clinical light · Gold: premium luxury, subtle gradients</label>
 
-        <p style="font-size:11px;letter-spacing:2px;color:#4488bb;margin:10px 0 0;font-weight:700">INTEGRATIONS</p>
-        <label style="display:flex;align-items:center;gap:8px;font-size:14px;color:#4488bb"><input type="checkbox" disabled> Google Fit / Wear OS integration (has public API, buildable)</label>
-        <label style="display:flex;align-items:center;gap:8px;font-size:14px;color:#4488bb"><input type="checkbox" disabled> Garmin integration (has public API, buildable)</label>
-        <label style="display:flex;align-items:center;gap:8px;font-size:14px;color:#555"><input type="checkbox" disabled> Apple Watch (requires iOS app bridge, longer term)</label>
-        <label style="display:flex;align-items:center;gap:8px;font-size:14px;color:#555"><input type="checkbox" disabled> Whoop (API invite only, waiting)</label>
+        <p style="font-size:11px;letter-spacing:2px;color:#4488bb;margin:10px 0 0;font-weight:700">WEARABLE INTEGRATIONS</p>
+        <label style="display:flex;align-items:start;gap:8px;font-size:14px;color:#f5a623"><input type="checkbox" disabled style="margin-top:4px"> Google Health Connect (Android) &mdash; supports Samsung, Pixel, OnePlus, most Android 14+ devices. Direct API, no Open Wearables needed. Steps, HRV, sleep, heart rate, workouts. HIGH PRIORITY.</label>
+        <label style="display:flex;align-items:start;gap:8px;font-size:14px;color:#ccc"><input type="checkbox" disabled style="margin-top:4px"> Open Wearables integration (Phase 2) &mdash; unified API for all wearables. Deploy on Railway ($5/mo). Android SDK ready, iOS needs companion app. Replaces individual integrations long term. Supports: Samsung, Garmin, Whoop, Oura, Polar, Suunto, Apple Health (via iOS app)</label>
+        <label style="display:flex;align-items:center;gap:8px;font-size:14px;color:#ccc"><input type="checkbox" disabled> Samsung Health direct &mdash; Samsung Health Data SDK (Android only, Galaxy devices)</label>
+        <label style="display:flex;align-items:start;gap:8px;font-size:14px;color:#555"><input type="checkbox" disabled style="margin-top:4px"> Apple Watch / HealthKit &mdash; requires iOS companion app + Apple Developer Account ($99/yr). Use Open Wearables iOS SDK when ready.</label>
+        <label style="display:flex;align-items:center;gap:8px;font-size:14px;color:#4488bb"><input type="checkbox" disabled> Garmin Connect API &mdash; public API, buildable without Open Wearables</label>
+        <label style="display:flex;align-items:center;gap:8px;font-size:14px;color:#555"><input type="checkbox" disabled> Whoop API &mdash; invite only, apply for access</label>
+
+        <p style="font-size:11px;letter-spacing:2px;color:#4488bb;margin:10px 0 0;font-weight:700">VOICE INPUT</p>
+        <label style="display:flex;align-items:start;gap:8px;font-size:14px;color:#ccc"><input type="checkbox" disabled style="margin-top:4px"> Upgrade voice recognition to OpenAI Whisper API &mdash; much more accurate than Web Speech API, especially for fitness/medical terminology. ~$0.006/min. Record audio blob, POST to Whisper, return transcript.</label>
+
+        <p style="font-size:11px;letter-spacing:2px;color:#4488bb;margin:10px 0 0;font-weight:700">OTHER INTEGRATIONS</p>
         <label style="display:flex;align-items:center;gap:8px;font-size:14px;color:#ccc"><input type="checkbox" disabled> Google OAuth login (replace PIN system)</label>
         <label style="display:flex;align-items:center;gap:8px;font-size:14px;color:#ccc"><input type="checkbox" disabled> Push notifications (morning reminder, streak alerts, weekly summary, rest day reminders)</label>
 
@@ -3984,6 +3991,7 @@ function renderLogArea() {
 
 var editingWorkoutId = null;
 var editingWorkoutDate = null;
+var editingOriginalNotes = null;
 
 function editWorkoutById(id) {
   var entry = null;
@@ -3997,6 +4005,7 @@ function editWorkoutById(id) {
 function editWorkout(entry) {
   editingWorkoutId = entry.id || null;
   editingWorkoutDate = entry.date || null;
+  editingOriginalNotes = entry.notes || '';
   document.getElementById('wtype').value = entry.type || '';
   document.getElementById('wnotes').value = entry.notes || '';
   document.getElementById('wdone').checked = entry.done !== false;
@@ -4103,6 +4112,24 @@ function confirmDeleteFromModal() {
   closeModal();
   editingWorkoutId = null;
   editingWorkoutDate = null;
+  editingOriginalNotes = null;
+}
+
+function generateWorkoutTitle(notes) {
+  return fetch('/api/ai', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      model: 'claude-sonnet-4-20250514',
+      max_tokens: 100,
+      messages: [{ role: 'user', content: 'Analyze these workout notes and generate a workout label using this exact hierarchy. Format: \'[Main] ([Sub]) + [Main] ([Sub])\' for multiple activities.\n\nTAXONOMY:\nSTRENGTH:\n- Upper Body: Chest, Back, Shoulders, Biceps, Triceps, Arms\n- Lower Body: Quads, Hamstrings, Glutes, Calves, Legs\n- Core: Abs, Obliques, Lower Back\n- Full Body\n- Calisthenics (bodyweight only)\n- Olympic Lifting\n- Powerlifting\n\nCARDIO:\n- Machine: Elliptical, Treadmill, Stairmaster, Rowing Machine, Stationary Bike, Ski Erg, Air Bike\n- Outdoor: Running, Walking, Hiking, Cycling, Swimming (open water)\n- Class: Spin, Zumba, Aerobics, Dance, Step\n- HIIT\n- Jump Rope\n- General\n\nMARTIAL ARTS:\n- Striking: Boxing, Kickboxing, Muay Thai, Karate, Taekwondo\n- Grappling: BJJ, Wrestling, Judo, Jiu Jitsu\n- MMA (Mixed)\n- General\n\nSPORTS:\n- Team: Basketball, Soccer, Football, Baseball, Volleyball, Hockey\n- Racket: Tennis, Pickleball, Racquetball, Squash, Badminton\n- Water: Swimming, Surfing, Kayaking, Paddleboard\n- Winter: Skiing, Snowboarding, Ice Skating\n- Golf, Gymnastics, Rock Climbing, Bowling, General\n\nMIND & BODY:\n- Yoga: Hot Yoga, Vinyasa, Restorative, Power Yoga\n- Pilates\n- Stretching\n- Breathwork\n- Meditation\n\nREHAB & RECOVERY:\n- Physical Therapy\n- Foam Rolling\n- Cold Therapy\n- Massage\n- Active Recovery\n- General\n\nMIXED TRAINING:\n- Use when session has 3+ different main categories\n- Still list the sub-components\n\nREST:\n- Full Rest\n- Light Activity\n\nRULES:\n- Scan ALL activities mentioned in the notes\n- List each distinct activity type\n- Use \'+\' to separate multiple categories\n- Maximum 3 categories shown (use \'Mixed Training\' if more)\n- Always include specific sub-category in parentheses\n- If duration mentioned, note it: \'Cardio (Elliptical, 20min)\'\n\nEXAMPLES:\n\'cat-cow, glute bridges, 20min elliptical, dumbbell curls 3x12\' → \'Rehab (PT) + Cardio (Elliptical, 20min) + Strength (Upper Body)\'\n\'MMA sparring, shadowboxing, bag work\' → \'Martial Arts (MMA)\'\n\'yoga flow, meditation\' → \'Mind & Body (Yoga) + Meditation\'\n\'squats, lunges, deadlifts, running 2 miles\' → \'Strength (Lower Body) + Cardio (Outdoor, Running)\'\n\'rest day, light stretching\' → \'Rest + Mind & Body (Stretching)\'\n\nReturn ONLY the label. Maximum 8 words total.\nWorkout notes: ' + notes }]
+    })
+  })
+  .then(function(r) { return r.json(); })
+  .then(function(data) {
+    var title = (data.content && data.content[0]) ? data.content[0].text.trim().replace(/^["']|["']$/g, '') : 'Workout';
+    return title;
+  });
 }
 
 var _savingWorkout = false;
@@ -4141,23 +4168,14 @@ function doSaveWorkout() {
   // For edits, use existing type; for new workouts, AI generates it
   if (editingWorkoutId) {
     var existingType = document.getElementById('wtype').value || 'Workout';
-    finishSave(existingType);
+    var notesChanged = notes.trim() !== (editingOriginalNotes || '').trim();
+    finishSave(existingType, notesChanged);
   } else {
     // AI-generate workout title from notes
     if (saveBtn) { saveBtn.textContent = 'Saving...'; saveBtn.disabled = true; }
     console.log('[ApexCoach] Generating AI title for notes length:', notes.length);
-    fetch('/api/ai', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        model: 'claude-sonnet-4-20250514',
-        max_tokens: 100,
-        messages: [{ role: 'user', content: 'Analyze these workout notes and generate a workout label using this exact hierarchy. Format: \'[Main] ([Sub]) + [Main] ([Sub])\' for multiple activities.\n\nTAXONOMY:\nSTRENGTH:\n- Upper Body: Chest, Back, Shoulders, Biceps, Triceps, Arms\n- Lower Body: Quads, Hamstrings, Glutes, Calves, Legs\n- Core: Abs, Obliques, Lower Back\n- Full Body\n- Calisthenics (bodyweight only)\n- Olympic Lifting\n- Powerlifting\n\nCARDIO:\n- Machine: Elliptical, Treadmill, Stairmaster, Rowing Machine, Stationary Bike, Ski Erg, Air Bike\n- Outdoor: Running, Walking, Hiking, Cycling, Swimming (open water)\n- Class: Spin, Zumba, Aerobics, Dance, Step\n- HIIT\n- Jump Rope\n- General\n\nMARTIAL ARTS:\n- Striking: Boxing, Kickboxing, Muay Thai, Karate, Taekwondo\n- Grappling: BJJ, Wrestling, Judo, Jiu Jitsu\n- MMA (Mixed)\n- General\n\nSPORTS:\n- Team: Basketball, Soccer, Football, Baseball, Volleyball, Hockey\n- Racket: Tennis, Pickleball, Racquetball, Squash, Badminton\n- Water: Swimming, Surfing, Kayaking, Paddleboard\n- Winter: Skiing, Snowboarding, Ice Skating\n- Golf, Gymnastics, Rock Climbing, Bowling, General\n\nMIND & BODY:\n- Yoga: Hot Yoga, Vinyasa, Restorative, Power Yoga\n- Pilates\n- Stretching\n- Breathwork\n- Meditation\n\nREHAB & RECOVERY:\n- Physical Therapy\n- Foam Rolling\n- Cold Therapy\n- Massage\n- Active Recovery\n- General\n\nMIXED TRAINING:\n- Use when session has 3+ different main categories\n- Still list the sub-components\n\nREST:\n- Full Rest\n- Light Activity\n\nRULES:\n- Scan ALL activities mentioned in the notes\n- List each distinct activity type\n- Use \'+\' to separate multiple categories\n- Maximum 3 categories shown (use \'Mixed Training\' if more)\n- Always include specific sub-category in parentheses\n- If duration mentioned, note it: \'Cardio (Elliptical, 20min)\'\n\nEXAMPLES:\n\'cat-cow, glute bridges, 20min elliptical, dumbbell curls 3x12\' → \'Rehab (PT) + Cardio (Elliptical, 20min) + Strength (Upper Body)\'\n\'MMA sparring, shadowboxing, bag work\' → \'Martial Arts (MMA)\'\n\'yoga flow, meditation\' → \'Mind & Body (Yoga) + Meditation\'\n\'squats, lunges, deadlifts, running 2 miles\' → \'Strength (Lower Body) + Cardio (Outdoor, Running)\'\n\'rest day, light stretching\' → \'Rest + Mind & Body (Stretching)\'\n\nReturn ONLY the label. Maximum 8 words total.\nWorkout notes: ' + notes }]
-      })
-    })
-    .then(function(r) { return r.json(); })
-    .then(function(data) {
-      var title = (data.content && data.content[0]) ? data.content[0].text.trim().replace(/^["']|["']$/g, '') : 'Workout';
+    generateWorkoutTitle(notes)
+    .then(function(title) {
       console.log('[ApexCoach] AI generated title:', title);
       finishSave(title);
     })
@@ -4167,7 +4185,7 @@ function doSaveWorkout() {
     });
   }
 
-  function finishSave(type) {
+  function finishSave(type, notesChanged) {
     _savingWorkout = false;
     if (saveBtn) { saveBtn.textContent = 'Save'; saveBtn.disabled = false; }
     var entry = {
@@ -4201,6 +4219,32 @@ function doSaveWorkout() {
       }
       // PATCH existing on server — never POST, don't send date
       updateWorkoutInSupabase(editingWorkoutId, editUpdate);
+
+      // If notes changed, regenerate AI title in background
+      if (notesChanged) {
+        var editId = editingWorkoutId;
+        var newNotes = entry.notes;
+        console.log('[ApexCoach] Notes changed in edit, regenerating title...');
+        generateWorkoutTitle(newNotes).then(function(newTitle) {
+          console.log('[ApexCoach] Regenerated title for edit:', newTitle);
+          // PATCH workout with new title
+          fetch('/api/workouts/' + editId, {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ type: newTitle })
+          }).then(function() {
+            // Update local workoutLog entry
+            var w = workoutLog.find(function(w) { return w.id == editId; });
+            if (w) w.type = newTitle;
+            localStorage.setItem('ac_log', JSON.stringify(workoutLog));
+            renderLog();
+            renderLogArea();
+            console.log('[ApexCoach] Title updated after notes edit');
+          });
+        }).catch(function(err) {
+          console.log('[ApexCoach] Title regen failed after edit:', err);
+        });
+      }
     } else {
       // New workout — POST to server
       entry.date = entryDate;
@@ -4219,6 +4263,7 @@ function doSaveWorkout() {
     if(dateEl) dateEl.value='today';
     document.getElementById('voice-status').textContent = '';
     editingWorkoutId = null;
+    editingOriginalNotes = null;
     renderLogArea();
     renderWeek();
     renderLog();
