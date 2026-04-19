@@ -22,7 +22,7 @@ ApexCoach is a personalized AI fitness coaching web app. Users connect their Fit
 
 ## Supabase Tables
 
-- profiles: id, name, pin (sha256 hashed), avatar_color, profile_data (jsonb), fitbit_access_token, fitbit_refresh_token, fitbit_expires_at, coaching_brief (text), historical_brief (text), historical_brief_updated_at (timestamp), roadmap (text), roadmap_updated_at (timestamp), created_at
+- profiles: id, name, pin (sha256 hashed), avatar_color, profile_data (jsonb), fitbit_access_token, fitbit_refresh_token, fitbit_expires_at, coaching_brief (text), historical_brief (text), historical_brief_updated_at (timestamp), roadmap (text), roadmap_updated_at (timestamp), daily_recommendations (jsonb), daily_recommendations_date (date), daily_recommendations_readiness (int), created_at
 
 - workouts: id, date, type, notes, done, mobility, med, ts, profile_id
 
@@ -141,6 +141,31 @@ Calculated from workoutLog entries where done=true. Counts backwards from today 
 - POST /api/profiles/:id/generate-brief — generates coaching briefs from workout history (two AI calls)
 
 - POST /api/profiles/:id/search-history — natural language search across all workout history
+
+- GET /api/profiles/:id/daily-recs — returns cached recommendations, date, and readiness score used
+
+- POST /api/profiles/:id/daily-recs — upserts daily_recommendations, daily_recommendations_date, daily_recommendations_readiness on profiles
+
+## Daily AI Recommendation Cache
+
+Recommendations are generated once per day and cached on the profiles table (`daily_recommendations` jsonb, `daily_recommendations_date` date, `daily_recommendations_readiness` int). On page load the app calls `tryLoadCachedAI()` first; if same-day recs exist they render immediately and no AI call is made. `renderAI()` shows a subtle "GENERATED AT H:MMAM" timestamp pill using the `generated_at` field stamped into the rec object.
+
+Regeneration triggers:
+- **Fitbit arrives / readiness changes**: `maybeRegenForReadiness()` silently regens if `|new - cached| > 10` or if cached readiness was null.
+- **Daily check-in submit**: always regens (context changed).
+- **Manual check-in submit**: always regens.
+- **Goal reorder (saveGoalPriority)**: regens only if top-2 priority goals changed order — reorders below rank 2 don't trigger.
+- **Goal add/remove**: always regens. Minor description edits don't trigger (only addGoal / removeGoal paths).
+- **Road map or Coaching Brief regeneration (user-initiated)**: regens.
+
+`fetchAI({silent:true})` skips the loading spinner and error banner so background regens don't disturb the visible cached recs. Every successful `fetchAI()` stamps `generated_at`, writes `ac_cache` locally, and POSTs to `/api/profiles/:id/daily-recs` so the cache survives reloads and syncs across devices.
+
+**New columns required in Supabase** — add via Supabase SQL editor:
+```sql
+ALTER TABLE profiles ADD COLUMN IF NOT EXISTS daily_recommendations jsonb;
+ALTER TABLE profiles ADD COLUMN IF NOT EXISTS daily_recommendations_date date;
+ALTER TABLE profiles ADD COLUMN IF NOT EXISTS daily_recommendations_readiness int;
+```
 
 ## Daily Feeling Check-In
 

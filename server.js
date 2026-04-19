@@ -1475,6 +1475,65 @@ app.post("/api/profiles/:id/checkin", async function(req, res) {
   }
 });
 
+// ── DAILY AI RECOMMENDATION CACHE ────────────────────────────────────────
+// Stored on profiles: daily_recommendations (jsonb),
+// daily_recommendations_date (date/text YYYY-MM-DD),
+// daily_recommendations_readiness (int, readiness score used to generate).
+app.get("/api/profiles/:id/daily-recs", async function(req, res) {
+  try {
+    const pid = req.params.id;
+    const r = await fetch(
+      SUPABASE_URL + "/rest/v1/profiles?id=eq." + pid +
+        "&select=daily_recommendations,daily_recommendations_date,daily_recommendations_readiness",
+      { headers: sbHeaders() }
+    );
+    const rows = await r.json();
+    if (!rows || !rows.length) return res.status(404).json({ error: "Profile not found" });
+    res.json({
+      success: true,
+      recommendations: rows[0].daily_recommendations || null,
+      date: rows[0].daily_recommendations_date || null,
+      readiness: rows[0].daily_recommendations_readiness === undefined ? null : rows[0].daily_recommendations_readiness,
+    });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.post("/api/profiles/:id/daily-recs", async function(req, res) {
+  try {
+    const pid = req.params.id;
+    const { recommendations, readiness, date } = req.body || {};
+    if (!recommendations || typeof recommendations !== "object") {
+      return res.status(400).json({ error: "recommendations object required" });
+    }
+    const now = new Date();
+    const pad = (n) => String(n).padStart(2, "0");
+    const fallbackDate = now.getFullYear() + "-" + pad(now.getMonth() + 1) + "-" + pad(now.getDate());
+    const recsWithMeta = Object.assign({}, recommendations, {
+      generated_at: recommendations.generated_at || now.toISOString(),
+    });
+    const payload = {
+      daily_recommendations: recsWithMeta,
+      daily_recommendations_date: date || fallbackDate,
+      daily_recommendations_readiness:
+        typeof readiness === "number" ? Math.round(readiness) : null,
+    };
+    const r = await fetch(SUPABASE_URL + "/rest/v1/profiles?id=eq." + pid, {
+      method: "PATCH",
+      headers: sbHeaders("return=representation"),
+      body: JSON.stringify(payload),
+    });
+    if (!r.ok) {
+      const text = await r.text();
+      return res.status(r.status).json({ error: text });
+    }
+    res.json({ success: true, recommendations: recsWithMeta, date: payload.daily_recommendations_date, readiness: payload.daily_recommendations_readiness });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 // ── ROAD MAP ─────────────────────────────────────────────────────────────
 app.get("/api/profiles/:id/roadmap", async function(req, res) {
   try {

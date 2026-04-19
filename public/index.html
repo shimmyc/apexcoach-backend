@@ -1982,7 +1982,7 @@ function showManualCheckin(reason) {
       document.getElementById('ai-card').style.display = 'block';
       document.getElementById('progress-card').style.display = 'block';
       if (c.progressRec) { progressRec = c.progressRec; renderProgress(); } else { fetchProgress(); }
-      if (c.aiRec) { aiRec = c.aiRec; renderAI(); } else { fetchAI(); }
+      resolveAIRecs();
       setBannerForCheckin(hasFitbitProfile, authUrl);
       return;
     }
@@ -2069,7 +2069,9 @@ function submitCheckin() {
   document.getElementById('progress-card').style.display = 'block';
   document.getElementById('progress-content').innerHTML = '<p class="mono" style="font-size:11px;color:#22c97a;letter-spacing:3px;animation:pulse 1.6s infinite">ANALYZING PROGRESS...</p>';
   fetchProgress();
-  fetchAI();
+  // User just submitted a fresh manual check-in — context has changed,
+  // always regenerate recs rather than using any stale cache.
+  regenerateAIForContextChange('manual_checkin_submit');
 }
 
 function renderManualReadiness() {
@@ -2231,8 +2233,8 @@ function submitFeelingCheckin() {
   // Save to localStorage as offline fallback
   localStorage.setItem('ac_checkin', JSON.stringify(dailyCheckin));
   showFeelingCheckinSummary();
-  // Re-trigger AI with check-in context
-  if (document.getElementById('ai-card').style.display === 'block') fetchAI();
+  // Re-trigger AI with check-in context (context changed — always regenerate)
+  if (document.getElementById('ai-card').style.display === 'block') regenerateAIForContextChange('daily_checkin_submit');
   // Save to Supabase (fire and forget, localStorage is already set)
   if (currentProfileId) {
     fetch('/api/profiles/' + currentProfileId + '/checkin', {
@@ -2500,7 +2502,7 @@ function syncFitbit(forceRefresh) {
           renderReadiness();
           document.getElementById('status-box').style.display = 'none';
           if (c.progressRec) { progressRec = c.progressRec; renderProgress(); } else { fetchProgress(); }
-          if (c.aiRec) { aiRec = c.aiRec; renderAI(); } else { fetchAI(); }
+          resolveAIRecs();
           return;
         }
       }
@@ -2525,7 +2527,7 @@ function syncFitbit(forceRefresh) {
       renderReadiness();
       document.getElementById('status-box').style.display = 'none';
       fetchProgress();
-      fetchAI();
+      resolveAIRecs();
     })
     .catch(function(e) {
       // Auth/token errors → show manual check-in with Fitbit connect banner
@@ -2741,8 +2743,115 @@ function statCard(label, value, sub) {
     '</div>';
 }
 
-function fetchAI() {
-  console.log('[ApexCoach] fetchAI: starting request');
+// ── AI RECOMMENDATION CACHE (server-backed, one generation per day) ──────
+var aiRecReadinessUsed = null;   // readiness score used when cached recs were generated
+var aiRecGeneratedAt = null;     // ISO timestamp recs were generated
+var aiRecDate = null;            // YYYY-MM-DD the cached recs are for
+
+function cacheAIRecOnServer(rec, readinessVal) {
+  if (!currentProfileId || !rec) return;
+  var today = ds(0);
+  fetch('/api/profiles/' + currentProfileId + '/daily-recs', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      recommendations: rec,
+      readiness: (typeof readinessVal === 'number') ? readinessVal : null,
+      date: today
+    })
+  })
+  .then(function(r) { return r.json(); })
+  .then(function(data) {
+    if (data && data.success) {
+      aiRecReadinessUsed = data.readiness;
+      aiRecGeneratedAt = (data.recommendations && data.recommendations.generated_at) || new Date().toISOString();
+      aiRecDate = data.date || today;
+      console.log('[ApexCoach] Cached recs on server for ' + aiRecDate + ' (readiness=' + aiRecReadinessUsed + ')');
+    }
+  })
+  .catch(function(e) { console.warn('[ApexCoach] cacheAIRec failed:', e.message); });
+}
+
+// Try to load cached recs for today from Supabase. Returns promise<boolean>
+// (true if a valid same-day cache was loaded and rendered).
+function tryLoadCachedAI() {
+  if (!currentProfileId) return Promise.resolve(false);
+  var today = ds(0);
+  return fetch('/api/profiles/' + currentProfileId + '/daily-recs')
+    .then(function(r) { return r.json(); })
+    .then(function(data) {
+      if (!data || !data.success || !data.recommendations) return false;
+      if (data.date !== today) return false;
+      aiRec = data.recommendations;
+      aiRecReadinessUsed = data.readiness;
+      aiRecGeneratedAt = data.recommendations.generated_at || null;
+      aiRecDate = data.date;
+      var c = JSON.parse(localStorage.getItem('ac_cache') || '{}');
+      c.aiRec = aiRec;
+      localStorage.setItem('ac_cache', JSON.stringify(c));
+      document.getElementById('ai-card').style.display = 'block';
+      renderAI();
+      console.log('[ApexCoach] Loaded cached recs from server (generated ' + (aiRecGeneratedAt || 'unknown') + ')');
+      return true;
+    })
+    .catch(function(e) {
+      console.warn('[ApexCoach] tryLoadCachedAI failed:', e.message);
+      return false;
+    });
+}
+
+// Primary entry point used at boot / after readiness changes.
+// Paints from local cache instantly if available, then reconciles with server.
+function resolveAIRecs() {
+  var today = ds(0);
+  var local = JSON.parse(localStorage.getItem('ac_cache') || '{}');
+  if (local && local.date === today && local.aiRec) {
+    aiRec = local.aiRec;
+    aiRecGeneratedAt = (local.aiRec.generated_at) || aiRecGeneratedAt;
+    renderAI();
+  }
+  return tryLoadCachedAI().then(function(used) {
+    if (used) {
+      maybeRegenForReadiness();
+    } else {
+      fetchAI();
+    }
+  });
+}
+
+// State 2: Fitbit data just arrived. Compare the fresh readiness to the score
+// the cached recs were generated with. If they diverge by more than 10 points
+// (or no baseline exists) silently regenerate in the background.
+function maybeRegenForReadiness() {
+  if (!readiness || typeof readiness.score !== 'number') return;
+  var cached = aiRecReadinessUsed;
+  if (cached === null || cached === undefined) {
+    console.log('[ApexCoach] Cached recs had no readiness baseline -> silent regen with new data');
+    fetchAI({ silent: true });
+    return;
+  }
+  var delta = Math.abs(readiness.score - cached);
+  if (delta > 10) {
+    console.log('[ApexCoach] Readiness delta ' + delta + ' (' + cached + ' -> ' + readiness.score + ') > 10 -> silent regen');
+    fetchAI({ silent: true });
+  } else {
+    console.log('[ApexCoach] Readiness delta ' + delta + ' within threshold - keeping cached recs');
+  }
+}
+
+// Invalidate + regenerate on user context changes (check-in, goal reorder,
+// goal add/remove, road map or coaching brief regeneration).
+function regenerateAIForContextChange(reason) {
+  console.log('[ApexCoach] Context changed (' + reason + ') -> regenerating recs');
+  var aiCard = document.getElementById('ai-card');
+  if (!aiCard) return;
+  aiCard.style.display = 'block';
+  fetchAI();
+}
+
+function fetchAI(opts) {
+  opts = opts || {};
+  console.log('[ApexCoach] fetchAI: starting request' + (opts.silent ? ' (silent)' : ''));
 
   // Safety check: ensure we have valid profile data for the current user
   if (!currentProfileData || !currentProfileData.name) {
@@ -2754,7 +2863,9 @@ function fetchAI() {
   FULL_PROFILE = (currentProfileData.ai_prompt_context || currentProfileData.full_profile || '');
   console.log('[ApexCoach] fetchAI using profile:', currentProfileData.name);
 
-  document.getElementById('ai-content').innerHTML = '<p class="mono" style="font-size:12px;color:#22c97a;letter-spacing:3px;animation:pulse 1.6s infinite">ANALYZING YOUR DATA...</p>';
+  if (!opts.silent) {
+    document.getElementById('ai-content').innerHTML = '<p class="mono" style="font-size:12px;color:#22c97a;letter-spacing:3px;animation:pulse 1.6s infinite">ANALYZING YOUR DATA...</p>';
+  }
 
   try {
   var recent = '';
@@ -2984,9 +3095,17 @@ function fetchAI() {
     if (!aiRec.options && aiRec.type && aiRec.headline) {
       aiRec = { brief: aiRec.brief || '', options: [aiRec], warning: aiRec.warning || null };
     }
+    // Stamp generation time so UI can show "Generated at HH:MM"
+    aiRec.generated_at = new Date().toISOString();
+    aiRecGeneratedAt = aiRec.generated_at;
+    aiRecDate = ds(0);
     var cached = JSON.parse(localStorage.getItem('ac_cache') || '{}');
     cached.aiRec = aiRec;
+    cached.date = ds(0);
     localStorage.setItem('ac_cache', JSON.stringify(cached));
+    // Persist to Supabase so recs survive reloads / other devices for the day
+    var readinessForCache = (readiness && typeof readiness.score === 'number') ? readiness.score : null;
+    cacheAIRecOnServer(aiRec, readinessForCache);
     console.log('[ApexCoach] fetchAI: done');
     renderAI();
   })
@@ -2994,7 +3113,9 @@ function fetchAI() {
     clearTimeout(timeoutId);
     var msg = e.name === 'AbortError' ? 'Request timed out (30s)' : (e.message || 'Unknown error');
     console.error('[ApexCoach] fetchAI: error -', msg);
-    document.getElementById('ai-content').innerHTML = '<div style="text-align:center;padding:20px 0"><p style="color:#e87;font-size:15px;margin-bottom:12px">Unable to load recommendation</p><p style="color:var(--text-dim);font-size:13px;margin-bottom:16px">' + msg + '</p><button onclick="fetchAI()" style="background:transparent;border:1px solid #333;color:var(--text-sec);padding:8px 20px;cursor:pointer;border-radius:6px;font-size:14px;font-family:DM Sans,sans-serif">Retry</button></div>';
+    if (!opts.silent) {
+      document.getElementById('ai-content').innerHTML = '<div style="text-align:center;padding:20px 0"><p style="color:#e87;font-size:15px;margin-bottom:12px">Unable to load recommendation</p><p style="color:var(--text-dim);font-size:13px;margin-bottom:16px">' + msg + '</p><button onclick="fetchAI()" style="background:transparent;border:1px solid #333;color:var(--text-sec);padding:8px 20px;cursor:pointer;border-radius:6px;font-size:14px;font-family:DM Sans,sans-serif">Retry</button></div>';
+    }
   });
 
   } catch (outerErr) {
@@ -3008,32 +3129,49 @@ function toggleOption(idx) { expandedOption = (expandedOption === idx) ? -1 : id
 
 function prefillLogFromAI(type, headline, exercises, mobility) {
   editingWorkoutId = null;
-  var typeSelect = document.getElementById('wtype');
-  // Try to match workout type to a select option
-  var matched = false;
-  for (var i = 0; i < typeSelect.options.length; i++) {
-    if (typeSelect.options[i].value.toLowerCase() === type.toLowerCase() ||
-        typeSelect.options[i].value.toLowerCase().indexOf(type.toLowerCase()) >= 0 ||
-        type.toLowerCase().indexOf(typeSelect.options[i].value.toLowerCase()) >= 0) {
-      typeSelect.selectedIndex = i; matched = true; break;
-    }
-  }
-  if (!matched) typeSelect.selectedIndex = 0;
-  // Build notes
-  var notes = headline + '\n';
+  editingWorkoutDate = null;
+  editingOriginalNotes = null;
+  document.getElementById('wtype').value = type || '';
+  var notes = (headline || '') + '\n';
   if (exercises && exercises.length) {
-    for (var i = 0; i < exercises.length; i++) {
-      notes += '- ' + exercises[i] + '\n';
-    }
+    for (var i = 0; i < exercises.length; i++) notes += '- ' + exercises[i] + '\n';
   }
   if (mobility) notes += '\nMobility: ' + mobility;
   document.getElementById('wnotes').value = notes.trim();
   document.getElementById('wdone').checked = true;
   document.getElementById('wmob').checked = !!mobility;
   document.getElementById('wmed').checked = false;
-  document.getElementById('wdate').value = 'today';
+  var dateEl = document.getElementById('wdate');
+  if (dateEl) dateEl.value = 'today';
+  document.getElementById('wdate-picker').style.display = 'block';
+  document.getElementById('wdate-readonly').style.display = 'none';
+  var editDel = document.getElementById('edit-delete-section');
+  if (editDel) editDel.style.display = 'none';
   document.querySelector('.modal p.mono').textContent = "LOG TODAY'S WORKOUT";
   document.getElementById('log-modal').style.display = 'flex';
+  if (typeof initAutoFormatToggle === 'function') initAutoFormatToggle();
+}
+
+// Robust attribute-value escape for use in HTML string building
+function attrEsc(s) {
+  return String(s == null ? '' : s)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+// Click handler for "Log This Workout" buttons on AI cards.
+// Reads payload from data-* attributes so AI strings (quotes/newlines/etc.)
+// can never break the inline onclick parsing.
+function logAIWorkout(btn) {
+  var type = btn.getAttribute('data-type') || '';
+  var headline = btn.getAttribute('data-headline') || '';
+  var mob = btn.getAttribute('data-mob') || '';
+  var exes = [];
+  try { exes = JSON.parse(btn.getAttribute('data-exes') || '[]'); } catch (e) { exes = []; }
+  prefillLogFromAI(type, headline, exes, mob);
 }
 
 function renderAI() {
@@ -3050,6 +3188,14 @@ function renderAI() {
   }
 
   var html = '';
+  var stamp = aiRec.generated_at || aiRecGeneratedAt;
+  if (stamp) {
+    try {
+      var d = new Date(stamp);
+      var timeStr = d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }).toLowerCase().replace(' ', '');
+      html += '<p class="mono" style="font-size:10px;color:var(--text-dim);letter-spacing:2px;margin-bottom:10px">GENERATED AT ' + timeStr.toUpperCase() + '</p>';
+    } catch (e) {}
+  }
   if (aiRec.brief) {
     html += '<p style="font-size:15px;color:var(--text-sec);line-height:1.75;margin-bottom:14px">' + aiRec.brief + '</p>';
   }
@@ -3095,20 +3241,14 @@ function renderAI() {
       if (o.mobility) {
         html += '<p style="font-size:14px;color:#4488bb;font-style:italic;margin-bottom:12px">Mobility: ' + o.mobility + '</p>';
       }
-      // Escape strings for onclick
-      var escType = (o.type || '').replace(/'/g, "\\'").replace(/"/g, '&quot;');
-      var escHead = (o.headline || '').replace(/'/g, "\\'").replace(/"/g, '&quot;');
-      var escExes = JSON.stringify(exes).replace(/'/g, "\\'").replace(/"/g, '&quot;');
-      var escMob = (o.mobility || '').replace(/'/g, "\\'").replace(/"/g, '&quot;');
-      html += '<button onclick="event.stopPropagation();prefillLogFromAI(&quot;' + escType + '&quot;,&quot;' + escHead + '&quot;,JSON.parse(this.dataset.exes),&quot;' + escMob + '&quot;)" data-exes=\'' + JSON.stringify(exes).replace(/'/g, '&#39;') + '\' style="width:100%;background:var(--accent);color:#040605;border:none;padding:12px 20px;font-size:14px;font-weight:700;cursor:pointer;border-radius:8px;font-family:DM Sans,sans-serif;margin-top:8px">Log This Workout</button>';
+      html += '<button type="button" onclick="event.stopPropagation();logAIWorkout(this)" data-type="' + attrEsc(o.type) + '" data-headline="' + attrEsc(o.headline) + '" data-exes="' + attrEsc(JSON.stringify(exes)) + '" data-mob="' + attrEsc(o.mobility || '') + '" style="width:100%;background:var(--accent);color:#040605;border:none;padding:12px 20px;font-size:14px;font-weight:700;cursor:pointer;border-radius:8px;font-family:DM Sans,sans-serif;margin-top:8px">Log This Workout</button>';
     }
     html += '</div>';
   }
 
   if (aiRec.minimum_viable) {
-    var escMV = aiRec.minimum_viable.replace(/'/g, '&#39;').replace(/"/g, '&quot;');
-    html += '<div style="background:#f5a62310;border:1px solid #f5a62322;padding:12px 16px;border-radius:6px;margin-top:4px"><p class="mono" style="font-size:10px;color:#f5a623;letter-spacing:2px;margin-bottom:6px">MINIMUM VIABLE</p><p style="font-size:14px;color:#c8a060;line-height:1.65;margin-bottom:12px">' + aiRec.minimum_viable + '</p>' +
-      '<button onclick="prefillLogFromAI(&quot;Active Recovery&quot;,&quot;Minimum Viable Workout&quot;,[&quot;' + escMV + '&quot;],&quot;&quot;)" style="width:100%;background:#f5a623;color:#040605;border:none;padding:10px 16px;font-size:13px;font-weight:700;cursor:pointer;border-radius:8px;font-family:DM Sans,sans-serif">Log Minimum Viable</button></div>';
+    html += '<div style="background:#f5a62310;border:1px solid #f5a62322;padding:12px 16px;border-radius:6px;margin-top:4px"><p class="mono" style="font-size:10px;color:#f5a623;letter-spacing:2px;margin-bottom:6px">MINIMUM VIABLE</p><p style="font-size:14px;color:#c8a060;line-height:1.65;margin-bottom:12px">' + attrEsc(aiRec.minimum_viable) + '</p>' +
+      '<button type="button" onclick="logAIWorkout(this)" data-type="Active Recovery" data-headline="Minimum Viable Workout" data-exes="' + attrEsc(JSON.stringify([aiRec.minimum_viable])) + '" data-mob="" style="width:100%;background:#f5a623;color:#040605;border:none;padding:10px 16px;font-size:13px;font-weight:700;cursor:pointer;border-radius:8px;font-family:DM Sans,sans-serif">Log Minimum Viable</button></div>';
   }
 
   document.getElementById('ai-content').innerHTML = html;
@@ -3263,6 +3403,8 @@ function generateBrief() {
         historicalBrief = data.historical_brief || historicalBrief;
         briefUpdatedAt = new Date().toISOString();
         renderCoachingBrief();
+        // Coaching brief is a major context input to the daily prompt — refresh recs
+        if (document.getElementById('ai-card').style.display === 'block') regenerateAIForContextChange('coaching_brief_regenerated');
       } else {
         if (btn) { btn.textContent = 'Error - Retry'; btn.disabled = false; }
       }
@@ -3306,6 +3448,8 @@ function generateRoadmap() {
         renderRoadmapContent(data.roadmap, data.roadmap_updated_at);
         btn.textContent = 'Regenerate';
         showToast('Road map generated!');
+        // Road map reflects updated plan/goals — invalidate recs
+        if (document.getElementById('ai-card').style.display === 'block') regenerateAIForContextChange('roadmap_regenerated');
       } else {
         document.getElementById('roadmap-content').innerHTML = '<p style="color:#e87;font-size:14px">Failed to generate — <button onclick="generateRoadmap()" style="background:transparent;border:1px solid #333;color:#666;padding:4px 10px;cursor:pointer;border-radius:4px;font-size:12px">Retry</button></p>';
         btn.textContent = 'Generate';
@@ -3678,6 +3822,8 @@ function addGoal() {
   saveProfileDataToServer(pd);
   renderGoalEditList();
   renderProfileGoals();
+  // Goal added — refresh AI recs so weighting reflects the new goal set
+  if (document.getElementById('ai-card').style.display === 'block') regenerateAIForContextChange('goal_added');
 
   // Auto-generate description if empty
   if (!desc && currentProfileId) {
@@ -3705,6 +3851,8 @@ function removeGoal(idx) {
   saveProfileDataToServer(pd);
   renderGoalEditList();
   renderProfileGoals();
+  // Goal removed — refresh AI recs
+  if (document.getElementById('ai-card').style.display === 'block') regenerateAIForContextChange('goal_removed');
 }
 
 function updateGoalStatus(idx, newStatus) {
@@ -3741,6 +3889,10 @@ function cancelGoalPriority() {
 function saveGoalPriority() {
   var pd = currentProfileData || {};
   var goals = pd.goals || [];
+  // Snapshot old top-2 titles BEFORE mutating the array
+  var oldTop1 = goals[0] ? goals[0].title : null;
+  var oldTop2 = goals[1] ? goals[1].title : null;
+
   var reordered = [];
   for (var i = 0; i < goalPriorityOrder.length; i++) {
     var g = goals[goalPriorityOrder[i]];
@@ -3754,11 +3906,20 @@ function saveGoalPriority() {
   showToast('Priority saved!');
   // Clear goal progress cache since order changed
   localStorage.removeItem('ac_goal_progress');
-  // Clear AI cache and regenerate with new priorities
-  var cached = JSON.parse(localStorage.getItem('ac_cache') || '{}');
-  delete cached.aiRec;
-  localStorage.setItem('ac_cache', JSON.stringify(cached));
-  if (document.getElementById('ai-card').style.display === 'block') fetchAI();
+
+  // Only invalidate recs if the top-2 priority goals actually changed order.
+  // Minor re-ordering below rank 2 doesn't affect AI weighting enough to warrant a regen.
+  var newTop1 = reordered[0] ? reordered[0].title : null;
+  var newTop2 = reordered[1] ? reordered[1].title : null;
+  var topTwoChanged = (newTop1 !== oldTop1) || (newTop2 !== oldTop2);
+  if (topTwoChanged) {
+    var cached = JSON.parse(localStorage.getItem('ac_cache') || '{}');
+    delete cached.aiRec;
+    localStorage.setItem('ac_cache', JSON.stringify(cached));
+    if (document.getElementById('ai-card').style.display === 'block') regenerateAIForContextChange('goal_priority_top2_changed');
+  } else {
+    console.log('[ApexCoach] Goal reorder did not change top-2 — keeping cached recs');
+  }
 }
 
 function renderGoalPriorityList() {
