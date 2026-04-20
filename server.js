@@ -1666,6 +1666,264 @@ app.post("/api/ai", async function(req, res) {
   }
 });
 
+// ── MICRO GOALS (Active Challenges) ──────────────────────────────────────
+// Supabase table: micro_goals
+//   id uuid primary key default gen_random_uuid(),
+//   profile_id uuid references profiles(id) on delete cascade,
+//   title text,
+//   type text,  -- daily_habit | weekly_frequency | cumulative_volume | strength_milestone | skill_technique | streak | recovery_balance
+//   target_value numeric,
+//   target_unit text,
+//   period text,          -- daily | weekly | monthly | custom
+//   end_date date null,
+//   current_value numeric default 0,
+//   is_active boolean default true,
+//   created_at timestamp default now()
+
+function mgYmdLocal(d) {
+  var p = function(n) { return String(n).padStart(2, "0"); };
+  return d.getFullYear() + "-" + p(d.getMonth() + 1) + "-" + p(d.getDate());
+}
+
+function mgStartOfWeekLocal(now) {
+  var d = new Date(now);
+  d.setHours(0, 0, 0, 0);
+  var day = d.getDay(); // 0=sun..6=sat
+  var diff = (day === 0 ? -6 : 1 - day);
+  d.setDate(d.getDate() + diff);
+  return d;
+}
+
+function mgMatchesKeyword(haystack, needle) {
+  if (!haystack || !needle) return false;
+  var h = String(haystack).toLowerCase();
+  var n = String(needle).toLowerCase().trim();
+  if (!n) return false;
+  var tokens = n.split(/[^a-z0-9]+/).filter(function(t) { return t.length >= 3; });
+  if (!tokens.length) return h.indexOf(n) >= 0;
+  return tokens.some(function(t) { return h.indexOf(t) >= 0; });
+}
+
+async function computeMicroGoalProgress(goal, pid) {
+  var type = goal.type;
+  var title = goal.title || '';
+  var targetUnit = (goal.target_unit || '').toLowerCase();
+  var startDate = goal.created_at ? String(goal.created_at).split('T')[0] : null;
+  var now = new Date();
+  var todayStr = mgYmdLocal(now);
+
+  try {
+    if (type === 'cumulative_volume') {
+      var afterClause = startDate ? '&date=gte.' + startDate : '';
+      var r = await fetch(SUPABASE_URL + "/rest/v1/exercises?profile_id=eq." + pid + afterClause + "&select=name,sets,reps,duration_minutes,distance_miles", { headers: sbHeaders() });
+      var rows = await r.json();
+      var total = 0;
+      (rows || []).forEach(function(e) {
+        if (!mgMatchesKeyword(e.name, title)) return;
+        if (targetUnit === 'minutes' || targetUnit === 'min' || targetUnit === 'mins') {
+          total += Number(e.duration_minutes || 0);
+        } else if (targetUnit === 'miles' || targetUnit === 'mi' || targetUnit === 'km') {
+          total += Number(e.distance_miles || 0);
+        } else {
+          var sets = Number(e.sets || 1);
+          var reps = Number(e.reps || 0);
+          total += sets * reps;
+        }
+      });
+      return total;
+    }
+
+    if (type === 'weekly_frequency') {
+      var weekStart = mgYmdLocal(mgStartOfWeekLocal(now));
+      var rw = await fetch(SUPABASE_URL + "/rest/v1/workouts?profile_id=eq." + pid + "&date=gte." + weekStart + "&done=eq.true&select=type,date", { headers: sbHeaders() });
+      var wrows = await rw.json();
+      var count = 0;
+      (wrows || []).forEach(function(w) {
+        if (mgMatchesKeyword(w.type, title) || mgMatchesKeyword(title, w.type)) count++;
+      });
+      return count;
+    }
+
+    if (type === 'streak') {
+      var rs = await fetch(SUPABASE_URL + "/rest/v1/workouts?profile_id=eq." + pid + "&done=eq.true&order=date.desc&limit=90&select=date", { headers: sbHeaders() });
+      var srows = await rs.json();
+      var dates = new Set((srows || []).map(function(w) { return w.date; }));
+      var streak = 0;
+      var cursor = new Date(now);
+      cursor.setHours(0, 0, 0, 0);
+      if (!dates.has(mgYmdLocal(cursor))) cursor.setDate(cursor.getDate() - 1);
+      while (dates.has(mgYmdLocal(cursor))) {
+        streak++;
+        cursor.setDate(cursor.getDate() - 1);
+      }
+      return streak;
+    }
+
+    if (type === 'daily_habit') {
+      var afterClause2 = startDate ? '&date=gte.' + startDate : '';
+      var rh = await fetch(SUPABASE_URL + "/rest/v1/exercises?profile_id=eq." + pid + afterClause2 + "&select=name,date", { headers: sbHeaders() });
+      var hrows = await rh.json();
+      var days = new Set();
+      (hrows || []).forEach(function(e) { if (mgMatchesKeyword(e.name, title)) days.add(e.date); });
+      return days.size;
+    }
+
+    if (type === 'strength_milestone') {
+      var rm = await fetch(SUPABASE_URL + "/rest/v1/exercises?profile_id=eq." + pid + "&main_category=eq.strength&select=name,weight_lbs", { headers: sbHeaders() });
+      var mrows = await rm.json();
+      var max = 0;
+      (mrows || []).forEach(function(e) {
+        if (!mgMatchesKeyword(e.name, title)) return;
+        var wt = Number(e.weight_lbs || 0);
+        if (wt > max) max = wt;
+      });
+      return max;
+    }
+
+    if (type === 'recovery_balance') {
+      var sevenAgo = new Date(now); sevenAgo.setDate(sevenAgo.getDate() - 6);
+      var rr = await fetch(SUPABASE_URL + "/rest/v1/workouts?profile_id=eq." + pid + "&date=gte." + mgYmdLocal(sevenAgo) + "&done=eq.true&select=date", { headers: sbHeaders() });
+      var rrows = await rr.json();
+      var trained = new Set((rrows || []).map(function(w) { return w.date; }));
+      var rest = 0;
+      for (var i = 0; i < 7; i++) {
+        var d = new Date(sevenAgo); d.setDate(d.getDate() + i);
+        if (!trained.has(mgYmdLocal(d))) rest++;
+      }
+      return rest;
+    }
+
+    // skill_technique → manual only
+    return null;
+  } catch (e) {
+    console.error("[MicroGoal] compute error:", e.message);
+    return null;
+  }
+}
+
+app.get("/api/profiles/:id/micro-goals", async function(req, res) {
+  try {
+    const pid = req.params.id;
+    const includeInactive = req.query.include_inactive === '1';
+    const filter = includeInactive ? '' : '&is_active=eq.true';
+    const r = await fetch(SUPABASE_URL + "/rest/v1/micro_goals?profile_id=eq." + pid + filter + "&order=created_at.desc", { headers: sbHeaders() });
+    const rows = await r.json();
+    const goals = Array.isArray(rows) ? rows : [];
+    const updates = [];
+    for (let i = 0; i < goals.length; i++) {
+      const g = goals[i];
+      if (!g.is_active) continue;
+      const computed = await computeMicroGoalProgress(g, pid);
+      if (computed !== null && computed !== undefined && Number(computed) !== Number(g.current_value || 0)) {
+        g.current_value = computed;
+        updates.push(fetch(SUPABASE_URL + "/rest/v1/micro_goals?id=eq." + g.id, {
+          method: "PATCH",
+          headers: sbHeaders("return=minimal"),
+          body: JSON.stringify({ current_value: computed })
+        }));
+      }
+    }
+    if (updates.length) await Promise.all(updates);
+    res.json({ success: true, micro_goals: goals });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.post("/api/profiles/:id/micro-goals", async function(req, res) {
+  try {
+    const pid = req.params.id;
+    const body = req.body || {};
+    const title = body.title;
+    const type = body.type;
+    const target_value = body.target_value;
+    if (!title || !type || target_value === undefined || target_value === null) {
+      return res.status(400).json({ error: "title, type, and target_value are required" });
+    }
+    const validTypes = ['daily_habit','weekly_frequency','cumulative_volume','strength_milestone','skill_technique','streak','recovery_balance'];
+    if (validTypes.indexOf(type) < 0) return res.status(400).json({ error: "invalid type" });
+    const payload = {
+      profile_id: pid,
+      title: String(title).slice(0, 200).trim(),
+      type: type,
+      target_value: Number(target_value),
+      target_unit: body.target_unit ? String(body.target_unit).slice(0, 40).trim() : null,
+      period: body.period || 'custom',
+      end_date: body.end_date || null,
+      current_value: 0,
+      is_active: true
+    };
+    const r = await fetch(SUPABASE_URL + "/rest/v1/micro_goals", {
+      method: "POST",
+      headers: sbHeaders("return=representation"),
+      body: JSON.stringify(payload)
+    });
+    if (!r.ok) { const t = await r.text(); return res.status(r.status).json({ error: t }); }
+    const rows = await r.json();
+    const saved = Array.isArray(rows) ? rows[0] : rows;
+    // Seed initial current_value from auto-tracking
+    const computed = await computeMicroGoalProgress(saved, pid);
+    if (computed !== null && computed !== undefined && Number(computed) !== 0) {
+      saved.current_value = computed;
+      await fetch(SUPABASE_URL + "/rest/v1/micro_goals?id=eq." + saved.id, {
+        method: "PATCH",
+        headers: sbHeaders("return=minimal"),
+        body: JSON.stringify({ current_value: computed })
+      });
+    }
+    res.json({ success: true, micro_goal: saved });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.patch("/api/micro-goals/:id", async function(req, res) {
+  try {
+    const gid = req.params.id;
+    const allowed = ['title','type','target_value','target_unit','period','end_date','current_value','is_active'];
+    const payload = {};
+    for (let i = 0; i < allowed.length; i++) {
+      const k = allowed[i];
+      if (req.body && req.body[k] !== undefined) payload[k] = req.body[k];
+    }
+    if (!Object.keys(payload).length) return res.status(400).json({ error: "nothing to update" });
+    const r = await fetch(SUPABASE_URL + "/rest/v1/micro_goals?id=eq." + gid, {
+      method: "PATCH",
+      headers: sbHeaders("return=representation"),
+      body: JSON.stringify(payload)
+    });
+    if (!r.ok) { const t = await r.text(); return res.status(r.status).json({ error: t }); }
+    const rows = await r.json();
+    res.json({ success: true, micro_goal: Array.isArray(rows) ? rows[0] : rows });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.delete("/api/micro-goals/:id", async function(req, res) {
+  try {
+    const gid = req.params.id;
+    const hard = req.query.hard === '1';
+    if (hard) {
+      const r = await fetch(SUPABASE_URL + "/rest/v1/micro_goals?id=eq." + gid, {
+        method: "DELETE",
+        headers: sbHeaders("return=minimal")
+      });
+      if (!r.ok) { const t = await r.text(); return res.status(r.status).json({ error: t }); }
+      return res.json({ success: true, deleted: true });
+    }
+    const r = await fetch(SUPABASE_URL + "/rest/v1/micro_goals?id=eq." + gid, {
+      method: "PATCH",
+      headers: sbHeaders("return=minimal"),
+      body: JSON.stringify({ is_active: false })
+    });
+    if (!r.ok) { const t = await r.text(); return res.status(r.status).json({ error: t }); }
+    res.json({ success: true, archived: true });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 app.listen(PORT, function() {
   console.log("ApexCoach running on port " + PORT);
 });

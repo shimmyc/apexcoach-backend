@@ -77,6 +77,18 @@ input[type=range]{width:100%;accent-color:var(--accent)}
 .pill-amber{background:#f5a62318;color:#f5a623;border:1px solid #f5a62333}
 .pill-red{background:#e8454518;color:#e84545;border:1px solid #e8454533}
 .pill-blue{background:#4488bb18;color:#4488bb;border:1px solid #4488bb33}
+.mg-pill{background:var(--bg-input);border:1px solid var(--border);color:var(--text-sec);padding:6px 12px;border-radius:999px;font-size:12px;cursor:pointer;font-family:'DM Sans',sans-serif;transition:all .15s}
+.mg-pill:hover{border-color:var(--accent-33);color:var(--text)}
+.mg-pill.active{background:var(--accent-18);border-color:var(--accent-66);color:var(--accent)}
+.mg-period-pill{background:var(--bg-input);border:1px solid var(--border);color:var(--text-sec);padding:6px 12px;border-radius:6px;font-size:12px;cursor:pointer;font-family:'DM Sans',sans-serif;transition:all .15s}
+.mg-period-pill:hover{border-color:var(--accent-33);color:var(--text)}
+.mg-period-pill.active{background:var(--accent-18);border-color:var(--accent-66);color:var(--accent)}
+.mg-card{background:var(--bg-input);border:1px solid var(--border);border-radius:10px;padding:14px;position:relative;transition:border-color .2s;margin-bottom:10px}
+.mg-card.done{border-color:var(--accent-33);background:var(--accent-08)}
+.mg-card:hover{border-color:var(--border-accent)}
+.mg-type-badge{display:inline-block;font-family:'IBM Plex Mono',monospace;font-size:9px;letter-spacing:1.5px;padding:2px 8px;border-radius:4px;background:var(--accent-10);color:var(--accent);border:1px solid var(--accent-22);text-transform:uppercase}
+@keyframes mgPop{0%{transform:scale(.9);opacity:0}60%{transform:scale(1.04)}100%{transform:scale(1);opacity:1}}
+.mg-card.just-done{animation:mgPop .5s ease}
 .injury-item{padding:12px 0;border-bottom:1px solid var(--border);display:flex;flex-direction:column;gap:5px}
 .injury-item:last-child{border-bottom:none}
 .pb-progress-track{width:100%;height:8px;background:var(--border);border-radius:4px;overflow:hidden;margin:12px 0}
@@ -554,6 +566,15 @@ input[type=range]{width:100%;accent-color:var(--accent)}
     <!-- 3. Belt Journey (rendered dynamically) -->
     <div id="belt-section"></div>
 
+    <!-- 3.5 Active Challenges (Micro-Goals) -->
+    <div class="card" id="challenges-card">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">
+        <p class="clabel" style="margin-bottom:0">&#x1F3AF; active challenges</p>
+        <button onclick="openMicroGoalModal()" id="mg-add-btn" style="background:var(--accent-10);border:1px solid var(--accent-33);color:var(--accent);padding:5px 12px;border-radius:6px;cursor:pointer;font-size:13px;font-weight:600" title="Add challenge">+ Add</button>
+      </div>
+      <div id="challenges-display"></div>
+    </div>
+
     <!-- 4. Goals -->
     <div class="card">
       <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">
@@ -794,6 +815,57 @@ input[type=range]{width:100%;accent-color:var(--accent)}
     </div>
   </div>
 </div>
+
+<!-- MICRO-GOAL / CHALLENGE MODAL -->
+<div class="overlay" id="mg-modal" style="display:none" onclick="closeMicroGoalModal()">
+  <div class="modal" onclick="event.stopPropagation()" style="max-width:440px">
+    <p class="mono" style="font-size:10px;color:#555;letter-spacing:3px;margin-bottom:14px" id="mg-modal-title">NEW CHALLENGE</p>
+    <input type="hidden" id="mg-id" value="">
+    <p class="mono" style="font-size:10px;color:var(--text-dim);letter-spacing:2px;margin-bottom:6px">TITLE</p>
+    <input id="mg-title" type="text" placeholder="e.g. Do 1000 pushups this month" style="width:100%;background:var(--bg-input);border:1px solid var(--border);color:var(--text);padding:11px 14px;border-radius:6px;font-size:14px;outline:none;font-family:'DM Sans',sans-serif;margin-bottom:12px">
+    <p class="mono" style="font-size:10px;color:var(--text-dim);letter-spacing:2px;margin-bottom:6px">TYPE</p>
+    <div id="mg-type-pills" style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:14px">
+      <button type="button" class="mg-pill" data-type="daily_habit" onclick="selectMicroGoalType('daily_habit')">Daily habit</button>
+      <button type="button" class="mg-pill" data-type="weekly_frequency" onclick="selectMicroGoalType('weekly_frequency')">Weekly frequency</button>
+      <button type="button" class="mg-pill" data-type="cumulative_volume" onclick="selectMicroGoalType('cumulative_volume')">Cumulative volume</button>
+      <button type="button" class="mg-pill" data-type="strength_milestone" onclick="selectMicroGoalType('strength_milestone')">Strength milestone</button>
+      <button type="button" class="mg-pill" data-type="skill_technique" onclick="selectMicroGoalType('skill_technique')">Skill / technique</button>
+      <button type="button" class="mg-pill" data-type="streak" onclick="selectMicroGoalType('streak')">Streak</button>
+      <button type="button" class="mg-pill" data-type="recovery_balance" onclick="selectMicroGoalType('recovery_balance')">Recovery balance</button>
+    </div>
+    <input type="hidden" id="mg-type" value="">
+    <div style="display:flex;gap:8px;margin-bottom:14px">
+      <div style="flex:1">
+        <p class="mono" style="font-size:10px;color:var(--text-dim);letter-spacing:2px;margin-bottom:6px">TARGET</p>
+        <input id="mg-target-value" type="number" step="any" min="0" placeholder="1000" style="width:100%;background:var(--bg-input);border:1px solid var(--border);color:var(--text);padding:11px 14px;border-radius:6px;font-size:14px;outline:none;font-family:'DM Sans',sans-serif">
+      </div>
+      <div style="flex:1">
+        <p class="mono" style="font-size:10px;color:var(--text-dim);letter-spacing:2px;margin-bottom:6px">UNIT</p>
+        <input id="mg-target-unit" type="text" placeholder="pushups, lbs, runs…" style="width:100%;background:var(--bg-input);border:1px solid var(--border);color:var(--text);padding:11px 14px;border-radius:6px;font-size:14px;outline:none;font-family:'DM Sans',sans-serif">
+      </div>
+    </div>
+    <p class="mono" style="font-size:10px;color:var(--text-dim);letter-spacing:2px;margin-bottom:6px">PERIOD</p>
+    <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:10px" id="mg-period-pills">
+      <button type="button" class="mg-period-pill" data-period="daily" onclick="selectMicroGoalPeriod('daily')">Daily</button>
+      <button type="button" class="mg-period-pill" data-period="weekly" onclick="selectMicroGoalPeriod('weekly')">Weekly</button>
+      <button type="button" class="mg-period-pill" data-period="monthly" onclick="selectMicroGoalPeriod('monthly')">Monthly</button>
+      <button type="button" class="mg-period-pill" data-period="custom" onclick="selectMicroGoalPeriod('custom')">Custom end date</button>
+    </div>
+    <input type="hidden" id="mg-period" value="">
+    <div id="mg-end-date-wrap" style="display:none;margin-bottom:14px">
+      <p class="mono" style="font-size:10px;color:var(--text-dim);letter-spacing:2px;margin-bottom:6px">END DATE</p>
+      <input id="mg-end-date" type="date" style="width:100%;background:var(--bg-input);border:1px solid var(--border);color:var(--text);padding:11px 14px;border-radius:6px;font-size:14px;outline:none;font-family:'DM Sans',sans-serif">
+    </div>
+    <p id="mg-error" style="color:#e84545;font-size:12px;min-height:16px;margin-bottom:6px"></p>
+    <div style="display:flex;gap:8px;justify-content:flex-end">
+      <button class="btnSec" onclick="closeMicroGoalModal()">Cancel</button>
+      <button class="btnPri" onclick="saveMicroGoalFromModal()" id="mg-save-btn">Save</button>
+    </div>
+  </div>
+</div>
+
+<!-- CONFETTI CANVAS (overlaid when a challenge completes) -->
+<canvas id="mg-confetti" style="position:fixed;inset:0;pointer-events:none;z-index:9999;display:none"></canvas>
 
 <!-- BUILD PROFILE (full-page paginated) -->
 <div id="profile-builder-screen" class="ob-overlay" style="display:none">
@@ -1594,6 +1666,7 @@ function bootApp() {
   loadSchedule();
   renderSchedule();
   renderProfileTab();
+  loadMicroGoals();
 
   loadWorkouts().then(function() {
     renderWeek();
@@ -2987,6 +3060,9 @@ function fetchAI(opts) {
     goalPriorityContext += '\nIMPORTANT: Weight workout recommendations toward top-ranked goals. Goal #1 should influence ~40% of recommendations, #2 ~25%, #3 ~15%, remaining goals share rest. Always mention which goal each workout option targets.\n\n';
   }
 
+  // Build micro-goals / active challenges context
+  var microGoalsContext = buildMicroGoalsPromptContext();
+
   var prompt = 'You are ApexCoach, an elite personal AI coach for ' + athleteName + '. You know everything about them. Give ' + aiNumOpts + ' specific, data-driven workout options for today, ordered by best fit first.\n\n' +
     'COACHING STYLE: ' + aiTone + ' tone. ' + aiLang + ' language. Detail level: ' + aiDetail + '.\n' +
     'AVAILABLE EQUIPMENT: ' + equipStr + '\n' +
@@ -3001,6 +3077,7 @@ function fetchAI(opts) {
     truncatedExerciseContext +
     'FULL ATHLETE PROFILE:\n' + FULL_PROFILE + '\n\n' +
     goalPriorityContext +
+    microGoalsContext +
     'WEEKLY SCHEDULE DEFAULTS:\n' + getScheduleText() + '\n\n' +
     rulesBlock +
     'CRITICAL: Every workout option MUST include goal_tags array with at least one goal title from the priority list, and goal_reasoning explaining the connection. This is required.\n\n' +
@@ -3217,11 +3294,16 @@ function renderAI() {
     html += '</div>';
     html += '<div class="oswald" style="font-size:20px;font-weight:600;color:var(--text-bright);margin-bottom:4px">' + o.headline + '</div>';
     html += '<div class="mono" style="font-size:12px;color:var(--text-muted);margin-bottom:' + ((o.goal_tags && o.goal_tags.length) ? '8' : (isExpanded ? '12' : '0')) + 'px">' + o.type + '</div>';
-    // Goal tags
+    // Goal tags (regular goals + micro-goals — micro-goals get a 🎯 Supports prefix)
     if (o.goal_tags && o.goal_tags.length) {
       html += '<div style="display:flex;flex-wrap:wrap;gap:5px;margin-bottom:' + (isExpanded ? '10' : '0') + 'px">';
       for (var gt = 0; gt < o.goal_tags.length; gt++) {
-        html += '<span style="font-size:11px;color:#f5a623;background:#f5a62312;border:1px solid #f5a62322;padding:2px 8px;border-radius:10px;font-family:IBM Plex Mono,monospace">&rarr; ' + o.goal_tags[gt] + '</span>';
+        var tag = o.goal_tags[gt];
+        if (isMicroGoalTag(tag)) {
+          html += '<span style="font-size:11px;color:var(--accent);background:var(--accent-10);border:1px solid var(--accent-33);padding:2px 8px;border-radius:10px;font-family:IBM Plex Mono,monospace">&#x1F3AF; Supports: ' + tag + '</span>';
+        } else {
+          html += '<span style="font-size:11px;color:#f5a623;background:#f5a62312;border:1px solid #f5a62322;padding:2px 8px;border-radius:10px;font-family:IBM Plex Mono,monospace">&rarr; ' + tag + '</span>';
+        }
       }
       html += '</div>';
     }
@@ -3633,6 +3715,377 @@ function renderProfileGoals() {
 
   // Fetch progress if not cached
   if (!cached && currentProfileId && pGoals.length) fetchGoalProgress();
+}
+
+// ─── MICRO-GOALS / ACTIVE CHALLENGES ────────────────────────────────────
+var microGoals = [];
+
+var MG_TYPE_LABEL = {
+  daily_habit: 'Daily Habit',
+  weekly_frequency: 'Weekly',
+  cumulative_volume: 'Volume',
+  strength_milestone: 'Strength',
+  skill_technique: 'Skill',
+  streak: 'Streak',
+  recovery_balance: 'Recovery'
+};
+
+function isMicroGoalTag(tag) {
+  if (!tag || !microGoals || !microGoals.length) return false;
+  var t = String(tag).toLowerCase().trim();
+  for (var i = 0; i < microGoals.length; i++) {
+    var mg = microGoals[i];
+    if (!mg || !mg.is_active) continue;
+    var title = String(mg.title || '').toLowerCase().trim();
+    if (!title) continue;
+    if (t === title || t.indexOf(title) >= 0 || title.indexOf(t) >= 0) return true;
+  }
+  return false;
+}
+
+function loadMicroGoals() {
+  if (!currentProfileId) return;
+  fetch('/api/profiles/' + currentProfileId + '/micro-goals')
+    .then(function(r) { return r.json(); })
+    .then(function(data) {
+      if (data && data.success) {
+        microGoals = data.micro_goals || [];
+        renderProfileChallenges();
+        checkMicroGoalCompletions();
+      }
+    })
+    .catch(function(e) { console.error('[MicroGoals] load error:', e); });
+}
+
+function mgDaysRemaining(g) {
+  if (!g.end_date) return null;
+  var end = new Date(g.end_date + 'T23:59:59');
+  var now = new Date();
+  var ms = end - now;
+  return Math.ceil(ms / 86400000);
+}
+
+function mgPeriodLabel(g) {
+  if (g.end_date) {
+    var rem = mgDaysRemaining(g);
+    if (rem === null) return '';
+    if (rem < 0) return 'Past due';
+    if (rem === 0) return 'Last day';
+    return rem + 'd left';
+  }
+  if (g.period === 'daily') return 'Daily';
+  if (g.period === 'weekly') return 'This week';
+  if (g.period === 'monthly') return 'This month';
+  return '';
+}
+
+function mgIsComplete(g) {
+  return Number(g.current_value || 0) >= Number(g.target_value || 0) && Number(g.target_value || 0) > 0;
+}
+
+function renderProfileChallenges() {
+  var host = document.getElementById('challenges-display');
+  if (!host) return;
+  if (!microGoals || !microGoals.length) {
+    host.innerHTML = '<p style="color:var(--text-dim);font-size:13px;font-style:italic;margin:4px 0">No active challenges yet. Tap "+ Add" to set a specific, measurable target your coach will push you toward every day.</p>';
+    return;
+  }
+  var html = '';
+  for (var i = 0; i < microGoals.length; i++) {
+    var g = microGoals[i];
+    var cur = Number(g.current_value || 0);
+    var tgt = Number(g.target_value || 0);
+    var pct = tgt > 0 ? Math.min(100, Math.round((cur / tgt) * 100)) : 0;
+    var done = mgIsComplete(g);
+    var unit = g.target_unit ? ' ' + g.target_unit : '';
+    var periodLbl = mgPeriodLabel(g);
+    var typeLbl = MG_TYPE_LABEL[g.type] || g.type;
+    var barColor = done ? 'var(--accent)' : (pct >= 70 ? 'var(--accent)' : pct >= 35 ? '#f5a623' : '#4488bb');
+
+    html += '<div class="mg-card' + (done ? ' done' : '') + '" data-mg-id="' + attrEsc(g.id) + '">';
+    html += '<div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px;margin-bottom:6px">';
+    html += '<div style="flex:1;min-width:0">';
+    html += '<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:4px">';
+    html += '<span class="mg-type-badge">' + typeLbl + '</span>';
+    if (periodLbl) html += '<span class="mono" style="font-size:10px;color:var(--text-dim);letter-spacing:1px">' + periodLbl + '</span>';
+    if (done) html += '<span class="mono" style="font-size:10px;color:var(--accent);letter-spacing:1.5px">&#x2705; DONE</span>';
+    html += '</div>';
+    html += '<div style="font-size:15px;font-weight:600;color:var(--text-bright);line-height:1.3">' + (g.title || '') + '</div>';
+    html += '</div>';
+    html += '<div style="display:flex;gap:4px;flex-shrink:0">';
+    html += '<button onclick="openMicroGoalModal(\'' + attrEsc(g.id) + '\')" title="Edit" style="background:transparent;border:none;color:var(--text-dim);cursor:pointer;font-size:14px;padding:4px">&#9998;</button>';
+    html += '<button onclick="deleteMicroGoal(\'' + attrEsc(g.id) + '\')" title="Delete" style="background:transparent;border:none;color:var(--text-dim);cursor:pointer;font-size:14px;padding:4px">&#128465;</button>';
+    html += '</div>';
+    html += '</div>';
+    html += '<div class="bar-track" style="height:6px;margin-top:8px"><div class="bar-fill" style="width:' + pct + '%;background:' + barColor + '"></div></div>';
+    html += '<div style="display:flex;justify-content:space-between;align-items:center;margin-top:4px">';
+    html += '<span class="mono" style="font-size:11px;color:var(--text-muted)">' + cur + ' / ' + tgt + unit + '</span>';
+    html += '<span class="mono" style="font-size:11px;color:' + barColor + ';font-weight:700">' + pct + '%</span>';
+    html += '</div>';
+    html += '</div>';
+  }
+  host.innerHTML = html;
+}
+
+// ─── MICRO-GOAL MODAL ───────────────────────────────────────────────────
+var _mgEditingId = null;
+
+function openMicroGoalModal(id) {
+  _mgEditingId = id || null;
+  var isEdit = !!id;
+  document.getElementById('mg-modal-title').textContent = isEdit ? 'EDIT CHALLENGE' : 'NEW CHALLENGE';
+  document.getElementById('mg-id').value = id || '';
+  document.getElementById('mg-error').textContent = '';
+  document.getElementById('mg-save-btn').disabled = false;
+
+  var g = null;
+  if (isEdit) {
+    for (var i = 0; i < microGoals.length; i++) {
+      if (String(microGoals[i].id) === String(id)) { g = microGoals[i]; break; }
+    }
+  }
+  document.getElementById('mg-title').value = g ? (g.title || '') : '';
+  document.getElementById('mg-target-value').value = g ? (g.target_value != null ? g.target_value : '') : '';
+  document.getElementById('mg-target-unit').value = g ? (g.target_unit || '') : '';
+  selectMicroGoalType(g ? g.type : null);
+  selectMicroGoalPeriod(g ? (g.period || (g.end_date ? 'custom' : 'daily')) : null);
+  document.getElementById('mg-end-date').value = g && g.end_date ? g.end_date : '';
+  document.getElementById('mg-end-date-wrap').style.display = (g && g.end_date) ? '' : 'none';
+  document.getElementById('mg-modal').style.display = 'flex';
+  setTimeout(function() { document.getElementById('mg-title').focus(); }, 50);
+}
+
+function closeMicroGoalModal() {
+  document.getElementById('mg-modal').style.display = 'none';
+  _mgEditingId = null;
+}
+
+function selectMicroGoalType(type) {
+  document.getElementById('mg-type').value = type || '';
+  var pills = document.querySelectorAll('#mg-type-pills .mg-pill');
+  for (var i = 0; i < pills.length; i++) {
+    pills[i].classList.toggle('active', pills[i].getAttribute('data-type') === type);
+  }
+}
+
+function selectMicroGoalPeriod(period) {
+  document.getElementById('mg-period').value = period || '';
+  var pills = document.querySelectorAll('#mg-period-pills .mg-period-pill');
+  for (var i = 0; i < pills.length; i++) {
+    pills[i].classList.toggle('active', pills[i].getAttribute('data-period') === period);
+  }
+  document.getElementById('mg-end-date-wrap').style.display = (period === 'custom') ? '' : 'none';
+}
+
+function saveMicroGoalFromModal() {
+  var errEl = document.getElementById('mg-error');
+  errEl.textContent = '';
+  var title = document.getElementById('mg-title').value.trim();
+  var type = document.getElementById('mg-type').value;
+  var targetValue = document.getElementById('mg-target-value').value;
+  var targetUnit = document.getElementById('mg-target-unit').value.trim();
+  var period = document.getElementById('mg-period').value || 'custom';
+  var endDate = document.getElementById('mg-end-date').value || null;
+
+  if (!title) { errEl.textContent = 'Title is required.'; return; }
+  if (!type) { errEl.textContent = 'Pick a challenge type.'; return; }
+  if (targetValue === '' || isNaN(Number(targetValue)) || Number(targetValue) <= 0) { errEl.textContent = 'Target value must be a positive number.'; return; }
+  if (period === 'custom' && !endDate) { errEl.textContent = 'Pick an end date or choose a different period.'; return; }
+
+  var payload = {
+    title: title,
+    type: type,
+    target_value: Number(targetValue),
+    target_unit: targetUnit || null,
+    period: period,
+    end_date: period === 'custom' ? endDate : null
+  };
+
+  var btn = document.getElementById('mg-save-btn');
+  btn.disabled = true;
+  btn.textContent = 'Saving...';
+
+  var req;
+  if (_mgEditingId) {
+    req = fetch('/api/micro-goals/' + _mgEditingId, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    });
+  } else {
+    req = fetch('/api/profiles/' + currentProfileId + '/micro-goals', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    });
+  }
+
+  req.then(function(r) { return r.json(); })
+    .then(function(data) {
+      btn.disabled = false;
+      btn.textContent = 'Save';
+      if (!data || !data.success) {
+        errEl.textContent = (data && data.error) ? String(data.error).slice(0, 120) : 'Save failed.';
+        return;
+      }
+      closeMicroGoalModal();
+      loadMicroGoals();
+      if (document.getElementById('ai-card') && document.getElementById('ai-card').style.display === 'block') {
+        regenerateAIForContextChange(_mgEditingId ? 'micro_goal_edited' : 'micro_goal_added');
+      }
+      _mgEditingId = null;
+    })
+    .catch(function(e) {
+      btn.disabled = false;
+      btn.textContent = 'Save';
+      errEl.textContent = 'Network error: ' + (e.message || e);
+    });
+}
+
+function deleteMicroGoal(id) {
+  if (!id) return;
+  if (!confirm('Delete this challenge? It will no longer influence your daily recommendations.')) return;
+  fetch('/api/micro-goals/' + id, { method: 'DELETE' })
+    .then(function(r) { return r.json(); })
+    .then(function(data) {
+      if (!data || !data.success) return;
+      loadMicroGoals();
+      if (document.getElementById('ai-card') && document.getElementById('ai-card').style.display === 'block') {
+        regenerateAIForContextChange('micro_goal_deleted');
+      }
+    })
+    .catch(function(e) { console.error('[MicroGoals] delete error:', e); });
+}
+
+// Called after server progress update — detects new completions and celebrates.
+// First load initializes state without firing (only transitions celebrate).
+var _mgPrevComplete = {};
+var _mgCompletionTrackerInit = false;
+function checkMicroGoalCompletions() {
+  if (!microGoals || !microGoals.length) { _mgCompletionTrackerInit = true; return; }
+  var firstRun = !_mgCompletionTrackerInit;
+  for (var i = 0; i < microGoals.length; i++) {
+    var g = microGoals[i];
+    var id = String(g.id);
+    var nowDone = mgIsComplete(g);
+    if (nowDone && !_mgPrevComplete[id] && !firstRun) {
+      fireConfetti();
+      setTimeout(function(gid) { return function() {
+        var card = document.querySelector('.mg-card[data-mg-id="' + gid + '"]');
+        if (card) { card.classList.add('just-done'); }
+      }; }(id), 50);
+      if (document.getElementById('ai-card') && document.getElementById('ai-card').style.display === 'block') {
+        regenerateAIForContextChange('micro_goal_completed');
+      }
+    }
+    _mgPrevComplete[id] = nowDone;
+  }
+  _mgCompletionTrackerInit = true;
+}
+
+// ─── CONFETTI (vanilla canvas) ──────────────────────────────────────────
+function fireConfetti() {
+  var canvas = document.getElementById('mg-confetti');
+  if (!canvas) return;
+  canvas.style.display = 'block';
+  var ctx = canvas.getContext('2d');
+  var W = canvas.width = window.innerWidth;
+  var H = canvas.height = window.innerHeight;
+  var colors = ['#22c97a', '#f5a623', '#4488bb', '#9966cc', '#e84545', '#ffd54f'];
+  var pieces = [];
+  for (var i = 0; i < 140; i++) {
+    pieces.push({
+      x: Math.random() * W,
+      y: -20 - Math.random() * 200,
+      vx: (Math.random() - 0.5) * 6,
+      vy: 3 + Math.random() * 5,
+      size: 6 + Math.random() * 6,
+      color: colors[Math.floor(Math.random() * colors.length)],
+      rot: Math.random() * Math.PI * 2,
+      vr: (Math.random() - 0.5) * 0.3
+    });
+  }
+  var start = Date.now();
+  function frame() {
+    var elapsed = Date.now() - start;
+    ctx.clearRect(0, 0, W, H);
+    for (var i = 0; i < pieces.length; i++) {
+      var p = pieces[i];
+      p.x += p.vx;
+      p.y += p.vy;
+      p.vy += 0.12;
+      p.rot += p.vr;
+      ctx.save();
+      ctx.translate(p.x, p.y);
+      ctx.rotate(p.rot);
+      ctx.fillStyle = p.color;
+      ctx.fillRect(-p.size / 2, -p.size / 2, p.size, p.size * 0.5);
+      ctx.restore();
+    }
+    if (elapsed < 2600) {
+      requestAnimationFrame(frame);
+    } else {
+      ctx.clearRect(0, 0, W, H);
+      canvas.style.display = 'none';
+    }
+  }
+  requestAnimationFrame(frame);
+}
+
+// ─── MICRO-GOAL AI PROMPT BUILDER ──────────────────────────────────────
+function buildMicroGoalsPromptContext() {
+  if (!microGoals || !microGoals.length) return '';
+  var active = microGoals.filter(function(g) { return g.is_active !== false && !mgIsComplete(g); });
+  if (!active.length) return '';
+
+  var lines = [];
+  var instructions = [];
+  var todayDow = new Date().getDay(); // 0=Sun..6=Sat
+  // Day-of-week within 7-day week (Mon=1..Sun=7). Used for weekly pace math.
+  var weekDay = todayDow === 0 ? 7 : todayDow;
+
+  for (var i = 0; i < active.length; i++) {
+    var g = active[i];
+    var cur = Number(g.current_value || 0);
+    var tgt = Number(g.target_value || 0);
+    var unit = g.target_unit || '';
+    var remaining = Math.max(0, tgt - cur);
+    var daysLeft = mgDaysRemaining(g);
+    var line = '- "' + g.title + '" [' + (MG_TYPE_LABEL[g.type] || g.type) + ']: ' + cur + '/' + tgt + (unit ? ' ' + unit : '');
+    if (daysLeft != null) line += ' — ' + (daysLeft < 0 ? 'past deadline' : daysLeft + ' days left');
+
+    if (g.type === 'daily_habit') {
+      instructions.push('Daily habit "' + g.title + '": EVERY recommendation today MUST include "' + g.title + '" (or equivalent movement). This is non-negotiable.');
+    } else if (g.type === 'weekly_frequency') {
+      var pace = (weekDay / 7) * tgt;
+      var behind = cur < pace - 0.5;
+      if (behind) {
+        instructions.push('Weekly frequency "' + g.title + '": athlete is BEHIND pace (day ' + weekDay + '/7, has ' + cur + ' of ' + tgt + ', expected ~' + pace.toFixed(1) + '). Make AT LEAST ONE of today\'s options explicitly this activity with urgency.');
+      } else {
+        instructions.push('Weekly frequency "' + g.title + '": on pace. Keep this option available but not urgent.');
+      }
+    } else if (g.type === 'cumulative_volume') {
+      if (daysLeft != null && daysLeft > 0 && remaining > 0) {
+        var perDay = Math.ceil(remaining / daysLeft);
+        instructions.push('Cumulative volume "' + g.title + '": ' + remaining + (unit ? ' ' + unit : '') + ' remaining over ' + daysLeft + ' days — suggest ~' + perDay + (unit ? ' ' + unit : '') + ' today, in achievable sets.');
+      } else if (remaining > 0) {
+        instructions.push('Cumulative volume "' + g.title + '": ' + remaining + (unit ? ' ' + unit : '') + ' remaining, no deadline — chip away with specific rep counts.');
+      }
+    } else if (g.type === 'strength_milestone') {
+      instructions.push('Strength milestone "' + g.title + '" (target: ' + tgt + (unit ? ' ' + unit : '') + ', current PR: ' + cur + (unit ? ' ' + unit : '') + '): when readiness allows, include progressive overload work on this lift — small, safe jumps toward the target weight.');
+    } else if (g.type === 'streak') {
+      instructions.push('Streak "' + g.title + '" (current: ' + cur + ', target: ' + tgt + '): if the athlete has not logged a workout yet today, explicitly flag that today\'s session keeps the streak alive. If already done, reinforce.');
+    } else if (g.type === 'recovery_balance') {
+      instructions.push('Recovery balance "' + g.title + '" (target rest days/week: ' + tgt + ', actual rest this week: ' + cur + '): if under the rest target AND readiness < 70, recommend an active recovery or rest day as the PRIMARY option.');
+    } else if (g.type === 'skill_technique') {
+      instructions.push('Skill/technique "' + g.title + '": weave targeted drills into one option when category fits.');
+    }
+    lines.push(line);
+  }
+
+  return 'ACTIVE CHALLENGES (micro-goals the athlete is actively pursuing — these must shape today\'s recommendations):\n' + lines.join('\n') + '\n\n' +
+    'PER-CHALLENGE INSTRUCTIONS:\n' + instructions.map(function(s, idx) { return (idx + 1) + '. ' + s; }).join('\n') + '\n\n' +
+    'When a workout option supports one of these challenges, include the challenge title (exact string) in its goal_tags array. Multiple tags are allowed (mix regular goals and challenge titles). The UI will surface challenge tags distinctly.\n\n';
 }
 
 function fetchGoalProgress() {
@@ -4234,8 +4687,12 @@ function saveWorkoutToSupabase(entry) {
         if (document.getElementById('tab-library') && document.getElementById('tab-library').classList.contains('active')) {
           loadLibrary();
         }
+        // Refresh micro-goal progress (auto-tracking reads workouts/exercises)
+        if (typeof loadMicroGoals === 'function') loadMicroGoals();
       })
       .catch(function(e) { console.error('[ApexCoach] Exercise extraction error:', e); });
+      } else if (typeof loadMicroGoals === 'function') {
+        loadMicroGoals();
       }
     }
   })

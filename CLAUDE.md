@@ -30,6 +30,8 @@ ApexCoach is a personalized AI fitness coaching web app. Users connect their Fit
 
 - daily_checkins: id, profile_id, date (text, YYYY-MM-DD), energy (text), soreness (text[]), severity (text), checkin_text (text), created_at. UNIQUE(profile_id, date) for upsert.
 
+- micro_goals: id (uuid pk), profile_id (fk → profiles), title (text), type (text: daily_habit | weekly_frequency | cumulative_volume | strength_milestone | skill_technique | streak | recovery_balance), target_value (numeric), target_unit (text), period (text: daily | weekly | monthly | custom), end_date (date, nullable), current_value (numeric default 0), is_active (boolean default true), created_at (timestamp default now()).
+
 ## Onboarding Flow (Full-Page Paginated)
 
 New users go through a 7-question full-screen paginated onboarding flow:
@@ -145,6 +147,14 @@ Calculated from workoutLog entries where done=true. Counts backwards from today 
 - GET /api/profiles/:id/daily-recs — returns cached recommendations, date, and readiness score used
 
 - POST /api/profiles/:id/daily-recs — upserts daily_recommendations, daily_recommendations_date, daily_recommendations_readiness on profiles
+
+- GET /api/profiles/:id/micro-goals — list active micro-goals; server recomputes `current_value` for auto-trackable types (see Active Challenges system)
+
+- POST /api/profiles/:id/micro-goals — create a new micro-goal; body: `{title, type, target_value, target_unit?, period?, end_date?}`
+
+- PATCH /api/micro-goals/:id — update any of title, type, target_value, target_unit, period, end_date, current_value (manual override), is_active
+
+- DELETE /api/micro-goals/:id — archives (is_active=false) by default; pass `?hard=1` for permanent delete
 
 ## Daily AI Recommendation Cache
 
@@ -331,6 +341,53 @@ Goals can be ranked by priority via "Prioritize" button on Profile tab. Desktop:
 - **AI integration**: `goalPriorityContext` injected into fetchAI() after FULL_PROFILE. Instructs AI to weight recommendations toward top goals (#1 ~40%, #2 ~25%, #3 ~15%).
 - **Goal tags in AI response**: Each workout option includes `goal_tags` (array of goal titles targeted) and `goal_reasoning` (how it advances that goal). Rendered as amber pills below workout headline.
 - **Save**: Reordered goals saved via PATCH /api/profiles/:id. Goal progress cache cleared on reorder.
+
+## Active Challenges (Micro-Goals)
+
+Short-horizon, specific, measurable challenges that the AI weaves into EVERY daily recommendation. Separate from the long-term goal priority list — goals set direction, challenges set the next concrete target.
+
+**Types** (`micro_goals.type`): `daily_habit`, `weekly_frequency`, `cumulative_volume`, `strength_milestone`, `skill_technique`, `streak`, `recovery_balance`.
+
+**Auto-tracking** (server recomputes `current_value` on every GET):
+- `cumulative_volume` — sums `sets*reps` (or `duration_minutes` if unit is minutes, `distance_miles` if unit is miles/km) from exercises matching title keywords since `created_at`
+- `weekly_frequency` — counts workouts in current week (Mon-Sun) matching title keywords
+- `streak` — consecutive days with `done=true` workouts ending today/yesterday
+- `daily_habit` — distinct days with a matching exercise logged since `created_at`
+- `strength_milestone` — max `weight_lbs` from strength exercises matching title keywords
+- `recovery_balance` — rest days (no completed workout) in the last 7 days
+- `skill_technique` — manual only (PATCH with `current_value`)
+
+**UI** — Profile tab "Active Challenges" card above Goals & Milestones. Each challenge: title, type badge, progress bar (color scales with %), days-remaining/period label, edit/delete buttons. Completion triggers a canvas confetti burst (`fireConfetti()`) and a `.just-done` card pop animation. `+ Add` opens `#mg-modal` with title input, type pill selector, target value + unit, and period picker (daily/weekly/monthly/custom with date).
+
+**AI integration** — `buildMicroGoalsPromptContext()` injects an ACTIVE CHALLENGES block after `goalPriorityContext`. Per-type instructions:
+- Daily habit → must appear in every recommendation
+- Weekly frequency → urgency flag when behind pace based on day-of-week (day X / 7)
+- Cumulative volume → remaining ÷ days_left = suggested daily volume
+- Strength milestone → progressive overload when readiness allows
+- Streak → flag risk if no workout yet today
+- Recovery balance → rest day as primary option if under rest target AND readiness < 70
+
+Claude may include challenge titles in the rec's `goal_tags` array; `isMicroGoalTag()` detects these client-side and renders them as `🎯 Supports: [title]` pills (accent green) instead of the amber `→ [title]` pills used for long-term goals.
+
+**Cache refresh** — adding, editing, completing, or deleting a challenge calls `regenerateAIForContextChange()` to invalidate cached daily recs. Workout saves also call `loadMicroGoals()` so auto-tracked progress updates immediately after a session is logged.
+
+**Supabase setup** — run once in SQL editor:
+```sql
+CREATE TABLE IF NOT EXISTS micro_goals (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  profile_id uuid NOT NULL REFERENCES profiles(id) ON DELETE CASCADE,
+  title text NOT NULL,
+  type text NOT NULL,
+  target_value numeric NOT NULL,
+  target_unit text,
+  period text DEFAULT 'custom',
+  end_date date,
+  current_value numeric DEFAULT 0,
+  is_active boolean DEFAULT true,
+  created_at timestamp with time zone DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_micro_goals_profile ON micro_goals(profile_id, is_active);
+```
 
 ## Personal Road Map
 
