@@ -1680,6 +1680,37 @@ app.post("/api/ai", async function(req, res) {
 //   is_active boolean default true,
 //   created_at timestamp default now()
 
+// Wipe cached daily recommendations for a profile so the next client fetch
+// regenerates with fresh context (new micro-goals, etc.). Fire-and-forget.
+async function clearDailyRecsCache(pid) {
+  if (!pid) return;
+  try {
+    await fetch(SUPABASE_URL + "/rest/v1/profiles?id=eq." + pid, {
+      method: "PATCH",
+      headers: sbHeaders("return=minimal"),
+      body: JSON.stringify({
+        daily_recommendations: null,
+        daily_recommendations_date: null,
+        daily_recommendations_readiness: null
+      })
+    });
+    console.log("[MicroGoal] Cleared daily recs cache for profile " + pid);
+  } catch (e) {
+    console.warn("[MicroGoal] clearDailyRecsCache failed:", e.message);
+  }
+}
+
+// Look up the profile_id that owns a micro_goals row.
+async function getMicroGoalProfileId(gid) {
+  try {
+    const r = await fetch(SUPABASE_URL + "/rest/v1/micro_goals?id=eq." + gid + "&select=profile_id", { headers: sbHeaders() });
+    const rows = await r.json();
+    return rows && rows[0] ? rows[0].profile_id : null;
+  } catch (e) {
+    return null;
+  }
+}
+
 function mgYmdLocal(d) {
   var p = function(n) { return String(n).padStart(2, "0"); };
   return d.getFullYear() + "-" + p(d.getMonth() + 1) + "-" + p(d.getDate());
@@ -1871,6 +1902,8 @@ app.post("/api/profiles/:id/micro-goals", async function(req, res) {
         body: JSON.stringify({ current_value: computed })
       });
     }
+    // New challenge changes what the AI should recommend today — wipe the cache.
+    await clearDailyRecsCache(pid);
     res.json({ success: true, micro_goal: saved });
   } catch (e) {
     res.status(500).json({ error: e.message });
@@ -1894,7 +1927,10 @@ app.patch("/api/micro-goals/:id", async function(req, res) {
     });
     if (!r.ok) { const t = await r.text(); return res.status(r.status).json({ error: t }); }
     const rows = await r.json();
-    res.json({ success: true, micro_goal: Array.isArray(rows) ? rows[0] : rows });
+    const updated = Array.isArray(rows) ? rows[0] : rows;
+    // Edits (including manual progress/completion) alter AI context — clear cache.
+    if (updated && updated.profile_id) await clearDailyRecsCache(updated.profile_id);
+    res.json({ success: true, micro_goal: updated });
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
@@ -1904,12 +1940,15 @@ app.delete("/api/micro-goals/:id", async function(req, res) {
   try {
     const gid = req.params.id;
     const hard = req.query.hard === '1';
+    // Resolve owner profile first so we can invalidate its cache either way.
+    const ownerPid = await getMicroGoalProfileId(gid);
     if (hard) {
       const r = await fetch(SUPABASE_URL + "/rest/v1/micro_goals?id=eq." + gid, {
         method: "DELETE",
         headers: sbHeaders("return=minimal")
       });
       if (!r.ok) { const t = await r.text(); return res.status(r.status).json({ error: t }); }
+      if (ownerPid) await clearDailyRecsCache(ownerPid);
       return res.json({ success: true, deleted: true });
     }
     const r = await fetch(SUPABASE_URL + "/rest/v1/micro_goals?id=eq." + gid, {
@@ -1918,6 +1957,7 @@ app.delete("/api/micro-goals/:id", async function(req, res) {
       body: JSON.stringify({ is_active: false })
     });
     if (!r.ok) { const t = await r.text(); return res.status(r.status).json({ error: t }); }
+    if (ownerPid) await clearDailyRecsCache(ownerPid);
     res.json({ success: true, archived: true });
   } catch (e) {
     res.status(500).json({ error: e.message });

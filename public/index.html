@@ -2922,6 +2922,31 @@ function regenerateAIForContextChange(reason) {
   fetchAI();
 }
 
+// Stronger variant for context changes that must invalidate the cache even if
+// the AI card is not currently visible (e.g. adding a micro-goal from the
+// Profile tab). Clears local + server caches so the NEXT render on any tab
+// shows fresh recs, then triggers a fresh resolve.
+function invalidateDailyRecsAndRefresh(reason) {
+  console.log('[ApexCoach] Invalidating recs cache (' + reason + ')');
+  // Clear in-memory state
+  aiRec = null;
+  aiRecGeneratedAt = null;
+  aiRecDate = null;
+  aiRecReadinessUsed = null;
+  // Clear local cache
+  try {
+    var c = JSON.parse(localStorage.getItem('ac_cache') || '{}');
+    delete c.aiRec;
+    localStorage.setItem('ac_cache', JSON.stringify(c));
+  } catch (e) {}
+  // Server cache is wiped server-side by the micro-goal handler, so tryLoadCachedAI
+  // will miss and fall through to fetchAI.
+  var aiCard = document.getElementById('ai-card');
+  if (aiCard) aiCard.style.display = 'block';
+  if (typeof resolveAIRecs === 'function') resolveAIRecs();
+  else fetchAI();
+}
+
 function fetchAI(opts) {
   opts = opts || {};
   console.log('[ApexCoach] fetchAI: starting request' + (opts.silent ? ' (silent)' : ''));
@@ -2940,6 +2965,22 @@ function fetchAI(opts) {
     document.getElementById('ai-content').innerHTML = '<p class="mono" style="font-size:12px;color:#22c97a;letter-spacing:3px;animation:pulse 1.6s infinite">ANALYZING YOUR DATA...</p>';
   }
 
+  // Always pull the latest active micro-goals from the DB before building the
+  // prompt. This guarantees freshly-added challenges appear in the very next
+  // recommendation (closes the race where a just-added goal wasn't in memory).
+  var microGoalsReady = currentProfileId
+    ? fetch('/api/profiles/' + currentProfileId + '/micro-goals')
+        .then(function(r) { return r.json(); })
+        .then(function(data) {
+          if (data && data.success) {
+            microGoals = data.micro_goals || [];
+            if (typeof renderProfileChallenges === 'function') renderProfileChallenges();
+          }
+        })
+        .catch(function(e) { console.warn('[ApexCoach] fetchAI micro-goals refresh skipped:', e && e.message); })
+    : Promise.resolve();
+
+  microGoalsReady.then(function() {
   try {
   var recent = '';
   var slice = workoutLog.slice(-10);
@@ -3199,6 +3240,7 @@ function fetchAI(opts) {
     console.error('[ApexCoach] fetchAI: unexpected error -', outerErr);
     document.getElementById('ai-content').innerHTML = '<div style="text-align:center;padding:20px 0"><p style="color:#e87;font-size:15px;margin-bottom:12px">Unable to load recommendation</p><p style="color:var(--text-dim);font-size:13px;margin-bottom:16px">' + (outerErr.message || 'Unexpected error') + '</p><button onclick="fetchAI()" style="background:transparent;border:1px solid #333;color:var(--text-sec);padding:8px 20px;cursor:pointer;border-radius:6px;font-size:14px;font-family:DM Sans,sans-serif">Retry</button></div>';
   }
+  }); // end microGoalsReady.then
 }
 
 var expandedOption = 0;
@@ -3270,7 +3312,11 @@ function renderAI() {
     try {
       var d = new Date(stamp);
       var timeStr = d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }).toLowerCase().replace(' ', '');
-      html += '<p class="mono" style="font-size:10px;color:var(--text-dim);letter-spacing:2px;margin-bottom:10px">GENERATED AT ' + timeStr.toUpperCase() + '</p>';
+      html += '<div style="display:flex;justify-content:flex-end;margin-bottom:10px">';
+      html += '<span class="mono" title="Time these recommendations were generated" style="display:inline-flex;align-items:center;gap:6px;font-size:10px;letter-spacing:2px;color:var(--accent);background:var(--accent-10);border:1px solid var(--accent-33);padding:3px 10px;border-radius:999px">';
+      html += '<span style="width:6px;height:6px;border-radius:50%;background:var(--accent);display:inline-block"></span>';
+      html += 'GENERATED AT ' + timeStr.toUpperCase();
+      html += '</span></div>';
     } catch (e) {}
   }
   if (aiRec.brief) {
@@ -3928,11 +3974,12 @@ function saveMicroGoalFromModal() {
         errEl.textContent = (data && data.error) ? String(data.error).slice(0, 120) : 'Save failed.';
         return;
       }
+      var wasEdit = !!_mgEditingId;
       closeMicroGoalModal();
       loadMicroGoals();
-      if (document.getElementById('ai-card') && document.getElementById('ai-card').style.display === 'block') {
-        regenerateAIForContextChange(_mgEditingId ? 'micro_goal_edited' : 'micro_goal_added');
-      }
+      // Micro-goal changed → server already wiped the daily-recs cache; force
+      // a fresh resolve on the client too so the next render is up to date.
+      invalidateDailyRecsAndRefresh(wasEdit ? 'micro_goal_edited' : 'micro_goal_added');
       _mgEditingId = null;
     })
     .catch(function(e) {
@@ -3950,9 +3997,7 @@ function deleteMicroGoal(id) {
     .then(function(data) {
       if (!data || !data.success) return;
       loadMicroGoals();
-      if (document.getElementById('ai-card') && document.getElementById('ai-card').style.display === 'block') {
-        regenerateAIForContextChange('micro_goal_deleted');
-      }
+      invalidateDailyRecsAndRefresh('micro_goal_deleted');
     })
     .catch(function(e) { console.error('[MicroGoals] delete error:', e); });
 }
@@ -3974,9 +4019,7 @@ function checkMicroGoalCompletions() {
         var card = document.querySelector('.mg-card[data-mg-id="' + gid + '"]');
         if (card) { card.classList.add('just-done'); }
       }; }(id), 50);
-      if (document.getElementById('ai-card') && document.getElementById('ai-card').style.display === 'block') {
-        regenerateAIForContextChange('micro_goal_completed');
-      }
+      invalidateDailyRecsAndRefresh('micro_goal_completed');
     }
     _mgPrevComplete[id] = nowDone;
   }
