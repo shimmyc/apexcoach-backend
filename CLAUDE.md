@@ -156,6 +156,41 @@ Calculated from workoutLog entries where done=true. Counts backwards from today 
 
 - DELETE /api/micro-goals/:id — archives (is_active=false) by default; pass `?hard=1` for permanent delete
 
+## Daily AI Recommendation Prompt Architecture
+
+`fetchAI()` in public/index.html builds the Anthropic API request as a split **system** + **user** message (Anthropic Messages API), not a single user blob.
+
+**System prompt (`buildSystemPrompt`)** — persona, coaching style, equipment/location/duration prefs, rules, and JSON response shape. Opens with the ApexCoach persona: "an elite, deeply personal AI fitness coach… You adapt to real human life… You never suggest something contraindicated by their injuries. You always factor in their micro-goals as non-negotiable daily commitments." Rules include the compound Posture/PT add-on on every Strength session (naming 2–3 specific movements). When called in `mode: 'reroll'` the system prompt appends an instruction to generate meaningfully different options than the previously-shown headlines. When called in `mode: 'category'` it narrows to a single category.
+
+**User message** — assembled in this exact order; the schedule instruction comes FIRST so it anchors Claude's reasoning:
+
+1. `buildScheduleInstruction()` — `TODAY IS <WEEKDAY>. SCHEDULED WORKOUT TODAY: <activity>` + instruction that option 1 must match today's scheduled category unless readiness < 50.
+2. `TODAY: <date>` + `CURRENT WORKOUT STREAK: N days`.
+3. Biometric block (Fitbit live metrics OR manual check-in context, exclusive).
+4. Daily check-in block (if submitted for today).
+5. `buildWeeklyVolumeSummary()` — Mon–Today sessions completed vs scheduled, category breakdown, yesterday's zone minutes (if Fitbit), compliance %.
+6. `RECENT N-DAY LOG:` — last N workouts (N=10 default, trimmable to 7).
+7. `buildVarietyAndSkipAnalysis()` — last-7-day category tally, missed scheduled workouts with days-ago labels, VARIETY RULE, SKIP RULE, and CARRY FORWARD instruction when a scheduled workout was missed in the last 3 days.
+8. `HISTORICAL TRAINING SUMMARY:` + `RECENT COACHING BRIEF:` (each trimmable to 400 chars).
+9. `RECENT EXERCISE HISTORY:` — top 10 exercises from libExercises (trimmable to top 5), followed by `buildMuscleRecoveryInstruction()` — exercise-science rules for 48–72h compound-lift recovery and what can be trained daily.
+10. `FULL ATHLETE PROFILE:` — `profile_data.ai_prompt_context`.
+11. `GOAL PRIORITIES:` — long-term profile goals.
+12. `buildMicroGoalsPromptContext()` — ACTIVE CHALLENGES block. Daily habits are marked "no exceptions including Minimum Viable"; weekly-frequency and cumulative-volume goals are required to feature in ≥1 option and be referenced in others.
+13. `WEEKLY SCHEDULE DEFAULTS:` — flat Mon–Sun schedule pairs.
+
+**Truncation priority (preserves schedule + micro-goals always):** if `system+user > 8000` chars, trim in order (1) historicalBrief → 400, (2) coachingBrief → 400, (3) exerciseHistory → top 5, (4) recent log → 7 days. The schedule instruction, variety analysis, weekly volume, muscle recovery block, and micro-goals context are NEVER dropped.
+
+**Workout-category inference** uses `inferWorkoutCategory(workoutType)` — regex-based parse of the stored workout title string into `strength | cardio | martial_arts | sports | mind_body | rehab | rest | other`. Used by weekly volume and variety analysis.
+
+## Alternative Recommendations (Cycling UI)
+
+Below the 3 rec cards and Minimum Viable the Today tab renders two controls:
+
+- **🔄 Show me different options** — `rerollAlternativeRecs()` fires a fresh `fetchAI({ alternative: { mode: 'reroll', previousHeadlines: … } })`. Claude is instructed to generate meaningfully different categories/intensities/durations than the headlines already shown.
+- **Category pills** (Strength / Cardio / Martial Arts / Sports / Mind & Body / Rehab & Recovery / Rest) — `filterRecsByCategory(key)` fires `fetchAI({ alternative: { mode: 'category', category: <pretty> } })`. Claude is told to generate options in that category only, still respecting readiness, micro-goals, injuries, equipment.
+
+Both paths write to `altRec` / `altRecMode` / `altRecCategory` state and DO NOT touch the main daily cache (`aiRec`, `ac_cache`, `daily_recommendations` on profiles). `renderAI()` switches to rendering `altRec` with a blue "SHOWING DIFFERENT OPTIONS" banner and a `← Back to today's recommendations` link that calls `restoreCachedRecs()` to clear alt state.
+
 ## Daily AI Recommendation Cache
 
 Recommendations are generated once per day and cached on the profiles table (`daily_recommendations` jsonb, `daily_recommendations_date` date, `daily_recommendations_readiness` int). On page load the app calls `tryLoadCachedAI()` first; if same-day recs exist they render immediately and no AI call is made. `renderAI()` shows a subtle "GENERATED AT H:MMAM" timestamp pill using the `generated_at` field stamped into the rec object.

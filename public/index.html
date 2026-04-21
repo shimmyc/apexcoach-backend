@@ -2821,6 +2821,14 @@ var aiRecReadinessUsed = null;   // readiness score used when cached recs were g
 var aiRecGeneratedAt = null;     // ISO timestamp recs were generated
 var aiRecDate = null;            // YYYY-MM-DD the cached recs are for
 
+// Alternative / cycling-UI state. When altRec is non-null the rec card
+// renders those options instead of aiRec, and shows a banner + "Back to
+// today's recommendations" link. Alternative calls never touch the cache.
+var altRec = null;
+var altRecMode = null;          // 'reroll' | 'category'
+var altRecCategory = null;      // raw category key (e.g. 'strength')
+var altRecLoading = false;
+
 function cacheAIRecOnServer(rec, readinessVal) {
   if (!currentProfileId || !rec) return;
   var today = ds(0);
@@ -2982,22 +2990,27 @@ function fetchAI(opts) {
 
   microGoalsReady.then(function() {
   try {
-  var recent = '';
-  var slice = workoutLog.slice(-10);
-  for (var i = 0; i < slice.length; i++) {
-    var w = slice[i];
-    recent += '- ' + w.date + ': ' + w.type + (w.done ? ' done' : ' skipped') + (w.mobility ? ' + mobility' : '') + (w.med ? ' + meditation' : '') + (w.notes ? ' (' + w.notes + ')' : '') + '\n';
-  }
-  if (!recent) recent = 'No recent workouts logged yet.';
-  var today = new Date().toLocaleDateString('en-US', {weekday:'long', month:'long', day:'numeric'});
+  var buildLog = function(days) {
+    var slice = workoutLog.slice(-days);
+    var out = '';
+    for (var i = 0; i < slice.length; i++) {
+      var w = slice[i];
+      out += '- ' + w.date + ': ' + w.type + (w.done ? ' done' : ' skipped') + (w.mobility ? ' + mobility' : '') + (w.med ? ' + meditation' : '') + (w.notes ? ' (' + w.notes + ')' : '') + '\n';
+    }
+    return out || 'No recent workouts logged yet.';
+  };
+  var logDays = 10;
+  var recent = buildLog(logDays);
 
+  var today = new Date().toLocaleDateString('en-US', {weekday:'long', month:'long', day:'numeric'});
   var athleteName = (currentProfileData && currentProfileData.name) || currentProfileName || 'this athlete';
-  var recentExerciseContext = '';
-  if (libExercises && libExercises.length) {
-    var exLines = [];
-    var topEx = libExercises.slice(0, 10);
-    for (var ei = 0; ei < topEx.length; ei++) {
-      var ex = topEx[ei];
+
+  var buildExerciseHistory = function(limit) {
+    if (!libExercises || !libExercises.length) return '';
+    var lines = [];
+    var top = libExercises.slice(0, limit);
+    for (var ei = 0; ei < top.length; ei++) {
+      var ex = top[ei];
       var lastSess = ex.sessions && ex.sessions[0];
       var line = '- ' + ex.name + ': ' + ex.count + 'x logged';
       if (lastSess) {
@@ -3007,27 +3020,20 @@ function fetchAI(opts) {
         if (lastSess.weight_lbs) line += ' @' + lastSess.weight_lbs + 'lbs';
       }
       if (ex.best_weight) line += ', best ' + ex.best_weight + 'lbs';
-      exLines.push(line);
+      lines.push(line);
     }
-    if (exLines.length) recentExerciseContext = 'RECENT EXERCISE HISTORY:\n' + exLines.join('\n') + '\n\n';
-  }
-  var dataBlock = '';
-  var rulesBlock = '';
+    return lines.length ? 'RECENT EXERCISE HISTORY:\n' + lines.join('\n') + '\n\n' : '';
+  };
+  var exerciseLimit = 10;
+  var recentExerciseContext = buildExerciseHistory(exerciseLimit);
 
+  // Biometric / readiness block (Fitbit OR manual check-in)
+  var dataBlock = '';
   if (manualCheckinContext) {
-    // Manual check-in mode
     dataBlock = 'READINESS: ' + readiness.score + '/85 (manual check-in, no wearable) - ' + readiness.tier.toUpperCase() + '\n' +
       manualCheckinContext + '\n\n' +
       'NOTE: This user has no connected wearable. You have subjective self-reported data only. Do NOT reference HRV, RHR, heart rate zones, or sleep stages — you don\'t have that data. Instead reference their reported sleep quality, energy, and pain levels.\n';
-    rulesBlock = 'IMPORTANT RULES:\n' +
-      '- Base recommendations on the manual check-in scores\n' +
-      '- Reference their reported sleep, energy, and pain in reasoning\n' +
-      '- ALWAYS include a mobility/posture component in each option\n' +
-      '- If readiness under 60: recovery-focused options only, no heavy loading\n' +
-      '- If pain is rated 1-2 (significant/moderate): prioritize recovery and gentle movement\n' +
-      '- Provide 3 distinct options: best fit, alternative, and a shorter option\n\n';
   } else {
-    // Fitbit data mode
     var sleep = fitData.sleep || {};
     var stages = sleep.stages || {};
     var deepMins = stages.deep || {};
@@ -3051,32 +3057,7 @@ function fetchAI(opts) {
       '- RHR: ' + (fitData.rhr || '?') + 'bpm (7d avg ' + (r7.rhr || '?') + '), HRV: ' + (fitData.hrv || '?') + ' (7d avg ' + (r7.hrv || '?') + ')\n' +
       '- Yesterday zones: Peak ' + (pz.peak || 0) + 'min, Cardio ' + (pz.cardio || 0) + 'min, Fat Burn ' + (pz.fatBurn || 0) + 'min\n' +
       '- Steps yesterday: ' + (fitData.steps ? fitData.steps.toLocaleString() : '?') + '\n';
-    rulesBlock = 'IMPORTANT RULES:\n' +
-      '- NEVER suggest exercises that aggravate any listed injuries\n' +
-      '- ALWAYS include a mobility/posture component in each option\n' +
-      '- If readiness under 60: recovery-focused options only, no heavy loading\n' +
-      '- Reference actual HRV vs 7-day average in reasoning\n' +
-      '- Provide 3 distinct options: best fit, alternative, and a shorter option\n\n';
   }
-
-  var aiSettings = getSettings();
-  var aiTone = aiSettings.aiTone || 'Motivational';
-  var aiDetail = aiSettings.aiDetail || 'Normal';
-  var aiNumOpts = aiSettings.aiOptions || 3;
-  var aiMV = aiSettings.aiShowMV === undefined ? 'always' : aiSettings.aiShowMV;
-  if (aiMV === true) aiMV = 'always'; if (aiMV === false) aiMV = 'never';
-  var aiShowMV = aiMV === 'always' || (aiMV === 'low' && readiness && readiness.score < 50);
-  var aiLang = aiSettings.aiLang || 'Casual';
-  var allEquip = (aiSettings.equipment || []).concat(aiSettings.customEquipment || []);
-  var equipStr = allEquip.length ? allEquip.join(', ') : 'not specified';
-  var wkLoc = aiSettings.workoutLocation || 'Both';
-  var maxDur = aiSettings.maxDuration || 60;
-  var prefTime = aiSettings.preferredTime || 'Any';
-
-  // Build prompt sections that can be truncated
-  var truncatedCoachingBrief = coachingBrief || '';
-  var truncatedExerciseContext = recentExerciseContext || '';
-  var truncatedHistoricalBrief = historicalBrief || '';
 
   // Daily feeling check-in context
   var checkinBlock = '';
@@ -3089,7 +3070,7 @@ function fetchAI(opts) {
     checkinBlock += '\n';
   }
 
-  // Build goal priority context
+  // Goal priority (long-term goals)
   var goalPriorityContext = '';
   var profileGoals = (currentProfileData && currentProfileData.goals) || [];
   if (profileGoals.length) {
@@ -3101,86 +3082,82 @@ function fetchAI(opts) {
     goalPriorityContext += '\nIMPORTANT: Weight workout recommendations toward top-ranked goals. Goal #1 should influence ~40% of recommendations, #2 ~25%, #3 ~15%, remaining goals share rest. Always mention which goal each workout option targets.\n\n';
   }
 
-  // Build micro-goals / active challenges context
+  // New sections (schedule must come first in the user message)
+  var scheduleInstruction = buildScheduleInstruction();
+  var varietyAnalysis = buildVarietyAndSkipAnalysis();
+  var weeklyVolume = buildWeeklyVolumeSummary();
   var microGoalsContext = buildMicroGoalsPromptContext();
+  var muscleRecoveryBlock = buildMuscleRecoveryInstruction();
 
-  var prompt = 'You are ApexCoach, an elite personal AI coach for ' + athleteName + '. You know everything about them. Give ' + aiNumOpts + ' specific, data-driven workout options for today, ordered by best fit first.\n\n' +
-    'COACHING STYLE: ' + aiTone + ' tone. ' + aiLang + ' language. Detail level: ' + aiDetail + '.\n' +
-    'AVAILABLE EQUIPMENT: ' + equipStr + '\n' +
-    'WORKOUT LOCATION: ' + wkLoc + '. MAX DURATION: ' + (maxDur ? maxDur + ' min' : 'no limit') + '. PREFERRED TIME: ' + prefTime + '.\n\n' +
-    'TODAY: ' + today + '\n' +
-    'CURRENT WORKOUT STREAK: ' + currentStreak + ' days' + (currentStreak >= 7 ? ' (impressive consistency!)' : '') + '\n' +
-    dataBlock + '\n' +
-    checkinBlock +
-    'RECENT 10-DAY LOG:\n' + recent + '\n\n' +
-    (truncatedHistoricalBrief ? 'HISTORICAL TRAINING SUMMARY:\n' + truncatedHistoricalBrief + '\n\n' : '') +
-    (truncatedCoachingBrief ? 'RECENT COACHING BRIEF:\n' + truncatedCoachingBrief + '\n\n' : '') +
-    truncatedExerciseContext +
-    'FULL ATHLETE PROFILE:\n' + FULL_PROFILE + '\n\n' +
-    goalPriorityContext +
-    microGoalsContext +
-    'WEEKLY SCHEDULE DEFAULTS:\n' + getScheduleText() + '\n\n' +
-    rulesBlock +
-    'CRITICAL: Every workout option MUST include goal_tags array with at least one goal title from the priority list, and goal_reasoning explaining the connection. This is required.\n\n' +
-    'Respond ONLY with raw JSON, no markdown:\n' +
-    '{"brief":"one sentence overall context based on goal priorities","options":[{"type":"workout category","headline":"punchy name","duration":45,"intensity":"descriptor","goal_tags":["exact goal title from priority list"],"goal_reasoning":"one sentence explaining how this advances that goal","reasoning":"why this fits today based on readiness and data","exercises":["ex + sets/reps","ex + sets/reps","ex + sets/reps"],"mobility":"specific focus"},{"type":"category","headline":"name","duration":30,"intensity":"descriptor","goal_tags":["goal title"],"goal_reasoning":"connection to goal","reasoning":"why this alternative","exercises":["ex","ex","ex"],"mobility":"focus"}' + (aiNumOpts >= 3 ? ',{"type":"category","headline":"name","duration":20,"intensity":"descriptor","goal_tags":["goal title"],"goal_reasoning":"connection","reasoning":"why this shorter option","exercises":["ex","ex"],"mobility":"focus"}' : '') + (aiNumOpts >= 4 ? ',{"type":"category","headline":"name","duration":15,"intensity":"descriptor","goal_tags":["goal"],"goal_reasoning":"connection","reasoning":"why this option","exercises":["ex","ex"],"mobility":"focus"}' : '') + ']' + (aiShowMV ? ',"minimum_viable":"genuine 10-15 min fallback"' : '') + ',"warning":"one specific caution based on the data, or null"}';
+  var aiSettings = getSettings();
+  var aiNumOpts = aiSettings.aiOptions || 3;
+  var aiMV = aiSettings.aiShowMV === undefined ? 'always' : aiSettings.aiShowMV;
+  if (aiMV === true) aiMV = 'always'; if (aiMV === false) aiMV = 'never';
+  var aiShowMV = aiMV === 'always' || (aiMV === 'low' && readiness && readiness.score < 50);
 
-  // Truncate prompt if too long (>8000 chars)
-  if (prompt.length > 8000) {
-    console.log('[ApexCoach] fetchAI: prompt too long (' + prompt.length + ' chars), truncating...');
-    // Step 1: Truncate coaching brief to 500 chars
-    if (truncatedCoachingBrief.length > 500) {
-      truncatedCoachingBrief = truncatedCoachingBrief.substring(0, 500) + '...';
-      console.log('[ApexCoach] fetchAI: truncated coaching brief to 500 chars');
-    }
-    // Step 2: Truncate exercise history to last 5 only
-    if (libExercises && libExercises.length) {
-      var exLines5 = [];
-      var topEx5 = libExercises.slice(0, 5);
-      for (var ei5 = 0; ei5 < topEx5.length; ei5++) {
-        var ex5 = topEx5[ei5];
-        var lastSess5 = ex5.sessions && ex5.sessions[0];
-        var line5 = '- ' + ex5.name + ': ' + ex5.count + 'x logged';
-        if (lastSess5) {
-          line5 += ', last ' + lastSess5.date;
-          if (lastSess5.sets) line5 += ' ' + lastSess5.sets + 's';
-          if (lastSess5.reps) line5 += 'x' + lastSess5.reps + 'r';
-          if (lastSess5.weight_lbs) line5 += ' @' + lastSess5.weight_lbs + 'lbs';
-        }
-        if (ex5.best_weight) line5 += ', best ' + ex5.best_weight + 'lbs';
-        exLines5.push(line5);
-      }
-      truncatedExerciseContext = exLines5.length ? 'RECENT EXERCISE HISTORY:\n' + exLines5.join('\n') + '\n\n' : '';
-      console.log('[ApexCoach] fetchAI: truncated exercise history to 5 exercises');
-    }
-    // Step 3: Remove historical brief entirely if still too long
-    truncatedHistoricalBrief = '';
-    console.log('[ApexCoach] fetchAI: removed historical brief to reduce prompt size');
+  // Truncatable sections (kept separate so we can shrink them if needed)
+  var truncatedCoachingBrief = coachingBrief || '';
+  var truncatedHistoricalBrief = historicalBrief || '';
 
-    // Rebuild prompt with truncated sections
-    prompt = 'You are ApexCoach, an elite personal AI coach for ' + athleteName + '. You know everything about them. Give ' + aiNumOpts + ' specific, data-driven workout options for today, ordered by best fit first.\n\n' +
-      'COACHING STYLE: ' + aiTone + ' tone. ' + aiLang + ' language. Detail level: ' + aiDetail + '.\n' +
-      'AVAILABLE EQUIPMENT: ' + equipStr + '\n' +
-      'WORKOUT LOCATION: ' + wkLoc + '. MAX DURATION: ' + (maxDur ? maxDur + ' min' : 'no limit') + '. PREFERRED TIME: ' + prefTime + '.\n\n' +
+  var buildUserMessage = function() {
+    return scheduleInstruction +
       'TODAY: ' + today + '\n' +
       'CURRENT WORKOUT STREAK: ' + currentStreak + ' days' + (currentStreak >= 7 ? ' (impressive consistency!)' : '') + '\n' +
       dataBlock + '\n' +
       checkinBlock +
-      'RECENT 10-DAY LOG:\n' + recent + '\n\n' +
+      weeklyVolume +
+      'RECENT ' + logDays + '-DAY LOG:\n' + recent + '\n\n' +
+      varietyAnalysis +
       (truncatedHistoricalBrief ? 'HISTORICAL TRAINING SUMMARY:\n' + truncatedHistoricalBrief + '\n\n' : '') +
       (truncatedCoachingBrief ? 'RECENT COACHING BRIEF:\n' + truncatedCoachingBrief + '\n\n' : '') +
-      truncatedExerciseContext +
+      recentExerciseContext +
+      muscleRecoveryBlock +
       'FULL ATHLETE PROFILE:\n' + FULL_PROFILE + '\n\n' +
       goalPriorityContext +
-      'WEEKLY SCHEDULE DEFAULTS:\n' + getScheduleText() + '\n\n' +
-      rulesBlock +
-      'CRITICAL: Every workout option MUST include goal_tags array with at least one goal title from the priority list, and goal_reasoning explaining the connection. This is required.\n\n' +
-      'Respond ONLY with raw JSON, no markdown:\n' +
-      '{"brief":"one sentence overall context based on goal priorities","options":[{"type":"workout category","headline":"punchy name","duration":45,"intensity":"descriptor","goal_tags":["exact goal title from priority list"],"goal_reasoning":"one sentence explaining how this advances that goal","reasoning":"why this fits today based on readiness and data","exercises":["ex + sets/reps","ex + sets/reps","ex + sets/reps"],"mobility":"specific focus"},{"type":"category","headline":"name","duration":30,"intensity":"descriptor","goal_tags":["goal title"],"goal_reasoning":"connection to goal","reasoning":"why this alternative","exercises":["ex","ex","ex"],"mobility":"focus"}' + (aiNumOpts >= 3 ? ',{"type":"category","headline":"name","duration":20,"intensity":"descriptor","goal_tags":["goal title"],"goal_reasoning":"connection","reasoning":"why this shorter option","exercises":["ex","ex"],"mobility":"focus"}' : '') + (aiNumOpts >= 4 ? ',{"type":"category","headline":"name","duration":15,"intensity":"descriptor","goal_tags":["goal"],"goal_reasoning":"connection","reasoning":"why this option","exercises":["ex","ex"],"mobility":"focus"}' : '') + ']' + (aiShowMV ? ',"minimum_viable":"genuine 10-15 min fallback"' : '') + ',"warning":"one specific caution based on the data, or null"}';
-  }
+      microGoalsContext +
+      'WEEKLY SCHEDULE DEFAULTS:\n' + getScheduleText() + '\n';
+  };
 
-  console.log('[ApexCoach] AI prompt length:', prompt.length, 'chars');
-  console.log('[ApexCoach] fetchAI: prompt ready, length=' + prompt.length);
+  var altOpts = opts.alternative || null;
+  var systemPromptOpts = { aiNumOpts: aiNumOpts, aiShowMV: aiShowMV };
+  if (altOpts) {
+    systemPromptOpts.mode = altOpts.mode || null;
+    systemPromptOpts.category = altOpts.category || null;
+    systemPromptOpts.previousHeadlines = altOpts.previousHeadlines || '';
+  }
+  var systemPrompt = buildSystemPrompt(systemPromptOpts);
+  var userMessage = buildUserMessage();
+
+  // Length guard: keep the COMBINED prompt under 8000 chars. Trim in this
+  // priority order (micro-goals and schedule instruction are NEVER dropped):
+  //   1. historicalBrief → 400 chars
+  //   2. coachingBrief → 400 chars
+  //   3. exerciseHistory → top 5
+  //   4. 10-day log → 7 days
+  var totalLen = function() { return systemPrompt.length + userMessage.length; };
+  if (totalLen() > 8000 && truncatedHistoricalBrief.length > 400) {
+    truncatedHistoricalBrief = truncatedHistoricalBrief.substring(0, 400) + '...';
+    userMessage = buildUserMessage();
+    console.log('[ApexCoach] fetchAI: trimmed historical brief to 400 chars (total=' + totalLen() + ')');
+  }
+  if (totalLen() > 8000 && truncatedCoachingBrief.length > 400) {
+    truncatedCoachingBrief = truncatedCoachingBrief.substring(0, 400) + '...';
+    userMessage = buildUserMessage();
+    console.log('[ApexCoach] fetchAI: trimmed coaching brief to 400 chars (total=' + totalLen() + ')');
+  }
+  if (totalLen() > 8000 && exerciseLimit > 5) {
+    exerciseLimit = 5;
+    recentExerciseContext = buildExerciseHistory(exerciseLimit);
+    userMessage = buildUserMessage();
+    console.log('[ApexCoach] fetchAI: trimmed exercise history to 5 entries (total=' + totalLen() + ')');
+  }
+  if (totalLen() > 8000 && logDays > 7) {
+    logDays = 7;
+    recent = buildLog(logDays);
+    userMessage = buildUserMessage();
+    console.log('[ApexCoach] fetchAI: trimmed recent log to 7 days (total=' + totalLen() + ')');
+  }
+  console.log('[ApexCoach] AI prompt lengths: system=' + systemPrompt.length + ' user=' + userMessage.length + ' total=' + totalLen());
 
   // 30 second timeout
   var controller = new AbortController();
@@ -3189,7 +3166,12 @@ function fetchAI(opts) {
   fetch('/api/ai', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ model: 'claude-sonnet-4-20250514', max_tokens: 1800, messages: [{ role: 'user', content: prompt }] }),
+    body: JSON.stringify({
+      model: 'claude-sonnet-4-20250514',
+      max_tokens: 1800,
+      system: systemPrompt,
+      messages: [{ role: 'user', content: userMessage }]
+    }),
     signal: controller.signal
   })
   .then(function(r) {
@@ -3203,25 +3185,37 @@ function fetchAI(opts) {
     if (data.error) throw new Error(data.error.message || data.error || 'AI returned an error');
     var raw = (data.content && data.content[0]) ? data.content[0].text : '{}';
     var cleaned = raw.indexOf('{') >= 0 ? raw.substring(raw.indexOf('{'), raw.lastIndexOf('}') + 1) : '{}';
+    var parsed;
     try {
-      aiRec = JSON.parse(cleaned);
+      parsed = JSON.parse(cleaned);
     } catch (parseErr) {
       console.error('[ApexCoach] fetchAI: JSON parse failed:', parseErr.message, 'Raw:', raw.substring(0, 200));
       throw new Error('Failed to parse AI response');
     }
     // Normalize: if old single-object format (no options array), wrap it
-    if (!aiRec.options && aiRec.type && aiRec.headline) {
-      aiRec = { brief: aiRec.brief || '', options: [aiRec], warning: aiRec.warning || null };
+    if (!parsed.options && parsed.type && parsed.headline) {
+      parsed = { brief: parsed.brief || '', options: [parsed], warning: parsed.warning || null };
     }
-    // Stamp generation time so UI can show "Generated at HH:MM"
-    aiRec.generated_at = new Date().toISOString();
+    parsed.generated_at = new Date().toISOString();
+
+    if (altOpts) {
+      // Alternative call (re-roll or category filter) — DO NOT overwrite the
+      // cached daily recs. Store in altRec and render a "viewing alternatives"
+      // state. User can restore the cached recs with restoreCachedRecs().
+      altRec = parsed;
+      altRecLoading = false;
+      renderAI();
+      console.log('[ApexCoach] fetchAI: alternative recs ready (mode=' + (altOpts.mode || '') + (altOpts.category ? '/' + altOpts.category : '') + ')');
+      return;
+    }
+
+    aiRec = parsed;
     aiRecGeneratedAt = aiRec.generated_at;
     aiRecDate = ds(0);
     var cached = JSON.parse(localStorage.getItem('ac_cache') || '{}');
     cached.aiRec = aiRec;
     cached.date = ds(0);
     localStorage.setItem('ac_cache', JSON.stringify(cached));
-    // Persist to Supabase so recs survive reloads / other devices for the day
     var readinessForCache = (readiness && typeof readiness.score === 'number') ? readiness.score : null;
     cacheAIRecOnServer(aiRec, readinessForCache);
     console.log('[ApexCoach] fetchAI: done');
@@ -3231,6 +3225,13 @@ function fetchAI(opts) {
     clearTimeout(timeoutId);
     var msg = e.name === 'AbortError' ? 'Request timed out (30s)' : (e.message || 'Unknown error');
     console.error('[ApexCoach] fetchAI: error -', msg);
+    if (altOpts) {
+      altRecLoading = false;
+      altRec = null;
+      altRecMode = null;
+      renderAI();
+      return;
+    }
     if (!opts.silent) {
       document.getElementById('ai-content').innerHTML = '<div style="text-align:center;padding:20px 0"><p style="color:#e87;font-size:15px;margin-bottom:12px">Unable to load recommendation</p><p style="color:var(--text-dim);font-size:13px;margin-bottom:16px">' + msg + '</p><button onclick="fetchAI()" style="background:transparent;border:1px solid #333;color:var(--text-sec);padding:8px 20px;cursor:pointer;border-radius:6px;font-size:14px;font-family:DM Sans,sans-serif">Retry</button></div>';
     }
@@ -3245,6 +3246,45 @@ function fetchAI(opts) {
 
 var expandedOption = 0;
 function toggleOption(idx) { expandedOption = (expandedOption === idx) ? -1 : idx; renderAI(); }
+
+// User tapped "🔄 Show me different options" — ask Claude for fresh
+// alternatives without overwriting today's cached recs.
+function rerollAlternativeRecs() {
+  if (altRecLoading) return;
+  altRecMode = 'reroll';
+  altRecCategory = null;
+  altRecLoading = true;
+  expandedOption = 0;
+  var previous = '';
+  if (aiRec && aiRec.options && aiRec.options.length) {
+    previous = aiRec.options.map(function(o) { return '"' + (o.headline || '') + '" (' + (o.type || '') + ')'; }).join(', ');
+  }
+  renderAI();
+  fetchAI({ alternative: { mode: 'reroll', previousHeadlines: previous } });
+}
+
+// User tapped a category pill (e.g. Strength) — ask Claude for options in
+// that category only, without overwriting today's cached recs.
+function filterRecsByCategory(categoryKey) {
+  if (altRecLoading) return;
+  altRecMode = 'category';
+  altRecCategory = categoryKey;
+  altRecLoading = true;
+  expandedOption = 0;
+  renderAI();
+  var pretty = CATEGORY_PRETTY[categoryKey] || categoryKey;
+  fetchAI({ alternative: { mode: 'category', category: pretty } });
+}
+
+// "← Back to today's recommendations" restores the cached rec view.
+function restoreCachedRecs() {
+  altRec = null;
+  altRecMode = null;
+  altRecCategory = null;
+  altRecLoading = false;
+  expandedOption = 0;
+  renderAI();
+}
 
 function prefillLogFromAI(type, headline, exercises, mobility) {
   editingWorkoutId = null;
@@ -3294,20 +3334,46 @@ function logAIWorkout(btn) {
 }
 
 function renderAI() {
-  if (!aiRec) return;
+  var viewingAlt = !!(altRec || altRecLoading);
+  var activeRec = (altRec && !altRecLoading) ? altRec : aiRec;
+  if (!activeRec && !altRecLoading) return;
   var t = TIERS[readiness.tier];
-  // Handle old single-object format (no options array)
-  if (!aiRec.options && aiRec.type && aiRec.headline) {
+  // Handle old single-object format (no options array) on cached recs
+  if (aiRec && !aiRec.options && aiRec.type && aiRec.headline) {
     aiRec = { brief: aiRec.brief || '', options: [aiRec], warning: aiRec.warning || null };
-  }
-  var opts = aiRec.options || [];
-  if (!opts.length) {
-    document.getElementById('ai-content').innerHTML = '<div style="text-align:center;padding:20px 0"><p style="color:#e87;font-size:15px;margin-bottom:12px">Unable to load recommendation</p><p style="color:var(--text-dim);font-size:13px;margin-bottom:16px">AI response was empty or unreadable</p><button onclick="fetchAI()" style="background:transparent;border:1px solid #333;color:var(--text-sec);padding:8px 20px;cursor:pointer;border-radius:6px;font-size:14px;font-family:DM Sans,sans-serif">Retry</button></div>';
-    return;
   }
 
   var html = '';
-  var stamp = aiRec.generated_at || aiRecGeneratedAt;
+
+  // Banner + back link when the user is viewing alternatives.
+  if (viewingAlt) {
+    var bannerLabel = altRecLoading
+      ? (altRecMode === 'category'
+          ? 'LOADING ' + (CATEGORY_PRETTY[altRecCategory] || altRecCategory).toUpperCase() + ' OPTIONS…'
+          : 'LOADING DIFFERENT OPTIONS…')
+      : (altRecMode === 'category'
+          ? 'SHOWING ' + (CATEGORY_PRETTY[altRecCategory] || altRecCategory).toUpperCase() + ' OPTIONS'
+          : 'SHOWING DIFFERENT OPTIONS');
+    html += '<div style="display:flex;justify-content:space-between;align-items:center;gap:10px;background:#4488bb10;border:1px solid #4488bb33;border-radius:8px;padding:8px 12px;margin-bottom:10px">';
+    html += '<span class="mono" style="font-size:10px;letter-spacing:2px;color:#4488bb">' + bannerLabel + '</span>';
+    html += '<a href="#" onclick="event.preventDefault();restoreCachedRecs()" style="font-size:12px;color:var(--accent);text-decoration:none;font-family:DM Sans,sans-serif">&larr; Back to today\'s recommendations</a>';
+    html += '</div>';
+  }
+
+  if (altRecLoading) {
+    html += '<div style="text-align:center;padding:30px 0"><p class="mono" style="font-size:12px;color:#22c97a;letter-spacing:3px;animation:pulse 1.6s infinite">ANALYZING YOUR DATA...</p></div>';
+    document.getElementById('ai-content').innerHTML = html;
+    return;
+  }
+
+  var opts = (activeRec && activeRec.options) || [];
+  if (!opts.length) {
+    html += '<div style="text-align:center;padding:20px 0"><p style="color:#e87;font-size:15px;margin-bottom:12px">Unable to load recommendation</p><p style="color:var(--text-dim);font-size:13px;margin-bottom:16px">AI response was empty or unreadable</p><button onclick="fetchAI()" style="background:transparent;border:1px solid #333;color:var(--text-sec);padding:8px 20px;cursor:pointer;border-radius:6px;font-size:14px;font-family:DM Sans,sans-serif">Retry</button></div>';
+    document.getElementById('ai-content').innerHTML = html;
+    return;
+  }
+
+  var stamp = activeRec.generated_at || (viewingAlt ? null : aiRecGeneratedAt);
   if (stamp) {
     try {
       var d = new Date(stamp);
@@ -3319,11 +3385,11 @@ function renderAI() {
       html += '</span></div>';
     } catch (e) {}
   }
-  if (aiRec.brief) {
-    html += '<p style="font-size:15px;color:var(--text-sec);line-height:1.75;margin-bottom:14px">' + aiRec.brief + '</p>';
+  if (activeRec.brief) {
+    html += '<p style="font-size:15px;color:var(--text-sec);line-height:1.75;margin-bottom:14px">' + activeRec.brief + '</p>';
   }
-  if (aiRec.warning) {
-    html += '<div style="background:#e8454512;border:1px solid #e8454528;color:#e87;padding:10px 14px;border-radius:6px;font-size:14px;margin-bottom:14px">Warning: ' + aiRec.warning + '</div>';
+  if (activeRec.warning) {
+    html += '<div style="background:#e8454512;border:1px solid #e8454528;color:#e87;padding:10px 14px;border-radius:6px;font-size:14px;margin-bottom:14px">Warning: ' + activeRec.warning + '</div>';
   }
 
   var optColors = [t.color, '#4488bb', '#f5a623'];
@@ -3374,9 +3440,35 @@ function renderAI() {
     html += '</div>';
   }
 
-  if (aiRec.minimum_viable) {
-    html += '<div style="background:#f5a62310;border:1px solid #f5a62322;padding:12px 16px;border-radius:6px;margin-top:4px"><p class="mono" style="font-size:10px;color:#f5a623;letter-spacing:2px;margin-bottom:6px">MINIMUM VIABLE</p><p style="font-size:14px;color:#c8a060;line-height:1.65;margin-bottom:12px">' + attrEsc(aiRec.minimum_viable) + '</p>' +
-      '<button type="button" onclick="logAIWorkout(this)" data-type="Active Recovery" data-headline="Minimum Viable Workout" data-exes="' + attrEsc(JSON.stringify([aiRec.minimum_viable])) + '" data-mob="" style="width:100%;background:#f5a623;color:#040605;border:none;padding:10px 16px;font-size:13px;font-weight:700;cursor:pointer;border-radius:8px;font-family:DM Sans,sans-serif">Log Minimum Viable</button></div>';
+  if (activeRec.minimum_viable) {
+    html += '<div style="background:#f5a62310;border:1px solid #f5a62322;padding:12px 16px;border-radius:6px;margin-top:4px"><p class="mono" style="font-size:10px;color:#f5a623;letter-spacing:2px;margin-bottom:6px">MINIMUM VIABLE</p><p style="font-size:14px;color:#c8a060;line-height:1.65;margin-bottom:12px">' + attrEsc(activeRec.minimum_viable) + '</p>' +
+      '<button type="button" onclick="logAIWorkout(this)" data-type="Active Recovery" data-headline="Minimum Viable Workout" data-exes="' + attrEsc(JSON.stringify([activeRec.minimum_viable])) + '" data-mob="" style="width:100%;background:#f5a623;color:#040605;border:none;padding:10px 16px;font-size:13px;font-weight:700;cursor:pointer;border-radius:8px;font-family:DM Sans,sans-serif">Log Minimum Viable</button></div>';
+  }
+
+  // ── CYCLING UI ─────────────────────────────────────────────────────────
+  // Re-roll button + category selector. Only shown when we're not already
+  // viewing alternatives (if we are, the "Back to today's recommendations"
+  // link at the top is the primary control).
+  if (!viewingAlt) {
+    html += '<div style="margin-top:18px;padding-top:14px;border-top:1px solid var(--border)">';
+    html += '<button type="button" onclick="rerollAlternativeRecs()" style="width:100%;background:transparent;border:1px solid var(--accent-33);color:var(--accent);padding:11px 16px;font-size:13px;font-weight:600;cursor:pointer;border-radius:8px;font-family:DM Sans,sans-serif;margin-bottom:10px">&#x1F504; Show me different options</button>';
+    html += '<p class="mono" style="font-size:10px;color:var(--text-dim);letter-spacing:2px;margin-bottom:8px;text-align:center">OR — I want to do something else &rarr;</p>';
+    html += '<div style="display:flex;flex-wrap:wrap;gap:6px;justify-content:center">';
+    var cats = [
+      ['strength','Strength'],
+      ['cardio','Cardio'],
+      ['martial_arts','Martial Arts'],
+      ['sports','Sports'],
+      ['mind_body','Mind & Body'],
+      ['rehab','Rehab & Recovery'],
+      ['rest','Rest']
+    ];
+    for (var cci = 0; cci < cats.length; cci++) {
+      var ck = cats[cci][0];
+      var cl = cats[cci][1];
+      html += '<button type="button" onclick="filterRecsByCategory(\'' + ck + '\')" style="background:var(--bg-input);border:1px solid var(--border);color:var(--text-sec);padding:6px 12px;border-radius:999px;font-size:12px;cursor:pointer;font-family:DM Sans,sans-serif">' + cl + '</button>';
+    }
+    html += '</div></div>';
   }
 
   document.getElementById('ai-content').innerHTML = html;
@@ -4075,6 +4167,272 @@ function fireConfetti() {
   requestAnimationFrame(frame);
 }
 
+// ─── DAILY AI PROMPT HELPERS ───────────────────────────────────────────
+
+// Returns day index with Monday = 0, Sunday = 6 (matches DAYS array order).
+function todayDayIdx() {
+  var d = new Date().getDay(); // 0=Sun..6=Sat
+  return d === 0 ? 6 : d - 1;
+}
+
+// YYYY-MM-DD of the Monday that starts the current week, in local time.
+function getMondayLocalStr() {
+  var d = new Date();
+  d.setHours(0, 0, 0, 0);
+  var idx = todayDayIdx(); // 0=Mon..6=Sun
+  d.setDate(d.getDate() - idx);
+  var y = d.getFullYear();
+  var m = String(d.getMonth() + 1).padStart(2, '0');
+  var dd = String(d.getDate()).padStart(2, '0');
+  return y + '-' + m + '-' + dd;
+}
+
+// Best-effort category inference from a workout's stored `type` string
+// (which is an AI-generated title like "Strength (Upper Body) + Cardio").
+// Returns one of: strength|cardio|martial_arts|sports|mind_body|rehab|rest|other.
+function inferWorkoutCategory(workoutType) {
+  if (!workoutType) return 'other';
+  var t = String(workoutType).toLowerCase();
+  if (/rest|recovery day|day off|off day/.test(t)) return 'rest';
+  if (/\b(mma|bjj|jiu.?jitsu|muay|boxing|kickbox|martial|spar|wrestling|judo|grappl|striking)\b/.test(t)) return 'martial_arts';
+  if (/\b(strength|lift|weights?|squat|deadlift|bench|press|row|powerlift|olympic|calisthenic|upper|lower|full body|pushup|pullup|chinup)\b/.test(t)) return 'strength';
+  if (/\b(cardio|run|jog|walk|hike|cycle|bike|elliptic|treadmill|swim|row|erg|hiit|conditioning|jump rope)\b/.test(t)) return 'cardio';
+  if (/\b(yoga|pilates|stretch|mobility|meditat|breath|mind ?body)\b/.test(t)) return 'mind_body';
+  if (/\b(pt|physical therapy|rehab|foam roll|active recovery)\b/.test(t)) return 'rehab';
+  if (/\b(tennis|basketball|soccer|volleyball|golf|ski|snowboard|surf|climb|sport)\b/.test(t)) return 'sports';
+  return 'other';
+}
+
+var CATEGORY_PRETTY = {
+  strength: 'Strength',
+  cardio: 'Cardio',
+  martial_arts: 'Martial Arts',
+  sports: 'Sports',
+  mind_body: 'Mind & Body',
+  rehab: 'Rehab',
+  rest: 'Rest',
+  other: 'Other'
+};
+
+// Build the TOP-of-message schedule instruction the coach must obey.
+function buildScheduleInstruction() {
+  var idx = todayDayIdx();
+  var weekday = ['Monday','Tuesday','Wednesday','Thursday','Friday','Saturday','Sunday'][idx];
+  var scheduled = schedule[DAYS[idx]] || 'Flexible';
+  var noWorkout = (!scheduled || scheduled === 'Flexible' || scheduled === 'Rest Day');
+  var out = 'TODAY IS ' + weekday.toUpperCase() + '. SCHEDULED WORKOUT TODAY: ' +
+    (scheduled === 'Rest Day' ? 'Rest Day — recovery and mobility only' :
+     noWorkout ? 'No scheduled workout — bonus or rest day' : scheduled) + '.\n\n';
+  out += 'INSTRUCTION: The primary recommendation (option 1) MUST match today\'s scheduled activity. ';
+  if (noWorkout) {
+    out += 'Since today is unscheduled, option 1 can be any category that fits readiness and micro-goals — but make it the clear best choice for TODAY. ';
+  } else {
+    out += 'If today is an MMA day, option 1 must be MMA-focused. If today is a strength day, option 1 must be strength-focused. ';
+  }
+  out += 'Secondary options may complement the scheduled activity (e.g. mobility add-on, PT block, shorter version) but they must acknowledge the scheduled activity. ';
+  out += 'Do not suggest cardio on a strength day or vice versa unless the readiness score is below 50.\n\n';
+  return out;
+}
+
+// Variety + skip analysis. Looks at last 7 days of workoutLog and compares
+// with schedule to flag missed sessions to carry forward.
+function buildVarietyAndSkipAnalysis() {
+  var today = new Date(); today.setHours(0, 0, 0, 0);
+  var byCat = {};
+  var dayStreakCats = []; // yesterday→7 days ago, inferred category per day
+  var daysBack = [];
+  for (var i = 1; i <= 7; i++) {
+    var d = new Date(today); d.setDate(d.getDate() - i);
+    var y = d.getFullYear();
+    var m = String(d.getMonth() + 1).padStart(2, '0');
+    var dd = String(d.getDate()).padStart(2, '0');
+    daysBack.push({ dateStr: y + '-' + m + '-' + dd, date: new Date(d), daysAgo: i });
+  }
+  // Tally categories for last 7 days (done workouts only)
+  for (var j = 0; j < daysBack.length; j++) {
+    var entry = workoutLog.find(function(w) { return w.date === daysBack[j].dateStr && w.done; });
+    var cat = entry ? inferWorkoutCategory(entry.type) : 'rest';
+    byCat[cat] = (byCat[cat] || 0) + 1;
+    dayStreakCats.push(cat);
+  }
+  // Pretty summary
+  var summaryParts = [];
+  var order = ['strength','cardio','martial_arts','sports','mind_body','rehab','rest','other'];
+  for (var k = 0; k < order.length; k++) {
+    if (byCat[order[k]]) summaryParts.push(CATEGORY_PRETTY[order[k]] + ' x' + byCat[order[k]]);
+  }
+  var categorySummary = summaryParts.length ? summaryParts.join(', ') : 'No activity logged';
+  // Detect a same-category streak (e.g. last 3 days all cardio)
+  var repeatNote = '';
+  if (dayStreakCats.length >= 3) {
+    var last3 = dayStreakCats.slice(0, 3);
+    if (last3[0] !== 'rest' && last3[0] === last3[1] && last3[1] === last3[2]) {
+      repeatNote = ' (3+ consecutive ' + CATEGORY_PRETTY[last3[0]] + ' sessions — avoid another ' + CATEGORY_PRETTY[last3[0]] + ' today unless scheduled)';
+    }
+  }
+  // Missed scheduled workouts in last 7 days
+  var missed = [];
+  for (var m2 = 0; m2 < daysBack.length; m2++) {
+    var info = daysBack[m2];
+    var dow = info.date.getDay(); // 0=Sun..6=Sat
+    var dowIdx = dow === 0 ? 6 : dow - 1; // Mon=0..Sun=6
+    var sched = schedule[DAYS[dowIdx]] || 'Flexible';
+    if (!sched || sched === 'Flexible' || sched === 'Rest Day') continue;
+    var done = workoutLog.find(function(w) { return w.date === info.dateStr && w.done; });
+    if (!done) {
+      missed.push({ date: info.dateStr, daysAgo: info.daysAgo, type: sched });
+    }
+  }
+  var missedStr = 'None — schedule has been kept.';
+  if (missed.length) {
+    missedStr = missed.map(function(mm) {
+      var label = mm.daysAgo === 1 ? 'yesterday' : mm.daysAgo + ' days ago';
+      return mm.type + ' (' + label + ')';
+    }).join(', ');
+  }
+  var todayIdx = todayDayIdx();
+  var todayScheduled = schedule[DAYS[todayIdx]] || 'Flexible';
+  var todayHasSchedule = (todayScheduled && todayScheduled !== 'Flexible' && todayScheduled !== 'Rest Day');
+  // Identify a recent miss (≤3 days) to carry forward
+  var carryForward = null;
+  for (var c = 0; c < missed.length; c++) {
+    if (missed[c].daysAgo <= 3) { carryForward = missed[c]; break; }
+  }
+  var carryLine = '';
+  if (carryForward && !todayHasSchedule) {
+    var lbl = carryForward.daysAgo === 1 ? 'yesterday' : carryForward.daysAgo + ' days ago';
+    carryLine = '- CARRY FORWARD: You missed ' + carryForward.type + ' on ' + lbl + '. Today has no scheduled workout, so option 1 SHOULD be "' + carryForward.type + '" with the explicit reasoning: "You missed ' + carryForward.type + ' on ' + lbl + ' — today is a good day to make it up."\n';
+  } else if (carryForward && todayHasSchedule) {
+    carryLine = '- NOTE: A recent missed ' + carryForward.type + ' session exists but today already has a scheduled activity (' + todayScheduled + '). Prioritize today\'s schedule; optionally reference the miss in secondary options.\n';
+  }
+  return 'VARIETY & SKIP ANALYSIS:\n' +
+    '- Categories trained last 7 days: ' + categorySummary + repeatNote + '\n' +
+    '- Scheduled workouts missed in last 7 days: ' + missedStr + '\n' +
+    '- VARIETY RULE: Do NOT suggest the same category two days in a row unless it is the scheduled activity for today.\n' +
+    '- SKIP RULE: If a scheduled workout type was missed in the last 3 days, carry it forward as the primary suggestion today unless today has a different scheduled activity. Call it out explicitly in the reasoning.\n' +
+    '- If 3+ sessions of the same category have been logged in a row, avoid that category today unless it is scheduled.\n' +
+    carryLine +
+    '\n';
+}
+
+// Compute weekly load summary Mon–Today.
+function buildWeeklyVolumeSummary() {
+  var monStr = getMondayLocalStr();
+  var todayStr = ds(0);
+  var todayIdx = todayDayIdx(); // 0=Mon..6=Sun
+  var scheduledCount = 0;
+  for (var i = 0; i <= todayIdx; i++) {
+    var sched = schedule[DAYS[i]] || 'Flexible';
+    if (sched && sched !== 'Flexible' && sched !== 'Rest Day') scheduledCount++;
+  }
+  var sessionsDone = 0;
+  var catBreakdown = {};
+  for (var w = 0; w < workoutLog.length; w++) {
+    var lw = workoutLog[w];
+    if (!lw || !lw.done) continue;
+    if (lw.date < monStr || lw.date > todayStr) continue;
+    sessionsDone++;
+    var cat = inferWorkoutCategory(lw.type);
+    catBreakdown[cat] = (catBreakdown[cat] || 0) + 1;
+  }
+  var bdOrder = ['strength','cardio','martial_arts','sports','mind_body','rehab','rest','other'];
+  var bdParts = [];
+  for (var b = 0; b < bdOrder.length; b++) {
+    if (catBreakdown[bdOrder[b]]) bdParts.push(CATEGORY_PRETTY[bdOrder[b]] + ' x' + catBreakdown[bdOrder[b]]);
+  }
+  var bdStr = bdParts.length ? bdParts.join(', ') : 'No sessions logged this week';
+  // Zone minutes — aggregate not available; use yesterday snapshot only when present.
+  var zoneLine = '';
+  if (fitData && fitData.prevZones) {
+    var pz = fitData.prevZones || {};
+    var zTotal = (pz.peak || 0) + (pz.cardio || 0) + (pz.fatBurn || 0);
+    if (zTotal > 0) zoneLine = '- Zone minutes yesterday (Fitbit): ' + zTotal + ' (peak ' + (pz.peak||0) + ', cardio ' + (pz.cardio||0) + ', fat-burn ' + (pz.fatBurn||0) + ')\n';
+  }
+  var compliance = scheduledCount > 0 ? Math.round((Math.min(sessionsDone, scheduledCount) / scheduledCount) * 100) : null;
+  var complianceLine = scheduledCount > 0
+    ? '- Schedule compliance: ' + compliance + '% (' + Math.min(sessionsDone, scheduledCount) + ' of ' + scheduledCount + ' scheduled sessions so far this week)\n'
+    : '- No sessions scheduled Mon–Today, so no compliance rate yet.\n';
+  var weekdayToday = ['Monday','Tuesday','Wednesday','Thursday','Friday','Saturday','Sunday'][todayIdx];
+  return 'THIS WEEK SO FAR (Mon–' + weekdayToday + '):\n' +
+    '- Sessions completed: ' + sessionsDone + ' (of ' + scheduledCount + ' scheduled through today)\n' +
+    '- Breakdown: ' + bdStr + '\n' +
+    zoneLine +
+    complianceLine +
+    'Use this to assess weekly load and avoid overtraining or undertraining.\n\n';
+}
+
+// Static exercise-science recovery reasoning block appended after the
+// exercise history section.
+function buildMuscleRecoveryInstruction() {
+  return 'MUSCLE GROUP RECOVERY ANALYSIS:\n' +
+    'Apply exercise science principles to the exercise history above:\n' +
+    '- Major compound lifts (squat, deadlift, bench, row, overhead press, lunges) require 48–72 hours recovery for the primary muscle groups involved.\n' +
+    '- Isolation and accessory work requires 24–48 hours.\n' +
+    '- The following CAN be done daily without recovery concerns: core work, dead hangs, grip training, mobility, PT exercises, stretching, cardio (unless high-intensity two days in a row), martial arts technique work.\n' +
+    'Using your exercise-science knowledge, identify which major muscle groups were trained in the last 48–72 hours from the exercise history above. Do not recommend heavy loading of those muscle groups today unless readiness is above 80. Call out any recovery considerations explicitly in your reasoning.\n\n';
+}
+
+// JSON response shape spec — shared by system prompt across normal + alt calls.
+function buildResponseShapeSpec(aiNumOpts, aiShowMV) {
+  var optTmpl = function(dur) {
+    return '{"type":"workout category","headline":"punchy name","duration":' + dur + ',"intensity":"descriptor","goal_tags":["exact goal title or challenge title"],"goal_reasoning":"one sentence explaining how this advances that goal/challenge","reasoning":"why this fits today based on readiness and data","exercises":["ex + sets/reps","ex + sets/reps","ex + sets/reps"],"mobility":"specific focus"}';
+  };
+  var arr = [optTmpl(45), optTmpl(30)];
+  if (aiNumOpts >= 3) arr.push(optTmpl(20));
+  if (aiNumOpts >= 4) arr.push(optTmpl(15));
+  return 'Respond ONLY with raw JSON, no markdown:\n' +
+    '{"brief":"one sentence overall context based on goal priorities and today\'s schedule","options":[' + arr.join(',') + ']' +
+    (aiShowMV ? ',"minimum_viable":"genuine 10-15 min fallback that still includes every daily-habit micro-goal"' : '') +
+    ',"warning":"one specific caution based on the data, or null"}';
+}
+
+// Build the full system prompt (persona + rules + format + JSON shape).
+function buildSystemPrompt(opts) {
+  opts = opts || {};
+  var aiSettings = getSettings();
+  var aiTone = aiSettings.aiTone || 'Motivational';
+  var aiDetail = aiSettings.aiDetail || 'Normal';
+  var aiNumOpts = opts.aiNumOpts || aiSettings.aiOptions || 3;
+  var aiMV = aiSettings.aiShowMV === undefined ? 'always' : aiSettings.aiShowMV;
+  if (aiMV === true) aiMV = 'always'; if (aiMV === false) aiMV = 'never';
+  var aiShowMV = opts.aiShowMV !== undefined ? opts.aiShowMV : (aiMV === 'always' || (aiMV === 'low' && readiness && readiness.score < 50));
+  var aiLang = aiSettings.aiLang || 'Casual';
+  var allEquip = (aiSettings.equipment || []).concat(aiSettings.customEquipment || []);
+  var equipStr = allEquip.length ? allEquip.join(', ') : 'not specified';
+  var wkLoc = aiSettings.workoutLocation || 'Both';
+  var maxDur = aiSettings.maxDuration || 60;
+  var prefTime = aiSettings.preferredTime || 'Any';
+
+  var persona = 'You are ApexCoach — an elite, deeply personal AI fitness coach. You think like a world-class personal trainer who has studied this athlete for months. You know their schedule, their history, their goals, their injuries, their tendencies, and their life context. You adapt to real human life — if they skipped a workout, you don\'t lecture them, you adjust. You are specific, never generic. Every recommendation is tailored to this exact person on this exact day. You never suggest something contraindicated by their injuries. You always factor in their micro-goals as non-negotiable daily commitments.\n\n';
+
+  var style = 'COACHING STYLE: ' + aiTone + ' tone. ' + aiLang + ' language. Detail level: ' + aiDetail + '. Give ' + aiNumOpts + ' specific, data-driven workout options ordered by best fit first.\n' +
+    'AVAILABLE EQUIPMENT: ' + equipStr + '\n' +
+    'WORKOUT LOCATION: ' + wkLoc + '. MAX DURATION: ' + (maxDur ? maxDur + ' min' : 'no limit') + '. PREFERRED TIME: ' + prefTime + '.\n\n';
+
+  var rulesCommon = 'IMPORTANT RULES:\n' +
+    '- NEVER suggest exercises that aggravate any listed injuries.\n' +
+    '- ALWAYS include a mobility/posture component in each option.\n' +
+    '- If readiness is under 60: recovery-focused options only, no heavy loading.\n' +
+    '- Provide ' + aiNumOpts + ' distinct options: best fit, alternative, and a shorter option' + (aiNumOpts >= 4 ? ', plus a fourth' : '') + '.\n' +
+    '- When recommending ANY Strength session (upper, lower, full body, calisthenics), ALWAYS add a 5–10 minute Posture or PT block as a compound add-on. Format the workout title as "Upper Body Strength + Posture (10 min)" or "Lower Body Strength + PT (10 min)" — matching the existing title taxonomy. In the exercises list, name 2–3 specific PT or posture movements (e.g. "Dead bug 3x10", "Band pull-apart 3x15", "Thoracic extension over foam roller 2min"). Do not mention it generically — always name the actual movements.\n' +
+    '- Every workout option MUST include a goal_tags array with at least one goal title or challenge title, and goal_reasoning explaining the connection.\n';
+  var rulesFitbit = '- Reference actual HRV vs 7-day average in reasoning when available.\n';
+  var rulesManual = '- Base recommendations on the manual check-in scores when no wearable data is available; reference reported sleep, energy, and pain.\n' +
+    '- If pain is rated 1-2 (significant/moderate): prioritize recovery and gentle movement.\n';
+  var rules = rulesCommon + (manualCheckinContext ? rulesManual : rulesFitbit) + '\n';
+
+  var altInstruction = '';
+  if (opts.mode === 'reroll') {
+    altInstruction = 'ALTERNATIVE MODE: The user wants DIFFERENT suggestions than the ones already shown.\n' +
+      'The previous options were: ' + (opts.previousHeadlines || 'unknown') + '.\n' +
+      'Generate ' + aiNumOpts + ' meaningfully different options — different categories, different intensity, different time commitment. Do not repeat any of the previous headlines or categories. All other rules (micro-goals, schedule, injuries, readiness) still apply.\n\n';
+  } else if (opts.mode === 'category' && opts.category) {
+    altInstruction = 'CATEGORY FILTER: The user specifically wants a ' + opts.category + ' workout today. Generate ' + aiNumOpts + ' options in this category only. Still respect readiness, micro-goals, injuries, and equipment. Still include daily-habit micro-goals in every option, including Minimum Viable.\n\n';
+  }
+
+  return persona + style + rules + altInstruction + buildResponseShapeSpec(aiNumOpts, aiShowMV);
+}
+
 // ─── MICRO-GOAL AI PROMPT BUILDER ──────────────────────────────────────
 function buildMicroGoalsPromptContext() {
   if (!microGoals || !microGoals.length) return '';
@@ -4098,21 +4456,21 @@ function buildMicroGoalsPromptContext() {
     if (daysLeft != null) line += ' — ' + (daysLeft < 0 ? 'past deadline' : daysLeft + ' days left');
 
     if (g.type === 'daily_habit') {
-      instructions.push('Daily habit "' + g.title + '": EVERY recommendation today MUST include "' + g.title + '" (or equivalent movement). This is non-negotiable.');
+      instructions.push('Daily habit "' + g.title + '": EVERY recommendation option MUST include "' + g.title + '" (or an equivalent movement). There are NO exceptions — every option INCLUDING the Minimum Viable (10-15 min fallback) MUST include ' + g.title + '. If no other exercise fits, the Minimum Viable IS the habit. Reference the habit by name in that option\'s exercises list, not generically.');
     } else if (g.type === 'weekly_frequency') {
       var pace = (weekDay / 7) * tgt;
       var behind = cur < pace - 0.5;
       if (behind) {
-        instructions.push('Weekly frequency "' + g.title + '": athlete is BEHIND pace (day ' + weekDay + '/7, has ' + cur + ' of ' + tgt + ', expected ~' + pace.toFixed(1) + '). Make AT LEAST ONE of today\'s options explicitly this activity with urgency.');
+        instructions.push('Weekly frequency "' + g.title + '": athlete is BEHIND pace (day ' + weekDay + '/7, has ' + cur + ' of ' + tgt + ', expected ~' + pace.toFixed(1) + '). The PRIMARY option today must be this activity with explicit urgency language. The other options must also reference this goal in their reasoning (e.g. "doesn\'t directly advance your ' + g.title + ' target, pick this only if you can\'t do ' + g.title + ' today").');
       } else {
-        instructions.push('Weekly frequency "' + g.title + '": on pace. Keep this option available but not urgent.');
+        instructions.push('Weekly frequency "' + g.title + '": on pace (day ' + weekDay + '/7, has ' + cur + ' of ' + tgt + '). Keep the goal prominent — feature it in at least one option, reference it in the others.');
       }
     } else if (g.type === 'cumulative_volume') {
       if (daysLeft != null && daysLeft > 0 && remaining > 0) {
         var perDay = Math.ceil(remaining / daysLeft);
-        instructions.push('Cumulative volume "' + g.title + '": ' + remaining + (unit ? ' ' + unit : '') + ' remaining over ' + daysLeft + ' days — suggest ~' + perDay + (unit ? ' ' + unit : '') + ' today, in achievable sets.');
+        instructions.push('Cumulative volume "' + g.title + '": ' + remaining + (unit ? ' ' + unit : '') + ' remaining over ' + daysLeft + ' days — feature it prominently in AT LEAST ONE option (suggest ~' + perDay + (unit ? ' ' + unit : '') + ' today, in achievable sets) and reference the remaining volume in the reasoning of the others.');
       } else if (remaining > 0) {
-        instructions.push('Cumulative volume "' + g.title + '": ' + remaining + (unit ? ' ' + unit : '') + ' remaining, no deadline — chip away with specific rep counts.');
+        instructions.push('Cumulative volume "' + g.title + '": ' + remaining + (unit ? ' ' + unit : '') + ' remaining, no deadline — feature it in at least one option with specific rep counts; reference it briefly in others.');
       }
     } else if (g.type === 'strength_milestone') {
       instructions.push('Strength milestone "' + g.title + '" (target: ' + tgt + (unit ? ' ' + unit : '') + ', current PR: ' + cur + (unit ? ' ' + unit : '') + '): when readiness allows, include progressive overload work on this lift — small, safe jumps toward the target weight.');
