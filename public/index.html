@@ -1612,10 +1612,10 @@ function obSubmitPin() {
       localStorage.setItem('ac_profile_data', JSON.stringify(profileData));
       if (profileData.ai_prompt_context) FULL_PROFILE = profileData.ai_prompt_context;
       if (profileData.schedule) {
-        schedule = profileData.schedule;
+        schedule = normalizeSchedule(profileData.schedule);
         localStorage.setItem('ac_schedule', JSON.stringify(schedule));
       } else if (profileData.schedule_defaults) {
-        schedule = profileData.schedule_defaults;
+        schedule = normalizeSchedule(profileData.schedule_defaults);
         localStorage.setItem('ac_schedule', JSON.stringify(schedule));
       }
       obStep = 9; obRender();
@@ -3082,12 +3082,7 @@ function fetchAI(opts) {
     goalPriorityContext += '\nIMPORTANT: Weight workout recommendations toward top-ranked goals. Goal #1 should influence ~40% of recommendations, #2 ~25%, #3 ~15%, remaining goals share rest. Always mention which goal each workout option targets.\n\n';
   }
 
-  // New sections (schedule must come first in the user message)
-  var scheduleInstruction = buildScheduleInstruction();
-  var varietyAnalysis = buildVarietyAndSkipAnalysis();
-  var weeklyVolume = buildWeeklyVolumeSummary();
-  var microGoalsContext = buildMicroGoalsPromptContext();
-  var muscleRecoveryBlock = buildMuscleRecoveryInstruction();
+  var altOpts = opts.alternative || null;
 
   var aiSettings = getSettings();
   var aiNumOpts = aiSettings.aiOptions || 3;
@@ -3095,12 +3090,31 @@ function fetchAI(opts) {
   if (aiMV === true) aiMV = 'always'; if (aiMV === false) aiMV = 'never';
   var aiShowMV = aiMV === 'always' || (aiMV === 'low' && readiness && readiness.score < 50);
 
+  // When the user taps a category pill, inject a hard override block that
+  // explicitly outranks the schedule. The schedule instruction itself is
+  // switched to a suppressed note so nothing contradicts.
+  var categoryOverrideBlock = '';
+  if (altOpts && altOpts.mode === 'category' && altOpts.category) {
+    categoryOverrideBlock = 'CATEGORY OVERRIDE (takes priority over everything else in this message):\n' +
+      'The user has manually chosen to do a ' + altOpts.category + ' workout today instead of their scheduled activity. Generate ' + aiNumOpts + ' ' + altOpts.category + ' options only. The schedule instruction does NOT apply to this call. Still respect readiness score, injuries, equipment, and micro-goals — and include the daily-habit micro-goals in every option including Minimum Viable.\n\n';
+  }
+
+  // New sections (schedule must come first after any override)
+  var scheduleInstruction = buildScheduleInstruction(
+    categoryOverrideBlock ? { categoryOverride: altOpts.category } : null
+  );
+  var varietyAnalysis = buildVarietyAndSkipAnalysis();
+  var weeklyVolume = buildWeeklyVolumeSummary();
+  var microGoalsContext = buildMicroGoalsPromptContext();
+  var muscleRecoveryBlock = buildMuscleRecoveryInstruction();
+
   // Truncatable sections (kept separate so we can shrink them if needed)
   var truncatedCoachingBrief = coachingBrief || '';
   var truncatedHistoricalBrief = historicalBrief || '';
 
   var buildUserMessage = function() {
-    return scheduleInstruction +
+    return categoryOverrideBlock +
+      scheduleInstruction +
       'TODAY: ' + today + '\n' +
       'CURRENT WORKOUT STREAK: ' + currentStreak + ' days' + (currentStreak >= 7 ? ' (impressive consistency!)' : '') + '\n' +
       dataBlock + '\n' +
@@ -3118,7 +3132,6 @@ function fetchAI(opts) {
       'WEEKLY SCHEDULE DEFAULTS:\n' + getScheduleText() + '\n';
   };
 
-  var altOpts = opts.alternative || null;
   var systemPromptOpts = { aiNumOpts: aiNumOpts, aiShowMV: aiShowMV };
   if (altOpts) {
     systemPromptOpts.mode = altOpts.mode || null;
@@ -4215,22 +4228,38 @@ var CATEGORY_PRETTY = {
 };
 
 // Build the TOP-of-message schedule instruction the coach must obey.
-function buildScheduleInstruction() {
+// When opts.categoryOverride is set (user manually picked a category pill)
+// the schedule rule is suppressed — see prompt construction in fetchAI.
+function buildScheduleInstruction(opts) {
+  opts = opts || {};
   var idx = todayDayIdx();
   var weekday = ['Monday','Tuesday','Wednesday','Thursday','Friday','Saturday','Sunday'][idx];
-  var scheduled = schedule[DAYS[idx]] || 'Flexible';
-  var noWorkout = (!scheduled || scheduled === 'Flexible' || scheduled === 'Rest Day');
-  var out = 'TODAY IS ' + weekday.toUpperCase() + '. SCHEDULED WORKOUT TODAY: ' +
-    (scheduled === 'Rest Day' ? 'Rest Day — recovery and mobility only' :
-     noWorkout ? 'No scheduled workout — bonus or rest day' : scheduled) + '.\n\n';
-  out += 'INSTRUCTION: The primary recommendation (option 1) MUST match today\'s scheduled activity. ';
-  if (noWorkout) {
-    out += 'Since today is unscheduled, option 1 can be any category that fits readiness and micro-goals — but make it the clear best choice for TODAY. ';
-  } else {
-    out += 'If today is an MMA day, option 1 must be MMA-focused. If today is a strength day, option 1 must be strength-focused. ';
+
+  if (opts.categoryOverride) {
+    return 'TODAY IS ' + weekday.toUpperCase() + '. NOTE: The athlete has manually chosen a ' + opts.categoryOverride + ' workout today instead of their scheduled activity. The normal schedule-matching rule does NOT apply to this call — follow the CATEGORY OVERRIDE block above.\n\n';
   }
-  out += 'Secondary options may complement the scheduled activity (e.g. mobility add-on, PT block, shorter version) but they must acknowledge the scheduled activity. ';
-  out += 'Do not suggest cardio on a strength day or vice versa unless the readiness score is below 50.\n\n';
+
+  var acts = normalizeScheduleDay(schedule[DAYS[idx]]);
+  if (!acts.length) {
+    return 'TODAY IS ' + weekday.toUpperCase() + '. SCHEDULED WORKOUT TODAY: No scheduled activity — bonus or rest day.\n\n' +
+      'INSTRUCTION: Option 1 can be any category that fits readiness and micro-goals — but make it the clear best choice for TODAY.\n\n';
+  }
+
+  var lines = acts.map(function(a, i) {
+    return (i + 1) + '. ' + a.activity + (a.duration ? ' (' + a.duration + ' min)' : '');
+  });
+  var out = 'TODAY IS ' + weekday.toUpperCase() + '. SCHEDULED ACTIVITIES TODAY:\n' + lines.join('\n') + '\n\n';
+  out += 'INSTRUCTION: The primary recommendation (option 1) MUST match the first scheduled activity exactly. ';
+  out += 'Its headline should be "' + acts[0].activity + '" (optionally suffixed with a micro-goal habit, e.g. "' + acts[0].activity + ' + Dead Hang"). ';
+  if (acts.length > 1) {
+    var names = acts.map(function(a) { return a.activity; });
+    out += 'There are multiple scheduled activities today (' + names.join(', ') + '). Mention ALL of them in option 1\'s reasoning and suggest how to structure the day — e.g. "' + names[0] + ' first, then ' + names[1] + ' — here\'s what to focus on in each". ';
+  }
+  if (acts[0].duration) {
+    out += 'Option 1\'s duration MUST match the scheduled duration (' + acts[0].duration + ' min) — do not suggest a shorter session when a ' + acts[0].duration + '-min block is on the calendar. ';
+  }
+  out += 'Secondary options may complement the scheduled activity (mobility add-on, PT block, shorter backup) but must acknowledge the scheduled activities. ';
+  out += 'Do not suggest a different category than the scheduled activity\'s category unless readiness is below 50.\n\n';
   return out;
 }
 
@@ -4276,11 +4305,11 @@ function buildVarietyAndSkipAnalysis() {
     var info = daysBack[m2];
     var dow = info.date.getDay(); // 0=Sun..6=Sat
     var dowIdx = dow === 0 ? 6 : dow - 1; // Mon=0..Sun=6
-    var sched = schedule[DAYS[dowIdx]] || 'Flexible';
-    if (!sched || sched === 'Flexible' || sched === 'Rest Day') continue;
+    var schedActs = normalizeScheduleDay(schedule[DAYS[dowIdx]]);
+    if (!schedActs.length) continue;
     var done = workoutLog.find(function(w) { return w.date === info.dateStr && w.done; });
     if (!done) {
-      missed.push({ date: info.dateStr, daysAgo: info.daysAgo, type: sched });
+      missed.push({ date: info.dateStr, daysAgo: info.daysAgo, type: schedActs[0].activity });
     }
   }
   var missedStr = 'None — schedule has been kept.';
@@ -4291,8 +4320,9 @@ function buildVarietyAndSkipAnalysis() {
     }).join(', ');
   }
   var todayIdx = todayDayIdx();
-  var todayScheduled = schedule[DAYS[todayIdx]] || 'Flexible';
-  var todayHasSchedule = (todayScheduled && todayScheduled !== 'Flexible' && todayScheduled !== 'Rest Day');
+  var todayActs = normalizeScheduleDay(schedule[DAYS[todayIdx]]);
+  var todayScheduled = todayActs.length ? todayActs.map(function(a) { return a.activity; }).join(' + ') : 'Flexible';
+  var todayHasSchedule = todayActs.length > 0;
   // Identify a recent miss (≤3 days) to carry forward
   var carryForward = null;
   for (var c = 0; c < missed.length; c++) {
@@ -4322,8 +4352,8 @@ function buildWeeklyVolumeSummary() {
   var todayIdx = todayDayIdx(); // 0=Mon..6=Sun
   var scheduledCount = 0;
   for (var i = 0; i <= todayIdx; i++) {
-    var sched = schedule[DAYS[i]] || 'Flexible';
-    if (sched && sched !== 'Flexible' && sched !== 'Rest Day') scheduledCount++;
+    var schedActs = normalizeScheduleDay(schedule[DAYS[i]]);
+    if (schedActs.length) scheduledCount++;
   }
   var sessionsDone = 0;
   var catBreakdown = {};
@@ -4427,7 +4457,7 @@ function buildSystemPrompt(opts) {
       'The previous options were: ' + (opts.previousHeadlines || 'unknown') + '.\n' +
       'Generate ' + aiNumOpts + ' meaningfully different options — different categories, different intensity, different time commitment. Do not repeat any of the previous headlines or categories. All other rules (micro-goals, schedule, injuries, readiness) still apply.\n\n';
   } else if (opts.mode === 'category' && opts.category) {
-    altInstruction = 'CATEGORY FILTER: The user specifically wants a ' + opts.category + ' workout today. Generate ' + aiNumOpts + ' options in this category only. Still respect readiness, micro-goals, injuries, and equipment. Still include daily-habit micro-goals in every option, including Minimum Viable.\n\n';
+    altInstruction = 'CATEGORY FILTER: The user has manually chosen to do a ' + opts.category + ' workout today instead of their scheduled activity. Generate ' + aiNumOpts + ' ' + opts.category + ' options ONLY — the schedule instruction does NOT apply to this call. If any option slips into a non-' + opts.category + ' category, the response is wrong. Still respect readiness, injuries, equipment, micro-goals, and include the daily-habit micro-goals in every option including Minimum Viable.\n\n';
   }
 
   return persona + style + rules + altInstruction + buildResponseShapeSpec(aiNumOpts, aiShowMV);
@@ -4871,32 +4901,178 @@ function saveProfileDataToServer(pd) {
 
 // ── SCHEDULE ──────────────────────────────────────────────────────────────
 
+// Schedule entry shape: schedule[dayKey] is an array of
+//   { activity: string, duration: number|null }
+// Backward compat: legacy format stored a single string per day
+// (e.g. "MMA / Sparring") — normalizeScheduleDay() upgrades those on read.
+
+function normalizeScheduleDay(v) {
+  if (!v) return [];
+  if (Array.isArray(v)) {
+    var out = [];
+    for (var i = 0; i < v.length; i++) {
+      var e = v[i];
+      if (!e) continue;
+      var act = typeof e === 'string' ? e : (e.activity || '');
+      act = String(act).trim();
+      if (!act) continue;
+      var dur = (e && typeof e.duration === 'number' && e.duration > 0) ? e.duration : null;
+      out.push({ activity: act, duration: dur });
+    }
+    return out;
+  }
+  if (typeof v === 'string') {
+    var s = v.trim();
+    if (!s || s === 'Flexible') return [];
+    return [{ activity: s, duration: null }];
+  }
+  return [];
+}
+
+function normalizeSchedule(obj) {
+  var out = {};
+  for (var i = 0; i < DAYS.length; i++) {
+    out[DAYS[i]] = normalizeScheduleDay(obj && obj[DAYS[i]]);
+  }
+  return out;
+}
+
 function loadSchedule() {
   var saved = localStorage.getItem('ac_schedule');
-  schedule = saved ? JSON.parse(saved) : Object.assign({}, SCHEDULE_DEFAULTS);
+  var raw = saved ? JSON.parse(saved) : Object.assign({}, SCHEDULE_DEFAULTS);
+  schedule = normalizeSchedule(raw);
 }
 
 function saveSchedule() {
   localStorage.setItem('ac_schedule', JSON.stringify(schedule));
+  if (currentProfileId) {
+    // Sync to server so cross-device and AI prompts stay in step.
+    fetch('/api/profiles/' + currentProfileId, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ profile_data: { schedule: schedule } })
+    }).catch(function(e) { console.warn('[Schedule] server sync skipped:', e && e.message); });
+  }
+}
+
+var DURATION_OPTIONS = [15, 30, 45, 60, 75, 90];
+var scheduleExpanded = {}; // day key → expanded boolean
+
+function toggleScheduleDay(day) {
+  scheduleExpanded[day] = !scheduleExpanded[day];
+  renderSchedule();
+}
+
+function addScheduleActivity(day) {
+  if (!Array.isArray(schedule[day])) schedule[day] = [];
+  schedule[day].push({ activity: '', duration: 60 });
+  scheduleExpanded[day] = true;
+  saveSchedule();
+  renderSchedule();
+  // Focus the just-added input
+  setTimeout(function() {
+    var inputs = document.querySelectorAll('[data-schedule-day="' + day + '"] input[data-role="activity"]');
+    if (inputs.length) inputs[inputs.length - 1].focus();
+  }, 10);
+}
+
+function removeScheduleActivity(day, idx) {
+  if (!Array.isArray(schedule[day])) return;
+  schedule[day].splice(idx, 1);
+  saveSchedule();
+  renderSchedule();
+}
+
+function updateScheduleActivityName(day, idx, value) {
+  if (!Array.isArray(schedule[day]) || !schedule[day][idx]) return;
+  schedule[day][idx].activity = String(value || '').trim();
+  saveSchedule();
+}
+
+function updateScheduleActivityDuration(day, idx, rawValue) {
+  if (!Array.isArray(schedule[day]) || !schedule[day][idx]) return;
+  if (rawValue === '__custom__') {
+    var current = schedule[day][idx].duration || 60;
+    var entered = prompt('Custom duration (minutes):', String(current));
+    if (entered === null) { renderSchedule(); return; }
+    var n = parseInt(entered, 10);
+    schedule[day][idx].duration = (isNaN(n) || n <= 0) ? null : n;
+  } else if (rawValue === '') {
+    schedule[day][idx].duration = null;
+  } else {
+    var n2 = parseInt(rawValue, 10);
+    schedule[day][idx].duration = (isNaN(n2) || n2 <= 0) ? null : n2;
+  }
+  saveSchedule();
+  renderSchedule();
+}
+
+function formatScheduleDaySummary(day) {
+  var acts = normalizeScheduleDay(schedule[day]);
+  if (!acts.length) return 'No activities';
+  return acts.map(function(a) {
+    return a.activity + (a.duration ? ' (' + a.duration + 'm)' : '');
+  }).join(' + ');
 }
 
 function renderSchedule() {
   var el = document.getElementById('schedule-grid');
   if (!el) return;
-  var todayDow = new Date().toLocaleDateString('en-US', { weekday: 'short' }).toLowerCase();
+  // Switch container from 7-column grid to vertical stack for accordion.
+  el.style.display = 'flex';
+  el.style.flexDirection = 'column';
+  el.style.gap = '6px';
+  el.style.gridTemplateColumns = '';
+
+  var todayIdx = todayDayIdx();
   var html = '';
   for (var i = 0; i < DAYS.length; i++) {
     var day = DAYS[i];
     var label = DAY_LABELS[i];
-    var val = schedule[day] || 'Flexible';
-    var isToday = todayDow === label.toLowerCase();
-    html += '<div style="background:var(--bg-input);border:1px solid ' + (isToday ? 'var(--accent-33)' : 'var(--border)') + ';border-radius:8px;padding:10px 6px;text-align:center">' +
-      '<div class="mono" style="font-size:10px;color:' + (isToday ? 'var(--accent)' : 'var(--text-dim)') + ';letter-spacing:2px;margin-bottom:8px">' + label.toUpperCase() + '</div>' +
-      '<select onchange="schedule[\'' + day + '\']=this.value;saveSchedule()" style="font-size:11px;padding:5px 4px;margin-bottom:0;text-align:center">';
-    for (var j = 0; j < WORKOUT_TYPES.length; j++) {
-      html += '<option value="' + WORKOUT_TYPES[j] + '"' + (val === WORKOUT_TYPES[j] ? ' selected' : '') + '>' + WORKOUT_TYPES[j] + '</option>';
+    var isToday = todayIdx === i;
+    var acts = normalizeScheduleDay(schedule[day]);
+    var expanded = !!scheduleExpanded[day];
+    var summary = acts.length ? formatScheduleDaySummary(day) : 'No activities';
+    var borderColor = isToday ? 'var(--accent-33)' : 'var(--border)';
+    html += '<div data-schedule-day="' + day + '" style="background:var(--bg-input);border:1px solid ' + borderColor + ';border-radius:8px;overflow:hidden">';
+    // Header (tap to toggle)
+    html += '<div onclick="toggleScheduleDay(\'' + day + '\')" style="display:flex;align-items:center;gap:10px;padding:10px 12px;cursor:pointer;user-select:none">';
+    html += '<span class="mono" style="font-size:10px;letter-spacing:2px;color:' + (isToday ? 'var(--accent)' : 'var(--text-dim)') + ';width:38px;flex-shrink:0">' + label.toUpperCase() + '</span>';
+    html += '<span style="flex:1;min-width:0;font-size:13px;color:' + (acts.length ? 'var(--text)' : 'var(--text-dim)') + ';overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + attrEsc(summary) + '</span>';
+    if (acts.length) {
+      html += '<span class="mono" style="font-size:10px;color:var(--text-dim)">' + acts.length + '</span>';
     }
-    html += '</select></div>';
+    html += '<span style="color:var(--text-dim);font-size:12px;transform:rotate(' + (expanded ? '90' : '0') + 'deg);transition:transform .15s">&#9654;</span>';
+    html += '</div>';
+
+    if (expanded) {
+      html += '<div style="padding:4px 10px 12px 10px;display:flex;flex-direction:column;gap:8px">';
+      if (!acts.length) {
+        html += '<p style="font-size:12px;color:var(--text-dim);font-style:italic;margin:4px 0 0 4px">Nothing scheduled — add an activity below.</p>';
+      }
+      for (var a = 0; a < acts.length; a++) {
+        var row = acts[a];
+        var duration = row.duration;
+        var customDuration = (duration && DURATION_OPTIONS.indexOf(duration) < 0) ? duration : null;
+        html += '<div style="display:flex;gap:6px;align-items:center">';
+        html += '<input data-role="activity" type="text" value="' + attrEsc(row.activity) + '" placeholder="Activity (e.g. MMA Class)" onchange="updateScheduleActivityName(\'' + day + '\',' + a + ',this.value)" onblur="updateScheduleActivityName(\'' + day + '\',' + a + ',this.value)" style="flex:1;min-width:0;background:var(--bg-card);border:1px solid var(--border);color:var(--text);padding:8px 10px;border-radius:6px;font-size:13px;font-family:DM Sans,sans-serif;margin-bottom:0;outline:none">';
+        html += '<select onchange="updateScheduleActivityDuration(\'' + day + '\',' + a + ',this.value)" style="width:112px;font-size:12px;padding:8px 6px;margin-bottom:0">';
+        if (customDuration) html += '<option value="' + customDuration + '" selected>' + customDuration + ' min</option>';
+        html += '<option value=""' + (duration == null ? ' selected' : '') + '>No duration</option>';
+        for (var d = 0; d < DURATION_OPTIONS.length; d++) {
+          var dv = DURATION_OPTIONS[d];
+          html += '<option value="' + dv + '"' + (duration === dv ? ' selected' : '') + '>' + dv + ' min</option>';
+        }
+        html += '<option value="__custom__">Custom&hellip;</option>';
+        html += '</select>';
+        html += '<button type="button" onclick="removeScheduleActivity(\'' + day + '\',' + a + ')" title="Remove" style="background:transparent;border:1px solid var(--border);color:var(--text-dim);padding:6px 10px;border-radius:6px;cursor:pointer;font-size:13px;flex-shrink:0">&#128465;</button>';
+        html += '</div>';
+      }
+      html += '<button type="button" onclick="addScheduleActivity(\'' + day + '\')" style="background:var(--accent-10);border:1px solid var(--accent-33);color:var(--accent);padding:8px 12px;border-radius:6px;cursor:pointer;font-size:12px;font-weight:600;align-self:flex-start;font-family:DM Sans,sans-serif">+ Add activity</button>';
+      html += '</div>';
+    }
+
+    html += '</div>';
   }
   el.innerHTML = html;
 }
@@ -4904,7 +5080,14 @@ function renderSchedule() {
 function getScheduleText() {
   var lines = [];
   for (var i = 0; i < DAYS.length; i++) {
-    lines.push(DAY_LABELS[i] + ': ' + (schedule[DAYS[i]] || 'Flexible'));
+    var acts = normalizeScheduleDay(schedule[DAYS[i]]);
+    var s;
+    if (!acts.length) {
+      s = 'Flexible';
+    } else {
+      s = acts.map(function(a) { return a.activity + (a.duration ? ' (' + a.duration + 'min)' : ''); }).join(' + ');
+    }
+    lines.push(DAY_LABELS[i] + ': ' + s);
   }
   return lines.join(', ');
 }

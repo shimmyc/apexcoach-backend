@@ -182,6 +182,34 @@ Calculated from workoutLog entries where done=true. Counts backwards from today 
 
 **Workout-category inference** uses `inferWorkoutCategory(workoutType)` — regex-based parse of the stored workout title string into `strength | cardio | martial_arts | sports | mind_body | rehab | rest | other`. Used by weekly volume and variety analysis.
 
+## Weekly Schedule (Array-per-Day Format)
+
+Schedule supports multiple activities per day, each with an optional duration. Data shape on `profile_data.schedule`:
+
+```json
+{
+  "tue": [
+    {"activity": "MMA Class", "duration": 60},
+    {"activity": "BJJ Class", "duration": 60}
+  ],
+  "thu": [{"activity": "MMA Class", "duration": 60}]
+}
+```
+
+Day keys are Mon-first 3-letter: `mon, tue, wed, thu, fri, sat, sun`. Empty array = no scheduled activity (flexible/rest). Duration is a number in minutes or `null`.
+
+**Backward compat:** `normalizeScheduleDay(v)` upgrades legacy strings on read — `'Flexible'` → `[]`, any other string → `[{activity: str, duration: null}]`. Runs on both `loadSchedule()` and profile-data arrival so old saved profiles still work.
+
+**UI:** collapsible accordion in the Profile tab `#schedule-grid`. Each day is a card with summary row (tap to expand). Expanded view shows per-activity rows: text input for activity name, duration `<select>` (No duration / 15 / 30 / 45 / 60 / 75 / 90 / Custom…), and a 🗑️ remove button, plus a `+ Add activity` button. `saveSchedule()` writes to localStorage and PATCHes `profile_data.schedule` on the server for cross-device sync.
+
+**AI prompt injection** — `buildScheduleInstruction()` formats multi-activity days as:
+```
+TODAY IS TUESDAY. SCHEDULED ACTIVITIES TODAY:
+1. MMA Class (60 min)
+2. BJJ Class (60 min)
+```
+plus rules that option 1 must match the first scheduled activity exactly, must mention all scheduled activities and suggest how to structure the day, and must match the first activity's duration if specified. `buildVarietyAndSkipAnalysis` and `buildWeeklyVolumeSummary` also read the array format — missed-workout detection uses the first activity's name as the "missed type".
+
 ## Alternative Recommendations (Cycling UI)
 
 Below the 3 rec cards and Minimum Viable the Today tab renders two controls:
@@ -190,6 +218,8 @@ Below the 3 rec cards and Minimum Viable the Today tab renders two controls:
 - **Category pills** (Strength / Cardio / Martial Arts / Sports / Mind & Body / Rehab & Recovery / Rest) — `filterRecsByCategory(key)` fires `fetchAI({ alternative: { mode: 'category', category: <pretty> } })`. Claude is told to generate options in that category only, still respecting readiness, micro-goals, injuries, equipment.
 
 Both paths write to `altRec` / `altRecMode` / `altRecCategory` state and DO NOT touch the main daily cache (`aiRec`, `ac_cache`, `daily_recommendations` on profiles). `renderAI()` switches to rendering `altRec` with a blue "SHOWING DIFFERENT OPTIONS" banner and a `← Back to today's recommendations` link that calls `restoreCachedRecs()` to clear alt state.
+
+**Category override outranks schedule:** when the category pill path is taken, `fetchAI()` prepends a `CATEGORY OVERRIDE` block to the user message ("takes priority over everything else in this message") and swaps `buildScheduleInstruction()` to a suppressed note stating the schedule does NOT apply to this call. The system prompt's category block also enforces this with "if any option slips into a non-{category} category, the response is wrong." This fixes a bug where tapping Strength still returned MMA recommendations because the schedule instruction was drowning out the category filter.
 
 ## Daily AI Recommendation Cache
 

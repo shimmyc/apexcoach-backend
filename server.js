@@ -1579,13 +1579,29 @@ app.post("/api/profiles/:id/roadmap", async function(req, res) {
       goalCtx += '\n';
     }
 
-    // Build schedule from profile_data
+    // Build schedule from profile_data. Supports both legacy string-per-day
+    // format and the new array-of-{activity, duration}-per-day format.
     let scheduleStr = '';
     if (pd.schedule) {
       const days = ['mon','tue','wed','thu','fri','sat','sun'];
       const dayNames = ['Monday','Tuesday','Wednesday','Thursday','Friday','Saturday','Sunday'];
+      const formatDay = (v) => {
+        if (!v) return null;
+        if (Array.isArray(v)) {
+          const parts = v
+            .filter((e) => e && e.activity)
+            .map((e) => e.activity + (typeof e.duration === 'number' && e.duration > 0 ? ' (' + e.duration + ' min)' : ''));
+          return parts.length ? parts.join(' + ') : null;
+        }
+        if (typeof v === 'string') {
+          const s = v.trim();
+          return (!s || s === 'Flexible') ? null : s;
+        }
+        return null;
+      };
       days.forEach(function(d, i) {
-        if (pd.schedule[d]) scheduleStr += dayNames[i] + ': ' + pd.schedule[d] + '\n';
+        const f = formatDay(pd.schedule[d]);
+        if (f) scheduleStr += dayNames[i] + ': ' + f + '\n';
       });
     }
 
