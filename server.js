@@ -1801,17 +1801,25 @@ app.post("/api/ai", async function(req, res) {
     // Auto-cache the system prompt. If client sent a plain string, wrap it.
     // If client already sent a structured array, only add cache_control to the
     // last block if none of the blocks already have one (don't clobber).
+    //
+    // TTL: daily_recs uses 1-hour TTL because users check the app several
+    // times a day and the system prompt is stable across sessions. 1h writes
+    // cost 2× (vs 1.25× for 5m) but pay off after ~3 reads, which is typical.
+    // All other callers get the 5-minute default.
+    const cacheControl = callType === "daily_recs"
+      ? { type: "ephemeral", ttl: "1h" }
+      : { type: "ephemeral" };
     if (typeof forwarded.system === "string" && forwarded.system.length > 0) {
       forwarded.system = [{
         type: "text",
         text: forwarded.system,
-        cache_control: { type: "ephemeral" },
+        cache_control: cacheControl,
       }];
     } else if (Array.isArray(forwarded.system) && forwarded.system.length > 0) {
       const hasCache = forwarded.system.some(function(b) { return b && b.cache_control; });
       if (!hasCache) {
         const last = forwarded.system[forwarded.system.length - 1];
-        if (last && typeof last === "object") last.cache_control = { type: "ephemeral" };
+        if (last && typeof last === "object") last.cache_control = cacheControl;
       }
     }
 
