@@ -22,7 +22,7 @@ ApexCoach is a personalized AI fitness coaching web app. Users connect their Fit
 
 ## Supabase Tables
 
-- profiles: id, name, pin (sha256 hashed), avatar_color, profile_data (jsonb), fitbit_access_token, fitbit_refresh_token, fitbit_expires_at, coaching_brief (text), historical_brief (text), historical_brief_updated_at (timestamp), roadmap (text), roadmap_updated_at (timestamp), daily_recommendations (jsonb), daily_recommendations_date (date), daily_recommendations_readiness (int), created_at
+- profiles: id, name, pin (sha256 hashed), avatar_color, profile_data (jsonb), fitbit_access_token, fitbit_refresh_token, fitbit_expires_at, coaching_brief (text), historical_brief (text), historical_brief_updated_at (timestamp), roadmap (text), roadmap_updated_at (timestamp), daily_recommendations (jsonb), daily_recommendations_date (date), daily_recommendations_readiness (int), progress_brief (jsonb), progress_brief_date (date), created_at
 
 - workouts: id, date, type, notes, done, mobility, med, ts, profile_id
 
@@ -148,6 +148,10 @@ Calculated from workoutLog entries where done=true. Counts backwards from today 
 
 - POST /api/profiles/:id/daily-recs — upserts daily_recommendations, daily_recommendations_date, daily_recommendations_readiness on profiles
 
+- GET /api/profiles/:id/progress-brief — returns cached progress brief + date
+
+- POST /api/profiles/:id/progress-brief — upserts progress_brief (jsonb) + progress_brief_date on profiles
+
 - GET /api/profiles/:id/micro-goals — list active micro-goals; server recomputes `current_value` for auto-trackable types (see Active Challenges system)
 
 - POST /api/profiles/:id/micro-goals — create a new micro-goal; body: `{title, type, target_value, target_unit?, period?, end_date?}`
@@ -240,7 +244,16 @@ Regeneration triggers:
 ALTER TABLE profiles ADD COLUMN IF NOT EXISTS daily_recommendations jsonb;
 ALTER TABLE profiles ADD COLUMN IF NOT EXISTS daily_recommendations_date date;
 ALTER TABLE profiles ADD COLUMN IF NOT EXISTS daily_recommendations_readiness int;
+ALTER TABLE profiles ADD COLUMN IF NOT EXISTS progress_brief jsonb;
+ALTER TABLE profiles ADD COLUMN IF NOT EXISTS progress_brief_date date;
 ```
+
+## Progress Brief Cache (Server-Side)
+
+The progress brief on the Today tab is cached on the profile in `progress_brief` (jsonb) + `progress_brief_date` (date), mirroring the `daily_recommendations` pattern so it survives cross-device and doesn't fire an AI call on every load.
+
+- **Client flow** (`fetchProgress()`): GET `/api/profiles/:id/progress-brief` first. If server has a same-day entry, render it and mirror to `localStorage.ac_cache.progressRec`. Otherwise fire the AI call (Haiku via `callType: 'progress_brief'`), render, then POST the result back to the server.
+- **Invalidation**: `POST /api/workouts`, `PATCH /api/workouts/:id`, and `DELETE /api/workouts/:id` all call `clearProgressBriefCache(profile_id)` after the mutation. The PATCH/DELETE paths look up `profile_id` from the workouts row first (via `getWorkoutProfileId`). The client-side `saveWorkout` / `deleteWorkout` paths also clear `localStorage.ac_cache.progressRec` and call `fetchProgress()` if the Today card is visible, so the regenerated brief appears immediately on the active device.
 
 ## Daily Feeling Check-In
 

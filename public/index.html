@@ -5100,6 +5100,9 @@ function getScheduleText() {
 
 // ── PROGRESS BRIEF ────────────────────────────────────────────────────────
 
+// Try the server-side daily cache first (cross-device). Falls through to AI
+// regeneration when the server has no same-day entry — which happens after a
+// workout save/edit/delete because those endpoints wipe the cache.
 function fetchProgress() {
   document.getElementById('progress-card').style.display = 'block';
   document.getElementById('progress-content').innerHTML = '<p class="mono" style="font-size:11px;color:#22c97a;letter-spacing:3px;animation:pulse 1.6s infinite">ANALYZING PROGRESS...</p>';
@@ -5110,6 +5113,28 @@ function fetchProgress() {
     return;
   }
 
+  var today = ds(0);
+  if (currentProfileId) {
+    fetch('/api/profiles/' + currentProfileId + '/progress-brief')
+      .then(function(r) { return r.json(); })
+      .then(function(data) {
+        if (data && data.success && data.brief && data.date === today) {
+          progressRec = data.brief;
+          var cached = JSON.parse(localStorage.getItem('ac_cache') || '{}');
+          cached.progressRec = progressRec;
+          localStorage.setItem('ac_cache', JSON.stringify(cached));
+          renderProgress();
+        } else {
+          generateProgressBrief(slice, today);
+        }
+      })
+      .catch(function() { generateProgressBrief(slice, today); });
+  } else {
+    generateProgressBrief(slice, today);
+  }
+}
+
+function generateProgressBrief(slice, today) {
   var log14 = '';
   for (var i = 0; i < slice.length; i++) {
     var w = slice[i];
@@ -5151,6 +5176,14 @@ function fetchProgress() {
     cached.progressRec = progressRec;
     localStorage.setItem('ac_cache', JSON.stringify(cached));
     renderProgress();
+    // Persist to server so other devices reuse it. Fire-and-forget.
+    if (currentProfileId && progressRec) {
+      fetch('/api/profiles/' + currentProfileId + '/progress-brief', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ brief: progressRec, date: today })
+      }).catch(function() {});
+    }
   })
   .catch(function() {
     document.getElementById('progress-content').innerHTML = '<p style="color:#e87;font-size:13px">Progress analysis unavailable.</p>';
@@ -5304,6 +5337,13 @@ function deleteWorkout(id) {
   renderLogArea();
   renderWeek();
   renderLog();
+  // History changed → progress brief is stale. Clear local mirror; next render
+  // refetches from server (which was wiped by DELETE /api/workouts/:id).
+  var cachedPB = JSON.parse(localStorage.getItem('ac_cache') || '{}');
+  delete cachedPB.progressRec;
+  localStorage.setItem('ac_cache', JSON.stringify(cachedPB));
+  progressRec = null;
+  if (document.getElementById('progress-card').style.display === 'block') fetchProgress();
 }
 
 function showDeleteConfirm() {
@@ -5495,6 +5535,15 @@ function doSaveWorkout() {
     }
     // Invalidate goal progress cache after workout save
     localStorage.removeItem('ac_goal_progress');
+
+    // Invalidate progress-brief — history changed. Clear localStorage mirror
+    // (server-side cache is wiped by the /api/workouts handler) and regenerate
+    // if the Today card is visible.
+    var cachedPB = JSON.parse(localStorage.getItem('ac_cache') || '{}');
+    delete cachedPB.progressRec;
+    localStorage.setItem('ac_cache', JSON.stringify(cachedPB));
+    progressRec = null;
+    if (document.getElementById('progress-card').style.display === 'block') fetchProgress();
   }
 }
 

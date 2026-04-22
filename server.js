@@ -639,6 +639,18 @@ app.get("/api/workouts", async function(req, res) {
   }
 });
 
+// Look up the profile_id that owns a workouts row. Used to invalidate the
+// progress-brief cache on PATCH/DELETE where the body doesn't carry profile_id.
+async function getWorkoutProfileId(wid) {
+  try {
+    const r = await fetch(SUPABASE_URL + "/rest/v1/workouts?id=eq." + wid + "&select=profile_id", { headers: sbHeaders() });
+    const rows = await r.json();
+    return rows && rows[0] ? rows[0].profile_id : null;
+  } catch (e) {
+    return null;
+  }
+}
+
 app.post("/api/workouts", async function(req, res) {
   try {
     var r = await fetch(SUPABASE_URL + "/rest/v1/workouts", {
@@ -647,6 +659,8 @@ app.post("/api/workouts", async function(req, res) {
       body: JSON.stringify(req.body),
     });
     var data = await r.json();
+    // Invalidate progress-brief cache — history changed. Fire-and-forget.
+    if (req.body && req.body.profile_id) clearProgressBriefCache(req.body.profile_id);
     res.json({ success: true, workout: data });
   } catch (e) {
     res.status(500).json({ success: false, error: e.message });
@@ -656,12 +670,15 @@ app.post("/api/workouts", async function(req, res) {
 app.patch("/api/workouts/:id", async function(req, res) {
   try {
     var id = req.params.id;
+    // Capture profile_id before the update so we can invalidate afterward.
+    var pid = (req.body && req.body.profile_id) || await getWorkoutProfileId(id);
     var r = await fetch(SUPABASE_URL + "/rest/v1/workouts?id=eq." + id, {
       method: "PATCH",
       headers: sbHeaders("return=representation"),
       body: JSON.stringify(req.body),
     });
     var data = await r.json();
+    if (pid) clearProgressBriefCache(pid);
     res.json({ success: true, workout: data });
   } catch (e) {
     res.status(500).json({ success: false, error: e.message });
@@ -671,10 +688,12 @@ app.patch("/api/workouts/:id", async function(req, res) {
 app.delete("/api/workouts/:id", async function(req, res) {
   try {
     var id = req.params.id;
+    var pid = await getWorkoutProfileId(id);
     await fetch(SUPABASE_URL + "/rest/v1/workouts?id=eq." + id, {
       method: "DELETE",
       headers: sbHeaders("return=minimal"),
     });
+    if (pid) clearProgressBriefCache(pid);
     res.json({ success: true });
   } catch (e) {
     res.status(500).json({ success: false, error: e.message });
@@ -1566,6 +1585,76 @@ app.post("/api/profiles/:id/daily-recs", async function(req, res) {
     res.status(500).json({ error: e.message });
   }
 });
+
+// ── PROGRESS BRIEF CACHE ─────────────────────────────────────────────────
+// Mirrors the daily-recs cache pattern. Stored on profiles:
+//   progress_brief jsonb, progress_brief_date date.
+// Invalidated on any workout save/edit/delete so the next Today tab load
+// regenerates against the new history.
+app.get("/api/profiles/:id/progress-brief", async function(req, res) {
+  try {
+    const pid = req.params.id;
+    const r = await fetch(
+      SUPABASE_URL + "/rest/v1/profiles?id=eq." + pid +
+        "&select=progress_brief,progress_brief_date",
+      { headers: sbHeaders() }
+    );
+    const rows = await r.json();
+    if (!rows || !rows.length) return res.status(404).json({ error: "Profile not found" });
+    res.json({
+      success: true,
+      brief: rows[0].progress_brief || null,
+      date: rows[0].progress_brief_date || null,
+    });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.post("/api/profiles/:id/progress-brief", async function(req, res) {
+  try {
+    const pid = req.params.id;
+    const { brief, date } = req.body || {};
+    if (!brief || typeof brief !== "object") {
+      return res.status(400).json({ error: "brief object required" });
+    }
+    const now = new Date();
+    const pad = (n) => String(n).padStart(2, "0");
+    const fallbackDate = now.getFullYear() + "-" + pad(now.getMonth() + 1) + "-" + pad(now.getDate());
+    const payload = {
+      progress_brief: brief,
+      progress_brief_date: date || fallbackDate,
+    };
+    const r = await fetch(SUPABASE_URL + "/rest/v1/profiles?id=eq." + pid, {
+      method: "PATCH",
+      headers: sbHeaders("return=minimal"),
+      body: JSON.stringify(payload),
+    });
+    if (!r.ok) {
+      const text = await r.text();
+      return res.status(r.status).json({ error: text });
+    }
+    res.json({ success: true, brief: brief, date: payload.progress_brief_date });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Fire-and-forget wipe used by workout mutations. Nulls progress brief only;
+// daily recs have their own invalidation rules (readiness-based, check-in, etc).
+async function clearProgressBriefCache(pid) {
+  if (!pid) return;
+  try {
+    await fetch(SUPABASE_URL + "/rest/v1/profiles?id=eq." + pid, {
+      method: "PATCH",
+      headers: sbHeaders("return=minimal"),
+      body: JSON.stringify({ progress_brief: null, progress_brief_date: null }),
+    });
+    console.log("[ProgressBrief] Cleared cache for profile " + pid);
+  } catch (e) {
+    console.warn("[ProgressBrief] clearProgressBriefCache failed:", e.message);
+  }
+}
 
 // ── ROAD MAP ─────────────────────────────────────────────────────────────
 app.get("/api/profiles/:id/roadmap", async function(req, res) {
