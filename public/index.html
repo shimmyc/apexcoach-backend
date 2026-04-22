@@ -967,6 +967,13 @@ var previousStreak = 0;
 var streakLoggedToday = false;
 var streakBroken = false;
 var schedule = {};
+// Must be initialized up here (not next to renderSchedule) because bootApp
+// runs synchronously from the "boot from cache" path further down in this
+// script, and renderSchedule reads scheduleExpanded/DURATION_OPTIONS. `var`
+// hoisting gives us the binding but NOT the initializer, so keeping those
+// assignments near the function definition caused a boot-time TypeError.
+var scheduleExpanded = {};
+var DURATION_OPTIONS = [15, 30, 45, 60, 75, 90];
 
 var DAYS = ['mon','tue','wed','thu','fri','sat','sun'];
 var DAY_LABELS = ['Mon','Tue','Wed','Thu','Fri','Sat','Sun'];
@@ -4955,9 +4962,8 @@ function saveSchedule() {
   }
 }
 
-var DURATION_OPTIONS = [15, 30, 45, 60, 75, 90];
-var scheduleExpanded = {}; // day key → expanded boolean
-
+// DURATION_OPTIONS + scheduleExpanded are declared at the top of the script
+// so they're initialized before bootApp() fires on the "boot from cache" path.
 function toggleScheduleDay(day) {
   scheduleExpanded[day] = !scheduleExpanded[day];
   renderSchedule();
