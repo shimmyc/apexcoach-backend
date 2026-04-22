@@ -12,7 +12,7 @@ ApexCoach is a personalized AI fitness coaching web app. Users connect their Fit
 
 - Database: Supabase (PostgreSQL)
 
-- AI: Anthropic claude-sonnet-4-20250514 via /api/ai proxy
+- AI: Anthropic via /api/ai proxy. Smart tasks (daily recs, briefs, roadmap, onboarding, profile builder) use `claude-sonnet-4-20250514`; cheap tasks (format, workout title, extract, progress brief, goal description/estimate, exercise insight) use `claude-haiku-4-5-20251001`. Model is selected server-side from a `callType` field the client sends — the client cannot request an expensive model. The `/api/ai` proxy also auto-wraps any string `system` prompt with `cache_control: ephemeral` for prompt caching (~90% discount on repeat input tokens).
 
 - Fitbit: OAuth2 with auto token refresh
 

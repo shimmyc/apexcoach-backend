@@ -1499,7 +1499,7 @@ function obRenderGenerating(el) {
   fetch('/api/ai', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ model: 'claude-sonnet-4-20250514', max_tokens: 2000, messages: [{ role: 'user', content: prompt }] })
+    body: JSON.stringify({ callType: 'onboarding_profile', max_tokens: 2000, messages: [{ role: 'user', content: prompt }] })
   }).then(function(r) { return r.json(); }).then(function(data) {
     clearInterval(genTimer);
     if (fill) fill.style.width = '100%';
@@ -3187,7 +3187,7 @@ function fetchAI(opts) {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
-      model: 'claude-sonnet-4-20250514',
+      callType: 'daily_recs',
       max_tokens: 1800,
       system: systemPrompt,
       messages: [{ role: 'user', content: userMessage }]
@@ -5140,7 +5140,7 @@ function fetchProgress() {
   fetch('/api/ai', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ model: 'claude-haiku-4-5-20251001', max_tokens: 400, messages: [{ role: 'user', content: prompt }] })
+    body: JSON.stringify({ callType: 'progress_brief', max_tokens: 400, messages: [{ role: 'user', content: prompt }] })
   })
   .then(function(r) { return r.json(); })
   .then(function(data) {
@@ -5328,7 +5328,7 @@ function generateWorkoutTitle(notes) {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
-      model: 'claude-sonnet-4-20250514',
+      callType: 'workout_title',
       max_tokens: 100,
       messages: [{ role: 'user', content: 'Analyze these workout notes and generate a workout label using this exact hierarchy. Format: \'[Main] ([Sub]) + [Main] ([Sub])\' for multiple activities.\n\nTAXONOMY:\nSTRENGTH:\n- Upper Body: Chest, Back, Shoulders, Biceps, Triceps, Arms\n- Lower Body: Quads, Hamstrings, Glutes, Calves, Legs\n- Core: Abs, Obliques, Lower Back\n- Full Body\n- Calisthenics (bodyweight only)\n- Olympic Lifting\n- Powerlifting\n\nCARDIO:\n- Machine: Elliptical, Treadmill, Stairmaster, Rowing Machine, Stationary Bike, Ski Erg, Air Bike\n- Outdoor: Running, Walking, Hiking, Cycling, Swimming (open water)\n- Class: Spin, Zumba, Aerobics, Dance, Step\n- HIIT\n- Jump Rope\n- General\n\nMARTIAL ARTS:\n- Striking: Boxing, Kickboxing, Muay Thai, Karate, Taekwondo\n- Grappling: BJJ, Wrestling, Judo, Jiu Jitsu\n- MMA (Mixed)\n- General\n\nSPORTS:\n- Team: Basketball, Soccer, Football, Baseball, Volleyball, Hockey\n- Racket: Tennis, Pickleball, Racquetball, Squash, Badminton\n- Water: Swimming, Surfing, Kayaking, Paddleboard\n- Winter: Skiing, Snowboarding, Ice Skating\n- Golf, Gymnastics, Rock Climbing, Bowling, General\n\nMIND & BODY:\n- Yoga: Hot Yoga, Vinyasa, Restorative, Power Yoga\n- Pilates\n- Stretching\n- Breathwork\n- Meditation\n\nREHAB & RECOVERY:\n- Physical Therapy\n- Foam Rolling\n- Cold Therapy\n- Massage\n- Active Recovery\n- General\n\nMIXED TRAINING:\n- Use when session has 3+ different main categories\n- Still list the sub-components\n\nREST:\n- Full Rest\n- Light Activity\n\nRULES:\n- Scan ALL activities mentioned in the notes\n- List each distinct activity type\n- Use \'+\' to separate multiple categories\n- Maximum 3 categories shown (use \'Mixed Training\' if more)\n- Always include specific sub-category in parentheses\n- If duration mentioned, note it: \'Cardio (Elliptical, 20min)\'\n\nEXAMPLES:\n\'cat-cow, glute bridges, 20min elliptical, dumbbell curls 3x12\' → \'Rehab (PT) + Cardio (Elliptical, 20min) + Strength (Upper Body)\'\n\'MMA sparring, shadowboxing, bag work\' → \'Martial Arts (MMA)\'\n\'yoga flow, meditation\' → \'Mind & Body (Yoga) + Meditation\'\n\'squats, lunges, deadlifts, running 2 miles\' → \'Strength (Lower Body) + Cardio (Outdoor, Running)\'\n\'rest day, light stretching\' → \'Rest + Mind & Body (Stretching)\'\n\nReturn ONLY the label. Maximum 8 words total.\nWorkout notes: ' + notes }]
     })
@@ -6035,7 +6035,7 @@ function fetchExInsight(name, hist) {
   fetch('/api/ai', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ model: 'claude-haiku-4-5-20251001', max_tokens: 300, messages: [{ role: 'user', content: prompt }] })
+    body: JSON.stringify({ callType: 'exercise_insight', max_tokens: 300, messages: [{ role: 'user', content: prompt }] })
   })
   .then(function(r) { return r.json(); })
   .then(function(data) {
@@ -6439,7 +6439,7 @@ function formatNotesWithAI() {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
-      model: 'claude-sonnet-4-20250514',
+      callType: 'format_notes',
       max_tokens: 600,
       messages: [{ role: 'user', content: 'Format these workout notes into a clean structured list. Rules:\n- Each exercise on its own line with sets/reps/weight formatted cleanly\n- PRESERVE ALL subjective notes exactly as written - anything about how it felt, pain levels, energy, difficulty, sensations (e.g. \'felt tight\', \'groin felt okay\', \'really hard today\', \'good pump\') must be kept\n- Put exercise lines first, then a \'Notes:\' section at the bottom with all the subjective/feeling content\n- Expand abbreviations (3x12 is fine to keep, but spell out exercise names)\n- Return ONLY the formatted text, no explanation\n\n' + notes }]
     })
@@ -7024,7 +7024,7 @@ function pbFinishSection(el) {
   fetch('/api/ai', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ model: 'claude-sonnet-4-20250514', max_tokens: 3000, messages: [{ role: 'user', content: prompt }] })
+    body: JSON.stringify({ callType: 'profile_builder', max_tokens: 3000, messages: [{ role: 'user', content: prompt }] })
   })
   .then(function(r) { return r.json(); })
   .then(function(data) {

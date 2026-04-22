@@ -809,7 +809,40 @@ function formatWorkoutForAI(w) {
   return w.date + ": " + w.type + (w.done ? " (done)" : " (skipped)") + (w.mobility ? " +mobility" : "") + (w.med ? " +meditation" : "") + (w.notes ? " — " + w.notes : "");
 }
 
-async function callAI(prompt, maxTokens) {
+// Model IDs — kept in one place so routing decisions live server-side.
+var MODEL_SONNET = "claude-sonnet-4-20250514";
+var MODEL_HAIKU  = "claude-haiku-4-5-20251001";
+
+// callType → model. Cheap tasks (formatting, extraction, short classification)
+// run on Haiku; intelligence-sensitive work (recs, briefs, roadmap, full profile
+// generation) stays on Sonnet.
+var CALL_TYPE_MODEL = {
+  // Smart tasks — Sonnet
+  daily_recs:        MODEL_SONNET,
+  onboarding_profile: MODEL_SONNET,
+  profile_builder:   MODEL_SONNET,
+  coaching_brief:    MODEL_SONNET,
+  historical_brief:  MODEL_SONNET,
+  roadmap:           MODEL_SONNET,
+  history_search:    MODEL_SONNET,
+  // Cheap tasks — Haiku
+  format_notes:      MODEL_HAIKU,
+  workout_title:     MODEL_HAIKU,
+  extract_exercises: MODEL_HAIKU,
+  progress_brief:    MODEL_HAIKU,
+  exercise_insight:  MODEL_HAIKU,
+  goal_description:  MODEL_HAIKU,
+  goal_estimate:     MODEL_HAIKU,
+};
+
+function modelForCallType(callType) {
+  if (callType && CALL_TYPE_MODEL[callType]) return CALL_TYPE_MODEL[callType];
+  // Default to Sonnet if callType is missing or unknown — preserves existing
+  // behavior for any unmigrated caller, without letting the client pick.
+  return MODEL_SONNET;
+}
+
+async function callAI(prompt, maxTokens, model) {
   var response = await fetch("https://api.anthropic.com/v1/messages", {
     method: "POST",
     headers: {
@@ -818,7 +851,7 @@ async function callAI(prompt, maxTokens) {
       "anthropic-version": "2023-06-01",
     },
     body: JSON.stringify({
-      model: "claude-sonnet-4-20250514",
+      model: model || MODEL_SONNET,
       max_tokens: maxTokens || 1000,
       messages: [{ role: "user", content: prompt }],
     }),
@@ -1001,7 +1034,7 @@ app.post("/api/profiles/:id/goal-progress", async function(req, res) {
 
         try {
           var aiPrompt = "Athlete goal: " + g.title + " (" + (g.target_value || '?') + " " + (g.unit || 'miles') + ").\nTraining data last 90 days:\n- Longest cardio session: " + longestCardio + " minutes\n- Weekly cardio sessions: " + weeklyCardio + " avg\n- Daily steps avg: " + steps + "\n- Distance logged: " + totalDist + " miles\n- Manual progress reported: " + manualVal + " " + (g.unit || '') + "\nEstimate 0-100% readiness. Return JSON only: {\"readiness_pct\": number, \"reasoning\": \"1 sentence\"}";
-          var aiText = await callAI(aiPrompt, 200);
+          var aiText = await callAI(aiPrompt, 200, MODEL_HAIKU);
           var aiJson = JSON.parse(aiText.substring(aiText.indexOf('{'), aiText.lastIndexOf('}') + 1));
           r.pct = Math.min(100, aiJson.readiness_pct || 0);
           r.reasoning = aiJson.reasoning || '';
@@ -1052,7 +1085,7 @@ app.post("/api/profiles/:id/goal-progress", async function(req, res) {
           try {
             var recentLog = workouts.slice(0, 10).map(function(w) { return w.date + ': ' + w.type + (w.notes ? ' (' + w.notes.substring(0, 50) + ')' : ''); }).join('\n');
             var aiP = "Athlete goal: " + g.title + ".\nRecent workouts:\n" + recentLog + "\nEstimate 0-100% progress. Be conservative.\nReturn JSON only: {\"estimate_pct\": number, \"reasoning\": \"1 sentence\"}";
-            var aiT = await callAI(aiP, 200);
+            var aiT = await callAI(aiP, 200, MODEL_HAIKU);
             var aiJ = JSON.parse(aiT.substring(aiT.indexOf('{'), aiT.lastIndexOf('}') + 1));
             r.pct = Math.min(100, aiJ.estimate_pct || 0);
             r.reasoning = aiJ.reasoning || '';
@@ -1080,7 +1113,7 @@ app.post("/api/profiles/:id/generate-goal-description", async function(req, res)
     var prompt = "Write a single plain sentence describing this fitness goal. Be direct and simple, no motivational language, no exclamation marks. Maximum 15 words.\nExample: 'Hike 8 miles carrying Noam on your back without stopping.'\nGoal: " + body.title +
       (body.target_value ? "\nTarget: " + body.target_value + " " + (body.unit || "") : "") +
       "\nReturn ONLY the description text, no quotes, no explanation.";
-    var text = await callAI(prompt, 200);
+    var text = await callAI(prompt, 200, MODEL_HAIKU);
     res.json({ success: true, description: text.trim() });
   } catch (e) {
     res.status(500).json({ success: false, error: e.message });
@@ -1189,7 +1222,7 @@ app.post("/api/profiles/:id/extract-exercises", async function(req, res) {
 
     var prompt = "Extract all exercises from these workout notes. For each exercise identify: name (normalized), category (one of: strength/combat/cardio/mobility/rehab/core/other), sets (number or null), reps (number or null), weight_lbs (number or null), distance_miles (number or null), duration_minutes (number or null), raw_text (original text snippet).\n\nCATEGORY GUIDE:\n- strength: weightlifting, resistance, dumbbell/barbell work, push-up, pull-up, dip, squat, lunge, row\n- combat: MMA, boxing, sparring, martial arts, kicks, grappling, BJJ, pad work\n- cardio: running, elliptical, jumping jacks, cycling, rowing, burpee, jump rope\n- mobility: stretching, yoga, flexibility work\n- rehab: PT exercises, injury rehab, therapeutic (glute bridge, clamshell, cat-cow, hip flexor stretch)\n- core: plank, crunch, sit-up, leg raise, dead bug, bird dog, mountain climber, ab wheel, russian twist, windshield wiper - these are ALWAYS 'core' not 'strength'\n- other: anything else\n\nCRITICAL NORMALIZATION RULES:\n- Always use singular form: 'Glute Bridge' not 'Glute Bridges'\n- Capitalize first letter of each word\n- Use hyphens for compound exercises: 'Push-Up', 'Pull-Up', 'Sit-Up', 'Cat-Cow'\n- Remove trailing s from plural exercise names\n\nReturn ONLY a JSON array of exercise objects, no explanation.\nExample: [{\"name\":\"Glute Bridge\",\"category\":\"rehab\",\"sets\":3,\"reps\":12,\"weight_lbs\":null,\"distance_miles\":null,\"duration_minutes\":null,\"raw_text\":\"glute bridges 3x12\"}]\nWorkout type: " + (body.type || "unknown") + "\nNotes: " + body.notes;
 
-    var aiText = await callAI(prompt, 1000);
+    var aiText = await callAI(prompt, 1000, MODEL_HAIKU);
     console.log("[extract-exercises] Raw AI response: " + (aiText || "(empty)").substring(0, 300));
 
     var exercises = [];
@@ -1629,7 +1662,7 @@ app.post("/api/profiles/:id/roadmap", async function(req, res) {
         "x-api-key": process.env.ANTHROPIC_KEY,
         "anthropic-version": "2023-06-01",
       },
-      body: JSON.stringify({ model: "claude-sonnet-4-20250514", max_tokens: 1200, messages: [{ role: "user", content: prompt }] }),
+      body: JSON.stringify({ model: MODEL_SONNET, max_tokens: 1200, messages: [{ role: "user", content: prompt }] }),
     });
     const aiData = await aiRes.json();
     const roadmap = (aiData.content && aiData.content[0]) ? aiData.content[0].text : '';
@@ -1651,10 +1684,48 @@ app.post("/api/profiles/:id/roadmap", async function(req, res) {
 });
 
 // ── AI PROXY ──────────────────────────────────────────────────────────────
+// The client sends a `callType` ("daily_recs", "format_notes", "workout_title",
+// etc.) and the server picks the model. The client is no longer allowed to
+// request an expensive model for a cheap task — if `model` is sent it's logged
+// and dropped.
+//
+// Any string `system` prompt is automatically rewritten into a single-block
+// array with `cache_control: {type: "ephemeral"}` so the prefix (tools + system)
+// is cached on Anthropic's side and subsequent calls on the same prompt are
+// billed at ~10% of input-token rate. See shared/prompt-caching.md.
 app.post("/api/ai", async function(req, res) {
   const bodySize = JSON.stringify(req.body).length;
-  console.log("[AI] Request received, body size=" + bodySize + " bytes");
+  const callType = req.body && req.body.callType;
+  console.log("[AI] Request received, body size=" + bodySize + " bytes, callType=" + (callType || "(none)"));
   try {
+    const forwarded = Object.assign({}, req.body);
+    // Strip control fields that shouldn't hit Anthropic.
+    delete forwarded.callType;
+
+    // Server-side model selection. Ignore any client-sent model.
+    const chosenModel = modelForCallType(callType);
+    if (forwarded.model && forwarded.model !== chosenModel) {
+      console.log("[AI] Overriding client-requested model '" + forwarded.model + "' with server-chosen '" + chosenModel + "' for callType=" + (callType || "(none)"));
+    }
+    forwarded.model = chosenModel;
+
+    // Auto-cache the system prompt. If client sent a plain string, wrap it.
+    // If client already sent a structured array, only add cache_control to the
+    // last block if none of the blocks already have one (don't clobber).
+    if (typeof forwarded.system === "string" && forwarded.system.length > 0) {
+      forwarded.system = [{
+        type: "text",
+        text: forwarded.system,
+        cache_control: { type: "ephemeral" },
+      }];
+    } else if (Array.isArray(forwarded.system) && forwarded.system.length > 0) {
+      const hasCache = forwarded.system.some(function(b) { return b && b.cache_control; });
+      if (!hasCache) {
+        const last = forwarded.system[forwarded.system.length - 1];
+        if (last && typeof last === "object") last.cache_control = { type: "ephemeral" };
+      }
+    }
+
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), 25000);
     const response = await fetch("https://api.anthropic.com/v1/messages", {
@@ -1664,12 +1735,18 @@ app.post("/api/ai", async function(req, res) {
         "x-api-key": process.env.ANTHROPIC_KEY,
         "anthropic-version": "2023-06-01",
       },
-      body: JSON.stringify(req.body),
+      body: JSON.stringify(forwarded),
       signal: controller.signal,
     });
     clearTimeout(timeoutId);
-    console.log("[AI] Anthropic response status=" + response.status);
+    console.log("[AI] Anthropic response status=" + response.status + " model=" + chosenModel);
     const data = await response.json();
+    if (data && data.usage) {
+      console.log("[AI] usage: input=" + (data.usage.input_tokens || 0) +
+        " output=" + (data.usage.output_tokens || 0) +
+        " cache_write=" + (data.usage.cache_creation_input_tokens || 0) +
+        " cache_read=" + (data.usage.cache_read_input_tokens || 0));
+    }
     res.json(data);
   } catch (err) {
     if (err.name === "AbortError") {
