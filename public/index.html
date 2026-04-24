@@ -407,6 +407,7 @@ input[type=range]{width:100%;accent-color:var(--accent)}
     </div>
     <div id="streak-card" style="display:none"></div>
     <div id="readiness-card" class="card" style="display:none"></div>
+    <div id="body-metrics-card" class="card" style="display:none"></div>
     <div id="feeling-checkin-card" class="card" style="display:none;background:#0d1018;border-color:#22c97a22">
       <div id="feeling-checkin-full">
         <p class="clabel">how are you feeling today?</p>
@@ -613,6 +614,8 @@ input[type=range]{width:100%;accent-color:var(--accent)}
       </div>
     </div>
 
+    <div id="profile-body"></div>
+    <div id="profile-weight-trend"></div>
     <div id="profile-injuries"></div>
     <div id="profile-philosophy"></div>
     <div id="profile-context"></div>
@@ -867,6 +870,24 @@ input[type=range]{width:100%;accent-color:var(--accent)}
 <!-- CONFETTI CANVAS (overlaid when a challenge completes) -->
 <canvas id="mg-confetti" style="position:fixed;inset:0;pointer-events:none;z-index:9999;display:none"></canvas>
 
+<!-- LOG WEIGHT MODAL -->
+<div class="overlay" id="weight-modal" style="display:none" onclick="closeLogWeight()">
+  <div class="modal" onclick="event.stopPropagation()" style="max-width:380px">
+    <p class="mono" style="font-size:10px;color:var(--text-muted);letter-spacing:3px;margin-bottom:14px">LOG WEIGHT</p>
+    <p class="mono" style="font-size:10px;color:var(--text-dim);letter-spacing:2px;margin-bottom:6px">DATE</p>
+    <input id="weight-date" type="date" style="width:100%;background:var(--bg-input);border:1px solid var(--border);color:var(--text);padding:11px 14px;border-radius:6px;font-size:14px;outline:none;font-family:'DM Sans',sans-serif;margin-bottom:12px">
+    <p class="mono" style="font-size:10px;color:var(--text-dim);letter-spacing:2px;margin-bottom:6px">WEIGHT (LBS)</p>
+    <input id="weight-lbs" type="number" step="0.1" min="50" max="900" placeholder="e.g. 175.4" style="width:100%;background:var(--bg-input);border:1px solid var(--border);color:var(--text);padding:11px 14px;border-radius:6px;font-size:16px;outline:none;font-family:'DM Sans',sans-serif;margin-bottom:12px">
+    <p class="mono" style="font-size:10px;color:var(--text-dim);letter-spacing:2px;margin-bottom:6px">BODY FAT % <span style="color:#555">(optional)</span></p>
+    <input id="weight-bf" type="number" step="0.1" min="0" max="75" placeholder="e.g. 18.2" style="width:100%;background:var(--bg-input);border:1px solid var(--border);color:var(--text);padding:11px 14px;border-radius:6px;font-size:16px;outline:none;font-family:'DM Sans',sans-serif;margin-bottom:8px">
+    <p id="weight-error" style="color:#e84545;font-size:12px;min-height:16px;margin-bottom:6px"></p>
+    <div style="display:flex;gap:8px;justify-content:flex-end">
+      <button class="btnSec" onclick="closeLogWeight()">Cancel</button>
+      <button class="btnPri" onclick="submitLogWeight()" id="weight-save-btn">Save</button>
+    </div>
+  </div>
+</div>
+
 <!-- BUILD PROFILE (full-page paginated) -->
 <div id="profile-builder-screen" class="ob-overlay" style="display:none">
   <!-- filled dynamically by profile builder JS -->
@@ -961,6 +982,16 @@ var workoutLog = [];
 var medLog = [];
 var dailyStepsLog = [];
 var dailyStepsByDate = {};
+// Top-level body columns from profiles table (NOT profile_data jsonb).
+var currentProfileBody = {
+  height_inches: null,
+  birth_date: null,
+  sex: null,
+  goal_weight_lbs: null,
+  goal_weight_timeline_months: null
+};
+var bodyMetricsLog = [];     // last 90 days, ordered date desc
+var bodyMetricsLatest = null; // most recent row with weight
 var coachingBrief = '';
 var historicalBrief = '';
 var briefUpdatedAt = null;
@@ -1064,6 +1095,7 @@ function verifyPin() {
       currentProfileName = data.profile.name;
       currentProfileColor = data.profile.avatar_color || '#22c97a';
       currentProfileData = data.profile.profile_data || {};
+      captureProfileBody(data.profile);
       localStorage.setItem('ac_profile_id', currentProfileId);
       localStorage.setItem('ac_profile_name', currentProfileName);
       localStorage.setItem('ac_profile_color', currentProfileColor);
@@ -1677,6 +1709,7 @@ function bootApp() {
   renderProfileTab();
   loadMicroGoals();
   loadDailySteps();
+  loadBodyMetrics();
 
   loadWorkouts().then(function() {
     renderWeek();
@@ -1739,6 +1772,8 @@ function renderDayView() {
     document.getElementById('feeling-checkin-card').style.display = (document.getElementById('readiness-card').style.display === 'block' || document.getElementById('checkin-card').style.display === 'block') ? 'block' : '';
     document.getElementById('ai-card').style.display = '';
     document.getElementById('progress-card').style.display = '';
+    // Body card visibility is decided by renderBodyTodayCard (it self-hides).
+    if (typeof renderBodyTodayCard === 'function') renderBodyTodayCard();
     renderLogArea();
     return;
   }
@@ -1750,6 +1785,8 @@ function renderDayView() {
   document.getElementById('feeling-checkin-card').style.display = 'none';
   document.getElementById('ai-card').style.display = 'none';
   document.getElementById('progress-card').style.display = 'none';
+  var bodyCard = document.getElementById('body-metrics-card');
+  if (bodyCard) bodyCard.style.display = 'none';
 
   // Show workout for that date
   var entry = null;
@@ -1790,8 +1827,10 @@ function refreshProfileData() {
         currentProfileData = data.profile.profile_data;
         localStorage.setItem('ac_profile_data', JSON.stringify(currentProfileData));
         applyProfileData(currentProfileData);
+        captureProfileBody(data.profile);
         console.log('[ApexCoach] Profile data refreshed from server:', Object.keys(currentProfileData));
         renderProfileTab();
+        if (typeof renderBodyTodayCard === 'function') renderBodyTodayCard();
       }
     })
     .catch(function(e) { console.warn('[ApexCoach] Could not refresh profile data:', e.message); });
@@ -1821,6 +1860,10 @@ if (savedProfileId) {
   currentProfileName = localStorage.getItem('ac_profile_name') || '';
   currentProfileColor = localStorage.getItem('ac_profile_color') || '#22c97a';
   try { currentProfileData = JSON.parse(localStorage.getItem('ac_profile_data') || 'null'); } catch(e) { currentProfileData = null; }
+  try {
+    var cachedBody = JSON.parse(localStorage.getItem('ac_profile_body') || 'null');
+    if (cachedBody) currentProfileBody = Object.assign(currentProfileBody, cachedBody);
+  } catch(e) {}
   applyProfileData(currentProfileData);
   console.log('[ApexCoach] Boot from cache. profileData:', currentProfileData ? Object.keys(currentProfileData) : 'null');
   bootApp();
@@ -2304,6 +2347,101 @@ function buildStepContextLine(steps) {
   return '- Steps yesterday: ' + steps.toLocaleString() + ' (goal: ' + goal.toLocaleString() + ' ' + mark + tail + ')\n';
 }
 
+// BODY COMPOSITION block for the daily rec prompt. Computes TDEE via
+// Mifflin-St Jeor (1.55 activity factor = moderately active), spreads the
+// goal-weight delta across the timeline in days, caps deficit at 750/day
+// and surplus at 500/day (safety + sustainability), and gives Claude a
+// ready-made line it can echo back to the user.
+function buildBodyCompositionBlock() {
+  var pb = currentProfileBody || {};
+  var latest = bodyMetricsLatest;
+  var weight = latest && latest.weight_lbs != null ? latest.weight_lbs : null;
+  var hasAny = weight != null || pb.height_inches || pb.goal_weight_lbs;
+  if (!hasAny) return '';
+
+  var heightIn = pb.height_inches ? parseFloat(pb.height_inches) : null;
+  var age = ageFromDob(pb.birth_date);
+  var sex = pb.sex || null;
+  var goalWeight = pb.goal_weight_lbs;
+  var timelineMonths = pb.goal_weight_timeline_months;
+  var bf = latest && latest.body_fat_pct != null ? latest.body_fat_pct : null;
+  var bmi = latest && latest.bmi != null ? latest.bmi : (weight && heightIn ? calcBmiClient(weight, heightIn) : null);
+  var tier = bmiTier(bmi);
+
+  var heightStr = heightIn ? formatHeightFtIn(heightIn) : '?';
+  var ageStr = age != null ? age : '?';
+  var sexStr = sex || '?';
+
+  var lines = ['BODY COMPOSITION:'];
+  lines.push('Height: ' + heightStr + ' | Age: ' + ageStr + ' | Sex: ' + sexStr);
+
+  if (weight != null) {
+    var lineWt = 'Current weight: ' + weight.toFixed(1) + 'lbs';
+    if (goalWeight != null) {
+      var delta = +(weight - goalWeight).toFixed(1);
+      var verb = delta > 0 ? 'lose' : (delta < 0 ? 'gain' : 'maintain');
+      lineWt += ' | Goal: ' + goalWeight.toFixed(1) + 'lbs | To ' + verb + ': ' + Math.abs(delta) + 'lbs';
+    }
+    lines.push(lineWt);
+  } else if (goalWeight != null) {
+    lines.push('Goal weight: ' + goalWeight.toFixed(1) + 'lbs (no current weight logged)');
+  }
+
+  if (bmi != null) {
+    lines.push('BMI: ' + bmi.toFixed(1) + (tier ? ' (' + tier.label + ')' : '') + (bf != null ? ' | Body fat: ' + bf.toFixed(1) + '%' : ''));
+  } else if (bf != null) {
+    lines.push('Body fat: ' + bf.toFixed(1) + '%');
+  }
+
+  // TDEE + calorie target — only when we have enough inputs.
+  var tdee = null;
+  if (weight != null && heightIn && age != null && (sex === 'Male' || sex === 'Female')) {
+    var kg = weight / 2.20462;
+    var cm = heightIn * 2.54;
+    var bmr = sex === 'Male'
+      ? (10 * kg) + (6.25 * cm) - (5 * age) + 5
+      : (10 * kg) + (6.25 * cm) - (5 * age) - 161;
+    tdee = Math.round(bmr * 1.55);
+  }
+
+  var dailyDelta = null;
+  var months = timelineMonths ? parseInt(timelineMonths, 10) : null;
+  if (weight != null && goalWeight != null && months) {
+    var deltaLbs = goalWeight - weight; // negative = lose
+    var totalCal = deltaLbs * 3500;     // ~3500 cal/lb
+    var days = months * 30;             // approx
+    var raw = days > 0 ? totalCal / days : 0;
+    if (raw < -750) raw = -750;
+    if (raw >  500) raw =  500;
+    dailyDelta = Math.round(raw);
+  }
+
+  if (tdee != null && dailyDelta != null) {
+    var sign = dailyDelta > 0 ? '+' : '';
+    var verb2 = dailyDelta < 0 ? 'deficit' : (dailyDelta > 0 ? 'surplus' : 'maintenance');
+    lines.push('Timeline: ' + (months || '?') + ' months | TDEE ~' + tdee + ' cal/day | Required ' + verb2 + ': ' + sign + dailyDelta + ' cal/day');
+    var intake = tdee + dailyDelta;
+    var burnTarget = Math.max(0, -dailyDelta);
+    var monthDate = new Date(); monthDate.setMonth(monthDate.getMonth() + (months || 0));
+    var monthLabel = monthDate.toLocaleDateString('en-US', { month: 'long' });
+    if (dailyDelta < 0) {
+      lines.push('SUGGESTED LINE: "To reach your goal by ' + monthLabel + ', aim to burn ~' + burnTarget + ' cal today through exercise and keep intake around ' + intake + ' cal."');
+    } else if (dailyDelta > 0) {
+      lines.push('SUGGESTED LINE: "To reach your goal by ' + monthLabel + ', aim for an intake around ' + intake + ' cal today with quality lifting to drive lean mass."');
+    } else {
+      lines.push('SUGGESTED LINE: "You\'re at goal — keep intake near ' + intake + ' cal and prioritize training quality over deficit."');
+    }
+  } else if (tdee != null) {
+    lines.push('Estimated TDEE: ~' + tdee + ' cal/day (set goal weight + timeline for a calorie target)');
+  } else if (weight != null && goalWeight != null) {
+    lines.push('Goal delta: ' + Math.abs(goalWeight - weight).toFixed(1) + 'lbs (need height + age + sex for TDEE math)');
+  }
+
+  lines.push('When relevant, surface the SUGGESTED LINE in the rec reasoning so the user sees a concrete daily target.');
+
+  return lines.join('\n') + '\n\n';
+}
+
 function buildCheckinSummary(checkin) {
   var parts = [];
   var emojiMap = { Drained: '\u{1FAB6}', Low: '\uD83D\uDE13', Okay: '\uD83D\uDE10', Good: '\u26A1', High: '\uD83D\uDD25' };
@@ -2630,6 +2768,8 @@ function syncFitbit(forceRefresh) {
       // Server upserted yesterday's steps into daily_steps — refresh our cache
       // so the pill shows up immediately on the history tab.
       loadDailySteps();
+      // Server may have also upserted today's weight from Fitbit body API.
+      loadBodyMetrics();
     })
     .catch(function(e) {
       // Auth/token errors → show manual check-in with Fitbit connect banner
@@ -3141,12 +3281,15 @@ function fetchAI(opts) {
   var truncatedCoachingBrief = coachingBrief || '';
   var truncatedHistoricalBrief = historicalBrief || '';
 
+  var bodyCompositionBlock = buildBodyCompositionBlock();
+
   var buildUserMessage = function() {
     return categoryOverrideBlock +
       scheduleInstruction +
       'TODAY: ' + today + '\n' +
       'CURRENT WORKOUT STREAK: ' + currentStreak + ' days' + (currentStreak >= 7 ? ' (impressive consistency!)' : '') + '\n' +
       dataBlock + '\n' +
+      bodyCompositionBlock +
       checkinBlock +
       weeklyVolume +
       'RECENT ' + logDays + '-DAY LOG:\n' + recent + '\n\n' +
@@ -3588,6 +3731,10 @@ function renderProfileTab() {
   }
   philHTML += '</div></div>';
   document.getElementById('profile-philosophy').innerHTML = philHTML;
+
+  // ── BODY ──
+  renderProfileBodyCard();
+  renderWeightTrend();
 
   // ── LIFE CONTEXT ──
   var ctx = pd.life_context || {};
@@ -4924,8 +5071,42 @@ function saveProfileDataToServer(pd) {
     if (data.success && data.profile && data.profile.profile_data) {
       currentProfileData = data.profile.profile_data;
       localStorage.setItem('ac_profile_data', JSON.stringify(currentProfileData));
+      captureProfileBody(data.profile);
     }
   }).catch(function(e) { console.error('Save profile error:', e); });
+}
+
+// Pull top-level body columns out of an /api/profiles response.
+// PostgREST encodes `numeric` as JSON number for normal magnitudes, but coerce
+// defensively so downstream math never accidentally string-concatenates.
+function captureProfileBody(p) {
+  if (!p) return;
+  var numKeys = { height_inches: true, goal_weight_lbs: true, goal_weight_timeline_months: true };
+  ['height_inches', 'birth_date', 'sex', 'goal_weight_lbs', 'goal_weight_timeline_months'].forEach(function(k) {
+    var v = p[k];
+    if (v == null || v === '') { currentProfileBody[k] = null; return; }
+    if (numKeys[k]) {
+      var n = parseFloat(v);
+      currentProfileBody[k] = isNaN(n) ? null : n;
+    } else {
+      currentProfileBody[k] = v;
+    }
+  });
+  try { localStorage.setItem('ac_profile_body', JSON.stringify(currentProfileBody)); } catch(e) {}
+}
+
+// PATCH any subset of the body columns (height/dob/sex/goal/timeline).
+function saveProfileBody(patch) {
+  if (!currentProfileId) return Promise.resolve();
+  Object.keys(patch).forEach(function(k) { currentProfileBody[k] = patch[k]; });
+  try { localStorage.setItem('ac_profile_body', JSON.stringify(currentProfileBody)); } catch(e) {}
+  return fetch('/api/profiles/' + currentProfileId, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(patch)
+  }).then(function(r) { return r.json(); }).then(function(data) {
+    if (data && data.success && data.profile) captureProfileBody(data.profile);
+  }).catch(function(e) { console.error('Save profile body error:', e); });
 }
 
 // ── SCHEDULE ──────────────────────────────────────────────────────────────
@@ -5649,6 +5830,367 @@ function renderStepsPill(dateStr) {
   var color = hit ? '#22c97a' : '#888';
   var bg = hit ? '#22c97a18' : '#8882';
   return '<span class="mono" title="Goal: ' + goal.toLocaleString() + '" style="font-size:10px;color:' + color + ';background:' + bg + ';padding:2px 8px;border-radius:3px;display:inline-flex;align-items:center;gap:4px">&#128094; ' + n.toLocaleString() + ' steps</span>';
+}
+
+// ── BODY METRICS ──────────────────────────────────────────────────────────
+function loadBodyMetrics() {
+  if (!currentProfileId) return Promise.resolve();
+  return fetch('/api/profiles/' + currentProfileId + '/body-metrics?days=90')
+    .then(function(r) { return r.json(); })
+    .then(function(data) {
+      if (!data || !data.success) return;
+      var raw = Array.isArray(data.metrics) ? data.metrics : [];
+      bodyMetricsLog = raw.map(function(m) {
+        return {
+          date: m.date,
+          weight_lbs: m.weight_lbs == null ? null : parseFloat(m.weight_lbs),
+          body_fat_pct: m.body_fat_pct == null ? null : parseFloat(m.body_fat_pct),
+          bmi: m.bmi == null ? null : parseFloat(m.bmi),
+          source: m.source || 'manual'
+        };
+      });
+      bodyMetricsLatest = bodyMetricsLog.find(function(m) { return m.weight_lbs != null; }) || null;
+      renderBodyTodayCard();
+      // If profile tab is mounted, update the trend chart too.
+      if (document.getElementById('profile-weight-trend')) renderWeightTrend();
+    })
+    .catch(function(e) { console.error('[Body] load error:', e); });
+}
+
+function bmiTier(bmi) {
+  if (bmi == null || isNaN(bmi)) return null;
+  if (bmi < 18.5) return { label: 'Underweight', color: '#4488bb' };
+  if (bmi < 25)   return { label: 'Normal',      color: '#22c97a' };
+  if (bmi < 30)   return { label: 'Overweight',  color: '#f5a623' };
+  return                  { label: 'Obese',       color: '#e84545' };
+}
+
+function calcBmiClient(weightLbs, heightInches) {
+  if (!weightLbs || !heightInches) return null;
+  return +((weightLbs / (heightInches * heightInches)) * 703).toFixed(1);
+}
+
+function ageFromDob(dob) {
+  if (!dob) return null;
+  var d = new Date(dob + 'T12:00:00');
+  if (isNaN(d.getTime())) return null;
+  var now = new Date();
+  var age = now.getFullYear() - d.getFullYear();
+  var m = now.getMonth() - d.getMonth();
+  if (m < 0 || (m === 0 && now.getDate() < d.getDate())) age--;
+  return age;
+}
+
+function formatHeightFtIn(inches) {
+  if (!inches) return null;
+  var ft = Math.floor(inches / 12);
+  var rem = Math.round(inches - ft * 12);
+  if (rem === 12) { ft += 1; rem = 0; }
+  return ft + "'" + rem + '"';
+}
+
+function renderBodyTodayCard() {
+  var card = document.getElementById('body-metrics-card');
+  if (!card) return;
+  var pb = currentProfileBody || {};
+  var hasHeight = !!pb.height_inches;
+  var hasWeight = bodyMetricsLatest && bodyMetricsLatest.weight_lbs != null;
+  var hasGoal   = pb.goal_weight_lbs != null;
+
+  // Hide card entirely if there's no data and the user hasn't even set height/weight.
+  if (!hasWeight && !hasHeight && !hasGoal && !bodyMetricsLog.length) {
+    card.style.display = 'none';
+    card.innerHTML = '';
+    return;
+  }
+  card.style.display = 'block';
+
+  var wt = hasWeight ? bodyMetricsLatest.weight_lbs : null;
+  var bf = bodyMetricsLatest && bodyMetricsLatest.body_fat_pct != null ? bodyMetricsLatest.body_fat_pct : null;
+  var bmi = bodyMetricsLatest && bodyMetricsLatest.bmi != null ? bodyMetricsLatest.bmi : (hasWeight && hasHeight ? calcBmiClient(wt, pb.height_inches) : null);
+  var tier = bmiTier(bmi);
+  var goalDelta = (hasWeight && hasGoal) ? +(wt - pb.goal_weight_lbs).toFixed(1) : null;
+  var direction = goalDelta == null ? null : (goalDelta > 0 ? 'lose' : (goalDelta < 0 ? 'gain' : 'at'));
+
+  var h = '';
+  h += '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">';
+  h += '<p class="clabel" style="margin-bottom:0">body metrics</p>';
+  h += '<button onclick="openLogWeight()" style="background:var(--accent-10);border:1px solid var(--accent-33);color:var(--accent);padding:5px 12px;border-radius:6px;cursor:pointer;font-size:12px;font-weight:600">+ Log Weight</button>';
+  h += '</div>';
+
+  var cells = [];
+  if (hasWeight) {
+    cells.push({ label: 'WEIGHT',  val: wt.toFixed(1), unit: 'lbs', color: 'var(--text-bright)' });
+  }
+  if (bmi != null) {
+    cells.push({ label: 'BMI', val: bmi.toFixed(1), unit: tier ? tier.label : '', color: tier ? tier.color : 'var(--text-bright)' });
+  }
+  if (bf != null) {
+    cells.push({ label: 'BODY FAT', val: bf.toFixed(1) + '%', unit: '', color: 'var(--text-bright)' });
+  }
+  if (cells.length) {
+    h += '<div style="display:grid;grid-template-columns:repeat(' + cells.length + ',1fr);gap:10px;margin-bottom:' + (goalDelta != null ? '14px' : '0') + '">';
+    cells.forEach(function(c) {
+      h += '<div style="text-align:center"><div class="mono" style="font-size:10px;color:var(--text-dim);letter-spacing:2px;margin-bottom:4px">' + c.label + '</div>';
+      h += '<div style="font-size:22px;font-weight:600;color:' + c.color + ';line-height:1">' + c.val + '</div>';
+      if (c.unit) h += '<div style="font-size:11px;color:var(--text-muted);margin-top:3px">' + c.unit + '</div>';
+      h += '</div>';
+    });
+    h += '</div>';
+  } else if (!hasWeight) {
+    h += '<p style="font-size:13px;color:var(--text-dim);font-style:italic;text-align:center;padding:8px 0">No weight logged yet — tap + Log Weight to start tracking.</p>';
+  }
+
+  if (goalDelta != null) {
+    var absDelta = Math.abs(goalDelta);
+    var startWeight = bodyMetricsLog.length ? (bodyMetricsLog[bodyMetricsLog.length - 1].weight_lbs || wt) : wt;
+    var totalNeeded = Math.abs(startWeight - pb.goal_weight_lbs) || 1;
+    var done = Math.max(0, totalNeeded - absDelta);
+    var pct = Math.max(0, Math.min(100, Math.round((done / totalNeeded) * 100)));
+    var label = direction === 'at' ? 'Goal reached!' : absDelta.toFixed(1) + ' lbs to ' + direction + ' (goal: ' + pb.goal_weight_lbs + ' lbs)';
+    h += '<div>';
+    h += '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">';
+    h += '<span class="mono" style="font-size:11px;color:var(--text-muted);letter-spacing:1px">PROGRESS TO GOAL</span>';
+    h += '<span style="font-size:13px;color:var(--text-sec)">' + label + '</span>';
+    h += '</div>';
+    h += '<div style="background:var(--bg-input);border-radius:4px;height:8px;overflow:hidden"><div style="height:100%;width:' + pct + '%;background:linear-gradient(90deg,var(--accent),#22c97a);transition:width .6s ease"></div></div>';
+    h += '</div>';
+  }
+
+  card.innerHTML = h;
+}
+
+function openLogWeight() {
+  var d = new Date();
+  var iso = d.getFullYear() + '-' + String(d.getMonth()+1).padStart(2,'0') + '-' + String(d.getDate()).padStart(2,'0');
+  document.getElementById('weight-date').value = iso;
+  document.getElementById('weight-lbs').value = bodyMetricsLatest && bodyMetricsLatest.weight_lbs != null ? bodyMetricsLatest.weight_lbs : '';
+  document.getElementById('weight-bf').value = '';
+  document.getElementById('weight-error').textContent = '';
+  document.getElementById('weight-modal').style.display = 'flex';
+  setTimeout(function() { document.getElementById('weight-lbs').focus(); }, 50);
+}
+function closeLogWeight() {
+  document.getElementById('weight-modal').style.display = 'none';
+}
+function submitLogWeight() {
+  var dateStr = document.getElementById('weight-date').value;
+  var wt = document.getElementById('weight-lbs').value;
+  var bf = document.getElementById('weight-bf').value;
+  var err = document.getElementById('weight-error');
+  if (!dateStr) { err.textContent = 'Pick a date.'; return; }
+  if (!wt && !bf) { err.textContent = 'Enter weight (or body fat %).'; return; }
+  err.textContent = '';
+  var btn = document.getElementById('weight-save-btn');
+  btn.disabled = true; btn.textContent = 'Saving…';
+  fetch('/api/profiles/' + currentProfileId + '/body-metrics', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ date: dateStr, weight_lbs: wt || null, body_fat_pct: bf || null, source: 'manual' })
+  }).then(function(r) { return r.json(); }).then(function(data) {
+    btn.disabled = false; btn.textContent = 'Save';
+    if (!data.success) { err.textContent = data.error || 'Save failed.'; return; }
+    closeLogWeight();
+    showToast();
+    loadBodyMetrics();
+  }).catch(function(e) {
+    btn.disabled = false; btn.textContent = 'Save';
+    err.textContent = e.message;
+  });
+}
+
+function renderWeightTrend() {
+  var el = document.getElementById('profile-weight-trend');
+  if (!el) return;
+  var rows = (bodyMetricsLog || []).filter(function(r) { return r.weight_lbs != null; });
+  if (!rows.length) { el.innerHTML = ''; return; }
+  // Order chronologically for the chart
+  var asc = rows.slice().sort(function(a, b) { return a.date < b.date ? -1 : 1; });
+  var pb = currentProfileBody || {};
+  var startWeight = asc[0].weight_lbs;
+  var currentWeight = asc[asc.length - 1].weight_lbs;
+  var goalWeight = pb.goal_weight_lbs;
+
+  // Project goal date from rolling 14-day rate of change
+  var projection = projectGoalDate(asc, goalWeight, pb.goal_weight_timeline_months);
+
+  el.innerHTML = '<div class="card"><p class="clabel">weight trend &middot; last 90 days</p>' +
+    '<canvas id="weight-trend-canvas" style="max-height:220px"></canvas>' +
+    '<div style="display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-top:12px">' +
+    statRefBox('START', startWeight.toFixed(1) + ' lbs', '#888') +
+    statRefBox('CURRENT', currentWeight.toFixed(1) + ' lbs', 'var(--accent)') +
+    statRefBox('GOAL', goalWeight ? goalWeight.toFixed(1) + ' lbs' : '—', '#f5a623') +
+    '</div>' +
+    '<p class="mono" style="font-size:11px;color:var(--text-muted);margin-top:12px;text-align:center">' + projection.label + '</p>' +
+    '</div>';
+  setTimeout(function() { drawWeightTrendChart(asc, goalWeight); }, 50);
+}
+function statRefBox(label, val, color) {
+  return '<div style="text-align:center;background:var(--bg-input);border-radius:6px;padding:10px"><div class="mono" style="font-size:10px;color:var(--text-dim);letter-spacing:2px">' + label + '</div><div style="font-size:17px;font-weight:600;margin-top:3px;color:' + color + '">' + val + '</div></div>';
+}
+function projectGoalDate(asc, goalWeight, timelineMonths) {
+  if (!goalWeight || asc.length < 2) {
+    if (timelineMonths) {
+      var t = new Date(); t.setMonth(t.getMonth() + parseInt(timelineMonths, 10));
+      return { label: 'Target by ' + t.toLocaleDateString('en-US', { month: 'long', year: 'numeric' }) };
+    }
+    return { label: 'Log a few more days to see a projection.' };
+  }
+  var recent = asc.slice(-14);
+  if (recent.length < 2) return { label: 'Not enough data to project goal date.' };
+  var first = recent[0];
+  var last = recent[recent.length - 1];
+  var days = (new Date(last.date) - new Date(first.date)) / 86400000;
+  if (days <= 0) return { label: 'Not enough data to project goal date.' };
+  var rate = (last.weight_lbs - first.weight_lbs) / days; // lbs/day
+  var remaining = goalWeight - last.weight_lbs;
+  if (rate === 0 || (rate > 0 && remaining < 0) || (rate < 0 && remaining > 0)) {
+    return { label: 'Current rate isn’t moving toward your goal.' };
+  }
+  var daysToGoal = Math.abs(remaining / rate);
+  if (daysToGoal > 365 * 5) return { label: 'Projection out of range — adjust timeline or rate.' };
+  var when = new Date(); when.setDate(when.getDate() + Math.round(daysToGoal));
+  return { label: 'Projected goal date: ' + when.toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' }) + ' (at current rate of ' + (Math.abs(rate) * 7).toFixed(2) + ' lbs/wk)' };
+}
+function drawWeightTrendChart(asc, goalWeight) {
+  var canvas = document.getElementById('weight-trend-canvas');
+  if (!canvas) return;
+  if (libCharts.weightTrend) libCharts.weightTrend.destroy();
+  var labels = asc.map(function(r) { var d = new Date(r.date + 'T12:00:00'); return (d.getMonth()+1) + '/' + d.getDate(); });
+  var values = asc.map(function(r) { return r.weight_lbs; });
+
+  var refLinePlugin = {
+    id: 'refLines',
+    afterDatasetsDraw: function(chart) {
+      var ctx = chart.ctx;
+      var draw = function(yVal, color, label) {
+        if (yVal == null) return;
+        var y = chart.scales.y.getPixelForValue(yVal);
+        ctx.save();
+        ctx.setLineDash([5, 4]);
+        ctx.strokeStyle = color;
+        ctx.lineWidth = 1.5;
+        ctx.beginPath();
+        ctx.moveTo(chart.chartArea.left, y);
+        ctx.lineTo(chart.chartArea.right, y);
+        ctx.stroke();
+        ctx.setLineDash([]);
+        ctx.fillStyle = color;
+        ctx.font = '10px IBM Plex Mono, monospace';
+        ctx.textAlign = 'right';
+        ctx.fillText(label, chart.chartArea.right - 4, y - 4);
+        ctx.restore();
+      };
+      draw(values[0], '#888', 'start ' + values[0].toFixed(1));
+      draw(goalWeight, '#f5a623', 'goal ' + (goalWeight ? goalWeight.toFixed(1) : ''));
+    }
+  };
+
+  libCharts.weightTrend = new Chart(canvas, {
+    type: 'line',
+    data: {
+      labels: labels,
+      datasets: [{
+        data: values,
+        borderColor: '#22c97a',
+        backgroundColor: '#22c97a22',
+        fill: true,
+        tension: 0.3,
+        pointRadius: 3,
+        pointBackgroundColor: '#22c97a',
+        pointBorderColor: '#0a0a0a',
+        pointBorderWidth: 1,
+      }]
+    },
+    options: {
+      responsive: true,
+      plugins: {
+        legend: { display: false },
+        tooltip: { callbacks: { label: function(ctx) { return ctx.raw.toFixed(1) + ' lbs'; } } }
+      },
+      scales: {
+        x: { ticks: { color: '#555', font: { size: 10 }, autoSkip: true, autoSkipPadding: 12 }, grid: { display: false } },
+        y: { ticks: { color: '#555', font: { size: 10 }, callback: function(v) { return v + ''; } }, grid: { color: '#1a1c22' } }
+      }
+    },
+    plugins: [refLinePlugin]
+  });
+}
+
+function renderProfileBodyCard() {
+  var el = document.getElementById('profile-body');
+  if (!el) return;
+  var pb = currentProfileBody || {};
+  var heightTotal = pb.height_inches ? Math.round(parseFloat(pb.height_inches)) : null;
+  var heightFt = heightTotal != null ? Math.floor(heightTotal / 12) : '';
+  var heightIn = heightTotal != null ? heightTotal - heightFt * 12 : '';
+
+  var h = '<div class="card"><p class="clabel">body</p>';
+  h += '<div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">';
+
+  // Height
+  h += '<div><p class="mono" style="font-size:10px;color:var(--text-dim);letter-spacing:2px;margin-bottom:6px">HEIGHT</p>';
+  h += '<div style="display:flex;gap:6px">';
+  h += '<select id="body-height-ft" onchange="saveHeightFromInputs()" style="flex:1;background:var(--bg-input);border:1px solid var(--border);color:var(--text);padding:10px;border-radius:6px;font-size:14px">';
+  h += '<option value="">ft</option>';
+  for (var f = 4; f <= 7; f++) h += '<option value="' + f + '"' + (heightFt === f ? ' selected' : '') + '>' + f + '\'</option>';
+  h += '</select>';
+  h += '<select id="body-height-in" onchange="saveHeightFromInputs()" style="flex:1;background:var(--bg-input);border:1px solid var(--border);color:var(--text);padding:10px;border-radius:6px;font-size:14px">';
+  h += '<option value="">in</option>';
+  for (var inch = 0; inch <= 11; inch++) h += '<option value="' + inch + '"' + (heightIn === inch ? ' selected' : '') + '>' + inch + '"</option>';
+  h += '</select>';
+  h += '</div></div>';
+
+  // DOB
+  h += '<div><p class="mono" style="font-size:10px;color:var(--text-dim);letter-spacing:2px;margin-bottom:6px">DATE OF BIRTH</p>';
+  h += '<input id="body-dob" type="date" value="' + (pb.birth_date || '') + '" onchange="saveProfileBody({ birth_date: this.value || null })" style="width:100%;background:var(--bg-input);border:1px solid var(--border);color:var(--text);padding:10px;border-radius:6px;font-size:14px;font-family:DM Sans,sans-serif">';
+  h += (pb.birth_date && ageFromDob(pb.birth_date) != null ? '<p class="mono" style="font-size:10px;color:var(--text-muted);margin-top:4px">Age: ' + ageFromDob(pb.birth_date) + '</p>' : '');
+  h += '</div>';
+
+  // Sex
+  h += '<div><p class="mono" style="font-size:10px;color:var(--text-dim);letter-spacing:2px;margin-bottom:6px">SEX <span style="color:#555">(used for TDEE)</span></p>';
+  h += '<select id="body-sex" onchange="saveProfileBody({ sex: this.value || null })" style="width:100%;background:var(--bg-input);border:1px solid var(--border);color:var(--text);padding:10px;border-radius:6px;font-size:14px">';
+  ['', 'Male', 'Female', 'Prefer not to say'].forEach(function(opt) {
+    var label = opt || 'Choose…';
+    h += '<option value="' + opt + '"' + (pb.sex === opt ? ' selected' : '') + '>' + label + '</option>';
+  });
+  h += '</select></div>';
+
+  // Goal weight
+  h += '<div><p class="mono" style="font-size:10px;color:var(--text-dim);letter-spacing:2px;margin-bottom:6px">GOAL WEIGHT (LBS)</p>';
+  h += '<input id="body-goal-weight" type="number" step="0.1" min="50" max="900" value="' + (pb.goal_weight_lbs != null ? pb.goal_weight_lbs : '') + '" onchange="saveProfileBody({ goal_weight_lbs: this.value === \'\' ? null : parseFloat(this.value) })" placeholder="e.g. 175" style="width:100%;background:var(--bg-input);border:1px solid var(--border);color:var(--text);padding:10px;border-radius:6px;font-size:14px;font-family:DM Sans,sans-serif">';
+  h += '</div>';
+
+  // Timeline
+  h += '<div style="grid-column:1 / -1"><p class="mono" style="font-size:10px;color:var(--text-dim);letter-spacing:2px;margin-bottom:6px">GOAL TIMELINE</p>';
+  h += '<select id="body-goal-timeline" onchange="saveProfileBody({ goal_weight_timeline_months: this.value === \'\' ? null : parseInt(this.value, 10) })" style="width:100%;background:var(--bg-input);border:1px solid var(--border);color:var(--text);padding:10px;border-radius:6px;font-size:14px">';
+  h += '<option value="">No timeline set</option>';
+  [1, 2, 3, 6, 12].forEach(function(m) {
+    h += '<option value="' + m + '"' + (pb.goal_weight_timeline_months == m ? ' selected' : '') + '>' + m + ' month' + (m === 1 ? '' : 's') + '</option>';
+  });
+  h += '</select></div>';
+
+  h += '</div>';
+  if (pb.height_inches) {
+    h += '<p class="mono" style="font-size:11px;color:var(--text-muted);margin-top:12px;text-align:center">Height stored as ' + pb.height_inches + ' in (' + formatHeightFtIn(pb.height_inches) + ')</p>';
+  }
+  h += '</div>';
+  el.innerHTML = h;
+}
+
+function saveHeightFromInputs() {
+  var ftEl = document.getElementById('body-height-ft');
+  var inEl = document.getElementById('body-height-in');
+  if (!ftEl || !inEl) return;
+  var ft = parseInt(ftEl.value, 10);
+  var inc = parseInt(inEl.value, 10);
+  if (isNaN(ft) && isNaN(inc)) {
+    saveProfileBody({ height_inches: null });
+    return;
+  }
+  if (isNaN(ft)) ft = 0;
+  if (isNaN(inc)) inc = 0;
+  saveProfileBody({ height_inches: ft * 12 + inc });
 }
 
 function renderLibImportBanner() {

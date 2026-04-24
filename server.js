@@ -224,6 +224,8 @@ async function buildDailyData(token, overrideDate) {
     fitGet("/1/user/-/hrv/date/" + weekAgo + "/" + today + ".json", token).catch(function() { return { hrv: [] }; }),
     fitGet("/1/user/-/activities/heart/date/" + weekAgo + "/" + today + ".json", token).catch(function() { return { "activities-heart": [] }; }),
     fitGet("/1/user/-/sleep/date/" + today + ".json", token).catch(function() { return {}; }),
+    fitGet("/1/user/-/body/log/weight/date/" + today + ".json", token).catch(function() { return { weight: [] }; }),
+    fitGet("/1/user/-/body/log/fat/date/" + today + ".json", token).catch(function() { return { fat: [] }; }),
   ]);
 
   var sleep      = results[0];
@@ -234,6 +236,8 @@ async function buildDailyData(token, overrideDate) {
   const hrvWeek    = results[5];
   const heartWeek  = results[6];
   var sleepV1    = results[7];
+  const bodyWeight = results[8];
+  const bodyFat    = results[9];
 
   var sleepArr    = sleep && sleep.sleep ? sleep.sleep : [];
   var sleepDate = today;
@@ -366,6 +370,33 @@ async function buildDailyData(token, overrideDate) {
           floors: typeof s.floors === "number" ? s.floors : null,
         };
       })(),
+      bodySummary: (function() {
+        // Fitbit returns weight in kg by default (lbs only when locale en_US is set
+        // on the user's account). The body/log endpoints expose `weight` (kg) AND
+        // a separate `bmi` field. We re-derive weight_lbs and let the caller
+        // recompute BMI from profile height (more reliable than Fitbit's BMI).
+        var wRows = (bodyWeight && bodyWeight.weight) || [];
+        var fRows = (bodyFat && bodyFat.fat) || [];
+        var w = wRows.length ? wRows[wRows.length - 1] : null;
+        var f = fRows.length ? fRows[fRows.length - 1] : null;
+        if (!w && !f) return null;
+        var weightLbs = null;
+        if (w) {
+          // Fitbit returns kg by default — the units endpoint can override but we
+          // detect: if the value is suspiciously low (< 60), assume kg and convert;
+          // otherwise treat as lbs. A typical adult lbs value is 100-300; a kg
+          // value is 40-180. The split at 60 is safe for most adult users.
+          var raw = typeof w.weight === "number" ? w.weight : null;
+          if (raw !== null) {
+            weightLbs = raw < 60 ? +(raw * 2.20462).toFixed(1) : +raw.toFixed(1);
+          }
+        }
+        return {
+          date: today,
+          weight_lbs: weightLbs,
+          body_fat_pct: f && typeof f.fat === "number" ? +f.fat.toFixed(2) : null,
+        };
+      })(),
       rolling7: {
         rhr: rhrVals.length ? Math.round(rhrVals.reduce(function(a,b){return a+b;},0) / rhrVals.length) : null,
         hrv: hrvVals.length ? +(hrvVals.reduce(function(a,b){return a+b;},0) / hrvVals.length).toFixed(1) : null,
@@ -440,15 +471,30 @@ app.get("/api/profiles", async function(req, res) {
   }
 });
 
+// Top-level body columns surfaced alongside profile_data on every profile
+// fetch/verify/patch response so the client can render the Body card and feed
+// TDEE math into the AI prompt without a second round-trip.
+var PROFILE_BODY_FIELDS = ["height_inches", "birth_date", "sex", "goal_weight_lbs", "goal_weight_timeline_months"];
+function pickProfileBody(p) {
+  var out = {};
+  PROFILE_BODY_FIELDS.forEach(function(k) { out[k] = p && p[k] != null ? p[k] : null; });
+  return out;
+}
+var PROFILE_SELECT_BASE = "id,name,avatar_color,profile_data,created_at," + PROFILE_BODY_FIELDS.join(",");
+
 app.get("/api/profiles/:id", async function(req, res) {
   try {
-    var r = await fetch(SUPABASE_URL + "/rest/v1/profiles?id=eq." + req.params.id + "&select=id,name,avatar_color,profile_data,created_at", {
+    var r = await fetch(SUPABASE_URL + "/rest/v1/profiles?id=eq." + req.params.id + "&select=" + PROFILE_SELECT_BASE, {
       headers: sbHeaders(),
     });
     var rows = await r.json();
     if (!rows || !rows.length) return res.json({ success: false, error: "Profile not found." });
     var p = rows[0];
-    res.json({ success: true, profile: { id: p.id, name: p.name, avatar_color: p.avatar_color, profile_data: cleanProfileData(p.profile_data || {}), created_at: p.created_at } });
+    res.json({ success: true, profile: Object.assign({
+      id: p.id, name: p.name, avatar_color: p.avatar_color,
+      profile_data: cleanProfileData(p.profile_data || {}),
+      created_at: p.created_at,
+    }, pickProfileBody(p)) });
   } catch (e) {
     res.status(500).json({ success: false, error: e.message });
   }
@@ -484,7 +530,7 @@ app.post("/api/profiles/verify", async function(req, res) {
     if (!body.id || !body.pin) {
       return res.status(400).json({ success: false, error: "Profile ID and PIN required." });
     }
-    var r = await fetch(SUPABASE_URL + "/rest/v1/profiles?id=eq." + body.id + "&select=id,name,avatar_color,pin,profile_data,created_at", {
+    var r = await fetch(SUPABASE_URL + "/rest/v1/profiles?id=eq." + body.id + "&select=pin," + PROFILE_SELECT_BASE, {
       headers: sbHeaders(),
     });
     var rows = await r.json();
@@ -493,13 +539,13 @@ app.post("/api/profiles/verify", async function(req, res) {
     if (profile.pin !== hashPin(body.pin)) return res.json({ success: false, error: "Incorrect PIN." });
     res.json({
       success: true,
-      profile: {
+      profile: Object.assign({
         id: profile.id,
         name: profile.name,
         avatar_color: profile.avatar_color,
         profile_data: cleanProfileData(profile.profile_data || {}),
         created_at: profile.created_at,
-      },
+      }, pickProfileBody(profile)),
     });
   } catch (e) {
     res.status(500).json({ success: false, error: e.message });
@@ -510,10 +556,18 @@ app.patch("/api/profiles/:id", async function(req, res) {
   try {
     var profileId = req.params.id;
     var body = req.body;
-    // Build update payload - supports name, avatar_color, and profile_data
+    // Build update payload - supports name, avatar_color, profile_data,
+    // and the dedicated body columns (height/dob/sex/goal weight + timeline).
     var updatePayload = {};
     if (body.name) updatePayload.name = body.name;
     if (body.avatar_color) updatePayload.avatar_color = body.avatar_color;
+    PROFILE_BODY_FIELDS.forEach(function(k) {
+      if (Object.prototype.hasOwnProperty.call(body, k)) {
+        var v = body[k];
+        if (v === "" || v === undefined) v = null;
+        updatePayload[k] = v;
+      }
+    });
 
     if (body.profile_data && typeof body.profile_data === 'object') {
       // Fetch existing profile_data for merge
@@ -548,7 +602,10 @@ app.patch("/api/profiles/:id", async function(req, res) {
     });
     var updated = await r2.json();
     var profile = Array.isArray(updated) ? updated[0] : updated;
-    res.json({ success: true, profile: { id: profile.id, name: profile.name, avatar_color: profile.avatar_color, profile_data: profile.profile_data } });
+    res.json({ success: true, profile: Object.assign({
+      id: profile.id, name: profile.name, avatar_color: profile.avatar_color,
+      profile_data: profile.profile_data,
+    }, pickProfileBody(profile)) });
   } catch (e) {
     res.status(500).json({ success: false, error: e.message });
   }
@@ -643,6 +700,18 @@ app.get("/api/profiles/:id/daily", async function(req, res) {
         console.error("[Steps] post-sync persistence failed:", e.message);
       });
     }
+    // Fire-and-forget: persist today's weight / body fat from Fitbit if any.
+    var bs = result.data && result.data.bodySummary;
+    if (bs && bs.date && (typeof bs.weight_lbs === "number" || typeof bs.body_fat_pct === "number")) {
+      upsertBodyMetrics(req.params.id, {
+        date: bs.date,
+        weight_lbs: bs.weight_lbs,
+        body_fat_pct: bs.body_fat_pct,
+        source: "fitbit",
+      }).catch(function(e) {
+        console.error("[Body] fitbit upsert failed:", e.message);
+      });
+    }
     res.json({ success: true, date: result.date, data: result.data });
   } catch (err) {
     console.error("Error:", err.message);
@@ -721,6 +790,126 @@ app.get("/api/profiles/:id/daily-steps", async function(req, res) {
     var rows = await r.json();
     res.json({ success: true, steps: Array.isArray(rows) ? rows : [] });
   } catch (e) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+// ── BODY METRICS (weight / body fat / BMI) ────────────────────────────────
+function calcBmi(weightLbs, heightInches) {
+  if (!weightLbs || !heightInches) return null;
+  return +((weightLbs / (heightInches * heightInches)) * 703).toFixed(2);
+}
+
+async function getProfileHeightInches(profileId) {
+  try {
+    var r = await fetch(
+      SUPABASE_URL + "/rest/v1/profiles?id=eq." + profileId + "&select=height_inches",
+      { headers: sbHeaders() }
+    );
+    var rows = await r.json();
+    if (!rows || !rows.length) return null;
+    var h = rows[0].height_inches;
+    return h && !isNaN(parseFloat(h)) ? parseFloat(h) : null;
+  } catch (e) {
+    return null;
+  }
+}
+
+async function upsertBodyMetrics(profileId, entry) {
+  // entry: { date, weight_lbs?, body_fat_pct?, source? }
+  // Recompute BMI if we know the profile's height.
+  var height = await getProfileHeightInches(profileId);
+  var bmi = entry.weight_lbs ? calcBmi(entry.weight_lbs, height) : null;
+  var payload = {
+    profile_id: profileId,
+    date: entry.date,
+    weight_lbs: entry.weight_lbs == null ? null : entry.weight_lbs,
+    body_fat_pct: entry.body_fat_pct == null ? null : entry.body_fat_pct,
+    bmi: bmi,
+    source: entry.source || "manual",
+  };
+  // Strip null fields so we don't blow away an existing weight when the user
+  // logs body-fat-only (or vice versa). PostgREST treats omitted fields as
+  // "leave alone" under merge-duplicates.
+  Object.keys(payload).forEach(function(k) {
+    if (payload[k] === null && k !== "bmi") delete payload[k];
+  });
+  // Always include profile_id + date so the conflict target resolves.
+  payload.profile_id = profileId;
+  payload.date = entry.date;
+
+  var r = await fetch(
+    SUPABASE_URL + "/rest/v1/body_metrics?on_conflict=profile_id,date",
+    {
+      method: "POST",
+      headers: sbHeaders("return=representation,resolution=merge-duplicates"),
+      body: JSON.stringify(payload),
+    }
+  );
+  if (!r.ok) {
+    var t = await r.text();
+    throw new Error("body_metrics upsert " + r.status + ": " + t);
+  }
+  var data = await r.json();
+  console.log("[Body] upserted profile=" + profileId + " date=" + entry.date +
+    " weight=" + (entry.weight_lbs || "-") +
+    " bf=" + (entry.body_fat_pct || "-") +
+    " bmi=" + (bmi || "-") +
+    " source=" + payload.source);
+  return Array.isArray(data) ? data[0] : data;
+}
+
+app.get("/api/profiles/:id/body-metrics", async function(req, res) {
+  try {
+    var pid = req.params.id;
+    var days = Math.min(Math.max(parseInt(req.query.days, 10) || 90, 1), 730);
+    var cutoff = new Date();
+    cutoff.setDate(cutoff.getDate() - days);
+    var cutoffStr = cutoff.toISOString().slice(0, 10);
+    var r = await fetch(
+      SUPABASE_URL + "/rest/v1/body_metrics?profile_id=eq." + pid +
+        "&date=gte." + cutoffStr +
+        "&select=date,weight_lbs,body_fat_pct,bmi,source" +
+        "&order=date.desc",
+      { headers: sbHeaders() }
+    );
+    var rows = await r.json();
+    res.json({ success: true, metrics: Array.isArray(rows) ? rows : [] });
+  } catch (e) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+app.post("/api/profiles/:id/body-metrics", async function(req, res) {
+  try {
+    var pid = req.params.id;
+    var body = req.body || {};
+    var dateStr = body.date;
+    if (!dateStr) {
+      var d = new Date();
+      var pad = function(n) { return String(n).padStart(2, "0"); };
+      dateStr = d.getFullYear() + "-" + pad(d.getMonth() + 1) + "-" + pad(d.getDate());
+    }
+    var weight = body.weight_lbs == null || body.weight_lbs === "" ? null : parseFloat(body.weight_lbs);
+    var bf     = body.body_fat_pct == null || body.body_fat_pct === "" ? null : parseFloat(body.body_fat_pct);
+    if (weight === null && bf === null) {
+      return res.status(400).json({ success: false, error: "weight_lbs or body_fat_pct required" });
+    }
+    if (weight !== null && (isNaN(weight) || weight <= 0 || weight > 1000)) {
+      return res.status(400).json({ success: false, error: "weight_lbs out of range" });
+    }
+    if (bf !== null && (isNaN(bf) || bf < 0 || bf > 75)) {
+      return res.status(400).json({ success: false, error: "body_fat_pct out of range" });
+    }
+    var row = await upsertBodyMetrics(pid, {
+      date: dateStr,
+      weight_lbs: weight,
+      body_fat_pct: bf,
+      source: body.source || "manual",
+    });
+    res.json({ success: true, metric: row });
+  } catch (e) {
+    console.error("[Body] POST error:", e.message);
     res.status(500).json({ success: false, error: e.message });
   }
 });

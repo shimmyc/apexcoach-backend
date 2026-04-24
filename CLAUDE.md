@@ -22,7 +22,7 @@ ApexCoach is a personalized AI fitness coaching web app. Users connect their Fit
 
 ## Supabase Tables
 
-- profiles: id, name, pin (sha256 hashed), avatar_color, profile_data (jsonb), fitbit_access_token, fitbit_refresh_token, fitbit_expires_at, coaching_brief (text), historical_brief (text), historical_brief_updated_at (timestamp), roadmap (text), roadmap_updated_at (timestamp), daily_recommendations (jsonb), daily_recommendations_date (date), daily_recommendations_readiness (int), progress_brief (jsonb), progress_brief_date (date), created_at
+- profiles: id, name, pin (sha256 hashed), avatar_color, profile_data (jsonb), fitbit_access_token, fitbit_refresh_token, fitbit_expires_at, coaching_brief (text), historical_brief (text), historical_brief_updated_at (timestamp), roadmap (text), roadmap_updated_at (timestamp), daily_recommendations (jsonb), daily_recommendations_date (date), daily_recommendations_readiness (int), progress_brief (jsonb), progress_brief_date (date), height_inches (numeric), birth_date (date), sex (text), goal_weight_lbs (numeric), goal_weight_timeline_months (int), created_at
 
 - workouts: id, date, type, notes, done, mobility, med, ts, profile_id
 
@@ -33,6 +33,8 @@ ApexCoach is a personalized AI fitness coaching web app. Users connect their Fit
 - micro_goals: id (uuid pk), profile_id (fk → profiles), title (text), type (text: daily_habit | weekly_frequency | cumulative_volume | strength_milestone | skill_technique | streak | recovery_balance), target_value (numeric), target_unit (text), period (text: daily | weekly | monthly | custom), end_date (date, nullable), current_value (numeric default 0), is_active (boolean default true), created_at (timestamp default now()).
 
 - daily_steps: id (bigint identity pk), profile_id (fk → profiles, on delete cascade), date (date), steps (int), calories (int), distance_miles (numeric), floors (int), source (text default 'fitbit'), created_at (timestamptz default now()). UNIQUE(profile_id, date). Upserted nightly from Fitbit sync; powers history-tab step pills, Library 30-day chart, and step-goal context in the AI rec prompt.
+
+- body_metrics: id (bigint identity pk), profile_id (fk → profiles, on delete cascade), date (date), weight_lbs (numeric), body_fat_pct (numeric), bmi (numeric), source (text default 'manual', also 'fitbit'), created_at (timestamptz default now()). UNIQUE(profile_id, date). Stores weight / BF% / BMI history. Upserted from `/1/user/-/body/log/{weight,fat}/date/today.json` via Fitbit sync, or manually via the Today-tab "Log Weight" modal. BMI is computed server-side as `(weight_lbs / height_inches²) × 703` when `profiles.height_inches` is set.
 
 ## Onboarding Flow (Full-Page Paginated)
 
@@ -498,6 +500,43 @@ CREATE TABLE IF NOT EXISTS daily_steps (
   UNIQUE(profile_id, date)
 );
 CREATE INDEX IF NOT EXISTS idx_daily_steps_profile_date ON daily_steps(profile_id, date DESC);
+```
+
+## Body Composition Tracking
+
+Per-profile weight / body-fat / BMI history powers a Today-tab Body Metrics card, a 90-day weight-trend line chart on the Profile tab, and a `BODY COMPOSITION` block in the daily AI rec prompt with TDEE math.
+
+- **Profile body fields** (top-level columns on `profiles`, NOT `profile_data`): `height_inches` (numeric), `birth_date` (date), `sex` (text: `Male` | `Female` | `Prefer not to say`), `goal_weight_lbs` (numeric), `goal_weight_timeline_months` (int). Edited from the Profile tab "Body" card. PATCH `/api/profiles/:id` accepts these as siblings of `profile_data`.
+- **Body Metrics card (Today)** — sits between the readiness card and the feeling check-in. Shows latest weight, BMI + label tier (`<18.5` Underweight, `18.5–24.9` Normal, `25–29.9` Overweight, `30+` Obese), body-fat % when available, and a goal progress bar ("X lbs to goal"). Hidden entirely if no metric rows exist AND height/weight have never been set. "+ Log Weight" opens a quick-entry modal that POSTs `weight_lbs` (and optional `body_fat_pct`) and re-renders.
+- **Weight Trend (Profile)** — Chart.js line chart of last 90 days from `body_metrics`, with three reference lines: starting weight, current weight, goal weight. A `Projected goal date` line beneath estimates ETA from the rolling 14-day rate of change.
+- **Fitbit sync**: `buildDailyData` also calls `/1/user/-/body/log/weight/date/today.json` and `/1/user/-/body/log/fat/date/today.json`. If either returns a row for today, `/api/profiles/:id/daily` upserts into `body_metrics` with `source='fitbit'` and recomputes BMI when `height_inches` is set.
+- **AI prompt**: `buildBodyCompositionBlock()` injects a `BODY COMPOSITION` block right after the steps line. Computes TDEE via Mifflin-St Jeor (Men: `(10×kg)+(6.25×cm)−(5×age)+5`, Women: `−161` instead of `+5`), multiplies by 1.55 (moderately active default). Total `Δ lbs × 3500 ÷ days = daily delta`, capped at −750 cal/day (deficit, 1.5 lb/wk max) or +500 cal/day (surplus). The block ends with a one-liner Claude can echo back: "To reach your goal by [month], aim to burn ~X cal today through exercise and keep intake around Y cal."
+
+**Endpoints**:
+- `GET /api/profiles/:id/body-metrics?days=90` — returns rows ordered by date desc.
+- `POST /api/profiles/:id/body-metrics` — body `{weight_lbs, body_fat_pct?, date?}`. Upserts; recomputes BMI from profile height when known. Used by manual log button and any future scale integrations.
+
+**Supabase setup** — run once in SQL editor:
+```sql
+CREATE TABLE IF NOT EXISTS body_metrics (
+  id bigint generated always as identity primary key,
+  profile_id bigint references profiles(id) on delete cascade,
+  date date not null,
+  weight_lbs numeric(6,1),
+  body_fat_pct numeric(5,2),
+  bmi numeric(5,2),
+  source text default 'manual',
+  created_at timestamptz default now(),
+  UNIQUE(profile_id, date)
+);
+CREATE INDEX IF NOT EXISTS idx_body_metrics_profile_date ON body_metrics(profile_id, date DESC);
+
+ALTER TABLE profiles
+  ADD COLUMN IF NOT EXISTS height_inches numeric(5,1),
+  ADD COLUMN IF NOT EXISTS birth_date date,
+  ADD COLUMN IF NOT EXISTS sex text,
+  ADD COLUMN IF NOT EXISTS goal_weight_lbs numeric(6,1),
+  ADD COLUMN IF NOT EXISTS goal_weight_timeline_months int;
 ```
 
 ## Personal Road Map
