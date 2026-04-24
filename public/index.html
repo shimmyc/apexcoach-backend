@@ -5100,12 +5100,23 @@ function saveProfileBody(patch) {
   if (!currentProfileId) return Promise.resolve();
   Object.keys(patch).forEach(function(k) { currentProfileBody[k] = patch[k]; });
   try { localStorage.setItem('ac_profile_body', JSON.stringify(currentProfileBody)); } catch(e) {}
+  // Optimistically re-render so the Today body card appears as soon as a
+  // height is entered, even before the server PATCH round-trips.
+  if (typeof renderBodyTodayCard === 'function') renderBodyTodayCard();
+  if (typeof renderProfileBodyCard === 'function') renderProfileBodyCard();
   return fetch('/api/profiles/' + currentProfileId, {
     method: 'PATCH',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(patch)
   }).then(function(r) { return r.json(); }).then(function(data) {
-    if (data && data.success && data.profile) captureProfileBody(data.profile);
+    if (data && data.success && data.profile) {
+      captureProfileBody(data.profile);
+      // Re-render again with server-confirmed values (covers numeric coercion).
+      if (typeof renderBodyTodayCard === 'function') renderBodyTodayCard();
+      if (typeof renderProfileBodyCard === 'function') renderProfileBodyCard();
+      // Trend chart depends on goal weight, so refresh it too.
+      if (typeof renderWeightTrend === 'function') renderWeightTrend();
+    }
   }).catch(function(e) { console.error('Save profile body error:', e); });
 }
 
@@ -5851,6 +5862,8 @@ function loadBodyMetrics() {
       });
       bodyMetricsLatest = bodyMetricsLog.find(function(m) { return m.weight_lbs != null; }) || null;
       renderBodyTodayCard();
+      // Profile body card surfaces the latest weight too — refresh it.
+      if (document.getElementById('profile-body')) renderProfileBodyCard();
       // If profile tab is mounted, update the trend chart too.
       if (document.getElementById('profile-weight-trend')) renderWeightTrend();
     })
@@ -6125,7 +6138,42 @@ function renderProfileBodyCard() {
   var heightFt = heightTotal != null ? Math.floor(heightTotal / 12) : '';
   var heightIn = heightTotal != null ? heightTotal - heightFt * 12 : '';
 
+  // Current weight (and BMI/BF when available) come from the latest
+  // body_metrics row, NOT from the profiles table. We surface them here as
+  // a read-only summary above the editable fields.
+  var latest = bodyMetricsLatest;
+  var curWt = latest && latest.weight_lbs != null ? latest.weight_lbs : null;
+  var curBf = latest && latest.body_fat_pct != null ? latest.body_fat_pct : null;
+  var curBmi = latest && latest.bmi != null ? latest.bmi : (curWt && pb.height_inches ? calcBmiClient(curWt, pb.height_inches) : null);
+  var tier = bmiTier(curBmi);
+
   var h = '<div class="card"><p class="clabel">body</p>';
+
+  // Read-only current-state summary (always present so user can confirm
+  // their saved values land somewhere visible even before they log a weight).
+  h += '<div style="background:var(--bg-input);border-radius:6px;padding:12px;margin-bottom:14px">';
+  h += '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">';
+  h += '<span class="mono" style="font-size:10px;color:var(--text-dim);letter-spacing:2px">CURRENT WEIGHT</span>';
+  h += '<button onclick="openLogWeight()" style="background:transparent;border:1px solid var(--accent-33);color:var(--accent);padding:4px 10px;border-radius:4px;cursor:pointer;font-size:11px;font-weight:600">+ Log Weight</button>';
+  h += '</div>';
+  if (curWt != null) {
+    h += '<div style="display:flex;align-items:baseline;gap:10px;flex-wrap:wrap">';
+    h += '<span style="font-size:22px;font-weight:600;color:var(--text-bright)">' + curWt.toFixed(1) + ' lbs</span>';
+    if (curBmi != null) {
+      h += '<span style="font-size:13px;color:' + (tier ? tier.color : 'var(--text-muted)') + '">BMI ' + curBmi.toFixed(1) + (tier ? ' &middot; ' + tier.label : '') + '</span>';
+    }
+    if (curBf != null) {
+      h += '<span style="font-size:13px;color:var(--text-muted)">' + curBf.toFixed(1) + '% body fat</span>';
+    }
+    h += '</div>';
+    if (latest && latest.date) {
+      h += '<p class="mono" style="font-size:10px;color:var(--text-dim);margin-top:4px">last logged ' + latest.date + (latest.source ? ' &middot; ' + latest.source : '') + '</p>';
+    }
+  } else {
+    h += '<p style="font-size:13px;color:var(--text-dim);font-style:italic">No weight logged yet — tap + Log Weight to start tracking BMI and progress.</p>';
+  }
+  h += '</div>';
+
   h += '<div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">';
 
   // Height
@@ -7851,6 +7899,8 @@ function showTab(name, btn) {
 
   if (name === 'library') loadLibrary();
   if (name === 'history') { renderCalendar(); renderLog(); }
+  if (name === 'today' && typeof renderBodyTodayCard === 'function') renderBodyTodayCard();
+  if (name === 'profile' && typeof renderProfileBodyCard === 'function') renderProfileBodyCard();
 }
 
 // ── SETTINGS PANEL ───────────────────────────────────────────────────────
