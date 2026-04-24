@@ -22,7 +22,9 @@ ApexCoach is a personalized AI fitness coaching web app. Users connect their Fit
 
 ## Supabase Tables
 
-- profiles: id, name, pin (sha256 hashed), avatar_color, profile_data (jsonb), fitbit_access_token, fitbit_refresh_token, fitbit_expires_at, coaching_brief (text), historical_brief (text), historical_brief_updated_at (timestamp), roadmap (text), roadmap_updated_at (timestamp), daily_recommendations (jsonb), daily_recommendations_date (date), daily_recommendations_readiness (int), progress_brief (jsonb), progress_brief_date (date), height_inches (numeric), birth_date (date), sex (text), goal_weight_lbs (numeric), goal_weight_timeline_months (int), created_at
+- profiles: id, name, pin (sha256 hashed), avatar_color, profile_data (jsonb), fitbit_access_token, fitbit_refresh_token, fitbit_expires_at, coaching_brief (text), historical_brief (text), historical_brief_updated_at (timestamp), roadmap (text), roadmap_updated_at (timestamp), daily_recommendations (jsonb), daily_recommendations_date (date), daily_recommendations_readiness (int), progress_brief (jsonb), progress_brief_date (date), height_inches (numeric), birth_date (date), sex (text), goal_weight_lbs (numeric), goal_weight_timeline_months (int), fitbit_pending_imports (jsonb), created_at
+
+- workout_templates: id (bigint identity pk), profile_id (fk → profiles, on delete cascade), name (text), type (text), notes_template (text), exercises (jsonb), use_count (int default 0), created_at (timestamptz). Saved routines surfaced as ▶ Use buttons on Today and a manager on Profile.
 
 - workouts: id, date, type, notes, done, mobility, med, ts, profile_id
 
@@ -673,6 +675,45 @@ Valuation at this scale: $6-12M (5-10x ARR)
 - [ ] GDPR/CCPA compliance review
 - [ ] Apple Developer Account ($99/yr) for iOS app
 - [ ] Freemium tier system (Free/Pro/Family)
+
+## Fitbit History Backfill
+
+`POST /api/profiles/:id/fitbit-backfill` pulls 90 days of steps + weight + body fat in one shot and upserts into `daily_steps` / `body_metrics`. BMI is recomputed from `profiles.height_inches`. The same routine fires automatically (fire-and-forget) inside the OAuth `/callback` once per profile, gated by `profile_data.settings.fitbit_backfilled`. Manual trigger: Settings → Data & Readiness → "Import full history from Fitbit (90 days)".
+
+## Re-Log Past Workouts
+
+`GET /api/workouts/:id/full` returns the workout row + every exercise extracted from it. Client `reLogWorkout(workoutId)` builds notes lines from the exercises array (`name: SxR @ Wlbs`, plus distance/duration when present), prepends the original free-text notes, opens the log modal pre-filled with type+notes, and shows a re-log banner inside the modal. Surfaces:
+- 🔄 Re-log button on every History list card
+- Today tab "Recent Workouts" card (top 3, newest first) sits above the AI rec card
+
+## Workout Templates
+
+Saved routines (`workout_templates` table). User flow:
+- Save: log modal has a "Save as Template" prompt; tapping it shows an inline name input. POST creates a template with the current notes/type.
+- Use: ▶ Use button on Today tab "My Templates" or Profile tab manager opens log modal pre-filled with `notes_template`/`type`. Use_count increments on Use.
+- Manage: Profile tab "My Templates" card lists every template with Use / Rename / Delete and shows `Used N times`.
+
+Endpoints: `GET/POST /api/profiles/:id/templates`, `PATCH/DELETE /api/templates/:id`.
+
+## Fitbit Workout Auto-Import
+
+The daily Fitbit sync also calls `/1/user/-/activities/list.json?afterDate=TODAY&sort=asc&limit=10`. Activities that started today and don't already match an existing workout (deduped by activityId in the queue OR by matching `type` ILIKE the activity name) are pushed onto `profiles.fitbit_pending_imports` (jsonb array). Each entry: `{ activityId, name, durationMinutes, calories, steps, startTime, heartRateZones, avgHeartRate }`.
+
+Today tab renders a card per pending import between the body-metrics card and the check-in card with **Import to Log** / **Dismiss** buttons:
+- Import: creates a `workouts` row with auto-generated notes ("Auto-imported from Fitbit: X min, Y cal, avg HR Z bpm"), `done=true`, type mapped via `mapFitbitActivityType()` (Run/Walk/Hike/Bike/Swim/Elliptical → Cardio, Weights/Strength Training → Strength, Yoga/Pilates/Meditation → Mind & Body, Martial Arts/MMA/Boxing → Martial Arts, else verbatim). The notes also embed a `[source: fitbit_activity, activityId=...]` tag so future syncs dedupe against it. Removes from pending. Invalidates the progress brief cache.
+- Dismiss: removes from pending without creating a workout.
+
+Endpoints: `GET /api/profiles/:id/fitbit-pending-imports`, `POST /api/profiles/:id/fitbit-import` (body `{activityId, action: "import"|"dismiss"}`).
+
+## Past-Day Navigation (Fixed)
+
+`renderDayView()` now fetches `/api/profiles/:id/daily?date=YYYY-MM-DD` for past dates and replaces the readiness-card slot with that day's biometric snapshot (readiness score + steps + weight if logged). Results cached client-side per date in `_pastDayCache` so back-and-forth navigation doesn't re-fetch. Daily-steps history loader bumped from 30 → 90 days so the History tab steps pill works on older workout cards.
+
+## Exercise Extraction Hardening
+
+The `/api/profiles/:id/extract-exercises` prompt has explicit data-integrity rules: never invent or assume weights/reps/sets/distances/durations not in the raw text; if ambiguous, omit (null); never carry weights between exercises; never guess from words like "heavy"/"light"; raw_text must be the literal substring. Companion admin endpoints to clean up bad rows:
+- `GET /api/profiles/:id/exercises/audit?name=...&min_weight=...&max_weight=...`
+- `DELETE /api/profiles/:id/exercises/:exerciseId`
 
 ## Maintenance Instructions
 

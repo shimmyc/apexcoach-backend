@@ -408,6 +408,8 @@ input[type=range]{width:100%;accent-color:var(--accent)}
     <div id="streak-card" style="display:none"></div>
     <div id="readiness-card" class="card" style="display:none"></div>
     <div id="body-metrics-card" class="card" style="display:none"></div>
+    <!-- Fitbit auto-import prompts (Agent 4). One card per pending activity. -->
+    <div id="fitbit-import-prompts"></div>
     <div id="feeling-checkin-card" class="card" style="display:none;background:#0d1018;border-color:#22c97a22">
       <div id="feeling-checkin-full">
         <p class="clabel">how are you feeling today?</p>
@@ -462,6 +464,9 @@ input[type=range]{width:100%;accent-color:var(--accent)}
       <p class="clabel">progress brief</p>
       <div id="progress-content"></div>
     </div>
+    <!-- Recent Workouts + My Templates (Agent 2 + Agent 3). Sits just above
+         the AI rec card so re-log / template options are at hand. -->
+    <div id="recent-workouts-card" class="card" style="display:none"></div>
     <div id="ai-card" class="card" style="display:none">
       <p class="clabel">ai recommendation</p>
       <div id="ai-content"></div>
@@ -616,6 +621,7 @@ input[type=range]{width:100%;accent-color:var(--accent)}
 
     <div id="profile-body"></div>
     <div id="profile-weight-trend"></div>
+    <div id="profile-templates"></div>
     <div id="profile-injuries"></div>
     <div id="profile-philosophy"></div>
     <div id="profile-context"></div>
@@ -753,6 +759,7 @@ input[type=range]{width:100%;accent-color:var(--accent)}
 <div class="overlay" id="log-modal" style="display:none" onclick="closeModal()">
   <div class="modal" onclick="event.stopPropagation()">
     <p class="mono" style="font-size:10px;color:#555;letter-spacing:3px;margin-bottom:14px">LOG TODAY'S WORKOUT</p>
+    <div id="wlog-banner" style="display:none;margin-bottom:12px;padding:10px 12px;border-radius:6px;background:var(--accent-10);border:1px solid var(--accent-33);font-size:13px;color:var(--accent)"></div>
     <div id="wdate-picker">
       <p class="mono" style="font-size:10px;color:#555;letter-spacing:2px;margin-bottom:6px">LOG FOR</p>
       <select id="wdate" style="margin-bottom:14px">
@@ -803,6 +810,20 @@ input[type=range]{width:100%;accent-color:var(--accent)}
     <div style="display:flex;gap:8px;justify-content:flex-end">
       <button class="btnSec" onclick="closeModal()">Cancel</button>
       <button class="btnPri" onclick="saveWorkout()">Save</button>
+    </div>
+    <div id="save-template-section" style="margin-top:14px;padding-top:14px;border-top:1px solid var(--border)">
+      <div id="save-template-prompt">
+        <button onclick="showSaveTemplate()" style="background:transparent;border:1px dashed var(--border-accent);color:var(--text-muted);padding:8px 14px;border-radius:6px;cursor:pointer;font-size:12px;font-family:DM Sans,sans-serif;width:100%">&#128193; Save as Template</button>
+      </div>
+      <div id="save-template-form" style="display:none">
+        <p class="mono" style="font-size:10px;color:var(--text-dim);letter-spacing:2px;margin-bottom:6px">TEMPLATE NAME</p>
+        <input id="template-name" type="text" placeholder="e.g. Push day, Easy run, Mobility flow" style="width:100%;background:var(--bg-input);border:1px solid var(--border);color:var(--text);padding:10px 12px;border-radius:6px;font-size:14px;outline:none;font-family:'DM Sans',sans-serif;margin-bottom:8px">
+        <p id="save-template-status" class="mono" style="font-size:11px;color:var(--text-muted);margin:0 0 8px 0;min-height:14px"></p>
+        <div style="display:flex;gap:8px;justify-content:flex-end">
+          <button onclick="cancelSaveTemplate()" class="btnSec" style="font-size:12px;padding:8px 14px">Cancel</button>
+          <button onclick="submitSaveTemplate()" id="save-template-btn" class="btnPri" style="font-size:12px;padding:8px 14px">Save Template</button>
+        </div>
+      </div>
     </div>
     <div id="edit-delete-section" style="display:none;margin-top:16px;padding-top:16px;border-top:1px solid var(--border)">
       <div id="edit-delete-initial">
@@ -992,6 +1013,9 @@ var currentProfileBody = {
 };
 var bodyMetricsLog = [];     // last 90 days, ordered date desc
 var bodyMetricsLatest = null; // most recent row with weight
+var bodyMetricsByDate = {};  // YYYY-MM-DD -> row, for past-day lookups
+var workoutTemplates = [];    // saved workout templates (Agent 3)
+var fitbitPendingImports = []; // queued Fitbit-tracked activities (Agent 4)
 var coachingBrief = '';
 var historicalBrief = '';
 var briefUpdatedAt = null;
@@ -1715,8 +1739,11 @@ function bootApp() {
     renderWeek();
     renderLog();
     renderMeditationStatus();
+    if (typeof renderRecentAndTemplates === 'function') renderRecentAndTemplates();
     syncFitbit();
   });
+  if (typeof loadTemplates === 'function') loadTemplates();
+  if (typeof loadFitbitPendingImports === 'function') loadFitbitPendingImports();
 
   // Load coaching briefs and road map
   if (currentProfileId) {
@@ -1772,6 +1799,13 @@ function renderDayView() {
     document.getElementById('feeling-checkin-card').style.display = (document.getElementById('readiness-card').style.display === 'block' || document.getElementById('checkin-card').style.display === 'block') ? 'block' : '';
     document.getElementById('ai-card').style.display = '';
     document.getElementById('progress-card').style.display = '';
+    // Restore today-only Fitbit-import + recent-workouts cards (past-day mode hides them).
+    var imp = document.getElementById('fitbit-import-prompts');
+    if (imp) imp.style.display = '';
+    var rec = document.getElementById('recent-workouts-card');
+    if (rec) rec.style.display = '';
+    // Restore today's live readiness card if we have data.
+    if (typeof renderReadiness === 'function' && readiness) renderReadiness();
     // Body card visibility is decided by renderBodyTodayCard (it self-hides).
     if (typeof renderBodyTodayCard === 'function') renderBodyTodayCard();
     renderLogArea();
@@ -1781,14 +1815,23 @@ function renderDayView() {
   // Past day mode
   banner.style.display = 'block';
   document.getElementById('past-day-label').textContent = '\u2190 Viewing ' + d.toLocaleDateString('en-US', {month:'long', day:'numeric'});
-  // Hide today-only elements
+  // Hide today-only elements (AI rec / progress brief / check-in / body card).
   document.getElementById('feeling-checkin-card').style.display = 'none';
   document.getElementById('ai-card').style.display = 'none';
   document.getElementById('progress-card').style.display = 'none';
   var bodyCard = document.getElementById('body-metrics-card');
   if (bodyCard) bodyCard.style.display = 'none';
+  // Hide today-only Fitbit-import prompts and recent-workouts card too.
+  var importsCard = document.getElementById('fitbit-import-prompts');
+  if (importsCard) importsCard.style.display = 'none';
+  var recentCard = document.getElementById('recent-workouts-card');
+  if (recentCard) recentCard.style.display = 'none';
 
-  // Show workout for that date
+  // Render the past-day biometrics card (Fitbit data for that date), then the
+  // logged workout if any. Fitbit data is fetched on demand; we re-use the
+  // existing `readiness-card` slot since it already has the right styling.
+  renderPastDayBiometrics(dateStr);
+
   var entry = null;
   for (var i = 0; i < workoutLog.length; i++) {
     if (workoutLog[i].date === dateStr) { entry = workoutLog[i]; break; }
@@ -1800,6 +1843,71 @@ function renderDayView() {
   } else {
     logEl.innerHTML = '<p style="color:var(--text-dim);font-size:14px;text-align:center;padding:16px 0">No workout logged this day</p>';
   }
+}
+
+// Past-day biometric snapshot: pulls Fitbit data for the date and rewrites
+// the readiness-card slot to show what the body looked like that day.
+// The original bug: the client never forwarded `viewingDate` to
+// /api/profiles/:id/daily, so past-day views silently fell back to today's
+// cached data (or nothing at all).
+var _pastDayCache = {}; // date -> { readiness, fitData }
+function renderPastDayBiometrics(dateStr) {
+  var card = document.getElementById('readiness-card');
+  if (!card) return;
+  card.style.display = 'block';
+  // Show steps for the past day from our cached daily_steps log.
+  var stepRow = dailyStepsByDate[dateStr];
+  var stepsLine = stepRow && stepRow.steps != null
+    ? '<div class="mono" style="font-size:11px;color:var(--text-muted);letter-spacing:1px;margin-top:6px">&#128094; ' + stepRow.steps.toLocaleString() + ' steps</div>'
+    : '';
+  // Past-day weight from body_metrics if we logged one that day.
+  var bm = (bodyMetricsByDate && bodyMetricsByDate[dateStr]) || null;
+  var weightLine = bm && bm.weight_lbs != null
+    ? '<div class="mono" style="font-size:11px;color:var(--text-muted);letter-spacing:1px;margin-top:2px">&#9878; ' + bm.weight_lbs.toFixed(1) + ' lbs' + (bm.bmi != null ? ' &middot; BMI ' + bm.bmi.toFixed(1) : '') + '</div>'
+    : '';
+
+  // If we already fetched this date, render from cache; otherwise show a
+  // skeleton then fetch.
+  if (_pastDayCache[dateStr]) {
+    var c = _pastDayCache[dateStr];
+    if (c.readiness) {
+      card.innerHTML = '<p class="clabel">readiness on ' + dateStr + '</p>' +
+        '<div style="font-size:32px;font-weight:600;color:var(--accent)">' + c.readiness.score + '<span style="font-size:14px;color:var(--text-muted);font-weight:400"> / 100</span></div>' +
+        '<div class="mono" style="font-size:11px;color:var(--text-muted);letter-spacing:2px;margin-top:6px">' + c.readiness.tier.toUpperCase() + '</div>' +
+        stepsLine + weightLine;
+    } else {
+      card.innerHTML = '<p class="clabel">no biometrics for ' + dateStr + '</p>' + stepsLine + weightLine;
+    }
+    return;
+  }
+  card.innerHTML = '<p class="clabel">loading biometrics for ' + dateStr + '\u2026</p>';
+
+  fetch('/api/profiles/' + currentProfileId + '/daily?date=' + dateStr)
+    .then(function(r) { return r.json(); })
+    .then(function(json) {
+      // Bail if the user has navigated away while we were fetching.
+      if (viewingDate !== dateStr) return;
+      if (!json || !json.success || !json.data) {
+        _pastDayCache[dateStr] = { readiness: null, fitData: null };
+        card.innerHTML = '<p class="clabel">no biometrics for ' + dateStr + '</p>' + stepsLine + weightLine;
+        return;
+      }
+      var pastFit = json.data;
+      var pastReadiness = (typeof computeReadiness === 'function') ? computeReadiness(pastFit) : null;
+      _pastDayCache[dateStr] = { readiness: pastReadiness, fitData: pastFit };
+      if (pastReadiness && pastReadiness.score) {
+        card.innerHTML = '<p class="clabel">readiness on ' + dateStr + '</p>' +
+          '<div style="font-size:32px;font-weight:600;color:var(--accent)">' + pastReadiness.score + '<span style="font-size:14px;color:var(--text-muted);font-weight:400"> / 100</span></div>' +
+          '<div class="mono" style="font-size:11px;color:var(--text-muted);letter-spacing:2px;margin-top:6px">' + pastReadiness.tier.toUpperCase() + '</div>' +
+          stepsLine + weightLine;
+      } else {
+        card.innerHTML = '<p class="clabel">no biometrics for ' + dateStr + '</p>' + stepsLine + weightLine;
+      }
+    })
+    .catch(function() {
+      if (viewingDate !== dateStr) return;
+      card.innerHTML = '<p class="clabel">no biometrics for ' + dateStr + '</p>' + stepsLine + weightLine;
+    });
 }
 
 // Keyboard navigation
@@ -2770,6 +2878,9 @@ function syncFitbit(forceRefresh) {
       loadDailySteps();
       // Server may have also upserted today's weight from Fitbit body API.
       loadBodyMetrics();
+      // Server diffed today's Fitbit-tracked activities into the
+      // import queue — surface any new prompts.
+      if (typeof loadFitbitPendingImports === 'function') loadFitbitPendingImports();
     })
     .catch(function(e) {
       // Auth/token errors → show manual check-in with Fitbit connect banner
@@ -3735,6 +3846,9 @@ function renderProfileTab() {
   // ── BODY ──
   renderProfileBodyCard();
   renderWeightTrend();
+
+  // ── TEMPLATES ──
+  if (typeof renderProfileTemplates === 'function') renderProfileTemplates();
 
   // ── LIFE CONTEXT ──
   var ctx = pd.life_context || {};
@@ -5483,10 +5597,381 @@ function openModal() {
   document.getElementById('wdate-readonly').style.display = 'none';
   document.getElementById('edit-delete-section').style.display = 'none';
   document.querySelector('.modal p.mono').textContent = "LOG TODAY'S WORKOUT";
+  // Reset re-log / template banner and Save-as-Template form.
+  var banner = document.getElementById('wlog-banner');
+  if (banner) { banner.style.display = 'none'; banner.innerHTML = ''; }
+  if (typeof cancelSaveTemplate === 'function') cancelSaveTemplate();
   document.getElementById('log-modal').style.display = 'flex';
   initAutoFormatToggle();
 }
-function closeModal() { document.getElementById('log-modal').style.display = 'none'; }
+function closeModal() {
+  document.getElementById('log-modal').style.display = 'none';
+  var banner = document.getElementById('wlog-banner');
+  if (banner) { banner.style.display = 'none'; banner.innerHTML = ''; }
+}
+
+// ── RE-LOG PAST WORKOUTS ──────────────────────────────────────────────────
+// Build a notes-text representation of an exercise row, gracefully omitting
+// fields that aren't set so we don't end up with "3x12 @ nulllbs".
+function exerciseToNotesLine(ex) {
+  if (!ex || !ex.name) return '';
+  var line = ex.name;
+  var bits = [];
+  if (ex.sets != null && ex.reps != null) bits.push(ex.sets + 'x' + ex.reps);
+  else if (ex.reps != null) bits.push(ex.reps + ' reps');
+  else if (ex.sets != null) bits.push(ex.sets + ' sets');
+  if (ex.weight_lbs != null) bits.push('@ ' + ex.weight_lbs + 'lbs');
+  if (ex.distance_miles != null) bits.push(ex.distance_miles + ' mi');
+  if (ex.duration_minutes != null) bits.push(ex.duration_minutes + ' min');
+  return line + (bits.length ? ': ' + bits.join(' ') : '');
+}
+
+function reLogWorkout(workoutId) {
+  if (!workoutId) return;
+  fetch('/api/workouts/' + workoutId + '/full')
+    .then(function(r) { return r.json(); })
+    .then(function(data) {
+      if (!data.success) { alert('Could not load that workout.'); return; }
+      var w = data.workout || {};
+      var exs = data.exercises || [];
+      var lines = exs.map(exerciseToNotesLine).filter(function(l) { return l; });
+      var notesText = lines.join('\n');
+      // Prepend the original free-text notes if present (avoids losing
+      // descriptions like "felt strong, last set was a grind").
+      if (w.notes && w.notes.trim()) {
+        notesText = w.notes.trim() + (lines.length ? '\n\n' + notesText : '');
+      }
+      openModal();
+      // openModal resets type/notes to defaults, so fill *after* it.
+      document.getElementById('wnotes').value = notesText;
+      document.getElementById('wtype').value = w.type || '';
+      // Re-log always targets today (user can switch via the date picker).
+      var dateEl = document.getElementById('wdate');
+      if (dateEl) dateEl.value = 'today';
+      var banner = document.getElementById('wlog-banner');
+      if (banner) {
+        banner.innerHTML = '&#128260; Re-logging: <strong>' + (w.type || 'Workout') + '</strong> from ' + (w.date || '?') +
+          (exs.length ? ' &middot; ' + exs.length + ' exercise' + (exs.length === 1 ? '' : 's') : '');
+        banner.style.display = 'block';
+      }
+    })
+    .catch(function(e) { console.error('[ReLog] error:', e); alert('Re-log failed: ' + e.message); });
+}
+
+// ── TODAY TAB: Recent Workouts + My Templates card ────────────────────────
+function renderRecentAndTemplates() {
+  var card = document.getElementById('recent-workouts-card');
+  if (!card) return;
+  var hasWorkouts = Array.isArray(workoutLog) && workoutLog.length > 0;
+  var hasTemplates = Array.isArray(workoutTemplates) && workoutTemplates.length > 0;
+  if (!hasWorkouts && !hasTemplates) { card.style.display = 'none'; card.innerHTML = ''; return; }
+  card.style.display = 'block';
+
+  var h = '';
+
+  // Recent Workouts (last 3 distinct workouts, newest first).
+  if (hasWorkouts) {
+    var recent = workoutLog.slice().sort(function(a, b) {
+      if (a.date !== b.date) return a.date < b.date ? 1 : -1;
+      return (b.ts || 0) - (a.ts || 0);
+    }).slice(0, 3);
+    h += '<p class="clabel">recent workouts</p>';
+    h += '<div style="display:flex;flex-direction:column;gap:8px;margin-bottom:' + (hasTemplates ? '16px' : '0') + '">';
+    for (var i = 0; i < recent.length; i++) {
+      var r = recent[i];
+      var rid = r.id || '';
+      var exCount = (typeof exerciseCountByWorkoutId === 'object' && r.id != null && exerciseCountByWorkoutId[r.id]) ? exerciseCountByWorkoutId[r.id] : null;
+      h += '<div style="display:flex;align-items:center;justify-content:space-between;background:var(--bg-input);border:1px solid var(--border);border-radius:6px;padding:10px 12px">';
+      h += '<div style="flex:1;min-width:0">';
+      h += '<div style="font-size:14px;color:var(--text-bright);font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">' + (r.type || 'Workout') + '</div>';
+      h += '<div class="mono" style="font-size:10px;color:var(--text-dim);margin-top:2px">' + r.date + (exCount != null ? ' &middot; ' + exCount + ' exercise' + (exCount === 1 ? '' : 's') : '') + '</div>';
+      h += '</div>';
+      if (rid) h += '<button onclick="reLogWorkout(\'' + rid + '\')" style="background:var(--accent-10);border:1px solid var(--accent-33);color:var(--accent);padding:6px 12px;border-radius:6px;cursor:pointer;font-size:12px;font-weight:600;margin-left:8px;white-space:nowrap">&#128260; Re-log</button>';
+      h += '</div>';
+    }
+    h += '</div>';
+  }
+
+  // My Templates (Agent 3 hooks in here).
+  if (hasTemplates || hasWorkouts) {
+    h += '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">';
+    h += '<p class="clabel" style="margin-bottom:0">my templates</p>';
+    h += '</div>';
+    if (hasTemplates) {
+      h += '<div style="display:flex;flex-direction:column;gap:8px">';
+      for (var t = 0; t < workoutTemplates.length; t++) {
+        var tpl = workoutTemplates[t];
+        h += '<div style="display:flex;align-items:center;justify-content:space-between;background:var(--bg-input);border:1px solid var(--border);border-radius:6px;padding:10px 12px">';
+        h += '<div style="flex:1;min-width:0">';
+        h += '<div style="font-size:14px;color:var(--text-bright);font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">' + escHtml(tpl.name || 'Template') + '</div>';
+        var subBits = [];
+        if (tpl.type) subBits.push(tpl.type);
+        if (tpl.use_count != null) subBits.push('used ' + tpl.use_count + 'x');
+        h += '<div class="mono" style="font-size:10px;color:var(--text-dim);margin-top:2px">' + subBits.join(' &middot; ') + '</div>';
+        h += '</div>';
+        h += '<button onclick="useTemplate(\'' + tpl.id + '\')" style="background:var(--accent-10);border:1px solid var(--accent-33);color:var(--accent);padding:6px 12px;border-radius:6px;cursor:pointer;font-size:12px;font-weight:600;margin-left:8px;white-space:nowrap">&#9654; Use</button>';
+        h += '</div>';
+      }
+      h += '</div>';
+    } else {
+      h += '<p style="font-size:12px;color:var(--text-dim);font-style:italic;margin:0">Save a routine to see it here.</p>';
+    }
+  }
+
+  card.innerHTML = h;
+}
+
+// Lightweight cache: workout_id -> exercise count, populated on demand.
+var exerciseCountByWorkoutId = {};
+
+// ── WORKOUT TEMPLATES ─────────────────────────────────────────────────────
+function loadTemplates() {
+  if (!currentProfileId) return Promise.resolve();
+  return fetch('/api/profiles/' + currentProfileId + '/templates')
+    .then(function(r) { return r.json(); })
+    .then(function(data) {
+      if (!data || !data.success) return;
+      workoutTemplates = Array.isArray(data.templates) ? data.templates : [];
+      if (typeof renderRecentAndTemplates === 'function') renderRecentAndTemplates();
+      if (typeof renderProfileTemplates === 'function') renderProfileTemplates();
+    })
+    .catch(function(e) { console.error('[Templates] load error:', e); });
+}
+
+function showSaveTemplate() {
+  document.getElementById('save-template-prompt').style.display = 'none';
+  document.getElementById('save-template-form').style.display = 'block';
+  document.getElementById('save-template-status').textContent = '';
+  // Suggest a name based on the current type if available.
+  var typeVal = document.getElementById('wtype').value || '';
+  var nameInput = document.getElementById('template-name');
+  if (nameInput && !nameInput.value) nameInput.value = typeVal;
+  setTimeout(function() { if (nameInput) nameInput.focus(); }, 50);
+}
+function cancelSaveTemplate() {
+  document.getElementById('save-template-prompt').style.display = 'block';
+  document.getElementById('save-template-form').style.display = 'none';
+  document.getElementById('template-name').value = '';
+  document.getElementById('save-template-status').textContent = '';
+}
+function submitSaveTemplate() {
+  if (!currentProfileId) return;
+  var name = (document.getElementById('template-name').value || '').trim();
+  var notes = document.getElementById('wnotes').value || '';
+  var type = document.getElementById('wtype').value || null;
+  var status = document.getElementById('save-template-status');
+  if (!name) { status.textContent = 'Pick a name first.'; return; }
+  if (!notes.trim()) { status.textContent = 'Notes are empty — nothing to save.'; return; }
+  var btn = document.getElementById('save-template-btn');
+  btn.disabled = true; btn.textContent = 'Saving…';
+  status.textContent = '';
+  fetch('/api/profiles/' + currentProfileId + '/templates', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      name: name,
+      type: type,
+      notes_template: notes,
+      // We pass the raw notes; exercises array is left null until the user
+      // saves the workout itself (the extract-exercises endpoint runs there).
+      exercises: null,
+    })
+  }).then(function(r) { return r.json(); }).then(function(data) {
+    btn.disabled = false; btn.textContent = 'Save Template';
+    if (!data.success) { status.textContent = 'Save failed: ' + (data.error || 'unknown'); return; }
+    status.textContent = '✅ Template saved';
+    if (data.template) workoutTemplates.unshift(data.template);
+    if (typeof renderRecentAndTemplates === 'function') renderRecentAndTemplates();
+    if (typeof renderProfileTemplates === 'function') renderProfileTemplates();
+    setTimeout(cancelSaveTemplate, 900);
+  }).catch(function(e) {
+    btn.disabled = false; btn.textContent = 'Save Template';
+    status.textContent = 'Save failed: ' + e.message;
+  });
+}
+
+function useTemplate(templateId) {
+  var tpl = workoutTemplates.find(function(t) { return String(t.id) === String(templateId); });
+  if (!tpl) return;
+  openModal();
+  document.getElementById('wnotes').value = tpl.notes_template || '';
+  document.getElementById('wtype').value = tpl.type || '';
+  var dateEl = document.getElementById('wdate');
+  if (dateEl) dateEl.value = 'today';
+  var banner = document.getElementById('wlog-banner');
+  if (banner) {
+    banner.innerHTML = '📁 Using template: <strong>' + escHtml(tpl.name || '') + '</strong>';
+    banner.style.display = 'block';
+  }
+  // Optimistically bump local use_count so the Today card reflects it
+  // before the next save round-trip.
+  tpl.use_count = (tpl.use_count || 0) + 1;
+  // Server-side increment (fire-and-forget). The actual workout save will
+  // also bump the count, so this is just the immediate UX hint.
+  fetch('/api/templates/' + tpl.id, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ use_count: tpl.use_count })
+  }).catch(function() {});
+}
+
+function renderProfileTemplates() {
+  var el = document.getElementById('profile-templates');
+  if (!el) return;
+  if (!workoutTemplates.length) {
+    el.innerHTML = '<div class="card"><p class="clabel">my templates</p>' +
+      '<p style="font-size:13px;color:var(--text-dim);font-style:italic;margin:0">No templates yet — save a routine from the Log Workout modal to see it here.</p></div>';
+    return;
+  }
+  var h = '<div class="card"><p class="clabel">my templates</p>';
+  h += '<div style="display:flex;flex-direction:column;gap:8px">';
+  for (var i = 0; i < workoutTemplates.length; i++) {
+    var tpl = workoutTemplates[i];
+    var tid = tpl.id;
+    h += '<div style="background:var(--bg-input);border:1px solid var(--border);border-radius:8px;padding:12px">';
+    h += '<div style="display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:6px">';
+    h += '<div style="flex:1;min-width:0"><div style="font-size:15px;color:var(--text-bright);font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">' + escHtml(tpl.name || 'Template') + '</div>';
+    var meta = [];
+    if (tpl.type) meta.push(tpl.type);
+    meta.push('Used ' + (tpl.use_count || 0) + (tpl.use_count === 1 ? ' time' : ' times'));
+    h += '<div class="mono" style="font-size:10px;color:var(--text-dim);margin-top:2px">' + meta.join(' &middot; ') + '</div></div>';
+    h += '<div style="display:flex;gap:6px">';
+    h += '<button onclick="useTemplate(\'' + tid + '\')" style="background:var(--accent-10);border:1px solid var(--accent-33);color:var(--accent);padding:5px 10px;border-radius:4px;cursor:pointer;font-size:11px;font-weight:600">&#9654; Use</button>';
+    h += '<button onclick="renameTemplate(\'' + tid + '\')" style="background:transparent;border:1px solid var(--border-accent);color:var(--text-muted);padding:5px 10px;border-radius:4px;cursor:pointer;font-size:11px">Rename</button>';
+    h += '<button onclick="deleteTemplate(\'' + tid + '\')" style="background:transparent;border:1px solid #e8454533;color:#e84545;padding:5px 10px;border-radius:4px;cursor:pointer;font-size:11px">Delete</button>';
+    h += '</div></div>';
+    if (tpl.notes_template) {
+      var preview = String(tpl.notes_template).slice(0, 200) + (tpl.notes_template.length > 200 ? '…' : '');
+      h += '<p style="font-size:12px;color:var(--text-muted);margin:0;white-space:pre-wrap;line-height:1.5">' + escHtml(preview) + '</p>';
+    }
+    h += '</div>';
+  }
+  h += '</div></div>';
+  el.innerHTML = h;
+}
+
+function renameTemplate(templateId) {
+  var tpl = workoutTemplates.find(function(t) { return String(t.id) === String(templateId); });
+  if (!tpl) return;
+  var nextName = prompt('Rename template:', tpl.name || '');
+  if (nextName == null) return;
+  nextName = nextName.trim();
+  if (!nextName || nextName === tpl.name) return;
+  fetch('/api/templates/' + templateId, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name: nextName })
+  }).then(function(r) { return r.json(); }).then(function(data) {
+    if (data && data.success) {
+      tpl.name = nextName;
+      if (typeof renderRecentAndTemplates === 'function') renderRecentAndTemplates();
+      renderProfileTemplates();
+    }
+  });
+}
+
+function deleteTemplate(templateId) {
+  if (!confirm('Delete this template?')) return;
+  fetch('/api/templates/' + templateId, { method: 'DELETE' })
+    .then(function(r) { return r.json(); })
+    .then(function(data) {
+      if (data && data.success) {
+        workoutTemplates = workoutTemplates.filter(function(t) { return String(t.id) !== String(templateId); });
+        if (typeof renderRecentAndTemplates === 'function') renderRecentAndTemplates();
+        renderProfileTemplates();
+      }
+    });
+}
+
+// ── FITBIT WORKOUT AUTO-IMPORT ────────────────────────────────────────────
+function loadFitbitPendingImports() {
+  if (!currentProfileId) return Promise.resolve();
+  return fetch('/api/profiles/' + currentProfileId + '/fitbit-pending-imports')
+    .then(function(r) { return r.json(); })
+    .then(function(data) {
+      if (!data || !data.success) return;
+      fitbitPendingImports = Array.isArray(data.pending) ? data.pending : [];
+      renderFitbitImportPrompts();
+    })
+    .catch(function(e) { console.error('[FitbitImport] load error:', e); });
+}
+
+function renderFitbitImportPrompts() {
+  var el = document.getElementById('fitbit-import-prompts');
+  if (!el) return;
+  if (!fitbitPendingImports.length) { el.innerHTML = ''; return; }
+  var h = '';
+  for (var i = 0; i < fitbitPendingImports.length; i++) {
+    var a = fitbitPendingImports[i];
+    var aid = String(a.activityId);
+    var bits = [];
+    if (a.durationMinutes != null) bits.push(a.durationMinutes + ' min');
+    if (a.calories != null) bits.push(a.calories + ' cal');
+    if (a.steps != null && a.steps > 0) bits.push(a.steps.toLocaleString() + ' steps');
+    var meta = bits.join(' &middot; ');
+    h += '<div class="card" style="background:var(--accent-08);border-color:var(--accent-33);margin-bottom:12px">';
+    h += '<div style="display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap">';
+    h += '<div style="flex:1;min-width:200px">';
+    h += '<p class="mono" style="font-size:10px;color:var(--accent);letter-spacing:2px;margin-bottom:4px">&#127939; FITBIT TRACKED</p>';
+    h += '<div style="font-size:16px;font-weight:600;color:var(--text-bright)">' + escHtml(a.name || 'Activity') + '</div>';
+    h += '<div class="mono" style="font-size:11px;color:var(--text-muted);margin-top:2px">' + meta + '</div>';
+    h += '</div>';
+    h += '<div style="display:flex;gap:6px">';
+    h += '<button onclick="confirmFitbitImport(\'' + aid + '\', this)" style="background:var(--accent);border:1px solid var(--accent);color:#0a0a0a;padding:8px 14px;border-radius:6px;cursor:pointer;font-size:12px;font-weight:600">Import to Log</button>';
+    h += '<button onclick="dismissFitbitImport(\'' + aid + '\', this)" style="background:transparent;border:1px solid var(--border);color:var(--text-muted);padding:8px 14px;border-radius:6px;cursor:pointer;font-size:12px">Dismiss</button>';
+    h += '</div>';
+    h += '</div></div>';
+  }
+  el.innerHTML = h;
+}
+
+function confirmFitbitImport(activityId, btn) {
+  if (!currentProfileId) return;
+  if (btn) { btn.disabled = true; btn.textContent = 'Importing…'; }
+  fetch('/api/profiles/' + currentProfileId + '/fitbit-import', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ activityId: activityId, action: 'import' })
+  }).then(function(r) { return r.json(); }).then(function(data) {
+    if (!data.success) { alert('Import failed: ' + (data.error || 'unknown')); if (btn) btn.disabled = false; return; }
+    fitbitPendingImports = data.pending || [];
+    renderFitbitImportPrompts();
+    // Pull the new workout into the local log so the History tab + Recent
+    // Workouts card show it without a full reload.
+    if (data.workout) {
+      workoutLog.unshift(data.workout);
+      localStorage.setItem('ac_log', JSON.stringify(workoutLog));
+      renderLog();
+      renderLogArea();
+      if (typeof renderRecentAndTemplates === 'function') renderRecentAndTemplates();
+      if (typeof calculateStreak === 'function') calculateStreak();
+      if (typeof renderStreak === 'function') renderStreak();
+    }
+    // Invalidate AI rec cache since the workout history just changed.
+    if (typeof regenerateAIForContextChange === 'function') regenerateAIForContextChange('fitbit_import');
+    else if (readiness && fitData && typeof fetchAI === 'function') fetchAI();
+  }).catch(function(e) {
+    if (btn) btn.disabled = false;
+    alert('Import failed: ' + e.message);
+  });
+}
+
+function dismissFitbitImport(activityId, btn) {
+  if (!currentProfileId) return;
+  if (btn) { btn.disabled = true; btn.textContent = 'Dismissing…'; }
+  fetch('/api/profiles/' + currentProfileId + '/fitbit-import', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ activityId: activityId, action: 'dismiss' })
+  }).then(function(r) { return r.json(); }).then(function(data) {
+    if (!data.success) { alert('Dismiss failed: ' + (data.error || 'unknown')); if (btn) btn.disabled = false; return; }
+    fitbitPendingImports = data.pending || [];
+    renderFitbitImportPrompts();
+  }).catch(function(e) {
+    if (btn) btn.disabled = false;
+    alert('Dismiss failed: ' + e.message);
+  });
+}
 
 function saveWorkoutToSupabase(entry) {
   var payload = Object.assign({}, entry);
@@ -5729,6 +6214,7 @@ function doSaveWorkout() {
     renderLogArea();
     renderWeek();
     renderLog();
+    if (typeof renderRecentAndTemplates === 'function') renderRecentAndTemplates();
     calculateStreak();
     renderStreak();
     if (readiness && fitData) fetchAI();
@@ -5812,7 +6298,9 @@ function loadLibrary() {
 // ── STEP HISTORY ──────────────────────────────────────────────────────────
 function loadDailySteps() {
   if (!currentProfileId) return Promise.resolve();
-  return fetch('/api/profiles/' + currentProfileId + '/daily-steps?days=30')
+  // 90 days so the History tab steps pill works on older workout cards too,
+  // not just the last month.
+  return fetch('/api/profiles/' + currentProfileId + '/daily-steps?days=90')
     .then(function(r) { return r.json(); })
     .then(function(data) {
       if (!data || !data.success) return;
@@ -5861,6 +6349,11 @@ function loadBodyMetrics() {
         };
       });
       bodyMetricsLatest = bodyMetricsLog.find(function(m) { return m.weight_lbs != null; }) || null;
+      bodyMetricsByDate = {};
+      for (var bi = 0; bi < bodyMetricsLog.length; bi++) {
+        var bRow = bodyMetricsLog[bi];
+        if (bRow && bRow.date) bodyMetricsByDate[bRow.date] = bRow;
+      }
       renderBodyTodayCard();
       // Profile body card surfaces the latest weight too — refresh it.
       if (document.getElementById('profile-body')) renderProfileBodyCard();
@@ -7398,8 +7891,11 @@ function renderLog() {
     html += '</div>';
     // Notes
     if (w.notes) html += notesHTML;
-    // Edit button - uses editWorkoutById to avoid inline JSON quote issues
-    html += '<div style="margin-top:10px"><button onclick="event.stopPropagation();editWorkoutById(\'' + editId + '\')" style="background:transparent;border:1px solid var(--border-accent);color:var(--text-muted);padding:10px 20px;border-radius:4px;cursor:pointer;font-size:13px;font-family:DM Sans,sans-serif;min-height:44px">Edit</button></div>';
+    // Edit + Re-log actions
+    html += '<div style="margin-top:10px;display:flex;gap:8px;flex-wrap:wrap">';
+    html += '<button onclick="event.stopPropagation();editWorkoutById(\'' + editId + '\')" style="background:transparent;border:1px solid var(--border-accent);color:var(--text-muted);padding:10px 20px;border-radius:4px;cursor:pointer;font-size:13px;font-family:DM Sans,sans-serif;min-height:44px">Edit</button>';
+    if (editId) html += '<button onclick="event.stopPropagation();reLogWorkout(\'' + editId + '\')" title="Re-log this workout into today" style="background:transparent;border:1px solid var(--accent-33);color:var(--accent);padding:10px 16px;border-radius:4px;cursor:pointer;font-size:13px;font-family:DM Sans,sans-serif;min-height:44px">&#128260; Re-log</button>';
+    html += '</div>';
     html += '</div></div>';
     html += '</div>';
   }
@@ -7899,8 +8395,15 @@ function showTab(name, btn) {
 
   if (name === 'library') loadLibrary();
   if (name === 'history') { renderCalendar(); renderLog(); }
-  if (name === 'today' && typeof renderBodyTodayCard === 'function') renderBodyTodayCard();
-  if (name === 'profile' && typeof renderProfileBodyCard === 'function') renderProfileBodyCard();
+  if (name === 'today') {
+    if (typeof renderBodyTodayCard === 'function') renderBodyTodayCard();
+    if (typeof renderRecentAndTemplates === 'function') renderRecentAndTemplates();
+    if (typeof renderFitbitImportPrompts === 'function') renderFitbitImportPrompts();
+  }
+  if (name === 'profile') {
+    if (typeof renderProfileBodyCard === 'function') renderProfileBodyCard();
+    if (typeof renderProfileTemplates === 'function') renderProfileTemplates();
+  }
 }
 
 // ── SETTINGS PANEL ───────────────────────────────────────────────────────
@@ -8108,6 +8611,13 @@ function renderSettingsContent() {
   h += '<div class="s-row"><label class="s-label">CACHE DURATION</label><select onchange="saveDataPref(\'cacheDuration\',this.value)" style="margin-bottom:0">';
   [['day','Same day (default)'],['none','Always refresh (ignore cache)']].forEach(function(v){ h += '<option value="'+v[0]+'"' + (cacheDur===v[0]?' selected':'') + '>' + v[1] + '</option>'; });
   h += '</select></div>';
+  // Fitbit history backfill (manual on-demand trigger). The same endpoint
+  // also fires automatically once after first OAuth connect.
+  var bfDone = (currentProfileData && currentProfileData.settings && currentProfileData.settings.fitbit_backfilled);
+  var bfAt = (currentProfileData && currentProfileData.settings && currentProfileData.settings.fitbit_backfilled_at) || null;
+  h += '<div class="s-row"><label class="s-label">FITBIT HISTORY</label>';
+  h += '<button id="fitbit-backfill-btn" onclick="syncFitbitHistory()" class="btnSec" style="padding:10px 18px;font-size:13px;text-align:left;width:100%">&#x21BB; Import full history from Fitbit (90 days)</button>';
+  h += '<p id="fitbit-backfill-status" class="mono" style="font-size:11px;color:var(--text-muted);margin-top:6px">' + (bfDone ? 'Last imported: ' + (bfAt ? new Date(bfAt).toLocaleDateString() : 'previously') : 'Pulls steps, weight, and body fat from the last 90 days into your history.') + '</p></div>';
   h += '</div>';
 
   // ── GOALS & TRACKING ──
@@ -8239,6 +8749,34 @@ function saveDataPref(key, val) {
   dp[key] = val;
   localStorage.setItem('ac_data_prefs', JSON.stringify(dp));
   showToast();
+}
+// Manual trigger for the Fitbit 90-day backfill from Settings → Data.
+function syncFitbitHistory() {
+  if (!currentProfileId) return;
+  var btn = document.getElementById('fitbit-backfill-btn');
+  var status = document.getElementById('fitbit-backfill-status');
+  if (btn) { btn.disabled = true; btn.textContent = 'Importing… (this can take ~30s)'; }
+  if (status) status.textContent = 'Pulling steps, weight, and body fat from Fitbit…';
+  fetch('/api/profiles/' + currentProfileId + '/fitbit-backfill', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ days: 90 })
+  }).then(function(r) { return r.json(); }).then(function(data) {
+    if (btn) { btn.disabled = false; btn.textContent = '↻ Import full history from Fitbit (90 days)'; }
+    if (!data.success) {
+      if (status) status.textContent = 'Import failed: ' + (data.error || 'unknown');
+      return;
+    }
+    if (status) status.textContent = '✓ Imported ' + data.stepDays + ' day' + (data.stepDays === 1 ? '' : 's') + ' of steps and ' + data.weightDays + ' weight log' + (data.weightDays === 1 ? '' : 's') + '.';
+    // Refresh on-screen views that read from these tables.
+    if (typeof loadDailySteps === 'function') loadDailySteps();
+    if (typeof loadBodyMetrics === 'function') loadBodyMetrics();
+    // Capture the new fitbit_backfilled flag
+    refreshProfileData();
+  }).catch(function(e) {
+    if (btn) { btn.disabled = false; btn.textContent = '↻ Import full history from Fitbit (90 days)'; }
+    if (status) status.textContent = 'Import failed: ' + e.message;
+  });
 }
 function saveTrackingPref(key, val) {
   var tp = JSON.parse(localStorage.getItem('ac_tracking_prefs') || '{}');

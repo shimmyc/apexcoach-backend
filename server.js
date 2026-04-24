@@ -226,6 +226,9 @@ async function buildDailyData(token, overrideDate) {
     fitGet("/1/user/-/sleep/date/" + today + ".json", token).catch(function() { return {}; }),
     fitGet("/1/user/-/body/log/weight/date/" + today + ".json", token).catch(function() { return { weight: [] }; }),
     fitGet("/1/user/-/body/log/fat/date/" + today + ".json", token).catch(function() { return { fat: [] }; }),
+    // Activities list, sorted ascending after midnight today, limit 10.
+    // Fitbit's `afterDate` is ISO YYYY-MM-DD. We filter to today only client-side.
+    fitGet("/1/user/-/activities/list.json?afterDate=" + today + "&sort=asc&limit=10&offset=0", token).catch(function() { return { activities: [] }; }),
   ]);
 
   var sleep      = results[0];
@@ -238,6 +241,7 @@ async function buildDailyData(token, overrideDate) {
   var sleepV1    = results[7];
   const bodyWeight = results[8];
   const bodyFat    = results[9];
+  const activitiesList = results[10];
 
   var sleepArr    = sleep && sleep.sleep ? sleep.sleep : [];
   var sleepDate = today;
@@ -370,6 +374,34 @@ async function buildDailyData(token, overrideDate) {
           floors: typeof s.floors === "number" ? s.floors : null,
         };
       })(),
+      todaysActivities: (function() {
+        // Filter to activities that started today and shape into the
+        // payload we'll persist for the import-prompt UI.
+        var arr = activitiesList && activitiesList.activities ? activitiesList.activities : [];
+        var todayPrefix = today; // YYYY-MM-DD
+        var out = [];
+        for (var ai = 0; ai < arr.length; ai++) {
+          var a = arr[ai];
+          var startISO = a.startTime || a.originalStartTime || null;
+          if (!startISO) continue;
+          // Fitbit returns ISO with timezone like 2026-04-24T10:32:00.000-04:00.
+          // We trust the prefix for "today" matching, since the API was
+          // already scoped via afterDate=today.
+          if (String(startISO).indexOf(todayPrefix) !== 0) continue;
+          var hrZones = a.heartRateZones || a.heartRateZonesNew || null;
+          out.push({
+            activityId: a.logId || a.activityId || null,
+            name: a.activityName || a.name || "Activity",
+            durationMinutes: a.duration ? Math.round(a.duration / 60000) : null,
+            calories: typeof a.calories === "number" ? a.calories : null,
+            steps: typeof a.steps === "number" ? a.steps : null,
+            startTime: startISO,
+            heartRateZones: hrZones,
+            avgHeartRate: typeof a.averageHeartRate === "number" ? a.averageHeartRate : null,
+          });
+        }
+        return out;
+      })(),
       bodySummary: (function() {
         // Fitbit returns weight in kg by default (lbs only when locale en_US is set
         // on the user's account). The body/log endpoints expose `weight` (kg) AND
@@ -446,6 +478,36 @@ app.get("/callback", async function(req, res) {
       console.log("[OAuth] Saving tokens to PROFILES table, id=" + profileId);
       await saveProfileTokens(profileId, tokenData);
       console.log("[OAuth] SUCCESS: Tokens saved to profile " + profileId + ". expires_at=" + new Date(tokenData.expires_at).toISOString());
+      // First-connect 90-day backfill: fire-and-forget so the OAuth redirect
+      // isn't held up by the data import. Idempotent — guarded by the
+      // profile_data.settings.fitbit_backfilled flag.
+      (async function() {
+        try {
+          var pr = await fetch(SUPABASE_URL + "/rest/v1/profiles?id=eq." + profileId + "&select=profile_data", { headers: sbHeaders() });
+          var pRows = await pr.json();
+          var existing = (pRows && pRows[0] && pRows[0].profile_data) || {};
+          var alreadyDone = existing.settings && existing.settings.fitbit_backfilled;
+          if (alreadyDone) {
+            console.log("[OAuth->Backfill] profile " + profileId + " already backfilled, skipping");
+            return;
+          }
+          console.log("[OAuth->Backfill] kicking off 90-day backfill for profile " + profileId);
+          var summary = await runFitbitBackfill(profileId, 90);
+          var settings = Object.assign({}, existing.settings || {}, {
+            fitbit_backfilled: true,
+            fitbit_backfilled_at: new Date().toISOString(),
+          });
+          var merged = Object.assign({}, existing, { settings: settings });
+          await fetch(SUPABASE_URL + "/rest/v1/profiles?id=eq." + profileId, {
+            method: "PATCH",
+            headers: sbHeaders("return=minimal"),
+            body: JSON.stringify({ profile_data: merged }),
+          });
+          console.log("[OAuth->Backfill] DONE profile=" + profileId + " stepDays=" + summary.stepDays + " weightDays=" + summary.weightDays);
+        } catch (bfErr) {
+          console.error("[OAuth->Backfill] FAILED profile=" + profileId + ": " + bfErr.message);
+        }
+      })();
     } else {
       console.log("[OAuth] WARNING: No profileId in state param. Saving to legacy tokens table.");
       await saveTokens(tokenData);
@@ -712,6 +774,15 @@ app.get("/api/profiles/:id/daily", async function(req, res) {
         console.error("[Body] fitbit upsert failed:", e.message);
       });
     }
+    // Diff today's Fitbit-tracked activities against existing workouts and
+    // queue any that aren't already logged into profiles.fitbit_pending_imports.
+    // Fire-and-forget so the daily response isn't held up.
+    var todaysActs = result.data && result.data.todaysActivities;
+    if (Array.isArray(todaysActs) && todaysActs.length) {
+      diffAndQueueFitbitImports(req.params.id, result.date, todaysActs).catch(function(e) {
+        console.error("[FitbitImport] queue failed:", e.message);
+      });
+    }
     res.json({ success: true, date: result.date, data: result.data });
   } catch (err) {
     console.error("Error:", err.message);
@@ -880,6 +951,302 @@ app.get("/api/profiles/:id/body-metrics", async function(req, res) {
   }
 });
 
+// ── FITBIT 90-DAY BACKFILL ────────────────────────────────────────────────
+// Pulls 90 days of steps/weight/body-fat from Fitbit and upserts into
+// daily_steps + body_metrics. Idempotent (on conflict do update).
+async function runFitbitBackfill(profileId, days) {
+  days = days || 90;
+  var token = await getValidProfileToken(profileId);
+  var height = await getProfileHeightInches(profileId);
+
+  // Fitbit's `/Nd` ranges return arrays; on rare token-scope issues some
+  // endpoints throw — wrap each independently so one failure doesn't kill
+  // the whole backfill.
+  var stepsRes  = await fitGet("/1/user/-/activities/steps/date/today/" + days + "d.json", token).catch(function() { return null; });
+  var weightRes = await fitGet("/1/user/-/body/log/weight/date/today/" + days + "d.json", token).catch(function() { return null; });
+  var fatRes    = await fitGet("/1/user/-/body/log/fat/date/today/"    + days + "d.json", token).catch(function() { return null; });
+
+  // Steps come back as activities-steps[] of {dateTime, value}. Some days
+  // legitimately read 0 steps (e.g. tracker not worn) — keep them so the
+  // history chart shows the gap rather than implying data exists.
+  var stepDays = 0;
+  var stepsArr = stepsRes && stepsRes["activities-steps"] ? stepsRes["activities-steps"] : [];
+  for (var i = 0; i < stepsArr.length; i++) {
+    var sRow = stepsArr[i];
+    var n = parseInt(sRow.value, 10);
+    if (!sRow.dateTime || isNaN(n)) continue;
+    try {
+      await upsertDailySteps(profileId, {
+        date: sRow.dateTime,
+        steps: n,
+        calories: null,
+        distance_miles: null,
+        floors: null,
+      });
+      stepDays++;
+    } catch (e) {
+      console.error("[Backfill] step upsert failed for " + sRow.dateTime + ": " + e.message);
+    }
+  }
+
+  // Weight + fat logs are arrays of {date, time, weight|fat, ...}.
+  // Group by date so we upsert one row per day even when there are
+  // multiple weigh-ins in a day.
+  var byDate = {};
+  var weightArr = weightRes && weightRes.weight ? weightRes.weight : [];
+  for (var w = 0; w < weightArr.length; w++) {
+    var wr = weightArr[w];
+    if (!wr.date) continue;
+    var raw = typeof wr.weight === "number" ? wr.weight : parseFloat(wr.weight);
+    if (isNaN(raw)) continue;
+    // Same kg-vs-lbs heuristic as the daily sync: under 60 implies kg.
+    var lbs = raw < 60 ? +(raw * 2.20462).toFixed(1) : +raw.toFixed(1);
+    if (!byDate[wr.date]) byDate[wr.date] = {};
+    // Last logged weight in the day wins.
+    byDate[wr.date].weight_lbs = lbs;
+  }
+  var fatArr = fatRes && fatRes.fat ? fatRes.fat : [];
+  for (var f = 0; f < fatArr.length; f++) {
+    var fr = fatArr[f];
+    if (!fr.date) continue;
+    var pct = typeof fr.fat === "number" ? fr.fat : parseFloat(fr.fat);
+    if (isNaN(pct)) continue;
+    if (!byDate[fr.date]) byDate[fr.date] = {};
+    byDate[fr.date].body_fat_pct = +pct.toFixed(2);
+  }
+
+  var weightDays = 0;
+  var dateKeys = Object.keys(byDate);
+  for (var d = 0; d < dateKeys.length; d++) {
+    var key = dateKeys[d];
+    var entry = byDate[key];
+    try {
+      await upsertBodyMetrics(profileId, {
+        date: key,
+        weight_lbs: entry.weight_lbs == null ? null : entry.weight_lbs,
+        body_fat_pct: entry.body_fat_pct == null ? null : entry.body_fat_pct,
+        source: "fitbit",
+      });
+      weightDays++;
+    } catch (e) {
+      console.error("[Backfill] body upsert failed for " + key + ": " + e.message);
+    }
+  }
+  console.log("[Backfill] profile=" + profileId + " stepDays=" + stepDays + " weightDays=" + weightDays);
+  return { stepDays: stepDays, weightDays: weightDays, height_inches_used: height };
+}
+
+// ── FITBIT WORKOUT AUTO-IMPORT ────────────────────────────────────────────
+// Map common Fitbit activityName values into our workout-type taxonomy.
+// Anything not in the table is kept verbatim — Claude's title generator will
+// normalize it later if the user imports.
+var FITBIT_ACTIVITY_TYPE_MAP = {
+  "Run": "Cardio",
+  "Outdoor Run": "Cardio",
+  "Treadmill": "Cardio",
+  "Walk": "Cardio",
+  "Outdoor Walk": "Cardio",
+  "Hike": "Cardio",
+  "Bike": "Cardio",
+  "Outdoor Bike": "Cardio",
+  "Spinning": "Cardio",
+  "Elliptical": "Cardio",
+  "Swim": "Cardio",
+  "Weights": "Strength",
+  "Strength Training": "Strength",
+  "Workout": "Strength",
+  "Yoga": "Mind & Body",
+  "Pilates": "Mind & Body",
+  "Meditation": "Mind & Body",
+  "Martial Arts": "Martial Arts",
+  "MMA": "Martial Arts",
+  "Boxing": "Martial Arts",
+};
+function mapFitbitActivityType(name) {
+  if (!name) return "Workout";
+  if (FITBIT_ACTIVITY_TYPE_MAP[name]) return FITBIT_ACTIVITY_TYPE_MAP[name];
+  // Lowercase prefix fallbacks for things like "Outdoor Run (lap)" etc.
+  var lower = String(name).toLowerCase();
+  if (lower.indexOf("run") >= 0 || lower.indexOf("walk") >= 0 || lower.indexOf("hike") >= 0 || lower.indexOf("bike") >= 0 || lower.indexOf("swim") >= 0 || lower.indexOf("ellipt") >= 0) return "Cardio";
+  if (lower.indexOf("strength") >= 0 || lower.indexOf("weight") >= 0 || lower.indexOf("lift") >= 0) return "Strength";
+  if (lower.indexOf("yoga") >= 0 || lower.indexOf("pilates") >= 0 || lower.indexOf("medit") >= 0 || lower.indexOf("stretch") >= 0) return "Mind & Body";
+  if (lower.indexOf("martial") >= 0 || lower.indexOf("mma") >= 0 || lower.indexOf("boxing") >= 0 || lower.indexOf("bjj") >= 0 || lower.indexOf("kickbox") >= 0) return "Martial Arts";
+  return name; // Keep Fitbit's name as-is.
+}
+
+// Decide whether an activity is already represented either by an existing
+// workout (source="fitbit_activity" + same activityName/date) OR by an
+// already-pending import for the same activityId. Returns the new pending
+// queue (pre-existing entries kept, new ones appended).
+async function diffAndQueueFitbitImports(profileId, dateStr, activities) {
+  // Existing workouts that match: fitbit_activity-source rows for today.
+  var wRes = await fetch(
+    SUPABASE_URL + "/rest/v1/workouts?profile_id=eq." + profileId +
+      "&date=eq." + dateStr +
+      "&select=type,notes",
+    { headers: sbHeaders() }
+  );
+  var existingWorkouts = await wRes.json();
+  if (!Array.isArray(existingWorkouts)) existingWorkouts = [];
+
+  // Helper: do we already have a fitbit_activity workout matching this name?
+  function matchesExistingWorkout(activityName) {
+    var nameL = String(activityName || "").toLowerCase();
+    for (var i = 0; i < existingWorkouts.length; i++) {
+      var w = existingWorkouts[i];
+      // Source is encoded as a marker in notes (we don't have a source col on
+      // workouts). Belt-and-braces: also match on the type containing the
+      // activity name to dedupe manual logs.
+      if (w.notes && String(w.notes).indexOf("source: fitbit_activity") >= 0 &&
+          String(w.type || "").toLowerCase().indexOf(nameL) >= 0) return true;
+      if (String(w.type || "").toLowerCase() === nameL) return true;
+    }
+    return false;
+  }
+
+  var pRes = await fetch(SUPABASE_URL + "/rest/v1/profiles?id=eq." + profileId + "&select=fitbit_pending_imports", { headers: sbHeaders() });
+  var pRows = await pRes.json();
+  var existingPending = (pRows && pRows[0] && Array.isArray(pRows[0].fitbit_pending_imports)) ? pRows[0].fitbit_pending_imports : [];
+  var existingIds = {};
+  for (var ei = 0; ei < existingPending.length; ei++) {
+    if (existingPending[ei] && existingPending[ei].activityId != null) existingIds[String(existingPending[ei].activityId)] = true;
+  }
+
+  var added = 0;
+  var nextPending = existingPending.slice();
+  for (var ai = 0; ai < activities.length; ai++) {
+    var a = activities[ai];
+    if (!a || !a.activityId) continue;
+    if (existingIds[String(a.activityId)]) continue; // already pending
+    if (matchesExistingWorkout(a.name)) continue;    // already imported as a workout
+    nextPending.push(a);
+    added++;
+  }
+  if (added === 0) return;
+
+  await fetch(SUPABASE_URL + "/rest/v1/profiles?id=eq." + profileId, {
+    method: "PATCH",
+    headers: sbHeaders("return=minimal"),
+    body: JSON.stringify({ fitbit_pending_imports: nextPending }),
+  });
+  console.log("[FitbitImport] queued " + added + " new pending activity/activities for profile " + profileId);
+}
+
+// GET pending Fitbit imports for a profile (the client polls this on Today
+// tab render).
+app.get("/api/profiles/:id/fitbit-pending-imports", async function(req, res) {
+  try {
+    var pid = req.params.id;
+    var r = await fetch(SUPABASE_URL + "/rest/v1/profiles?id=eq." + pid + "&select=fitbit_pending_imports", { headers: sbHeaders() });
+    var rows = await r.json();
+    var pending = (rows && rows[0] && Array.isArray(rows[0].fitbit_pending_imports)) ? rows[0].fitbit_pending_imports : [];
+    res.json({ success: true, pending: pending });
+  } catch (e) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+// Import OR dismiss a pending Fitbit activity. Body: { activityId,
+// action: "import" | "dismiss" }. On import we create a workouts row and
+// remove from the pending list. On dismiss we just remove.
+app.post("/api/profiles/:id/fitbit-import", async function(req, res) {
+  try {
+    var pid = req.params.id;
+    var body = req.body || {};
+    var activityId = body.activityId;
+    var action = body.action || "import";
+    if (!activityId) return res.status(400).json({ success: false, error: "activityId required" });
+
+    var pr = await fetch(SUPABASE_URL + "/rest/v1/profiles?id=eq." + pid + "&select=fitbit_pending_imports", { headers: sbHeaders() });
+    var pRows = await pr.json();
+    var pending = (pRows && pRows[0] && Array.isArray(pRows[0].fitbit_pending_imports)) ? pRows[0].fitbit_pending_imports : [];
+    var idx = -1;
+    for (var i = 0; i < pending.length; i++) {
+      if (pending[i] && String(pending[i].activityId) === String(activityId)) { idx = i; break; }
+    }
+    if (idx < 0) return res.status(404).json({ success: false, error: "Pending activity not found" });
+    var act = pending[idx];
+
+    var createdWorkout = null;
+    if (action === "import") {
+      var dateStr = act.startTime ? String(act.startTime).slice(0, 10) : (function() {
+        var d = new Date(); var pad = function(n) { return String(n).padStart(2, "0"); };
+        return d.getFullYear() + "-" + pad(d.getMonth() + 1) + "-" + pad(d.getDate());
+      })();
+      var noteParts = ["Auto-imported from Fitbit: " + (act.durationMinutes != null ? act.durationMinutes + " min" : "?")];
+      if (act.calories != null) noteParts.push(act.calories + " cal burned");
+      if (act.avgHeartRate != null) noteParts.push("avg HR: " + act.avgHeartRate + " bpm");
+      var notes = noteParts.join(", ") + "\n[source: fitbit_activity, activityId=" + act.activityId + "]";
+      var workoutPayload = {
+        profile_id: parseInt(pid, 10),
+        date: dateStr,
+        type: mapFitbitActivityType(act.name),
+        notes: notes,
+        done: true,
+        mobility: false,
+        med: false,
+        ts: Date.now(),
+      };
+      var wRes = await fetch(SUPABASE_URL + "/rest/v1/workouts", {
+        method: "POST",
+        headers: sbHeaders("return=representation"),
+        body: JSON.stringify(workoutPayload),
+      });
+      if (!wRes.ok) {
+        var t = await wRes.text();
+        return res.status(wRes.status).json({ success: false, error: t });
+      }
+      var wRows = await wRes.json();
+      createdWorkout = Array.isArray(wRows) ? wRows[0] : wRows;
+      // Invalidate the progress brief — history changed.
+      clearProgressBriefCache(pid);
+    }
+
+    // Remove from pending regardless of action.
+    var nextPending = pending.slice(0, idx).concat(pending.slice(idx + 1));
+    await fetch(SUPABASE_URL + "/rest/v1/profiles?id=eq." + pid, {
+      method: "PATCH",
+      headers: sbHeaders("return=minimal"),
+      body: JSON.stringify({ fitbit_pending_imports: nextPending }),
+    });
+
+    res.json({ success: true, action: action, workout: createdWorkout, pending: nextPending });
+  } catch (e) {
+    console.error("[FitbitImport] action error:", e.message);
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+app.post("/api/profiles/:id/fitbit-backfill", async function(req, res) {
+  try {
+    var pid = req.params.id;
+    var days = Math.min(Math.max(parseInt(req.body && req.body.days, 10) || 90, 1), 365);
+    var summary = await runFitbitBackfill(pid, days);
+    // Mark as backfilled in profile_data.settings so we don't re-run on every
+    // Fitbit reconnect (reconnects bump the flag too via OAuth callback).
+    try {
+      var pr = await fetch(SUPABASE_URL + "/rest/v1/profiles?id=eq." + pid + "&select=profile_data", { headers: sbHeaders() });
+      var pRows = await pr.json();
+      var existing = (pRows && pRows[0] && pRows[0].profile_data) || {};
+      var settings = existing.settings || {};
+      settings.fitbit_backfilled = true;
+      settings.fitbit_backfilled_at = new Date().toISOString();
+      var merged = Object.assign({}, existing, { settings: settings });
+      await fetch(SUPABASE_URL + "/rest/v1/profiles?id=eq." + pid, {
+        method: "PATCH",
+        headers: sbHeaders("return=minimal"),
+        body: JSON.stringify({ profile_data: merged }),
+      });
+    } catch (flagErr) {
+      console.error("[Backfill] flag write failed:", flagErr.message);
+    }
+    res.json({ success: true, stepDays: summary.stepDays, weightDays: summary.weightDays });
+  } catch (e) {
+    console.error("[Backfill] error:", e.message);
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
 app.post("/api/profiles/:id/body-metrics", async function(req, res) {
   try {
     var pid = req.params.id;
@@ -924,6 +1291,123 @@ app.get("/api/workouts", async function(req, res) {
     var r = await fetch(url, { headers: sbHeaders() });
     var data = await r.json();
     res.json({ success: true, workouts: Array.isArray(data) ? data : [] });
+  } catch (e) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+// ── WORKOUT TEMPLATES ─────────────────────────────────────────────────────
+// Saved routines users can drop into the log modal in one tap.
+app.get("/api/profiles/:id/templates", async function(req, res) {
+  try {
+    var pid = req.params.id;
+    var r = await fetch(
+      SUPABASE_URL + "/rest/v1/workout_templates?profile_id=eq." + pid +
+        "&select=id,name,type,notes_template,exercises,use_count,created_at" +
+        "&order=use_count.desc,created_at.desc",
+      { headers: sbHeaders() }
+    );
+    var rows = await r.json();
+    res.json({ success: true, templates: Array.isArray(rows) ? rows : [] });
+  } catch (e) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+app.post("/api/profiles/:id/templates", async function(req, res) {
+  try {
+    var pid = req.params.id;
+    var body = req.body || {};
+    if (!body.name || !String(body.name).trim()) {
+      return res.status(400).json({ success: false, error: "name required" });
+    }
+    var payload = {
+      profile_id: parseInt(pid, 10),
+      name: String(body.name).trim(),
+      type: body.type || null,
+      notes_template: body.notes_template || null,
+      exercises: Array.isArray(body.exercises) ? body.exercises : (body.exercises || null),
+      use_count: 0,
+    };
+    var r = await fetch(SUPABASE_URL + "/rest/v1/workout_templates", {
+      method: "POST",
+      headers: sbHeaders("return=representation"),
+      body: JSON.stringify(payload),
+    });
+    if (!r.ok) {
+      var t = await r.text();
+      return res.status(r.status).json({ success: false, error: t });
+    }
+    var rows = await r.json();
+    res.json({ success: true, template: Array.isArray(rows) ? rows[0] : rows });
+  } catch (e) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+app.patch("/api/templates/:id", async function(req, res) {
+  try {
+    var tid = req.params.id;
+    var body = req.body || {};
+    var allowed = ["name", "type", "notes_template", "exercises", "use_count"];
+    var payload = {};
+    allowed.forEach(function(k) {
+      if (Object.prototype.hasOwnProperty.call(body, k)) payload[k] = body[k];
+    });
+    if (Object.keys(payload).length === 0) {
+      return res.status(400).json({ success: false, error: "Nothing to update" });
+    }
+    var r = await fetch(SUPABASE_URL + "/rest/v1/workout_templates?id=eq." + tid, {
+      method: "PATCH",
+      headers: sbHeaders("return=representation"),
+      body: JSON.stringify(payload),
+    });
+    if (!r.ok) {
+      var t = await r.text();
+      return res.status(r.status).json({ success: false, error: t });
+    }
+    var rows = await r.json();
+    res.json({ success: true, template: Array.isArray(rows) ? rows[0] : rows });
+  } catch (e) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+app.delete("/api/templates/:id", async function(req, res) {
+  try {
+    var tid = req.params.id;
+    var r = await fetch(SUPABASE_URL + "/rest/v1/workout_templates?id=eq." + tid, {
+      method: "DELETE",
+      headers: sbHeaders("return=minimal"),
+    });
+    if (!r.ok) {
+      var t = await r.text();
+      return res.status(r.status).json({ success: false, error: t });
+    }
+    res.json({ success: true });
+  } catch (e) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+// Full workout payload — row + all extracted exercises. Used by the
+// re-log feature on the History tab to pre-fill the log modal with the
+// original exercise list.
+app.get("/api/workouts/:id/full", async function(req, res) {
+  try {
+    var wid = req.params.id;
+    var wRes = await fetch(SUPABASE_URL + "/rest/v1/workouts?id=eq." + wid + "&select=*", { headers: sbHeaders() });
+    var wRows = await wRes.json();
+    if (!wRows || !wRows.length) return res.status(404).json({ success: false, error: "Workout not found" });
+    var workout = wRows[0];
+    var eRes = await fetch(
+      SUPABASE_URL + "/rest/v1/exercises?workout_id=eq." + wid +
+        "&select=id,name,category,main_category,subcategory,sets,reps,weight_lbs,distance_miles,duration_minutes,raw_text" +
+        "&order=id.asc",
+      { headers: sbHeaders() }
+    );
+    var exercises = await eRes.json();
+    res.json({ success: true, workout: workout, exercises: Array.isArray(exercises) ? exercises : [] });
   } catch (e) {
     res.status(500).json({ success: false, error: e.message });
   }
@@ -1529,7 +2013,7 @@ app.post("/api/profiles/:id/extract-exercises", async function(req, res) {
 
     console.log("[extract-exercises] Processing notes for profile " + profileId + ": " + body.notes.substring(0, 100) + "...");
 
-    var prompt = "Extract all exercises from these workout notes. For each exercise identify: name (normalized), category (one of: strength/combat/cardio/mobility/rehab/core/other), sets (number or null), reps (number or null), weight_lbs (number or null), distance_miles (number or null), duration_minutes (number or null), raw_text (original text snippet).\n\nCATEGORY GUIDE:\n- strength: weightlifting, resistance, dumbbell/barbell work, push-up, pull-up, dip, squat, lunge, row\n- combat: MMA, boxing, sparring, martial arts, kicks, grappling, BJJ, pad work\n- cardio: running, elliptical, jumping jacks, cycling, rowing, burpee, jump rope\n- mobility: stretching, yoga, flexibility work\n- rehab: PT exercises, injury rehab, therapeutic (glute bridge, clamshell, cat-cow, hip flexor stretch)\n- core: plank, crunch, sit-up, leg raise, dead bug, bird dog, mountain climber, ab wheel, russian twist, windshield wiper - these are ALWAYS 'core' not 'strength'\n- other: anything else\n\nCRITICAL NORMALIZATION RULES:\n- Always use singular form: 'Glute Bridge' not 'Glute Bridges'\n- Capitalize first letter of each word\n- Use hyphens for compound exercises: 'Push-Up', 'Pull-Up', 'Sit-Up', 'Cat-Cow'\n- Remove trailing s from plural exercise names\n\nReturn ONLY a JSON array of exercise objects, no explanation.\nExample: [{\"name\":\"Glute Bridge\",\"category\":\"rehab\",\"sets\":3,\"reps\":12,\"weight_lbs\":null,\"distance_miles\":null,\"duration_minutes\":null,\"raw_text\":\"glute bridges 3x12\"}]\nWorkout type: " + (body.type || "unknown") + "\nNotes: " + body.notes;
+    var prompt = "Extract all exercises from these workout notes. For each exercise identify: name (normalized), category (one of: strength/combat/cardio/mobility/rehab/core/other), sets (number or null), reps (number or null), weight_lbs (number or null), distance_miles (number or null), duration_minutes (number or null), raw_text (original text snippet).\n\nCATEGORY GUIDE:\n- strength: weightlifting, resistance, dumbbell/barbell work, push-up, pull-up, dip, squat, lunge, row\n- combat: MMA, boxing, sparring, martial arts, kicks, grappling, BJJ, pad work\n- cardio: running, elliptical, jumping jacks, cycling, rowing, burpee, jump rope\n- mobility: stretching, yoga, flexibility work\n- rehab: PT exercises, injury rehab, therapeutic (glute bridge, clamshell, cat-cow, hip flexor stretch)\n- core: plank, crunch, sit-up, leg raise, dead bug, bird dog, mountain climber, ab wheel, russian twist, windshield wiper - these are ALWAYS 'core' not 'strength'\n- other: anything else\n\nCRITICAL NORMALIZATION RULES:\n- Always use singular form: 'Glute Bridge' not 'Glute Bridges'\n- Capitalize first letter of each word\n- Use hyphens for compound exercises: 'Push-Up', 'Pull-Up', 'Sit-Up', 'Cat-Cow'\n- Remove trailing s from plural exercise names\n\nDATA INTEGRITY RULES (NON-NEGOTIABLE):\n- NEVER invent or assume weights, reps, sets, distances, or durations that are not explicitly stated in the raw text. The raw text is the only source of truth.\n- If a field is ambiguous, missing, or you are not 100% certain, OMIT it entirely (use null). Better to under-report than to fabricate.\n- Do NOT guess weights based on the exercise name (e.g. don't assume bench press is 135lb just because that's a common starting weight).\n- Do NOT carry over weights from one exercise to another — each exercise's fields must come from its own portion of the raw text.\n- Do NOT infer weight from words like 'heavy' or 'light' — those are not numeric values.\n- The raw_text field MUST be the literal substring from the user's notes that this exercise was extracted from. If the substring doesn't contain the weight, weight_lbs MUST be null.\n\nReturn ONLY a JSON array of exercise objects, no explanation.\nExample: [{\"name\":\"Glute Bridge\",\"category\":\"rehab\",\"sets\":3,\"reps\":12,\"weight_lbs\":null,\"distance_miles\":null,\"duration_minutes\":null,\"raw_text\":\"glute bridges 3x12\"}]\nWorkout type: " + (body.type || "unknown") + "\nNotes: " + body.notes;
 
     var aiText = await callAI(prompt, 1000, MODEL_HAIKU);
     console.log("[extract-exercises] Raw AI response: " + (aiText || "(empty)").substring(0, 300));
@@ -1594,6 +2078,56 @@ app.post("/api/profiles/:id/extract-exercises", async function(req, res) {
     res.json({ success: true, exercises: exercises, count: inserted });
   } catch (e) {
     console.error("[extract-exercises] Error:", e);
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+// ── ADMIN: AUDIT BAD EXERCISE EXTRACTIONS ─────────────────────────────────
+// Lookup helper for Bug 1 ("phantom 150lb bench press"). Hit this from a
+// browser on Shimmy's session to find the offending row + its raw_text, then
+// either DELETE that exact row or accept it. Filtered to one profile so a
+// stray request can't blow away anyone else's data.
+//
+//   GET /api/profiles/:id/exercises/audit?name=Bench%20Press&min_weight=140
+//   DELETE /api/profiles/:id/exercises/:exerciseId
+app.get("/api/profiles/:id/exercises/audit", async function(req, res) {
+  try {
+    var pid = req.params.id;
+    var name = req.query.name;
+    var minWeight = req.query.min_weight ? parseFloat(req.query.min_weight) : null;
+    var maxWeight = req.query.max_weight ? parseFloat(req.query.max_weight) : null;
+    var url = SUPABASE_URL + "/rest/v1/exercises?profile_id=eq." + pid +
+      "&select=id,workout_id,date,name,sets,reps,weight_lbs,raw_text,created_at" +
+      "&order=date.desc";
+    if (name) url += "&name=ilike." + encodeURIComponent("*" + name + "*");
+    if (minWeight != null) url += "&weight_lbs=gte." + minWeight;
+    if (maxWeight != null) url += "&weight_lbs=lte." + maxWeight;
+    var r = await fetch(url, { headers: sbHeaders() });
+    var rows = await r.json();
+    res.json({ success: true, exercises: Array.isArray(rows) ? rows : [], count: Array.isArray(rows) ? rows.length : 0 });
+  } catch (e) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+app.delete("/api/profiles/:id/exercises/:exerciseId", async function(req, res) {
+  try {
+    var pid = req.params.id;
+    var eid = req.params.exerciseId;
+    // Verify the row belongs to the profile before deleting.
+    var check = await fetch(SUPABASE_URL + "/rest/v1/exercises?id=eq." + eid + "&profile_id=eq." + pid + "&select=id", { headers: sbHeaders() });
+    var rows = await check.json();
+    if (!Array.isArray(rows) || !rows.length) return res.status(404).json({ success: false, error: "Not found for this profile" });
+    var del = await fetch(SUPABASE_URL + "/rest/v1/exercises?id=eq." + eid, {
+      method: "DELETE",
+      headers: sbHeaders("return=minimal"),
+    });
+    if (!del.ok) {
+      var t = await del.text();
+      return res.status(del.status).json({ success: false, error: t });
+    }
+    res.json({ success: true, deletedId: eid });
+  } catch (e) {
     res.status(500).json({ success: false, error: e.message });
   }
 });
