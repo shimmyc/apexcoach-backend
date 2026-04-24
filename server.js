@@ -350,6 +350,22 @@ async function buildDailyData(token, overrideDate) {
         fatBurn: findZone("Fat Burn"),
       },
       steps: actYest && actYest.summary ? actYest.summary.steps : null,
+      stepsSummary: (function() {
+        if (!actYest || !actYest.summary) return null;
+        var s = actYest.summary;
+        var distMiles = null;
+        if (Array.isArray(s.distances)) {
+          var totalDist = s.distances.find(function(d) { return d.activity === "total"; });
+          if (totalDist && typeof totalDist.distance === "number") distMiles = +totalDist.distance.toFixed(2);
+        }
+        return {
+          date: yesterday,
+          steps: typeof s.steps === "number" ? s.steps : null,
+          calories: typeof s.caloriesOut === "number" ? s.caloriesOut : null,
+          distance_miles: distMiles,
+          floors: typeof s.floors === "number" ? s.floors : null,
+        };
+      })(),
       rolling7: {
         rhr: rhrVals.length ? Math.round(rhrVals.reduce(function(a,b){return a+b;},0) / rhrVals.length) : null,
         hrv: hrvVals.length ? +(hrvVals.reduce(function(a,b){return a+b;},0) / hrvVals.length).toFixed(1) : null,
@@ -617,10 +633,95 @@ app.get("/api/profiles/:id/daily", async function(req, res) {
     const token = await getValidProfileToken(req.params.id);
     const dateParam = req.query.date || null;
     const result = await buildDailyData(token, dateParam);
+    // Fire-and-forget: persist yesterday's steps and auto-track step micro-goals.
+    // Do NOT block the daily response on this.
+    var ss = result.data && result.data.stepsSummary;
+    if (ss && ss.date && typeof ss.steps === "number") {
+      upsertDailySteps(req.params.id, ss).then(function() {
+        return autoTrackStepMicroGoals(req.params.id, ss.steps);
+      }).catch(function(e) {
+        console.error("[Steps] post-sync persistence failed:", e.message);
+      });
+    }
     res.json({ success: true, date: result.date, data: result.data });
   } catch (err) {
     console.error("Error:", err.message);
     res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// ── STEP HISTORY ──────────────────────────────────────────────────────────
+async function upsertDailySteps(profileId, summary) {
+  var payload = {
+    profile_id: profileId,
+    date: summary.date,
+    steps: summary.steps,
+    calories: summary.calories,
+    distance_miles: summary.distance_miles,
+    floors: summary.floors,
+    source: "fitbit",
+  };
+  var r = await fetch(
+    SUPABASE_URL + "/rest/v1/daily_steps?on_conflict=profile_id,date",
+    {
+      method: "POST",
+      headers: sbHeaders("return=minimal,resolution=merge-duplicates"),
+      body: JSON.stringify(payload),
+    }
+  );
+  if (!r.ok) {
+    var t = await r.text();
+    throw new Error("daily_steps upsert " + r.status + ": " + t);
+  }
+  console.log("[Steps] upserted profile=" + profileId + " date=" + summary.date + " steps=" + summary.steps);
+}
+
+// When new step data lands, any active micro_goal that looks like a step/walk
+// daily-habit (or explicitly has unit=steps) gets its current_value snapped to
+// today's step count so the user doesn't have to log it manually.
+async function autoTrackStepMicroGoals(profileId, stepCount) {
+  try {
+    var q = SUPABASE_URL + "/rest/v1/micro_goals?profile_id=eq." + profileId +
+      "&is_active=eq.true&type=eq.daily_habit" +
+      "&or=(title.ilike.*step*,title.ilike.*walk*,target_unit.eq.steps)" +
+      "&select=id,title,target_unit";
+    var r = await fetch(q, { headers: sbHeaders() });
+    if (!r.ok) return;
+    var rows = await r.json();
+    if (!Array.isArray(rows) || !rows.length) return;
+    for (var i = 0; i < rows.length; i++) {
+      var mg = rows[i];
+      await fetch(SUPABASE_URL + "/rest/v1/micro_goals?id=eq." + mg.id, {
+        method: "PATCH",
+        headers: sbHeaders("return=minimal"),
+        body: JSON.stringify({ current_value: stepCount }),
+      });
+      console.log("[Steps] auto-tracked micro_goal id=" + mg.id + " title=\"" + mg.title + "\" -> " + stepCount);
+    }
+  } catch (e) {
+    console.error("[Steps] autoTrackStepMicroGoals error:", e.message);
+  }
+}
+
+// GET recent step history for a profile (default 30 days).
+app.get("/api/profiles/:id/daily-steps", async function(req, res) {
+  try {
+    var pid = req.params.id;
+    var days = Math.min(Math.max(parseInt(req.query.days, 10) || 30, 1), 365);
+    var cutoff = new Date();
+    cutoff.setDate(cutoff.getDate() - days);
+    var cutoffStr = cutoff.toISOString().slice(0, 10);
+    var r = await fetch(
+      SUPABASE_URL + "/rest/v1/daily_steps?profile_id=eq." + pid +
+        "&date=gte." + cutoffStr +
+        "&select=date,steps,calories,distance_miles,floors,source" +
+        "&order=date.desc",
+      { headers: sbHeaders() }
+    );
+    var rows = await r.json();
+    res.json({ success: true, steps: Array.isArray(rows) ? rows : [] });
+  } catch (e) {
+    res.status(500).json({ success: false, error: e.message });
   }
 });
 

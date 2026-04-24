@@ -959,6 +959,8 @@ var aiRec = null;
 var progressRec = null;
 var workoutLog = [];
 var medLog = [];
+var dailyStepsLog = [];
+var dailyStepsByDate = {};
 var coachingBrief = '';
 var historicalBrief = '';
 var briefUpdatedAt = null;
@@ -1674,6 +1676,7 @@ function bootApp() {
   renderSchedule();
   renderProfileTab();
   loadMicroGoals();
+  loadDailySteps();
 
   loadWorkouts().then(function() {
     renderWeek();
@@ -2285,6 +2288,22 @@ function buildCheckinContext(checkin) {
   return parts.join(' | ');
 }
 
+// Step context line for the AI prompt. Tells Claude whether the user
+// already got significant low-intensity movement yesterday, so today's
+// rec can account for that (or nudge a walk if not).
+function buildStepContextLine(steps) {
+  if (steps === null || steps === undefined) {
+    return '- Steps yesterday: ?\n';
+  }
+  var goal = getStepGoal();
+  var hit = steps >= goal;
+  var mark = hit ? '✅' : '❌';
+  var tail = hit
+    ? ''
+    : ' — consider a walk today';
+  return '- Steps yesterday: ' + steps.toLocaleString() + ' (goal: ' + goal.toLocaleString() + ' ' + mark + tail + ')\n';
+}
+
 function buildCheckinSummary(checkin) {
   var parts = [];
   var emojiMap = { Drained: '\u{1FAB6}', Low: '\uD83D\uDE13', Okay: '\uD83D\uDE10', Good: '\u26A1', High: '\uD83D\uDD25' };
@@ -2608,6 +2627,9 @@ function syncFitbit(forceRefresh) {
       document.getElementById('status-box').style.display = 'none';
       fetchProgress();
       resolveAIRecs();
+      // Server upserted yesterday's steps into daily_steps — refresh our cache
+      // so the pill shows up immediately on the history tab.
+      loadDailySteps();
     })
     .catch(function(e) {
       // Auth/token errors → show manual check-in with Fitbit connect banner
@@ -3063,7 +3085,7 @@ function fetchAI(opts) {
       '- Deep: ' + (deepMins.minutes || '?') + 'min (30d avg ' + (deepMins.thirtyDayAvgMinutes || '?') + '), REM: ' + (remMins.minutes || '?') + 'min (30d avg ' + (remMins.thirtyDayAvgMinutes || '?') + ')\n' +
       '- RHR: ' + (fitData.rhr || '?') + 'bpm (7d avg ' + (r7.rhr || '?') + '), HRV: ' + (fitData.hrv || '?') + ' (7d avg ' + (r7.hrv || '?') + ')\n' +
       '- Yesterday zones: Peak ' + (pz.peak || 0) + 'min, Cardio ' + (pz.cardio || 0) + 'min, Fat Burn ' + (pz.fatBurn || 0) + 'min\n' +
-      '- Steps yesterday: ' + (fitData.steps ? fitData.steps.toLocaleString() : '?') + '\n';
+      buildStepContextLine(fitData.steps);
   }
 
   // Daily feeling check-in context
@@ -5595,6 +5617,40 @@ function loadLibrary() {
   }).catch(function(e) { console.error('[Library] Load error:', e); });
 }
 
+// ── STEP HISTORY ──────────────────────────────────────────────────────────
+function loadDailySteps() {
+  if (!currentProfileId) return Promise.resolve();
+  return fetch('/api/profiles/' + currentProfileId + '/daily-steps?days=30')
+    .then(function(r) { return r.json(); })
+    .then(function(data) {
+      if (!data || !data.success) return;
+      dailyStepsLog = Array.isArray(data.steps) ? data.steps : [];
+      dailyStepsByDate = {};
+      for (var i = 0; i < dailyStepsLog.length; i++) {
+        var row = dailyStepsLog[i];
+        if (row && row.date) dailyStepsByDate[row.date] = row;
+      }
+      if (typeof renderLog === 'function') renderLog();
+      if (libView === 'dashboard' && typeof renderLibDashboard === 'function') renderLibDashboard();
+    })
+    .catch(function(e) { console.error('[Steps] load error:', e); });
+}
+
+function getStepsForDate(dateStr) {
+  var row = dailyStepsByDate[dateStr];
+  return row && typeof row.steps === 'number' ? row.steps : null;
+}
+
+function renderStepsPill(dateStr) {
+  var n = getStepsForDate(dateStr);
+  if (n === null || n === undefined) return '';
+  var goal = getStepGoal();
+  var hit = n >= goal;
+  var color = hit ? '#22c97a' : '#888';
+  var bg = hit ? '#22c97a18' : '#8882';
+  return '<span class="mono" title="Goal: ' + goal.toLocaleString() + '" style="font-size:10px;color:' + color + ';background:' + bg + ';padding:2px 8px;border-radius:3px;display:inline-flex;align-items:center;gap:4px">&#128094; ' + n.toLocaleString() + ' steps</span>';
+}
+
 function renderLibImportBanner() {
   var el = document.getElementById('lib-import-banner');
   if (!el) return;
@@ -5674,6 +5730,9 @@ function renderLibDashboard() {
   // Volume chart
   html += '<div class="card" style="margin-bottom:16px"><p class="clabel">weekly training volume</p><canvas id="lib-volume" style="max-height:200px"></canvas></div>';
 
+  // Steps section
+  html += renderStepsSectionHTML();
+
   // Category breakdown
   var catBd = libStats.category_breakdown || {};
   var catLabels = { strength:'Strength', cardio:'Cardio', martial_arts:'Martial Arts', sports:'Sports', mind_body:'Mind & Body', rehab:'Rehab', other:'Other' };
@@ -5725,7 +5784,115 @@ function renderLibDashboard() {
   setTimeout(function() {
     renderDonutChart();
     renderVolumeChart();
+    renderStepsChart();
   }, 50);
+}
+
+// Build the Steps card HTML (30-day bar chart + summary stats).
+function renderStepsSectionHTML() {
+  var goal = getStepGoal();
+  // Build 30-day window (oldest → newest) with zero-fill for missing days.
+  var days = [];
+  var todayD = new Date();
+  for (var i = 29; i >= 0; i--) {
+    var d = new Date(todayD); d.setDate(d.getDate() - i);
+    var y = d.getFullYear(), m = String(d.getMonth()+1).padStart(2,'0'), dd = String(d.getDate()).padStart(2,'0');
+    var key = y + '-' + m + '-' + dd;
+    var row = dailyStepsByDate[key];
+    days.push({ date: key, steps: row && typeof row.steps === 'number' ? row.steps : 0, hasData: !!row });
+  }
+  var last7 = days.slice(-7);
+  var last7WithData = last7.filter(function(d) { return d.hasData; });
+  var avg7 = last7WithData.length
+    ? Math.round(last7WithData.reduce(function(s,d) { return s + d.steps; }, 0) / last7WithData.length)
+    : 0;
+  var hit7 = last7WithData.filter(function(d) { return d.steps >= goal; }).length;
+  var best = days.reduce(function(b, d) { return d.steps > b.steps ? d : b; }, { steps: 0, date: null });
+
+  var h = '';
+  h += '<div class="card" style="margin-bottom:16px">';
+  h += '<p class="clabel">daily steps &middot; last 30 days</p>';
+  if (!last7WithData.length && best.steps === 0) {
+    h += '<p style="font-size:13px;color:var(--text-dim);font-style:italic;padding:8px 0">No step data yet — sync Fitbit to start tracking.</p>';
+    h += '</div>';
+    return h;
+  }
+  h += '<canvas id="lib-steps" style="max-height:200px"></canvas>';
+  h += '<div style="display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-top:14px">';
+  h += '<div style="text-align:center"><div class="mono" style="font-size:10px;color:var(--text-dim);letter-spacing:1px">7-DAY AVG</div><div style="font-size:17px;color:var(--text-bright);font-weight:600;margin-top:2px">' + avg7.toLocaleString() + '</div></div>';
+  h += '<div style="text-align:center"><div class="mono" style="font-size:10px;color:var(--text-dim);letter-spacing:1px">BEST DAY</div><div style="font-size:17px;color:var(--text-bright);font-weight:600;margin-top:2px">' + (best.steps ? best.steps.toLocaleString() : '—') + '</div><div class="mono" style="font-size:10px;color:var(--text-muted);margin-top:2px">' + (best.date ? best.date.slice(5) : '') + '</div></div>';
+  h += '<div style="text-align:center"><div class="mono" style="font-size:10px;color:var(--text-dim);letter-spacing:1px">GOAL HIT RATE</div><div style="font-size:17px;color:var(--text-bright);font-weight:600;margin-top:2px">' + hit7 + ' / ' + last7WithData.length + '</div><div class="mono" style="font-size:10px;color:var(--text-muted);margin-top:2px">last 7 days</div></div>';
+  h += '</div>';
+  h += '<p class="mono" style="font-size:11px;color:var(--text-muted);margin-top:12px;text-align:center">Goal: ' + goal.toLocaleString() + ' steps/day — change in Settings &rarr; Goals &amp; Tracking</p>';
+  h += '</div>';
+  return h;
+}
+
+function renderStepsChart() {
+  var canvas = document.getElementById('lib-steps');
+  if (!canvas) return;
+  if (libCharts.steps) libCharts.steps.destroy();
+
+  var goal = getStepGoal();
+  var labels = [];
+  var values = [];
+  var colors = [];
+  var todayD = new Date();
+  for (var i = 29; i >= 0; i--) {
+    var d = new Date(todayD); d.setDate(d.getDate() - i);
+    var y = d.getFullYear(), m = String(d.getMonth()+1).padStart(2,'0'), dd = String(d.getDate()).padStart(2,'0');
+    var key = y + '-' + m + '-' + dd;
+    var row = dailyStepsByDate[key];
+    var steps = row && typeof row.steps === 'number' ? row.steps : 0;
+    labels.push((d.getMonth()+1) + '/' + d.getDate());
+    values.push(steps);
+    colors.push(steps >= goal ? '#22c97a' : '#888');
+  }
+
+  // Chart.js plugin for dashed goal line
+  var goalLinePlugin = {
+    id: 'goalLine',
+    afterDatasetsDraw: function(chart) {
+      var ctx = chart.ctx;
+      var y = chart.scales.y.getPixelForValue(goal);
+      var xStart = chart.chartArea.left;
+      var xEnd = chart.chartArea.right;
+      ctx.save();
+      ctx.setLineDash([6, 4]);
+      ctx.strokeStyle = '#f5a623';
+      ctx.lineWidth = 1.5;
+      ctx.beginPath();
+      ctx.moveTo(xStart, y);
+      ctx.lineTo(xEnd, y);
+      ctx.stroke();
+      ctx.setLineDash([]);
+      ctx.fillStyle = '#f5a623';
+      ctx.font = '10px IBM Plex Mono, monospace';
+      ctx.textAlign = 'right';
+      ctx.fillText('goal ' + goal.toLocaleString(), xEnd - 4, y - 4);
+      ctx.restore();
+    }
+  };
+
+  libCharts.steps = new Chart(canvas, {
+    type: 'bar',
+    data: {
+      labels: labels,
+      datasets: [{ data: values, backgroundColor: colors.map(function(c) { return c + '66'; }), borderColor: colors, borderWidth: 1, borderRadius: 3 }]
+    },
+    options: {
+      responsive: true,
+      plugins: {
+        legend: { display: false },
+        tooltip: { callbacks: { label: function(ctx) { return ctx.raw.toLocaleString() + ' steps'; } } }
+      },
+      scales: {
+        x: { ticks: { color: '#555', font: { size: 9 }, maxRotation: 0, autoSkip: true, autoSkipPadding: 12 }, grid: { display: false } },
+        y: { ticks: { color: '#555', font: { size: 10 }, callback: function(v) { return v >= 1000 ? (v/1000) + 'k' : v; } }, grid: { color: '#1a1c22' }, beginAtZero: true }
+      }
+    },
+    plugins: [goalLinePlugin]
+  });
 }
 
 function reformatAllTitles() {
@@ -6624,7 +6791,9 @@ function renderLog() {
     html += '<div class="mono" style="font-size:11px;color:var(--text-dim);margin-bottom:2px">' + w.date + '</div>';
     html += '<div style="font-weight:600;font-size:16px;color:var(--text-bright)">' + w.type + '</div>';
     html += '</div>';
-    html += '<div style="display:flex;align-items:center;gap:8px">';
+    html += '<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;justify-content:flex-end">';
+    var stepsPill = renderStepsPill(w.date);
+    if (stepsPill) html += stepsPill;
     html += w.done ? '<span class="mono" style="font-size:10px;color:#22c97a;background:#22c97a12;padding:2px 8px;border-radius:3px">Done</span>' : '<span class="mono" style="font-size:10px;color:#e84545;background:#e8454512;padding:2px 8px;border-radius:3px">Skip</span>';
     html += '<span id="lc-chev-' + cardId + '" class="log-card-chevron' + (isOpen ? ' open' : '') + '" style="color:var(--text-dim);font-size:12px">&#9660;</span>';
     html += '</div></div>';
@@ -7355,6 +7524,13 @@ function renderSettingsContent() {
   var weekTarget = tp.weeklyTarget || 4;
   h += '<div class="s-row"><label class="s-label">WEEKLY WORKOUT TARGET</label>';
   h += '<input type="number" min="1" max="7" value="' + weekTarget + '" onchange="saveTrackingPref(\'weeklyTarget\',parseInt(this.value))" style="width:80px;background:var(--bg-input);border:1px solid var(--border);color:var(--text);padding:10px 14px;border-radius:6px;font-size:15px;outline:none;font-family:DM Sans,sans-serif"></div>';
+  var stepGoal = getStepGoal();
+  h += '<div class="s-row"><label class="s-label">DAILY STEP GOAL</label>';
+  h += '<div style="display:flex;align-items:center;gap:12px">';
+  h += '<input type="range" id="step-goal-slider" min="3000" max="20000" step="500" value="' + stepGoal + '" oninput="previewStepGoal(this.value)" onchange="saveStepGoal(parseInt(this.value))" style="flex:1;accent-color:var(--accent)">';
+  h += '<input type="number" id="step-goal-number" min="3000" max="20000" step="500" value="' + stepGoal + '" onchange="saveStepGoal(parseInt(this.value))" style="width:90px;background:var(--bg-input);border:1px solid var(--border);color:var(--text);padding:10px 12px;border-radius:6px;font-size:15px;outline:none;font-family:DM Sans,sans-serif">';
+  h += '</div>';
+  h += '<p style="font-size:12px;color:var(--text-dim);margin-top:6px">Used for the history steps pill, Library chart, and AI coaching context.</p></div>';
   var showMed = tp.showMeditation !== false;
   h += '<div class="s-row"><label style="display:flex;align-items:center;gap:8px;cursor:pointer"><input type="checkbox" ' + (showMed?'checked':'') + ' onchange="saveTrackingPref(\'showMeditation\',this.checked)"><span style="font-size:14px;color:var(--text-sec)">Show meditation tracker on profile</span></label></div>';
   var showMob = tp.showMobility !== false;
@@ -7476,6 +7652,34 @@ function saveTrackingPref(key, val) {
   var tp = JSON.parse(localStorage.getItem('ac_tracking_prefs') || '{}');
   tp[key] = val;
   localStorage.setItem('ac_tracking_prefs', JSON.stringify(tp));
+  showToast();
+}
+// Step goal lives on profile_data.settings.step_goal so it syncs across
+// devices. Default 8000. Clamped to [3000,20000] on save.
+function getStepGoal() {
+  var pd = currentProfileData || {};
+  var s = pd.settings || {};
+  var v = parseInt(s.step_goal, 10);
+  if (!v || isNaN(v)) return 8000;
+  return Math.max(3000, Math.min(20000, v));
+}
+function previewStepGoal(val) {
+  var v = parseInt(val, 10); if (isNaN(v)) return;
+  var n = document.getElementById('step-goal-number'); if (n) n.value = v;
+}
+function saveStepGoal(val) {
+  var v = parseInt(val, 10);
+  if (isNaN(v)) return;
+  v = Math.max(3000, Math.min(20000, Math.round(v / 500) * 500));
+  var pd = currentProfileData || {};
+  if (!pd.settings) pd.settings = {};
+  pd.settings.step_goal = v;
+  saveProfileDataToServer(pd);
+  var s = document.getElementById('step-goal-slider'); if (s) s.value = v;
+  var n = document.getElementById('step-goal-number'); if (n) n.value = v;
+  // Re-render anything that reflects the goal
+  if (typeof renderLog === 'function') try { renderLog(); } catch(e) {}
+  if (typeof renderLibDashboard === 'function') try { renderLibDashboard(); } catch(e) {}
   showToast();
 }
 function saveWearable(device) {

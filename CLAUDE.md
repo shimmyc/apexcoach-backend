@@ -32,6 +32,8 @@ ApexCoach is a personalized AI fitness coaching web app. Users connect their Fit
 
 - micro_goals: id (uuid pk), profile_id (fk → profiles), title (text), type (text: daily_habit | weekly_frequency | cumulative_volume | strength_milestone | skill_technique | streak | recovery_balance), target_value (numeric), target_unit (text), period (text: daily | weekly | monthly | custom), end_date (date, nullable), current_value (numeric default 0), is_active (boolean default true), created_at (timestamp default now()).
 
+- daily_steps: id (bigint identity pk), profile_id (fk → profiles, on delete cascade), date (date), steps (int), calories (int), distance_miles (numeric), floors (int), source (text default 'fitbit'), created_at (timestamptz default now()). UNIQUE(profile_id, date). Upserted nightly from Fitbit sync; powers history-tab step pills, Library 30-day chart, and step-goal context in the AI rec prompt.
+
 ## Onboarding Flow (Full-Page Paginated)
 
 New users go through a 7-question full-screen paginated onboarding flow:
@@ -465,6 +467,37 @@ CREATE TABLE IF NOT EXISTS micro_goals (
   created_at timestamp with time zone DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS idx_micro_goals_profile ON micro_goals(profile_id, is_active);
+```
+
+## Step History Tracking
+
+Daily step totals (plus calories / distance / floors) are persisted per profile per day so they survive beyond Fitbit's rolling window and can power history views, trend charts, and AI prompt context.
+
+- **Table**: `daily_steps` (see Supabase Tables). `profile_id + date` unique; rows upserted on conflict.
+- **Source**: Upserted inside `GET /api/profiles/:id/daily` — right after `buildDailyData` returns, the server writes yesterday's `{steps, calories, distance, floors}` to `daily_steps` (source='fitbit'). Fire-and-forget; the daily response isn't delayed on the upsert.
+- **Step goal**: Stored at `profile_data.settings.step_goal` (integer, default 8000). Editable in Settings → Goals & Tracking as a slider (range 3000–20000, step 500). Saved via `PATCH /api/profiles/:id`.
+- **Auto-tracking of micro-goals**: After each steps upsert the server matches active `micro_goals` of type `daily_habit` where title ILIKE `%step%`/`%walk%` OR `target_unit = 'steps'` and sets `current_value` to today's step count. Lets a user create "Walk 8,000 steps daily" and have it auto-complete.
+- **History pill**: Each history-list card with a matching `daily_steps` row gets a `👟 N steps` pill — green (`#22c97a`) if steps ≥ goal, muted grey if below.
+- **Library Steps section**: 30-day bar chart (Chart.js) with dashed horizontal line at the step goal. Below the chart: 7-day average, best day (with value), goal hit rate ("Hit goal X of last 7 days").
+- **AI prompt injection**: `buildStepContextLine()` adds `Steps yesterday: N (goal: G ✅/❌)` plus a "consider a walk today" nudge when under goal, appended to the LIVE FITBIT DATA block so Claude factors low-intensity volume into the rec.
+
+**Endpoint**: `GET /api/profiles/:id/daily-steps?days=30` — returns last N days ordered by date desc.
+
+**Supabase setup** — run once in SQL editor:
+```sql
+CREATE TABLE IF NOT EXISTS daily_steps (
+  id bigint generated always as identity primary key,
+  profile_id bigint references profiles(id) on delete cascade,
+  date date not null,
+  steps int,
+  calories int,
+  distance_miles numeric(6,2),
+  floors int,
+  source text default 'fitbit',
+  created_at timestamptz default now(),
+  UNIQUE(profile_id, date)
+);
+CREATE INDEX IF NOT EXISTS idx_daily_steps_profile_date ON daily_steps(profile_id, date DESC);
 ```
 
 ## Personal Road Map
