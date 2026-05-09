@@ -2813,8 +2813,11 @@ function parseDurationToSeconds(text) {
     if (!isNaN(n) && n > max) max = n;
   }
   // "Ns" (e.g. "30s") — only when followed by space/end, to avoid hitting
-  // "60s music" or similar word boundaries
-  var sShortRe = /(?:^|[\s,])(\d+(?:\.\d+)?)s(?=$|[\s,.;])/g;
+  // "60s music" or similar word boundaries. `x` is allowed as a leading
+  // boundary so set notation like "4x25s" / "2x30s" extracts the per-set
+  // duration (25, 30) — strength_milestone takes MAX across entries, so the
+  // per-set value is the right "single best effort" to compare.
+  var sShortRe = /(?:^|[\s,x])(\d+(?:\.\d+)?)s(?=$|[\s,.;])/g;
   while ((m = sShortRe.exec(s)) !== null) {
     var n2 = parseFloat(m[1]);
     if (!isNaN(n2) && n2 > max) max = n2;
