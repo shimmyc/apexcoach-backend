@@ -762,10 +762,8 @@ input[type=range]{width:100%;accent-color:var(--accent)}
     <div id="wlog-banner" style="display:none;margin-bottom:12px;padding:10px 12px;border-radius:6px;background:var(--accent-10);border:1px solid var(--accent-33);font-size:13px;color:var(--accent)"></div>
     <div id="wdate-picker">
       <p class="mono" style="font-size:10px;color:#555;letter-spacing:2px;margin-bottom:6px">LOG FOR</p>
-      <select id="wdate" style="margin-bottom:14px">
-        <option value="today">Today</option>
-        <option value="yesterday">Yesterday</option>
-      </select>
+      <input type="date" id="wdate" onchange="onLogDateChanged()" style="margin-bottom:8px;width:100%;background:var(--bg-input);border:1px solid var(--border);color:var(--text);padding:11px 14px;border-radius:6px;font-size:14px;outline:none;font-family:'DM Sans',sans-serif">
+      <div id="wdate-past-banner" style="display:none;margin-bottom:14px;padding:8px 12px;border-radius:6px;background:#f5a62312;border:1px solid #f5a62333;font-size:12px;color:#f5a623;line-height:1.4"></div>
     </div>
     <div id="wdate-readonly" style="display:none;margin-bottom:14px">
       <p class="mono" style="font-size:10px;color:#555;letter-spacing:2px;margin-bottom:6px">DATE</p>
@@ -806,6 +804,10 @@ input[type=range]{width:100%;accent-color:var(--accent)}
         <input type="checkbox" id="wmed">
         <span style="margin-left:6px;font-size:13px;color:var(--text-sec)">Meditated</span>
       </label>
+    </div>
+    <div id="goal-checkin-section" style="display:none;margin-bottom:16px;padding:12px 14px;border-radius:8px;background:var(--accent-10);border:1px solid var(--accent-33)">
+      <p class="mono" style="font-size:10px;color:var(--accent);letter-spacing:2px;margin:0 0 10px 0">GOAL CHECK-IN</p>
+      <div id="goal-checkin-list"></div>
     </div>
     <div style="display:flex;gap:8px;justify-content:flex-end">
       <button class="btnSec" onclick="closeModal()">Cancel</button>
@@ -851,14 +853,15 @@ input[type=range]{width:100%;accent-color:var(--accent)}
     <div id="mg-type-pills" style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:14px">
       <button type="button" class="mg-pill" data-type="daily_habit" onclick="selectMicroGoalType('daily_habit')">Daily habit</button>
       <button type="button" class="mg-pill" data-type="weekly_frequency" onclick="selectMicroGoalType('weekly_frequency')">Weekly frequency</button>
-      <button type="button" class="mg-pill" data-type="cumulative_volume" onclick="selectMicroGoalType('cumulative_volume')">Cumulative volume</button>
-      <button type="button" class="mg-pill" data-type="strength_milestone" onclick="selectMicroGoalType('strength_milestone')">Strength milestone</button>
+      <button type="button" class="mg-pill" data-type="cumulative_volume" onclick="selectMicroGoalType('cumulative_volume')" title="Adds up all sessions (e.g. 100 total pushups)">Cumulative total</button>
+      <button type="button" class="mg-pill" data-type="strength_milestone" onclick="selectMicroGoalType('strength_milestone')" title="Tracks your longest/heaviest single effort (e.g. 2-min hang, 200lb squat)">Personal best</button>
       <button type="button" class="mg-pill" data-type="skill_technique" onclick="selectMicroGoalType('skill_technique')">Skill / technique</button>
       <button type="button" class="mg-pill" data-type="streak" onclick="selectMicroGoalType('streak')">Streak</button>
       <button type="button" class="mg-pill" data-type="recovery_balance" onclick="selectMicroGoalType('recovery_balance')">Recovery balance</button>
     </div>
     <input type="hidden" id="mg-type" value="">
-    <div style="display:flex;gap:8px;margin-bottom:14px">
+    <p id="mg-type-help" style="font-size:11px;color:var(--text-muted);font-style:italic;margin:-6px 0 12px 0;min-height:14px;line-height:1.4"></p>
+    <div id="mg-target-row" style="display:flex;gap:8px;margin-bottom:14px">
       <div style="flex:1">
         <p class="mono" style="font-size:10px;color:var(--text-dim);letter-spacing:2px;margin-bottom:6px">TARGET</p>
         <input id="mg-target-value" type="number" step="any" min="0" placeholder="1000" style="width:100%;background:var(--bg-input);border:1px solid var(--border);color:var(--text);padding:11px 14px;border-radius:6px;font-size:14px;outline:none;font-family:'DM Sans',sans-serif">
@@ -1841,8 +1844,15 @@ function renderDayView() {
     logEl.innerHTML = '<div class="loggedPill" style="display:flex;align-items:center;justify-content:space-between">' + (entry.done ? 'done' : 'skipped') + ': ' + entry.type + (entry.mobility ? ' + mobility' : '') + (entry.med ? ' + meditation' : '') + '<button onclick="editWorkoutById(\'' + (entry.id || '') + '\')" style="background:transparent;border:1px solid var(--accent-33);color:var(--accent);padding:3px 10px;border-radius:4px;cursor:pointer;font-size:11px;font-family:IBM Plex Mono,monospace;margin-left:10px">Edit</button></div>';
     if (entry.notes) logEl.innerHTML += '<div style="background:var(--bg-input);border:1px solid var(--border);border-radius:8px;padding:12px;margin-top:8px;font-size:13px;color:var(--text-sec);line-height:1.6;white-space:pre-wrap">' + entry.notes + '</div>';
   } else {
-    logEl.innerHTML = '<p style="color:var(--text-dim);font-size:14px;text-align:center;padding:16px 0">No workout logged this day</p>';
+    logEl.innerHTML = '<p style="color:var(--text-dim);font-size:14px;text-align:center;padding:16px 0;margin-bottom:8px">No workout logged this day</p>' +
+      '<div style="text-align:center"><button onclick="openLogModalForDate(\'' + attrEsc(dateStr) + '\')" style="background:var(--accent-10);border:1px dashed var(--accent-33);color:var(--accent);padding:10px 18px;border-radius:6px;cursor:pointer;font-size:13px;font-family:DM Sans,sans-serif">+ Log workout for this day</button></div>';
   }
+}
+
+// Opens the log modal pre-set to a specific past date. Used by the History
+// tab "+ Log workout for this day" button.
+function openLogModalForDate(dateStr) {
+  openModal(dateStr);
 }
 
 // Past-day biometric snapshot: pulls Fitbit data for the date and rewrites
@@ -3597,14 +3607,16 @@ function prefillLogFromAI(type, headline, exercises, mobility) {
   document.getElementById('wmob').checked = !!mobility;
   document.getElementById('wmed').checked = false;
   var dateEl = document.getElementById('wdate');
-  if (dateEl) dateEl.value = 'today';
+  if (dateEl) { dateEl.removeAttribute('min'); dateEl.max = ds(0); dateEl.value = ds(0); }
   document.getElementById('wdate-picker').style.display = 'block';
   document.getElementById('wdate-readonly').style.display = 'none';
+  if (typeof onLogDateChanged === 'function') onLogDateChanged();
   var editDel = document.getElementById('edit-delete-section');
   if (editDel) editDel.style.display = 'none';
   document.querySelector('.modal p.mono').textContent = "LOG TODAY'S WORKOUT";
   document.getElementById('log-modal').style.display = 'flex';
   if (typeof initAutoFormatToggle === 'function') initAutoFormatToggle();
+  if (typeof renderGoalCheckin === 'function') renderGoalCheckin();
 }
 
 // Robust attribute-value escape for use in HTML string building
@@ -4164,8 +4176,8 @@ var microGoals = [];
 var MG_TYPE_LABEL = {
   daily_habit: 'Daily Habit',
   weekly_frequency: 'Weekly',
-  cumulative_volume: 'Volume',
-  strength_milestone: 'Strength',
+  cumulative_volume: 'Cumulative',
+  strength_milestone: 'Personal Best',
   skill_technique: 'Skill',
   streak: 'Streak',
   recovery_balance: 'Recovery'
@@ -4221,7 +4233,33 @@ function mgPeriodLabel(g) {
 }
 
 function mgIsComplete(g) {
+  // daily_habit goals are ongoing — they never "complete" the way a target
+  // goal does. Treat them as always-incomplete so the Profile-tab "DONE"
+  // label and confetti animation don't trigger on every habit save.
+  if (g && g.type === 'daily_habit') return false;
   return Number(g.current_value || 0) >= Number(g.target_value || 0) && Number(g.target_value || 0) > 0;
+}
+
+// Format the bottom-line "X / Y unit" label for a micro-goal, honoring the
+// goal type. daily_habit shows just "X days completed" (no target), and
+// strength_milestone shows "Best: Xs / Ys" so users see it as a personal
+// best rather than a running sum.
+function formatMgProgressLabel(g) {
+  var cur = Number(g.current_value || 0);
+  var tgt = Number(g.target_value || 0);
+  var unit = (g.target_unit || '').toLowerCase();
+  if (g.type === 'daily_habit') {
+    return cur + (cur === 1 ? ' day' : ' days') + ' completed';
+  }
+  if (g.type === 'strength_milestone') {
+    var isSec = unit === 'seconds' || unit === 'sec' || unit === 'secs' || unit === 'second';
+    var isMin = unit === 'minutes' || unit === 'min' || unit === 'mins' || unit === 'minute';
+    if (isSec) return 'Best: ' + Math.round(cur) + 's / ' + Math.round(tgt) + 's';
+    if (isMin) return 'Best: ' + (+cur).toFixed(1) + 'min / ' + (+tgt).toFixed(1) + 'min';
+    var wu = unit || 'lbs';
+    return 'Best: ' + cur + wu + ' / ' + tgt + wu;
+  }
+  return cur + ' / ' + tgt + (g.target_unit ? ' ' + g.target_unit : '');
 }
 
 function renderProfileChallenges() {
@@ -4258,11 +4296,19 @@ function renderProfileChallenges() {
     html += '<button onclick="deleteMicroGoal(\'' + attrEsc(g.id) + '\')" title="Delete" style="background:transparent;border:none;color:var(--text-dim);cursor:pointer;font-size:14px;padding:4px">&#128465;</button>';
     html += '</div>';
     html += '</div>';
-    html += '<div class="bar-track" style="height:6px;margin-top:8px"><div class="bar-fill" style="width:' + pct + '%;background:' + barColor + '"></div></div>';
-    html += '<div style="display:flex;justify-content:space-between;align-items:center;margin-top:4px">';
-    html += '<span class="mono" style="font-size:11px;color:var(--text-muted)">' + cur + ' / ' + tgt + unit + '</span>';
-    html += '<span class="mono" style="font-size:11px;color:' + barColor + ';font-weight:700">' + pct + '%</span>';
-    html += '</div>';
+    // daily_habit doesn't have a meaningful percentage — show the day count
+    // alone instead of a 0%/100% bar that flickers with each save.
+    if (g.type === 'daily_habit') {
+      html += '<div style="display:flex;justify-content:space-between;align-items:center;margin-top:8px">';
+      html += '<span class="mono" style="font-size:11px;color:var(--text-muted)">' + formatMgProgressLabel(g) + '</span>';
+      html += '</div>';
+    } else {
+      html += '<div class="bar-track" style="height:6px;margin-top:8px"><div class="bar-fill" style="width:' + pct + '%;background:' + barColor + '"></div></div>';
+      html += '<div style="display:flex;justify-content:space-between;align-items:center;margin-top:4px">';
+      html += '<span class="mono" style="font-size:11px;color:var(--text-muted)">' + formatMgProgressLabel(g) + '</span>';
+      html += '<span class="mono" style="font-size:11px;color:' + barColor + ';font-weight:700">' + pct + '%</span>';
+      html += '</div>';
+    }
     html += '</div>';
   }
   host.innerHTML = html;
@@ -4301,12 +4347,32 @@ function closeMicroGoalModal() {
   _mgEditingId = null;
 }
 
+// One-line help copy for each challenge type. Shown under the type pills so
+// users pick the right kind for their goal — most importantly, distinguishes
+// "Cumulative total" (running sum) from "Personal best" (max single effort).
+var MG_TYPE_HELP = {
+  daily_habit: 'Daily habit — did you do it today? Just yes/no, no target needed.',
+  weekly_frequency: 'Weekly frequency — hit a category N times per week (e.g. MMA 3×/wk).',
+  cumulative_volume: 'Cumulative total — adds up all sessions (e.g. 100 total pushups, 20 total miles).',
+  strength_milestone: 'Personal best — tracks your longest/heaviest single effort (e.g. 2-min hang, 200lb squat).',
+  skill_technique: 'Skill / technique — manual progress on a learned skill or position.',
+  streak: 'Streak — consecutive days you hit the habit.',
+  recovery_balance: 'Recovery balance — minimum rest days per week.'
+};
+
 function selectMicroGoalType(type) {
   document.getElementById('mg-type').value = type || '';
   var pills = document.querySelectorAll('#mg-type-pills .mg-pill');
   for (var i = 0; i < pills.length; i++) {
     pills[i].classList.toggle('active', pills[i].getAttribute('data-type') === type);
   }
+  var help = document.getElementById('mg-type-help');
+  if (help) help.textContent = MG_TYPE_HELP[type] || '';
+  // Daily habit doesn't need a numeric target — it's a binary "did it today"
+  // tracker. Hide the target/unit row entirely; saveMicroGoalFromModal will
+  // force target_value=1 on submit so server validation passes.
+  var targetRow = document.getElementById('mg-target-row');
+  if (targetRow) targetRow.style.display = (type === 'daily_habit') ? 'none' : 'flex';
 }
 
 function selectMicroGoalPeriod(period) {
@@ -4330,14 +4396,19 @@ function saveMicroGoalFromModal() {
 
   if (!title) { errEl.textContent = 'Title is required.'; return; }
   if (!type) { errEl.textContent = 'Pick a challenge type.'; return; }
-  if (targetValue === '' || isNaN(Number(targetValue)) || Number(targetValue) <= 0) { errEl.textContent = 'Target value must be a positive number.'; return; }
+  // daily_habit has no numeric target — it's a yes/no daily check. Force a
+  // sentinel target=1 so server-side validation (target_value > 0) passes;
+  // the UI never shows this value back to the user.
+  if (type !== 'daily_habit') {
+    if (targetValue === '' || isNaN(Number(targetValue)) || Number(targetValue) <= 0) { errEl.textContent = 'Target value must be a positive number.'; return; }
+  }
   if (period === 'custom' && !endDate) { errEl.textContent = 'Pick an end date or choose a different period.'; return; }
 
   var payload = {
     title: title,
     type: type,
-    target_value: Number(targetValue),
-    target_unit: targetUnit || null,
+    target_value: type === 'daily_habit' ? 1 : Number(targetValue),
+    target_unit: type === 'daily_habit' ? null : (targetUnit || null),
     period: period,
     end_date: period === 'custom' ? endDate : null
   };
@@ -4468,6 +4539,209 @@ function fireConfetti() {
     }
   }
   requestAnimationFrame(frame);
+}
+
+// ─── GOAL CHECK-IN (LOG MODAL) ─────────────────────────────────────────
+// Mirror of the server-side CANONICAL_NAMES lookup, kept minimal to the
+// entries needed for client-side title→exercise resolution. The server is
+// the source of truth; this is only used to render the right input control
+// for each micro-goal. If a title doesn't resolve here we fall back to
+// using the goal title verbatim as the exercise name.
+var MG_CLIENT_CANONICAL = {
+  'hang': 'Dead Hang', 'hangs': 'Dead Hang', 'dead hang': 'Dead Hang',
+  'dead hangs': 'Dead Hang', 'hanging': 'Dead Hang',
+  'bar hang': 'Dead Hang', 'bar hangs': 'Dead Hang',
+  'passive hang': 'Dead Hang', 'passive hangs': 'Dead Hang',
+  'push up': 'Push-Up', 'pushup': 'Push-Up', 'push ups': 'Push-Up',
+  'pushups': 'Push-Up', 'push-ups': 'Push-Up',
+  'pull up': 'Pull-Up', 'pull ups': 'Pull-Up', 'pullup': 'Pull-Up', 'pullups': 'Pull-Up',
+  'chin up': 'Chin-Up', 'chin ups': 'Chin-Up', 'chinup': 'Chin-Up', 'chinups': 'Chin-Up',
+  'sit up': 'Sit-Up', 'sit ups': 'Sit-Up', 'situp': 'Sit-Up', 'situps': 'Sit-Up',
+  'squat': 'Squat', 'squats': 'Squat',
+  'lunge': 'Lunge', 'lunges': 'Lunge',
+  'burpee': 'Burpee', 'burpees': 'Burpee',
+  'plank': 'Plank', 'planks': 'Plank',
+  'bicep curl': 'Bicep Curl', 'bicep curls': 'Bicep Curl',
+  'glute bridge': 'Glute Bridge', 'glute bridges': 'Glute Bridge'
+};
+
+function mgClientCanonicalFromTitle(title) {
+  if (!title) return null;
+  var lower = String(title).toLowerCase();
+  if (MG_CLIENT_CANONICAL[lower]) return MG_CLIENT_CANONICAL[lower];
+  var tokens = lower.split(/[^a-z0-9-]+/).filter(function(t) { return t && t.length >= 3; });
+  for (var i = 0; i < tokens.length - 1; i++) {
+    var combo = tokens[i] + ' ' + tokens[i + 1];
+    if (MG_CLIENT_CANONICAL[combo]) return MG_CLIENT_CANONICAL[combo];
+  }
+  for (var j = 0; j < tokens.length; j++) {
+    if (MG_CLIENT_CANONICAL[tokens[j]]) return MG_CLIENT_CANONICAL[tokens[j]];
+  }
+  return null;
+}
+
+// Workout-type → goal_keywords match used to auto-check weekly_frequency
+// goals when their title roughly matches the current workout type field.
+function mgWorkoutTypeMatchesGoal(workoutType, goalTitle) {
+  if (!workoutType || !goalTitle) return false;
+  var t = String(workoutType).toLowerCase();
+  var g = String(goalTitle).toLowerCase();
+  var tokens = g.split(/[^a-z0-9]+/).filter(function(s) { return s.length >= 3; });
+  return tokens.some(function(s) { return t.indexOf(s) >= 0; });
+}
+
+// Render the active-challenges check-in inside the log modal. Hidden when
+// the user has no active micro-goals at all. If micro-goals haven't loaded
+// yet (e.g. user clicked the FAB before bootApp's initial loadMicroGoals
+// call resolved), fetch on demand and re-render.
+var _goalCheckinFetching = false;
+function renderGoalCheckin() {
+  var section = document.getElementById('goal-checkin-section');
+  var list = document.getElementById('goal-checkin-list');
+  if (!section || !list) return;
+
+  // Lazy load: fetch micro_goals if we don't have them yet so the section
+  // can render the very first time the log modal opens.
+  if ((!microGoals || !microGoals.length) && currentProfileId && !_goalCheckinFetching) {
+    _goalCheckinFetching = true;
+    console.log('[GoalCheckin] microGoals empty, fetching…');
+    fetch('/api/profiles/' + currentProfileId + '/micro-goals')
+      .then(function(r) { return r.json(); })
+      .then(function(data) {
+        _goalCheckinFetching = false;
+        if (data && data.success) {
+          microGoals = data.micro_goals || [];
+          console.log('[GoalCheckin] loaded', microGoals.length, 'micro_goals');
+          renderGoalCheckin();
+        }
+      })
+      .catch(function(e) { _goalCheckinFetching = false; console.warn('[GoalCheckin] fetch failed:', e.message); });
+    section.style.display = 'none';
+    list.innerHTML = '';
+    return;
+  }
+
+  var active = (microGoals || []).filter(function(g) {
+    return g && g.is_active !== false && !mgIsComplete(g);
+  });
+  console.log('[GoalCheckin] render: total=' + (microGoals || []).length + ' active_incomplete=' + active.length);
+  if (!active.length) {
+    section.style.display = 'none';
+    list.innerHTML = '';
+    return;
+  }
+  var workoutTypeHint = document.getElementById('wtype').value || '';
+  var html = '';
+  for (var i = 0; i < active.length; i++) {
+    var g = active[i];
+    var id = String(g.id);
+    var unit = (g.target_unit || '').toLowerCase();
+    var canonical = mgClientCanonicalFromTitle(g.title);
+    var isTimeUnit = unit === 'seconds' || unit === 'sec' || unit === 'secs' ||
+                     unit === 'minutes' || unit === 'min' || unit === 'mins';
+    html += '<div class="mg-checkin-row" data-mg-id="' + attrEsc(id) + '" data-mg-type="' + attrEsc(g.type) + '" data-mg-canonical="' + attrEsc(canonical || '') + '" data-mg-unit="' + attrEsc(g.target_unit || '') + '"';
+    html += ' style="display:flex;align-items:center;gap:8px;padding:6px 0;border-bottom:1px solid var(--accent-33);font-size:13px">';
+    html += '<div style="flex:1;min-width:0">';
+    html += '<div style="color:var(--text-bright);font-weight:500;line-height:1.3">' + escHtml(g.title || '') + '</div>';
+    if (g.type === 'weekly_frequency' || g.type === 'recovery_balance' || g.type === 'skill_technique') {
+      html += '<div class="mono" style="font-size:10px;color:var(--text-dim);margin-top:2px">' + (g.type === 'skill_technique' ? 'manual tracking' : 'auto-tracked') + '</div>';
+    }
+    html += '</div>';
+
+    if (g.type === 'daily_habit' || g.type === 'streak') {
+      if (canonical) {
+        html += '<label style="display:flex;align-items:center;gap:6px;cursor:pointer;flex-shrink:0">';
+        html += '<input type="checkbox" class="mg-checkin-done" style="accent-color:var(--accent)">';
+        html += '<span style="font-size:12px;color:var(--text-sec)">Mark as done</span>';
+        html += '</label>';
+      } else {
+        html += '<span class="mono" style="font-size:10px;color:var(--text-dim);flex-shrink:0">auto-tracked</span>';
+      }
+    } else if (g.type === 'strength_milestone') {
+      var ph = isTimeUnit ? (unit === 'minutes' || unit === 'min' || unit === 'mins' ? 'min' : 'sec') : (unit || 'lbs');
+      html += '<div style="display:flex;align-items:center;gap:6px;flex-shrink:0">';
+      html += '<input type="number" class="mg-checkin-value" min="0" step="any" placeholder="best" style="width:70px;background:var(--bg-input);border:1px solid var(--border);color:var(--text);padding:5px 8px;border-radius:4px;font-size:12px;outline:none">';
+      html += '<span style="font-size:11px;color:var(--text-dim)">' + escHtml(ph) + '</span>';
+      html += '</div>';
+    } else if (g.type === 'cumulative_volume') {
+      if (canonical) {
+        var vu = unit || 'reps';
+        html += '<div style="display:flex;align-items:center;gap:6px;flex-shrink:0">';
+        html += '<span style="font-size:11px;color:var(--text-dim)">+</span>';
+        html += '<input type="number" class="mg-checkin-value" min="0" step="any" placeholder="0" style="width:60px;background:var(--bg-input);border:1px solid var(--border);color:var(--text);padding:5px 8px;border-radius:4px;font-size:12px;outline:none">';
+        html += '<span style="font-size:11px;color:var(--text-dim)">' + escHtml(vu) + '</span>';
+        html += '</div>';
+      } else {
+        html += '<span class="mono" style="font-size:10px;color:var(--text-dim);flex-shrink:0">auto-tracked</span>';
+      }
+    } else if (g.type === 'weekly_frequency') {
+      var auto = mgWorkoutTypeMatchesGoal(workoutTypeHint, g.title);
+      html += '<span class="mono" style="font-size:10px;color:' + (auto ? 'var(--accent)' : 'var(--text-dim)') + ';flex-shrink:0">' + (auto ? '✓ counts' : 'no match') + '</span>';
+    }
+    html += '</div>';
+  }
+  list.innerHTML = html;
+  section.style.display = 'block';
+}
+
+// Read every visible check-in row and append a canonical exercise line per
+// active check-in to the notes textarea. The existing /api/profiles/:id/
+// extract-exercises pipeline then turns each line into an exercises row, and
+// the auto-tracker (loadMicroGoals on save) picks up the progress change.
+// Returns the merged notes string. Idempotent: lines are only appended if
+// the notes don't already contain them.
+function applyGoalCheckinsToNotes(rawNotes) {
+  var section = document.getElementById('goal-checkin-section');
+  if (!section || section.style.display === 'none') return rawNotes;
+  var rows = document.querySelectorAll('#goal-checkin-list .mg-checkin-row');
+  if (!rows.length) return rawNotes;
+  var additions = [];
+  for (var i = 0; i < rows.length; i++) {
+    var row = rows[i];
+    var type = row.getAttribute('data-mg-type');
+    var canonical = row.getAttribute('data-mg-canonical') || '';
+    var unit = (row.getAttribute('data-mg-unit') || '').toLowerCase();
+    var line = null;
+
+    if (type === 'daily_habit' || type === 'streak') {
+      var doneEl = row.querySelector('.mg-checkin-done');
+      if (doneEl && doneEl.checked && canonical) {
+        line = canonical;
+      }
+    } else if (type === 'strength_milestone') {
+      var valEl = row.querySelector('.mg-checkin-value');
+      var v = valEl && valEl.value ? parseFloat(valEl.value) : NaN;
+      if (!isNaN(v) && v > 0) {
+        var label = canonical || row.querySelector('div div').textContent.trim();
+        var isTime = unit === 'seconds' || unit === 'sec' || unit === 'secs' ||
+                     unit === 'minutes' || unit === 'min' || unit === 'mins';
+        if (isTime) {
+          var unitWord = (unit === 'minutes' || unit === 'min' || unit === 'mins') ? 'minutes' : 'seconds';
+          line = label + ' ' + v + ' ' + unitWord;
+        } else {
+          // Default to weight-style entry so extract-exercises catches it.
+          line = label + ' 1x1 @ ' + v + (unit ? unit : 'lbs');
+        }
+      }
+    } else if (type === 'cumulative_volume') {
+      var cvEl = row.querySelector('.mg-checkin-value');
+      var cv = cvEl && cvEl.value ? parseFloat(cvEl.value) : NaN;
+      if (!isNaN(cv) && cv > 0 && canonical) {
+        var u = unit || 'reps';
+        line = canonical + ' ' + cv + ' ' + u;
+      }
+    }
+
+    if (line) {
+      // Guard against double-appending if the user already typed it.
+      if ((rawNotes || '').toLowerCase().indexOf(line.toLowerCase()) < 0) {
+        additions.push(line);
+      }
+    }
+  }
+  if (!additions.length) return rawNotes;
+  var prefix = (rawNotes || '').trim();
+  return prefix ? (prefix + '\n' + additions.join('\n')) : additions.join('\n');
 }
 
 // ─── DAILY AI PROMPT HELPERS ───────────────────────────────────────────
@@ -5586,10 +5860,13 @@ function editWorkout(entry) {
   document.getElementById('edit-delete-section').style.display = 'block';
   document.getElementById('edit-delete-initial').style.display = 'block';
   document.getElementById('edit-delete-confirm').style.display = 'none';
+  // Goal check-in is only meaningful for fresh logs, not edits.
+  var goalSection = document.getElementById('goal-checkin-section');
+  if (goalSection) { goalSection.style.display = 'none'; var gl = document.getElementById('goal-checkin-list'); if (gl) gl.innerHTML = ''; }
   document.getElementById('log-modal').style.display = 'flex';
 }
 
-function openModal() {
+function openModal(prefillDate) {
   editingWorkoutId = null;
   editingWorkoutDate = null;
   // Show date picker, hide read-only
@@ -5597,17 +5874,54 @@ function openModal() {
   document.getElementById('wdate-readonly').style.display = 'none';
   document.getElementById('edit-delete-section').style.display = 'none';
   document.querySelector('.modal p.mono').textContent = "LOG TODAY'S WORKOUT";
+  // Default the date input to today (or the prefill date if provided), max=today.
+  // No min: any past date is allowed so users can backfill old workouts.
+  var dateEl = document.getElementById('wdate');
+  if (dateEl) {
+    var today = ds(0);
+    dateEl.removeAttribute('min');
+    dateEl.max = today;
+    dateEl.value = prefillDate || today;
+    onLogDateChanged();
+  }
   // Reset re-log / template banner and Save-as-Template form.
   var banner = document.getElementById('wlog-banner');
   if (banner) { banner.style.display = 'none'; banner.innerHTML = ''; }
   if (typeof cancelSaveTemplate === 'function') cancelSaveTemplate();
   document.getElementById('log-modal').style.display = 'flex';
   initAutoFormatToggle();
+  if (typeof renderGoalCheckin === 'function') renderGoalCheckin();
+}
+
+// Update the past-date banner and refresh the goal check-in section whenever
+// the date input changes. Default-day saves keep the banner hidden; past-day
+// saves show "Logging for [Day, Month Date] — this will be saved to that date".
+function onLogDateChanged() {
+  var dateEl = document.getElementById('wdate');
+  var banner = document.getElementById('wdate-past-banner');
+  if (!dateEl || !banner) return;
+  var val = dateEl.value;
+  var today = ds(0);
+  if (!val || val === today) {
+    banner.style.display = 'none';
+    banner.textContent = '';
+  } else {
+    var d = new Date(val + 'T12:00:00');
+    if (isNaN(d.getTime())) { banner.style.display = 'none'; return; }
+    var fmt = d.toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric' });
+    banner.textContent = 'Logging for ' + fmt + ' — this will be saved to that date';
+    banner.style.display = 'block';
+  }
+  if (typeof renderGoalCheckin === 'function') renderGoalCheckin();
 }
 function closeModal() {
   document.getElementById('log-modal').style.display = 'none';
   var banner = document.getElementById('wlog-banner');
   if (banner) { banner.style.display = 'none'; banner.innerHTML = ''; }
+  var pastBanner = document.getElementById('wdate-past-banner');
+  if (pastBanner) { pastBanner.style.display = 'none'; pastBanner.textContent = ''; }
+  var goalSection = document.getElementById('goal-checkin-section');
+  if (goalSection) { goalSection.style.display = 'none'; var gl = document.getElementById('goal-checkin-list'); if (gl) gl.innerHTML = ''; }
 }
 
 // ── RE-LOG PAST WORKOUTS ──────────────────────────────────────────────────
@@ -5647,7 +5961,7 @@ function reLogWorkout(workoutId) {
       document.getElementById('wtype').value = w.type || '';
       // Re-log always targets today (user can switch via the date picker).
       var dateEl = document.getElementById('wdate');
-      if (dateEl) dateEl.value = 'today';
+      if (dateEl) { dateEl.value = ds(0); onLogDateChanged(); }
       var banner = document.getElementById('wlog-banner');
       if (banner) {
         banner.innerHTML = '&#128260; Re-logging: <strong>' + (w.type || 'Workout') + '</strong> from ' + (w.date || '?') +
@@ -5797,7 +6111,7 @@ function useTemplate(templateId) {
   document.getElementById('wnotes').value = tpl.notes_template || '';
   document.getElementById('wtype').value = tpl.type || '';
   var dateEl = document.getElementById('wdate');
-  if (dateEl) dateEl.value = 'today';
+  if (dateEl) { dateEl.value = ds(0); onLogDateChanged(); }
   var banner = document.getElementById('wlog-banner');
   if (banner) {
     banner.innerHTML = '📁 Using template: <strong>' + escHtml(tpl.name || '') + '</strong>';
@@ -6082,7 +6396,14 @@ function generateWorkoutTitle(notes) {
 var _savingWorkout = false;
 function saveWorkout() {
   if (_savingWorkout) return;
-  var notes = document.getElementById('wnotes').value;
+  // Merge any active goal check-ins into the notes textarea up-front, so a
+  // "Mark as done" toggle alone (with no typed notes) still produces a save.
+  var notesEl = document.getElementById('wnotes');
+  if (typeof applyGoalCheckinsToNotes === 'function') {
+    var merged = applyGoalCheckinsToNotes(notesEl.value);
+    if (merged !== notesEl.value) notesEl.value = merged;
+  }
+  var notes = notesEl.value;
   if (!notes.trim()) return;
   _savingWorkout = true;
   var autoFormat = localStorage.getItem('ac_auto_format') !== 'false';
@@ -6106,11 +6427,24 @@ function saveWorkout() {
 
 function doSaveWorkout() {
   var saveBtn = document.querySelector('#log-modal .btnPri');
-  var notes = document.getElementById('wnotes').value;
+  // Merge any active goal check-ins into the notes before save so the
+  // existing extract-exercises pipeline picks them up as exercise rows.
+  var notesEl = document.getElementById('wnotes');
+  if (typeof applyGoalCheckinsToNotes === 'function') {
+    var merged = applyGoalCheckinsToNotes(notesEl.value);
+    if (merged !== notesEl.value) notesEl.value = merged;
+  }
+  var notes = notesEl.value;
   if (!notes.trim()) { if (saveBtn) { saveBtn.textContent = 'Save'; saveBtn.disabled = false; } return; }
   var medDone = document.getElementById('wmed').checked;
   var dateEl = document.getElementById('wdate');
-  var entryDate = editingWorkoutId && editingWorkoutDate ? editingWorkoutDate : (dateEl && dateEl.value === 'yesterday' ? ds(-1) : ds(0));
+  var today = ds(0);
+  var pickedDate = (dateEl && dateEl.value) ? dateEl.value : today;
+  // Guard: never save for a future date (date input has max=today, but the
+  // picker can be bypassed by typing).
+  if (pickedDate > today) pickedDate = today;
+  var entryDate = editingWorkoutId && editingWorkoutDate ? editingWorkoutDate : pickedDate;
+  var isPastDate = entryDate !== today;
 
   // For edits, use existing type; for new workouts, AI generates it
   if (editingWorkoutId) {
@@ -6207,7 +6541,8 @@ function doSaveWorkout() {
     document.getElementById('wdone').checked = true;
     document.getElementById('wmob').checked = false;
     document.getElementById('wmed').checked = false;
-    if(dateEl) dateEl.value='today';
+    if(dateEl) dateEl.value=today;
+    if (typeof onLogDateChanged === 'function') onLogDateChanged();
     document.getElementById('voice-status').textContent = '';
     editingWorkoutId = null;
     editingOriginalNotes = null;
@@ -6217,7 +6552,8 @@ function doSaveWorkout() {
     if (typeof renderRecentAndTemplates === 'function') renderRecentAndTemplates();
     calculateStreak();
     renderStreak();
-    if (readiness && fitData) fetchAI();
+    // Past-date logs don't change today's biometric context — skip the daily-recs regen.
+    if (!isPastDate && readiness && fitData) fetchAI();
 
     // Regenerate coaching brief in background
     if (currentProfileId) {

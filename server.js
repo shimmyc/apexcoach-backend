@@ -1427,14 +1427,37 @@ async function getWorkoutProfileId(wid) {
 
 app.post("/api/workouts", async function(req, res) {
   try {
+    var body = req.body || {};
+    // Validate optional date — must be YYYY-MM-DD and not in the future.
+    // Past dates are allowed so users can log a missed session.
+    if (body.date != null && body.date !== "") {
+      var dateStr = String(body.date);
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(dateStr)) {
+        return res.status(400).json({ success: false, error: "Invalid date format (expected YYYY-MM-DD)" });
+      }
+      var parsed = new Date(dateStr + "T12:00:00");
+      if (isNaN(parsed.getTime())) {
+        return res.status(400).json({ success: false, error: "Invalid date" });
+      }
+      var now = new Date();
+      var pad = function(n) { return String(n).padStart(2, "0"); };
+      var todayStr = now.getFullYear() + "-" + pad(now.getMonth() + 1) + "-" + pad(now.getDate());
+      if (dateStr > todayStr) {
+        return res.status(400).json({ success: false, error: "Cannot log workouts for future dates" });
+      }
+    }
     var r = await fetch(SUPABASE_URL + "/rest/v1/workouts", {
       method: "POST",
       headers: sbHeaders(),
-      body: JSON.stringify(req.body),
+      body: JSON.stringify(body),
     });
     var data = await r.json();
-    // Invalidate progress-brief cache — history changed. Fire-and-forget.
-    if (req.body && req.body.profile_id) clearProgressBriefCache(req.body.profile_id);
+    // Invalidate progress-brief cache — history changed (including past-date
+    // logs, since the 14-day pattern analysis covers any date inside the
+    // window). Daily-recommendations cache is intentionally NOT cleared here:
+    // a workout logged for a past date doesn't change today's biometric or
+    // schedule context.
+    if (body.profile_id) clearProgressBriefCache(body.profile_id);
     res.json({ success: true, workout: data });
   } catch (e) {
     res.status(500).json({ success: false, error: e.message });
@@ -1932,13 +1955,38 @@ var CANONICAL_NAMES = {
   'sit up': 'Sit-Up', 'sit ups': 'Sit-Up', 'situp': 'Sit-Up', 'situps': 'Sit-Up',
   'pull up': 'Pull-Up', 'pull ups': 'Pull-Up', 'pullup': 'Pull-Up', 'pullups': 'Pull-Up',
   'chin up': 'Chin-Up', 'chin ups': 'Chin-Up', 'chinup': 'Chin-Up', 'chinups': 'Chin-Up',
+  'hang': 'Dead Hang', 'hangs': 'Dead Hang', 'dead hang': 'Dead Hang', 'dead hangs': 'Dead Hang',
+  'hanging': 'Dead Hang', 'bar hang': 'Dead Hang', 'bar hangs': 'Dead Hang',
+  'passive hang': 'Dead Hang', 'passive hangs': 'Dead Hang',
 };
+
+// Try to extract a canonical exercise name from a free-text title (e.g. a
+// micro-goal title like "2-minute hang" or "Dead hang every day"). Used by
+// the auto-tracker so a goal can be scoped to a specific exercise even when
+// the user phrases it loosely. Returns null if nothing in the title matches
+// a known canonical alias.
+function extractCanonicalFromTitle(title) {
+  if (!title) return null;
+  var lower = String(title).toLowerCase();
+  if (CANONICAL_NAMES[lower]) return CANONICAL_NAMES[lower];
+  var tokens = lower.split(/[^a-z0-9-]+/).filter(function(t) { return t && t.length >= 3; });
+  // Multi-word combos first (so "dead hang" beats just "hang")
+  for (var i = 0; i < tokens.length - 1; i++) {
+    var combo = tokens[i] + ' ' + tokens[i + 1];
+    if (CANONICAL_NAMES[combo]) return CANONICAL_NAMES[combo];
+  }
+  for (var j = 0; j < tokens.length; j++) {
+    if (CANONICAL_NAMES[tokens[j]]) return CANONICAL_NAMES[tokens[j]];
+  }
+  return null;
+}
 
 var CATEGORY_OVERRIDES = {
   'Plank': 'strength', 'Crunch': 'strength', 'Sit-Up': 'strength', 'Leg Raise': 'strength',
   'Mountain Climber': 'strength', 'Dead Bug': 'rehab', 'Bird Dog': 'rehab',
   'Ab Wheel': 'strength', 'Russian Twist': 'strength', 'Windshield Wiper': 'strength',
   'Push-Up': 'strength', 'Pull-Up': 'strength', 'Chin-Up': 'strength', 'Dip': 'strength',
+  'Dead Hang': 'strength',
   'Burpee': 'cardio', 'Jumping Jack': 'cardio', 'Jump Rope': 'cardio',
   'Glute Bridge': 'rehab', 'Clamshell': 'rehab', 'Cat-Cow': 'rehab', 'Hip Flexor Stretch': 'rehab',
   'Foam Rolling': 'rehab', 'Foam Roll': 'rehab',
@@ -1958,6 +2006,7 @@ var SUBCATEGORY_MAP = {
   'Mountain Climber': 'core', 'Ab Wheel': 'core', 'Russian Twist': 'core', 'Windshield Wiper': 'core',
   'Dead Bug': 'physical therapy', 'Bird Dog': 'physical therapy',
   'Push-Up': 'upper body', 'Pull-Up': 'upper body', 'Chin-Up': 'upper body', 'Dip': 'upper body',
+  'Dead Hang': 'calisthenics',
   'Dumbbell Row': 'upper body', 'Bicep Curl': 'upper body', 'Bench Press': 'upper body', 'Overhead Press': 'upper body',
   'Squat': 'lower body', 'Lunge': 'lower body', 'Deadlift': 'lower body',
   'Burpee': 'hiit', 'Jumping Jack': 'hiit', 'Jump Rope': 'jump rope',
@@ -2739,6 +2788,46 @@ function mgStartOfWeekLocal(now) {
   return d;
 }
 
+// Parse a free-text exercise note for the longest duration mentioned, in
+// seconds. Handles common formats:
+//   "80 seconds", "80 sec", "80s"
+//   "1:20" (mm:ss)
+//   "2 min", "2 minutes", "2.5 min"
+// Returns 0 if nothing parseable is found. Used by strength_milestone goals
+// where the unit is time-based (e.g. "2-minute hang", target=120 seconds).
+function parseDurationToSeconds(text) {
+  if (!text) return 0;
+  var s = String(text).toLowerCase();
+  var max = 0;
+  // mm:ss — guard against years/timestamps by capping minutes at 999
+  var mmssRe = /(\d{1,3}):([0-5]\d)\b/g;
+  var m;
+  while ((m = mmssRe.exec(s)) !== null) {
+    var sec = parseInt(m[1], 10) * 60 + parseInt(m[2], 10);
+    if (sec > max) max = sec;
+  }
+  // "N seconds" / "N sec" / "N secs" / bare "Ns" only when preceded by a digit boundary
+  var secRe = /(\d+(?:\.\d+)?)\s*(?:seconds?|secs?)\b/g;
+  while ((m = secRe.exec(s)) !== null) {
+    var n = parseFloat(m[1]);
+    if (!isNaN(n) && n > max) max = n;
+  }
+  // "Ns" (e.g. "30s") — only when followed by space/end, to avoid hitting
+  // "60s music" or similar word boundaries
+  var sShortRe = /(?:^|[\s,])(\d+(?:\.\d+)?)s(?=$|[\s,.;])/g;
+  while ((m = sShortRe.exec(s)) !== null) {
+    var n2 = parseFloat(m[1]);
+    if (!isNaN(n2) && n2 > max) max = n2;
+  }
+  // "N minutes" / "N min" / "N mins"
+  var minRe = /(\d+(?:\.\d+)?)\s*(?:minutes?|mins?)\b/g;
+  while ((m = minRe.exec(s)) !== null) {
+    var nm = parseFloat(m[1]) * 60;
+    if (!isNaN(nm) && nm > max) max = nm;
+  }
+  return max;
+}
+
 function mgMatchesKeyword(haystack, needle) {
   if (!haystack || !needle) return false;
   var h = String(haystack).toLowerCase();
@@ -2747,6 +2836,24 @@ function mgMatchesKeyword(haystack, needle) {
   var tokens = n.split(/[^a-z0-9]+/).filter(function(t) { return t.length >= 3; });
   if (!tokens.length) return h.indexOf(n) >= 0;
   return tokens.some(function(t) { return h.indexOf(t) >= 0; });
+}
+
+// Canonical-aware exercise matcher used by the micro-goal auto-tracker. If
+// the goal title resolves to a known canonical exercise (e.g. "2-minute hang"
+// → "Dead Hang"), only exact canonical matches on the exercise name count —
+// this prevents loose token matches like "hanging" from leaking in. Falls
+// back to keyword matching when the title doesn't name a known exercise.
+function mgMatchesExercise(exName, title) {
+  if (!exName || !title) return false;
+  var canonical = extractCanonicalFromTitle(title);
+  if (canonical) {
+    var normEx = normalizeExerciseName(exName);
+    if (normEx === canonical) return true;
+    // Allow matches when the stored row is already the canonical name but
+    // the substring fallback would otherwise miss (e.g. row name "Dead Hang"
+    // vs goal title "Dead Hang every day").
+  }
+  return mgMatchesKeyword(exName, title);
 }
 
 async function computeMicroGoalProgress(goal, pid) {
@@ -2764,7 +2871,7 @@ async function computeMicroGoalProgress(goal, pid) {
       var rows = await r.json();
       var total = 0;
       (rows || []).forEach(function(e) {
-        if (!mgMatchesKeyword(e.name, title)) return;
+        if (!mgMatchesExercise(e.name, title)) return;
         if (targetUnit === 'minutes' || targetUnit === 'min' || targetUnit === 'mins') {
           total += Number(e.duration_minutes || 0);
         } else if (targetUnit === 'miles' || targetUnit === 'mi' || targetUnit === 'km') {
@@ -2790,14 +2897,31 @@ async function computeMicroGoalProgress(goal, pid) {
     }
 
     if (type === 'streak') {
-      var rs = await fetch(SUPABASE_URL + "/rest/v1/workouts?profile_id=eq." + pid + "&done=eq.true&order=date.desc&limit=90&select=date", { headers: sbHeaders() });
-      var srows = await rs.json();
-      var dates = new Set((srows || []).map(function(w) { return w.date; }));
+      // If the goal title names a specific exercise (e.g. "Dead hang every
+      // day"), scope the streak to days where that exercise was logged.
+      // Otherwise fall back to the legacy any-completed-workout streak.
+      var streakCanonical = extractCanonicalFromTitle(title);
+      var streakDates;
+      if (streakCanonical) {
+        var sxe = await fetch(SUPABASE_URL + "/rest/v1/exercises?profile_id=eq." + pid + "&order=date.desc&limit=2000&select=name,date", { headers: sbHeaders() });
+        var sxrows = await sxe.json();
+        streakDates = new Set();
+        (sxrows || []).forEach(function(e) {
+          if (mgMatchesExercise(e.name, title)) streakDates.add(e.date);
+        });
+      } else {
+        var rs = await fetch(SUPABASE_URL + "/rest/v1/workouts?profile_id=eq." + pid + "&done=eq.true&order=date.desc&limit=400&select=date", { headers: sbHeaders() });
+        var srows = await rs.json();
+        streakDates = new Set((srows || []).map(function(w) { return w.date; }));
+      }
       var streak = 0;
       var cursor = new Date(now);
       cursor.setHours(0, 0, 0, 0);
-      if (!dates.has(mgYmdLocal(cursor))) cursor.setDate(cursor.getDate() - 1);
-      while (dates.has(mgYmdLocal(cursor))) {
+      // Allow yesterday to start the streak so a user who hasn't logged today
+      // yet still sees their active streak. The streak BREAKS only when
+      // yesterday is also missing.
+      if (!streakDates.has(mgYmdLocal(cursor))) cursor.setDate(cursor.getDate() - 1);
+      while (streakDates.has(mgYmdLocal(cursor))) {
         streak++;
         cursor.setDate(cursor.getDate() - 1);
       }
@@ -2805,20 +2929,57 @@ async function computeMicroGoalProgress(goal, pid) {
     }
 
     if (type === 'daily_habit') {
+      // daily_habit is a simple cumulative day-counter ("X days completed").
+      // It has no target — the UI hides the target field — so streak logic
+      // belongs to the dedicated `streak` type instead. Use the canonical
+      // matcher so "did a hang" / "dead hangs" / "Dead Hang" all count.
       var afterClause2 = startDate ? '&date=gte.' + startDate : '';
-      var rh = await fetch(SUPABASE_URL + "/rest/v1/exercises?profile_id=eq." + pid + afterClause2 + "&select=name,date", { headers: sbHeaders() });
-      var hrows = await rh.json();
+      var rh2 = await fetch(SUPABASE_URL + "/rest/v1/exercises?profile_id=eq." + pid + afterClause2 + "&select=name,date", { headers: sbHeaders() });
+      var hrows2 = await rh2.json();
       var days = new Set();
-      (hrows || []).forEach(function(e) { if (mgMatchesKeyword(e.name, title)) days.add(e.date); });
+      (hrows2 || []).forEach(function(e) { if (mgMatchesExercise(e.name, title)) days.add(e.date); });
       return days.size;
     }
 
     if (type === 'strength_milestone') {
+      // Time-based milestones (e.g. "2-minute hang", target=120 seconds) need
+      // duration parsing rather than weight tracking. We scan duration_minutes
+      // AND raw_text/notes since users often describe hangs as "80 seconds"
+      // or "1:20" rather than entering a numeric duration_minutes value.
+      var unit = targetUnit;
+      var isTimeUnit = unit === 'seconds' || unit === 'sec' || unit === 'secs' || unit === 'second' ||
+                       unit === 'minutes' || unit === 'min' || unit === 'mins' || unit === 'minute';
+
+      if (isTimeUnit) {
+        // Don't filter by main_category — calisthenics/rehab hangs may be
+        // categorized differently from session to session.
+        var rmt = await fetch(SUPABASE_URL + "/rest/v1/exercises?profile_id=eq." + pid + "&select=name,duration_minutes,raw_text,notes", { headers: sbHeaders() });
+        var mtrows = await rmt.json();
+        var maxSec = 0;
+        (mtrows || []).forEach(function(e) {
+          if (!mgMatchesExercise(e.name, title)) return;
+          var dm = Number(e.duration_minutes || 0);
+          if (dm > 0) {
+            var dmSec = dm * 60;
+            if (dmSec > maxSec) maxSec = dmSec;
+          }
+          var rtSec = parseDurationToSeconds(e.raw_text || '');
+          if (rtSec > maxSec) maxSec = rtSec;
+          var ntSec = parseDurationToSeconds(e.notes || '');
+          if (ntSec > maxSec) maxSec = ntSec;
+        });
+        if (unit === 'minutes' || unit === 'min' || unit === 'mins' || unit === 'minute') {
+          return +(maxSec / 60).toFixed(2);
+        }
+        return Math.round(maxSec);
+      }
+
+      // Weight-based path (legacy)
       var rm = await fetch(SUPABASE_URL + "/rest/v1/exercises?profile_id=eq." + pid + "&main_category=eq.strength&select=name,weight_lbs", { headers: sbHeaders() });
       var mrows = await rm.json();
       var max = 0;
       (mrows || []).forEach(function(e) {
-        if (!mgMatchesKeyword(e.name, title)) return;
+        if (!mgMatchesExercise(e.name, title)) return;
         var wt = Number(e.weight_lbs || 0);
         if (wt > max) max = wt;
       });
@@ -2887,12 +3048,18 @@ app.post("/api/profiles/:id/micro-goals", async function(req, res) {
     }
     const validTypes = ['daily_habit','weekly_frequency','cumulative_volume','strength_milestone','skill_technique','streak','recovery_balance'];
     if (validTypes.indexOf(type) < 0) return res.status(400).json({ error: "invalid type" });
+    // daily_habit goals don't have a meaningful numeric target — force a
+    // sentinel target_value=1 server-side regardless of what the client sent.
+    // This makes the endpoint resilient to stale clients that still POST a
+    // user-entered target for daily_habit.
+    var resolvedTarget = type === 'daily_habit' ? 1 : Number(target_value);
+    var resolvedUnit = type === 'daily_habit' ? null : (body.target_unit ? String(body.target_unit).slice(0, 40).trim() : null);
     const payload = {
       profile_id: pid,
       title: String(title).slice(0, 200).trim(),
       type: type,
-      target_value: Number(target_value),
-      target_unit: body.target_unit ? String(body.target_unit).slice(0, 40).trim() : null,
+      target_value: resolvedTarget,
+      target_unit: resolvedUnit,
       period: body.period || 'custom',
       end_date: body.end_date || null,
       current_value: 0,
@@ -2934,6 +3101,13 @@ app.patch("/api/micro-goals/:id", async function(req, res) {
       if (req.body && req.body[k] !== undefined) payload[k] = req.body[k];
     }
     if (!Object.keys(payload).length) return res.status(400).json({ error: "nothing to update" });
+    // Belt-and-braces: if the goal is being saved as daily_habit, override
+    // target_value to 1 and target_unit to null so a stale client can't leave
+    // a stray target on it.
+    if (payload.type === 'daily_habit') {
+      payload.target_value = 1;
+      payload.target_unit = null;
+    }
     const r = await fetch(SUPABASE_URL + "/rest/v1/micro_goals?id=eq." + gid, {
       method: "PATCH",
       headers: sbHeaders("return=representation"),

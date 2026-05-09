@@ -715,6 +715,40 @@ The `/api/profiles/:id/extract-exercises` prompt has explicit data-integrity rul
 - `GET /api/profiles/:id/exercises/audit?name=...&min_weight=...&max_weight=...`
 - `DELETE /api/profiles/:id/exercises/:exerciseId`
 
+## Migrations
+
+One-time data fixes that should be run in the Supabase SQL editor.
+
+### Dead Hang canonicalization (2026-05-09)
+Existing exercises rows were inserted before "hang"/"hanging"/"dead hangs" were aliased to the canonical "Dead Hang" name. Re-canonicalize them in place so the micro-goal auto-tracker can match them.
+
+```sql
+UPDATE exercises
+SET name = 'Dead Hang'
+WHERE LOWER(name) IN ('hang', 'hangs', 'dead hang', 'dead hangs', 'hanging', 'bar hang', 'bar hangs', 'passive hang', 'passive hangs')
+AND profile_id = 1;
+```
+
+## Past-Date Workout Logging
+
+The Log Workout modal exposes a real `<input type="date">` (max=today) so users can log a missed session against any past date. Picking a past date shows a "Logging for [Day, Month Date] — this will be saved to that date" banner; today is the default.
+
+- **Server validation**: `POST /api/workouts` rejects malformed or future-dated `date` fields (400).
+- **Cache**: past-date saves invalidate `progress_brief` (the 14-day pattern analysis covers any date in window) but NOT `daily_recommendations` — a workout logged for a past date doesn't change today's biometric/schedule context. The client also skips its `fetchAI()` regen for past-date saves.
+- **History tab**: when viewing a past day with no entry, a "+ Log workout for this day" button opens the modal pre-set to that date.
+
+## Goal Check-in (Log Modal)
+
+The log modal renders an "Active Challenges" section listing every active, incomplete micro-goal. Each row's input mode depends on the goal type:
+
+- **daily_habit / streak** with a recognizable canonical exercise → "Mark as done" checkbox; toggling appends the canonical exercise name to the notes textarea so the existing extract-exercises pipeline picks it up and the auto-tracker increments the streak.
+- **strength_milestone** with unit `seconds`/`minutes` → numeric input ("My best today: ___ seconds"); appends `{Canonical} {N} {unit}`.
+- **strength_milestone** with weight unit (lbs etc.) → numeric input; appends `{Canonical} 1x1 @ {N}lbs`.
+- **cumulative_volume** with a recognizable canonical exercise → "+__ {unit} today" numeric input; appends `{Canonical} {N} {unit}`.
+- **weekly_frequency / recovery_balance / skill_technique** → info-only (auto-tracked or manual).
+
+The check-ins are merged into the notes textarea before the workout is saved, so they ride through the existing extract-exercises + auto-tracker flow. After save, `loadMicroGoals()` runs and `checkMicroGoalCompletions()` triggers `fireConfetti()` for any newly-completed goal.
+
 ## Maintenance Instructions
 
 This file should be kept up to date as the project evolves. After any significant change - new features, schema changes, new endpoints, formula updates, or architectural decisions - update the relevant section of this CLAUDE.md automatically as part of the commit. This way the file always reflects the current state of the project.
