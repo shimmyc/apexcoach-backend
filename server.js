@@ -3049,17 +3049,52 @@ async function computeMicroGoalProgress(goal, pid) {
   }
 }
 
-// Build the derived date-math block for a daily_habit goal: start_date,
-// days_elapsed (today - start, capped at total_goal_days if end_date set),
-// total_goal_days, and days_completed_pct = (current_value / days_elapsed)
-// * 100. Returned as a `progress` object on the goal so the client can
-// render without doing its own date math. Server is authoritative because
-// `created_at` is a UTC timestamp; the client doing the math would drift
-// for users east of UTC near midnight.
-function buildDailyHabitProgress(g) {
+// Build the derived date-math block for a daily_habit goal. Returned as a
+// `progress` object on the goal so the client can render without doing its
+// own date math. Server is authoritative because `created_at` is a UTC
+// timestamp; client-side math would drift for users near midnight.
+//
+// Effective start date = min(created_at::date, earliest matched session
+// date). Users routinely create a habit goal AFTER they've been doing the
+// activity for a while — anchoring start_date to the literal row creation
+// would make days_completed exceed days_elapsed (mathematically nonsense)
+// and force the percentage to cap at 100. Using the earlier of the two
+// makes "X / Y days" naturally read with completed ≤ elapsed.
+//
+// Returns: start_date, days_elapsed, total_goal_days, days_completed
+// (capped at days_elapsed), days_completed_pct (capped at 100), and
+// timeline_pct (days_elapsed / total_goal_days * 100, or null when there
+// is no end_date so the client can fall back to completion-% for the bar).
+async function buildDailyHabitProgress(g, pid) {
   if (!g || g.type !== 'daily_habit') return null;
   if (!g.created_at) return null;
-  var startDateStr = String(g.created_at).split('T')[0];
+  var createdDateStr = String(g.created_at).split('T')[0];
+
+  // Look up the earliest exercise row that matches this goal's title. The
+  // table is ordered ascending so the first match is the earliest. We only
+  // need the very first match — break out of the loop on hit.
+  var earliestSessionDate = null;
+  try {
+    var exR = await fetch(SUPABASE_URL + "/rest/v1/exercises?profile_id=eq." + pid +
+      "&select=name,date&order=date.asc&limit=5000", { headers: sbHeaders() });
+    var exRows = await exR.json();
+    if (Array.isArray(exRows)) {
+      for (var i = 0; i < exRows.length; i++) {
+        if (exRows[i].date && mgMatchesExercise(exRows[i].name, g.title || '')) {
+          earliestSessionDate = exRows[i].date;
+          break;
+        }
+      }
+    }
+  } catch (e) {
+    // best-effort lookup — fall back to created_at on failure
+  }
+
+  var startDateStr = createdDateStr;
+  if (earliestSessionDate && earliestSessionDate < createdDateStr) {
+    startDateStr = earliestSessionDate;
+  }
+
   var startDate = new Date(startDateStr + 'T00:00:00Z');
   var today = new Date();
   var todayStr = mgYmdLocal(today);
@@ -3075,16 +3110,27 @@ function buildDailyHabitProgress(g) {
     if (span >= 1) totalGoalDays = span;
   }
   var daysElapsed = (totalGoalDays != null) ? Math.min(rawElapsed, totalGoalDays) : rawElapsed;
-  var daysCompleted = Number(g.current_value || 0);
+  var daysCompletedRaw = Number(g.current_value || 0);
+  // Cap completed at elapsed. With the earliest-session anchor above this
+  // should rarely trigger, but it guards the display against any future
+  // edge case where the matcher returns a count > elapsed.
+  var daysCompleted = Math.min(daysCompletedRaw, daysElapsed);
   var pct = daysElapsed > 0 ? Math.round((daysCompleted / daysElapsed) * 100) : 0;
   if (pct > 100) pct = 100;
   if (pct < 0) pct = 0;
+  var timelinePct = null;
+  if (totalGoalDays != null && totalGoalDays > 0) {
+    timelinePct = Math.round((daysElapsed / totalGoalDays) * 100);
+    if (timelinePct > 100) timelinePct = 100;
+    if (timelinePct < 0) timelinePct = 0;
+  }
   return {
     start_date: startDateStr,
     days_elapsed: daysElapsed,
     total_goal_days: totalGoalDays,
     days_completed: daysCompleted,
-    days_completed_pct: pct
+    days_completed_pct: pct,
+    timeline_pct: timelinePct
   };
 }
 
@@ -3112,7 +3158,7 @@ app.get("/api/profiles/:id/micro-goals", async function(req, res) {
       // Attach derived date-math for daily_habit cards. Server-computed so
       // the client doesn't have to reason about created_at UTC drift.
       if (g.type === 'daily_habit') {
-        g.progress = buildDailyHabitProgress(g);
+        g.progress = await buildDailyHabitProgress(g, pid);
       }
     }
     if (updates.length) await Promise.all(updates);

@@ -4360,16 +4360,25 @@ function renderProfileChallenges() {
     html += '<button onclick="deleteMicroGoal(\'' + attrEsc(g.id) + '\')" title="Delete" style="background:transparent;border:none;color:var(--text-dim);cursor:pointer;font-size:14px;padding:4px">&#128465;</button>';
     html += '</div>';
     html += '</div>';
-    // daily_habit now shows X/Y days completion + percentage with tier
-    // coloring. Server supplies all the date math via g.progress so the
-    // client doesn't have to reason about UTC drift on created_at.
+    // daily_habit: server-supplied date math via g.progress.
+    //   - Left label: "<completed> / <elapsed> days [(of <total> total)]"
+    //   - Bar WIDTH: timeline_pct (days_elapsed / total_goal_days), so the
+    //     bar fills as the goal window passes — independent of how many
+    //     days were actually hit. Falls back to completion-pct when the
+    //     goal is open-ended (no end_date / total).
+    //   - Bar COLOR + right-side label: completion-pct (days_completed /
+    //     days_elapsed) tiered 85+/65-84/<65, capped at 100. Server caps
+    //     completed at elapsed so the value can never overshoot.
     if (g.type === 'daily_habit') {
       var p = g.progress || {};
       var dhPct = Number(p.days_completed_pct || 0);
       var dhColor = dailyHabitTierColor(dhPct);
-      var dcompleted = Number(p.days_completed || cur || 0);
+      var dcompleted = Number(p.days_completed != null ? p.days_completed : (cur || 0));
       var delapsed = Number(p.days_elapsed || 0);
       var dtotal = p.total_goal_days;
+      var barWidth = (p.timeline_pct != null) ? Number(p.timeline_pct) : dhPct;
+      if (barWidth > 100) barWidth = 100;
+      if (barWidth < 0) barWidth = 0;
       var label;
       if (delapsed > 0) {
         label = dcompleted + ' / ' + delapsed + ' days';
@@ -4377,7 +4386,7 @@ function renderProfileChallenges() {
       } else {
         label = formatMgProgressLabel(g);
       }
-      html += '<div class="bar-track" style="height:6px;margin-top:8px"><div class="bar-fill" style="width:' + Math.min(100, dhPct) + '%;background:' + dhColor + '"></div></div>';
+      html += '<div class="bar-track" style="height:6px;margin-top:8px"><div class="bar-fill" style="width:' + barWidth + '%;background:' + dhColor + '"></div></div>';
       html += '<div style="display:flex;justify-content:space-between;align-items:center;margin-top:4px">';
       html += '<span class="mono" style="font-size:11px;color:var(--text-muted)">' + label + '</span>';
       html += '<span class="mono" style="font-size:11px;color:' + dhColor + ';font-weight:700">' + dhPct + '%</span>';
