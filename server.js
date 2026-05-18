@@ -3143,6 +3143,9 @@ app.get("/api/profiles/:id/micro-goals", async function(req, res) {
     const rows = await r.json();
     const goals = Array.isArray(rows) ? rows : [];
     const updates = [];
+    // Single stamp for this GET so all cards share the same "computed at"
+    // moment — lets the client render a consistent "Updated just now" line.
+    const computedAt = new Date().toISOString();
     for (let i = 0; i < goals.length; i++) {
       const g = goals[i];
       if (!g.is_active) continue;
@@ -3160,6 +3163,10 @@ app.get("/api/profiles/:id/micro-goals", async function(req, res) {
       if (g.type === 'daily_habit') {
         g.progress = await buildDailyHabitProgress(g, pid);
       }
+      // Mark each active goal with the moment its current_value was
+      // (re)computed on this request. Set unconditionally — we ran the
+      // compute either way, even when the result equaled the stored value.
+      g.last_computed_at = computedAt;
     }
     if (updates.length) await Promise.all(updates);
     res.json({ success: true, micro_goals: goals });

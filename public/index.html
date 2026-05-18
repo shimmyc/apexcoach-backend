@@ -4310,6 +4310,28 @@ function dailyHabitTierColor(pct) {
   return '#e84545';
 }
 
+// "Updated 2m ago" / "Updated just now" — used on the Active Challenges
+// cards to make it visually obvious whether the server recomputed
+// current_value on this page load. A fresh GET stamps last_computed_at to
+// now() and this line should always read "just now" right after a reload;
+// if it shows minutes/hours, the cards are being rendered from stale
+// memory rather than a fresh fetch.
+function formatRelativeTimeAgo(iso) {
+  if (!iso) return '';
+  var then = new Date(iso).getTime();
+  if (isNaN(then)) return '';
+  var diff = Math.max(0, Date.now() - then);
+  var s = Math.floor(diff / 1000);
+  if (s < 10) return 'just now';
+  if (s < 60) return s + 's ago';
+  var m = Math.floor(s / 60);
+  if (m < 60) return m + 'm ago';
+  var h = Math.floor(m / 60);
+  if (h < 24) return h + 'h ago';
+  var d = Math.floor(h / 24);
+  return d + 'd ago';
+}
+
 // "2026-04-12" → "Apr 12, 2026". Uses Date.UTC so the YYYY-MM-DD string is
 // interpreted as a wall-clock date, not a UTC midnight that could shift one
 // day west in negative-offset timezones.
@@ -4397,6 +4419,13 @@ function renderProfileChallenges() {
       html += '<span class="mono" style="font-size:11px;color:var(--text-muted)">' + formatMgProgressLabel(g) + '</span>';
       html += '<span class="mono" style="font-size:11px;color:' + barColor + ';font-weight:700">' + pct + '%</span>';
       html += '</div>';
+    }
+    // Last-computed stamp — server sets g.last_computed_at to now() on
+    // every GET so this should always read "just now" right after a
+    // page load. If it shows minutes/hours, the card is rendering from
+    // stale memory rather than a fresh fetch.
+    if (g.last_computed_at) {
+      html += '<div class="mono" style="font-size:9px;color:var(--text-dim);letter-spacing:1px;margin-top:6px;text-align:right" title="' + attrEsc(g.last_computed_at) + '">Updated ' + escHtml(formatRelativeTimeAgo(g.last_computed_at)) + '</div>';
     }
     html += '</div>';
   }
