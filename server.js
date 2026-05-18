@@ -2793,15 +2793,24 @@ function mgStartOfWeekLocal(now) {
 //   "80 seconds", "80 sec", "80s"
 //   "1:20" (mm:ss)
 //   "2 min", "2 minutes", "2.5 min"
+//   "1 min 42 sec", "1m 42s" (combined — summed, not max'd)
 // Returns 0 if nothing parseable is found. Used by strength_milestone goals
 // where the unit is time-based (e.g. "2-minute hang", target=120 seconds).
 function parseDurationToSeconds(text) {
   if (!text) return 0;
   var s = String(text).toLowerCase();
   var max = 0;
+  var m;
+  // Combined "X min Y sec" / "Xm Ys" — handle BEFORE the standalone patterns
+  // so taking the max across patterns doesn't miss the sum (e.g. "1 min 42
+  // sec" would otherwise return max(60, 42) = 60 instead of 102).
+  var combinedRe = /(\d+(?:\.\d+)?)\s*(?:minutes?|mins?|m)\s*(?:and\s+)?(\d+(?:\.\d+)?)\s*(?:seconds?|secs?|s)\b/g;
+  while ((m = combinedRe.exec(s)) !== null) {
+    var combo = parseFloat(m[1]) * 60 + parseFloat(m[2]);
+    if (!isNaN(combo) && combo > max) max = combo;
+  }
   // mm:ss — guard against years/timestamps by capping minutes at 999
   var mmssRe = /(\d{1,3}):([0-5]\d)\b/g;
-  var m;
   while ((m = mmssRe.exec(s)) !== null) {
     var sec = parseInt(m[1], 10) * 60 + parseInt(m[2], 10);
     if (sec > max) max = sec;
@@ -2822,8 +2831,8 @@ function parseDurationToSeconds(text) {
     var n2 = parseFloat(m[1]);
     if (!isNaN(n2) && n2 > max) max = n2;
   }
-  // "N minutes" / "N min" / "N mins"
-  var minRe = /(\d+(?:\.\d+)?)\s*(?:minutes?|mins?)\b/g;
+  // "N minutes" / "N min" / "N mins" — also "N-min" (hyphenated) like "2-min hang"
+  var minRe = /(\d+(?:\.\d+)?)[\s-]*(?:minutes?|mins?)\b/g;
   while ((m = minRe.exec(s)) !== null) {
     var nm = parseFloat(m[1]) * 60;
     if (!isNaN(nm) && nm > max) max = nm;
@@ -2843,18 +2852,15 @@ function mgMatchesKeyword(haystack, needle) {
 
 // Canonical-aware exercise matcher used by the micro-goal auto-tracker. If
 // the goal title resolves to a known canonical exercise (e.g. "2-minute hang"
-// → "Dead Hang"), only exact canonical matches on the exercise name count —
-// this prevents loose token matches like "hanging" from leaking in. Falls
-// back to keyword matching when the title doesn't name a known exercise.
+// → "Dead Hang"), require an EXACT canonical match — no keyword fallback.
+// The fallback was producing false positives like "Hanging Leg Raise" being
+// counted as a "Dead Hang" via the shared "hang" token, which inflated some
+// goals and broke others when row names contained shared substrings.
 function mgMatchesExercise(exName, title) {
   if (!exName || !title) return false;
   var canonical = extractCanonicalFromTitle(title);
   if (canonical) {
-    var normEx = normalizeExerciseName(exName);
-    if (normEx === canonical) return true;
-    // Allow matches when the stored row is already the canonical name but
-    // the substring fallback would otherwise miss (e.g. row name "Dead Hang"
-    // vs goal title "Dead Hang every day").
+    return normalizeExerciseName(exName) === canonical;
   }
   return mgMatchesKeyword(exName, title);
 }
@@ -2936,11 +2942,16 @@ async function computeMicroGoalProgress(goal, pid) {
       // It has no target — the UI hides the target field — so streak logic
       // belongs to the dedicated `streak` type instead. Use the canonical
       // matcher so "did a hang" / "dead hangs" / "Dead Hang" all count.
-      var afterClause2 = startDate ? '&date=gte.' + startDate : '';
-      var rh2 = await fetch(SUPABASE_URL + "/rest/v1/exercises?profile_id=eq." + pid + afterClause2 + "&select=name,date", { headers: sbHeaders() });
+      //
+      // No date filter: every logged session should register, including any
+      // logged on the same calendar day as goal creation (created_at is a UTC
+      // timestamp; clipping by it dropped same-day-but-earlier rows for users
+      // east of UTC) and any past-date workouts the user later log-corrected.
+      // De-dup is per (exercise, calendar date) via the Set below.
+      var rh2 = await fetch(SUPABASE_URL + "/rest/v1/exercises?profile_id=eq." + pid + "&select=name,date&order=date.desc&limit=5000", { headers: sbHeaders() });
       var hrows2 = await rh2.json();
       var days = new Set();
-      (hrows2 || []).forEach(function(e) { if (mgMatchesExercise(e.name, title)) days.add(e.date); });
+      (hrows2 || []).forEach(function(e) { if (e.date && mgMatchesExercise(e.name, title)) days.add(e.date); });
       return days.size;
     }
 
@@ -2955,21 +2966,30 @@ async function computeMicroGoalProgress(goal, pid) {
 
       if (isTimeUnit) {
         // Don't filter by main_category — calisthenics/rehab hangs may be
-        // categorized differently from session to session.
-        var rmt = await fetch(SUPABASE_URL + "/rest/v1/exercises?profile_id=eq." + pid + "&select=name,duration_minutes,raw_text,notes", { headers: sbHeaders() });
+        // categorized differently from session to session. Order by date desc
+        // and use a wide limit so older rows don't get clipped off by the
+        // default 1000-row PostgREST cap.
+        var rmt = await fetch(SUPABASE_URL + "/rest/v1/exercises?profile_id=eq." + pid + "&select=name,duration_minutes,raw_text,notes&order=date.desc&limit=5000", { headers: sbHeaders() });
         var mtrows = await rmt.json();
         var maxSec = 0;
         (mtrows || []).forEach(function(e) {
           if (!mgMatchesExercise(e.name, title)) return;
+          // Prefer parsed raw_text/notes — they preserve the user's literal
+          // entry ("1:42", "1 min 42 sec") and are immune to the AI extractor
+          // occasionally writing the seconds value into duration_minutes.
+          var rtSec = parseDurationToSeconds(e.raw_text || '');
+          var ntSec = parseDurationToSeconds(e.notes || '');
+          var parsed = Math.max(rtSec, ntSec);
+          if (parsed > 0) {
+            if (parsed > maxSec) maxSec = parsed;
+            return;
+          }
+          // Fallback: trust duration_minutes only when no text-parse succeeded.
           var dm = Number(e.duration_minutes || 0);
           if (dm > 0) {
             var dmSec = dm * 60;
             if (dmSec > maxSec) maxSec = dmSec;
           }
-          var rtSec = parseDurationToSeconds(e.raw_text || '');
-          if (rtSec > maxSec) maxSec = rtSec;
-          var ntSec = parseDurationToSeconds(e.notes || '');
-          if (ntSec > maxSec) maxSec = ntSec;
         });
         if (unit === 'minutes' || unit === 'min' || unit === 'mins' || unit === 'minute') {
           return +(maxSec / 60).toFixed(2);

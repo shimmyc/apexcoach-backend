@@ -864,7 +864,7 @@ input[type=range]{width:100%;accent-color:var(--accent)}
     <div id="mg-target-row" style="display:flex;gap:8px;margin-bottom:14px">
       <div style="flex:1">
         <p class="mono" style="font-size:10px;color:var(--text-dim);letter-spacing:2px;margin-bottom:6px">TARGET</p>
-        <input id="mg-target-value" type="number" step="any" min="0" placeholder="1000" style="width:100%;background:var(--bg-input);border:1px solid var(--border);color:var(--text);padding:11px 14px;border-radius:6px;font-size:14px;outline:none;font-family:'DM Sans',sans-serif">
+        <input id="mg-target-value" type="text" inputmode="decimal" placeholder="1000 or 1:42" style="width:100%;background:var(--bg-input);border:1px solid var(--border);color:var(--text);padding:11px 14px;border-radius:6px;font-size:14px;outline:none;font-family:'DM Sans',sans-serif">
       </div>
       <div style="flex:1">
         <p class="mono" style="font-size:10px;color:var(--text-dim);letter-spacing:2px;margin-bottom:6px">UNIT</p>
@@ -4240,10 +4240,50 @@ function mgIsComplete(g) {
   return Number(g.current_value || 0) >= Number(g.target_value || 0) && Number(g.target_value || 0) > 0;
 }
 
+// Time helpers — duration is stored internally as seconds; M:SS is the
+// canonical display format across challenges, AI prompt context, and inputs.
+function isMinutesUnit(unit) {
+  var u = String(unit || '').toLowerCase();
+  return u === 'minutes' || u === 'min' || u === 'mins' || u === 'minute';
+}
+function isSecondsUnit(unit) {
+  var u = String(unit || '').toLowerCase();
+  return u === 'seconds' || u === 'sec' || u === 'secs' || u === 'second';
+}
+function isTimeUnit(unit) { return isMinutesUnit(unit) || isSecondsUnit(unit); }
+
+// Convert a stored micro-goal numeric value to seconds based on its unit.
+function mgValueToSeconds(value, unit) {
+  var v = Number(value || 0);
+  return isMinutesUnit(unit) ? v * 60 : v;
+}
+
+// Format an integer number of seconds as M:SS ("102" → "1:42", "60" → "1:00",
+// "5" → "0:05"). Negative or non-finite values render as "0:00".
+function formatMmSs(seconds) {
+  var s = Math.max(0, Math.round(Number(seconds) || 0));
+  var m = Math.floor(s / 60);
+  var ss = s % 60;
+  return m + ':' + (ss < 10 ? '0' : '') + ss;
+}
+
+// Parse "1:42" / "1" / "" into total seconds. Returns NaN if blank/unparseable.
+// Used for target-value input in the goal modal so users can type either a
+// plain number or M:SS.
+function parseMmSsToSeconds(text) {
+  if (text == null) return NaN;
+  var s = String(text).trim();
+  if (!s) return NaN;
+  var mm = s.match(/^(\d+):([0-5]?\d)$/);
+  if (mm) return parseInt(mm[1], 10) * 60 + parseInt(mm[2], 10);
+  var n = parseFloat(s);
+  return isNaN(n) ? NaN : n;
+}
+
 // Format the bottom-line "X / Y unit" label for a micro-goal, honoring the
 // goal type. daily_habit shows just "X days completed" (no target), and
-// strength_milestone shows "Best: Xs / Ys" so users see it as a personal
-// best rather than a running sum.
+// strength_milestone shows "Best: M:SS / M:SS" for time-based goals or
+// "Best: X / Y unit" for weight-based goals.
 function formatMgProgressLabel(g) {
   var cur = Number(g.current_value || 0);
   var tgt = Number(g.target_value || 0);
@@ -4252,10 +4292,9 @@ function formatMgProgressLabel(g) {
     return cur + (cur === 1 ? ' day' : ' days') + ' completed';
   }
   if (g.type === 'strength_milestone') {
-    var isSec = unit === 'seconds' || unit === 'sec' || unit === 'secs' || unit === 'second';
-    var isMin = unit === 'minutes' || unit === 'min' || unit === 'mins' || unit === 'minute';
-    if (isSec) return 'Best: ' + Math.round(cur) + 's / ' + Math.round(tgt) + 's';
-    if (isMin) return 'Best: ' + (+cur).toFixed(1) + 'min / ' + (+tgt).toFixed(1) + 'min';
+    if (isTimeUnit(unit)) {
+      return 'Best: ' + formatMmSs(mgValueToSeconds(cur, unit)) + ' / ' + formatMmSs(mgValueToSeconds(tgt, unit));
+    }
     var wu = unit || 'lbs';
     return 'Best: ' + cur + wu + ' / ' + tgt + wu;
   }
@@ -4332,7 +4371,17 @@ function openMicroGoalModal(id) {
     }
   }
   document.getElementById('mg-title').value = g ? (g.title || '') : '';
-  document.getElementById('mg-target-value').value = g ? (g.target_value != null ? g.target_value : '') : '';
+  // Time-based personal-best goals display target as M:SS (seconds is canonical
+  // storage; minutes-unit legacy goals are converted up for the display).
+  var initialTargetDisplay = '';
+  if (g && g.target_value != null) {
+    if (g.type === 'strength_milestone' && isTimeUnit(g.target_unit)) {
+      initialTargetDisplay = formatMmSs(mgValueToSeconds(g.target_value, g.target_unit));
+    } else {
+      initialTargetDisplay = g.target_value;
+    }
+  }
+  document.getElementById('mg-target-value').value = initialTargetDisplay;
   document.getElementById('mg-target-unit').value = g ? (g.target_unit || '') : '';
   selectMicroGoalType(g ? g.type : null);
   selectMicroGoalPeriod(g ? (g.period || (g.end_date ? 'custom' : 'daily')) : null);
@@ -4399,16 +4448,40 @@ function saveMicroGoalFromModal() {
   // daily_habit has no numeric target — it's a yes/no daily check. Force a
   // sentinel target=1 so server-side validation (target_value > 0) passes;
   // the UI never shows this value back to the user.
+  // strength_milestone with a time-based unit: accept M:SS or a bare number,
+  // then normalize the unit to "seconds" so the stored target is canonical
+  // and the auto-tracker's max comparison is unambiguous.
+  var resolvedTarget = null;
+  var resolvedUnit = targetUnit || null;
   if (type !== 'daily_habit') {
-    if (targetValue === '' || isNaN(Number(targetValue)) || Number(targetValue) <= 0) { errEl.textContent = 'Target value must be a positive number.'; return; }
+    if (type === 'strength_milestone' && isTimeUnit(targetUnit)) {
+      var parsedTarget = parseMmSsToSeconds(targetValue);
+      // If the user typed M:SS, the result is already seconds. If they typed
+      // a plain number, interpret it through the unit they selected so legacy
+      // "2 minutes" entries still mean 120 seconds.
+      if (isNaN(parsedTarget) || parsedTarget <= 0) {
+        errEl.textContent = 'Target must be a positive number or M:SS (e.g. 1:42).';
+        return;
+      }
+      var hadColon = String(targetValue).indexOf(':') >= 0;
+      var targetSec = hadColon ? parsedTarget : (isMinutesUnit(targetUnit) ? parsedTarget * 60 : parsedTarget);
+      resolvedTarget = targetSec;
+      resolvedUnit = 'seconds';
+    } else {
+      if (targetValue === '' || isNaN(Number(targetValue)) || Number(targetValue) <= 0) {
+        errEl.textContent = 'Target value must be a positive number.';
+        return;
+      }
+      resolvedTarget = Number(targetValue);
+    }
   }
   if (period === 'custom' && !endDate) { errEl.textContent = 'Pick an end date or choose a different period.'; return; }
 
   var payload = {
     title: title,
     type: type,
-    target_value: type === 'daily_habit' ? 1 : Number(targetValue),
-    target_unit: type === 'daily_habit' ? null : (targetUnit || null),
+    target_value: type === 'daily_habit' ? 1 : resolvedTarget,
+    target_unit: type === 'daily_habit' ? null : resolvedUnit,
     period: period,
     end_date: period === 'custom' ? endDate : null
   };
@@ -4637,8 +4710,7 @@ function renderGoalCheckin() {
     var id = String(g.id);
     var unit = (g.target_unit || '').toLowerCase();
     var canonical = mgClientCanonicalFromTitle(g.title);
-    var isTimeUnit = unit === 'seconds' || unit === 'sec' || unit === 'secs' ||
-                     unit === 'minutes' || unit === 'min' || unit === 'mins';
+    var rowIsTimeUnit = isTimeUnit(unit);
     html += '<div class="mg-checkin-row" data-mg-id="' + attrEsc(id) + '" data-mg-type="' + attrEsc(g.type) + '" data-mg-canonical="' + attrEsc(canonical || '') + '" data-mg-unit="' + attrEsc(g.target_unit || '') + '"';
     html += ' style="display:flex;align-items:center;gap:8px;padding:6px 0;border-bottom:1px solid var(--accent-33);font-size:13px">';
     html += '<div style="flex:1;min-width:0">';
@@ -4658,11 +4730,22 @@ function renderGoalCheckin() {
         html += '<span class="mono" style="font-size:10px;color:var(--text-dim);flex-shrink:0">auto-tracked</span>';
       }
     } else if (g.type === 'strength_milestone') {
-      var ph = isTimeUnit ? (unit === 'minutes' || unit === 'min' || unit === 'mins' ? 'min' : 'sec') : (unit || 'lbs');
-      html += '<div style="display:flex;align-items:center;gap:6px;flex-shrink:0">';
-      html += '<input type="number" class="mg-checkin-value" min="0" step="any" placeholder="best" style="width:70px;background:var(--bg-input);border:1px solid var(--border);color:var(--text);padding:5px 8px;border-radius:4px;font-size:12px;outline:none">';
-      html += '<span style="font-size:11px;color:var(--text-dim)">' + escHtml(ph) + '</span>';
-      html += '</div>';
+      if (rowIsTimeUnit) {
+        // M:SS entry — two fields keep parsing unambiguous on mobile. Seconds
+        // is the canonical storage unit, so on save the appended notes line
+        // is computed as min*60 + sec.
+        html += '<div style="display:flex;align-items:center;gap:4px;flex-shrink:0">';
+        html += '<input type="number" class="mg-checkin-min" min="0" max="59" step="1" placeholder="m" style="width:46px;background:var(--bg-input);border:1px solid var(--border);color:var(--text);padding:5px 6px;border-radius:4px;font-size:12px;outline:none;text-align:center">';
+        html += '<span style="font-size:13px;color:var(--text-dim);font-weight:600">:</span>';
+        html += '<input type="number" class="mg-checkin-sec" min="0" max="59" step="1" placeholder="ss" style="width:46px;background:var(--bg-input);border:1px solid var(--border);color:var(--text);padding:5px 6px;border-radius:4px;font-size:12px;outline:none;text-align:center">';
+        html += '</div>';
+      } else {
+        var ph = unit || 'lbs';
+        html += '<div style="display:flex;align-items:center;gap:6px;flex-shrink:0">';
+        html += '<input type="number" class="mg-checkin-value" min="0" step="any" placeholder="best" style="width:70px;background:var(--bg-input);border:1px solid var(--border);color:var(--text);padding:5px 8px;border-radius:4px;font-size:12px;outline:none">';
+        html += '<span style="font-size:11px;color:var(--text-dim)">' + escHtml(ph) + '</span>';
+        html += '</div>';
+      }
     } else if (g.type === 'cumulative_volume') {
       if (canonical) {
         var vu = unit || 'reps';
@@ -4709,16 +4792,25 @@ function applyGoalCheckinsToNotes(rawNotes) {
         line = canonical;
       }
     } else if (type === 'strength_milestone') {
-      var valEl = row.querySelector('.mg-checkin-value');
-      var v = valEl && valEl.value ? parseFloat(valEl.value) : NaN;
-      if (!isNaN(v) && v > 0) {
-        var label = canonical || row.querySelector('div div').textContent.trim();
-        var isTime = unit === 'seconds' || unit === 'sec' || unit === 'secs' ||
-                     unit === 'minutes' || unit === 'min' || unit === 'mins';
-        if (isTime) {
-          var unitWord = (unit === 'minutes' || unit === 'min' || unit === 'mins') ? 'minutes' : 'seconds';
-          line = label + ' ' + v + ' ' + unitWord;
-        } else {
+      var label = canonical || row.querySelector('div div').textContent.trim();
+      if (isTimeUnit(unit)) {
+        // Two-field M:SS entry — sum into total seconds and write in MM:SS
+        // form so the server-side parseDurationToSeconds gets an unambiguous
+        // value regardless of how the AI extractor maps the substring.
+        var minEl = row.querySelector('.mg-checkin-min');
+        var secEl = row.querySelector('.mg-checkin-sec');
+        var minVal = minEl && minEl.value !== '' ? parseInt(minEl.value, 10) : 0;
+        var secVal = secEl && secEl.value !== '' ? parseInt(secEl.value, 10) : 0;
+        if (isNaN(minVal)) minVal = 0;
+        if (isNaN(secVal)) secVal = 0;
+        var totalSec = minVal * 60 + secVal;
+        if (totalSec > 0) {
+          line = label + ' ' + formatMmSs(totalSec) + ' (' + totalSec + ' seconds)';
+        }
+      } else {
+        var valEl = row.querySelector('.mg-checkin-value');
+        var v = valEl && valEl.value ? parseFloat(valEl.value) : NaN;
+        if (!isNaN(v) && v > 0) {
           // Default to weight-style entry so extract-exercises catches it.
           line = label + ' 1x1 @ ' + v + (unit ? unit : 'lbs');
         }
@@ -5046,7 +5138,12 @@ function buildMicroGoalsPromptContext() {
     var unit = g.target_unit || '';
     var remaining = Math.max(0, tgt - cur);
     var daysLeft = mgDaysRemaining(g);
-    var line = '- "' + g.title + '" [' + (MG_TYPE_LABEL[g.type] || g.type) + ']: ' + cur + '/' + tgt + (unit ? ' ' + unit : '');
+    var line;
+    if (g.type === 'strength_milestone' && isTimeUnit(unit)) {
+      line = '- "' + g.title + '" [' + (MG_TYPE_LABEL[g.type] || g.type) + ']: ' + formatMmSs(mgValueToSeconds(cur, unit)) + ' / ' + formatMmSs(mgValueToSeconds(tgt, unit)) + ' (M:SS)';
+    } else {
+      line = '- "' + g.title + '" [' + (MG_TYPE_LABEL[g.type] || g.type) + ']: ' + cur + '/' + tgt + (unit ? ' ' + unit : '');
+    }
     if (daysLeft != null) line += ' — ' + (daysLeft < 0 ? 'past deadline' : daysLeft + ' days left');
 
     if (g.type === 'daily_habit') {
@@ -5067,7 +5164,13 @@ function buildMicroGoalsPromptContext() {
         instructions.push('Cumulative volume "' + g.title + '": ' + remaining + (unit ? ' ' + unit : '') + ' remaining, no deadline — feature it in at least one option with specific rep counts; reference it briefly in others.');
       }
     } else if (g.type === 'strength_milestone') {
-      instructions.push('Strength milestone "' + g.title + '" (target: ' + tgt + (unit ? ' ' + unit : '') + ', current PR: ' + cur + (unit ? ' ' + unit : '') + '): when readiness allows, include progressive overload work on this lift — small, safe jumps toward the target weight.');
+      if (isTimeUnit(unit)) {
+        var tgtDisplay = formatMmSs(mgValueToSeconds(tgt, unit));
+        var curDisplay = formatMmSs(mgValueToSeconds(cur, unit));
+        instructions.push('Strength milestone "' + g.title + '" (target: ' + tgtDisplay + ', current PR: ' + curDisplay + '): when readiness allows, include progressive overload work on this hold — small, safe jumps toward the target duration.');
+      } else {
+        instructions.push('Strength milestone "' + g.title + '" (target: ' + tgt + (unit ? ' ' + unit : '') + ', current PR: ' + cur + (unit ? ' ' + unit : '') + '): when readiness allows, include progressive overload work on this lift — small, safe jumps toward the target weight.');
+      }
     } else if (g.type === 'streak') {
       instructions.push('Streak "' + g.title + '" (current: ' + cur + ', target: ' + tgt + '): if the athlete has not logged a workout yet today, explicitly flag that today\'s session keeps the streak alive. If already done, reinforce.');
     } else if (g.type === 'recovery_balance') {
