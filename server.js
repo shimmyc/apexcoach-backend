@@ -2062,7 +2062,7 @@ app.post("/api/profiles/:id/extract-exercises", async function(req, res) {
 
     console.log("[extract-exercises] Processing notes for profile " + profileId + ": " + body.notes.substring(0, 100) + "...");
 
-    var prompt = "STRICT RULE: Only extract exercises that are explicitly named in the raw text. Never infer, assume, or hallucinate exercises or weights that are not clearly stated. If a weight is ambiguous or missing, omit weight_lbs entirely. Do not extract stretches, mobility work, or warm-ups as weighted exercises unless they explicitly include sets, reps, and weight.\n\nExtract all exercises from these workout notes. For each exercise identify: name (normalized), category (one of: strength/combat/cardio/mobility/rehab/core/other), sets (number or null), reps (number or null), weight_lbs (number or null), distance_miles (number or null), duration_minutes (number or null), raw_text (original text snippet).\n\nCATEGORY GUIDE:\n- strength: weightlifting, resistance, dumbbell/barbell work, push-up, pull-up, dip, squat, lunge, row\n- combat: MMA, boxing, sparring, martial arts, kicks, grappling, BJJ, pad work\n- cardio: running, elliptical, jumping jacks, cycling, rowing, burpee, jump rope\n- mobility: stretching, yoga, flexibility work\n- rehab: PT exercises, injury rehab, therapeutic (glute bridge, clamshell, cat-cow, hip flexor stretch)\n- core: plank, crunch, sit-up, leg raise, dead bug, bird dog, mountain climber, ab wheel, russian twist, windshield wiper - these are ALWAYS 'core' not 'strength'\n- other: anything else\n\nCRITICAL NORMALIZATION RULES:\n- Always use singular form: 'Glute Bridge' not 'Glute Bridges'\n- Capitalize first letter of each word\n- Use hyphens for compound exercises: 'Push-Up', 'Pull-Up', 'Sit-Up', 'Cat-Cow'\n- Remove trailing s from plural exercise names\n\nDATA INTEGRITY RULES (NON-NEGOTIABLE):\n- NEVER invent or assume weights, reps, sets, distances, or durations that are not explicitly stated in the raw text. The raw text is the only source of truth.\n- If a field is ambiguous, missing, or you are not 100% certain, OMIT it entirely (use null). Better to under-report than to fabricate.\n- Do NOT guess weights based on the exercise name (e.g. don't assume bench press is 135lb just because that's a common starting weight).\n- Do NOT carry over weights from one exercise to another — each exercise's fields must come from its own portion of the raw text.\n- Do NOT infer weight from words like 'heavy' or 'light' — those are not numeric values.\n- The raw_text field MUST be the literal substring from the user's notes that this exercise was extracted from. If the substring doesn't contain the weight, weight_lbs MUST be null.\n\nReturn ONLY a JSON array of exercise objects, no explanation.\nExample: [{\"name\":\"Glute Bridge\",\"category\":\"rehab\",\"sets\":3,\"reps\":12,\"weight_lbs\":null,\"distance_miles\":null,\"duration_minutes\":null,\"raw_text\":\"glute bridges 3x12\"}]\nWorkout type: " + (body.type || "unknown") + "\nNotes: " + body.notes;
+    var prompt = "STRICT RULE: Only extract exercises that are explicitly named in the raw text. Never infer, assume, or hallucinate exercises or weights that are not clearly stated. If a weight is ambiguous or missing, omit weight_lbs entirely. Do not extract stretches, mobility work, or warm-ups as weighted exercises unless they explicitly include sets, reps, and weight.\n\nExtract all exercises from these workout notes. For each exercise identify: name (normalized), category (one of: strength/combat/cardio/mobility/rehab/core/other), sets (number or null), reps (number or null), weight_lbs (number or null), distance_miles (number or null), duration_minutes (number or null), raw_text (original text snippet).\n\nCATEGORY GUIDE:\n- strength: weightlifting, resistance, dumbbell/barbell work, push-up, pull-up, dip, squat, lunge, row, dead hang (isometric grip/hang holds)\n- combat: MMA, boxing, sparring, martial arts, kicks, grappling, BJJ, pad work\n- cardio: running, elliptical, jumping jacks, cycling, rowing, burpee, jump rope\n- mobility: stretching, yoga, flexibility work\n- rehab: PT exercises, injury rehab, therapeutic (glute bridge, clamshell, cat-cow, hip flexor stretch)\n- core: plank, crunch, sit-up, leg raise, dead bug, bird dog, mountain climber, ab wheel, russian twist, windshield wiper - these are ALWAYS 'core' not 'strength'\n- other: anything else\n\nCRITICAL NORMALIZATION RULES:\n- Always use singular form: 'Glute Bridge' not 'Glute Bridges'\n- Capitalize first letter of each word\n- Use hyphens for compound exercises: 'Push-Up', 'Pull-Up', 'Sit-Up', 'Cat-Cow'\n- Remove trailing s from plural exercise names\n\nMANDATORY DEAD HANG RULE (NON-NEGOTIABLE):\n- ANY mention of \"dead hang\", \"dead hangs\", \"hang\" (when referring to a bar hold, not a noun/verb in unrelated context), \"bar hang\", \"passive hang\", \"hang hold\", or \"hanging\" (as an isometric exercise) MUST produce its own exercise object in the output array — even when it appears alongside many other exercises in the workout notes, even when listed as a single line, even when it has no sets/reps annotation. NEVER skip a dead-hang entry because the surrounding notes are long.\n- name MUST be \"Dead Hang\" (canonical) regardless of how the user phrased it (\"dead hangs\", \"bar hang\", \"hang hold\", etc).\n- category MUST be \"strength\".\n- duration_minutes MUST be populated whenever the raw text contains a duration (any of: \"Ns\", \"N seconds\", \"N sec\", \"N min\", \"M:SS\", \"Xm Ys\", \"X min Y sec\"). Compute it as total_seconds / 60 — examples: \"45 seconds\" → 0.75; \"1:42\" → 1.7; \"1 min 15 sec\" → 1.25; \"30s\" → 0.5; \"1m 42s\" → 1.7. Use the per-set (single-hold) duration, not the sum across sets.\n- sets MUST be populated if the raw text contains set notation (\"3x20s\", \"4x30 seconds\" → sets=3 or 4; per-set duration goes in duration_minutes). For a single hold with no set notation, sets=1.\n- raw_text MUST be the literal hang substring from the user's notes.\n- If the notes contain TWO separate dead hang entries (e.g. \"Dead Hang 0:45\" on one line and \"Dead Hang 0:30\" on another, or \"45s dead hang\" twice), produce TWO exercise objects — do not collapse into one.\n\nDATA INTEGRITY RULES (NON-NEGOTIABLE):\n- NEVER invent or assume weights, reps, sets, distances, or durations that are not explicitly stated in the raw text. The raw text is the only source of truth.\n- If a field is ambiguous, missing, or you are not 100% certain, OMIT it entirely (use null). Better to under-report than to fabricate.\n- Do NOT guess weights based on the exercise name (e.g. don't assume bench press is 135lb just because that's a common starting weight).\n- Do NOT carry over weights from one exercise to another — each exercise's fields must come from its own portion of the raw text.\n- Do NOT infer weight from words like 'heavy' or 'light' — those are not numeric values.\n- The raw_text field MUST be the literal substring from the user's notes that this exercise was extracted from. If the substring doesn't contain the weight, weight_lbs MUST be null.\n\nReturn ONLY a JSON array of exercise objects, no explanation.\nExample: [{\"name\":\"Glute Bridge\",\"category\":\"rehab\",\"sets\":3,\"reps\":12,\"weight_lbs\":null,\"distance_miles\":null,\"duration_minutes\":null,\"raw_text\":\"glute bridges 3x12\"},{\"name\":\"Dead Hang\",\"category\":\"strength\",\"sets\":4,\"reps\":null,\"weight_lbs\":null,\"distance_miles\":null,\"duration_minutes\":0.5,\"raw_text\":\"Dead Hangs 4x30s\"}]\nWorkout type: " + (body.type || "unknown") + "\nNotes: " + body.notes;
 
     var aiText = await callAI(prompt, 1000, MODEL_HAIKU);
     console.log("[extract-exercises] Raw AI response: " + (aiText || "(empty)").substring(0, 300));
@@ -3403,6 +3403,164 @@ app.get("/api/debug/missing-dates/:userId", async function(req, res) {
     });
   } catch (e) {
     console.error("[debug/missing-dates] error:", e);
+    res.status(500).json({ error: e.message, stack: e.stack });
+  }
+});
+
+// ── DEBUG: one-shot Dead Hang backfill (TEMPORARY) ───────────────────────
+// Inserts the missing Dead Hang exercise rows from the manual audit. Each
+// row is keyed by workout_id; the workout's date is read live from the
+// workouts table so we don't have to encode it here. Idempotent: if a
+// Dead Hang exercise row already exists for a given workout_id, the entry
+// is skipped (workouts 26 and 47 each have multiple Dead Hangs, but the
+// idempotency check is on "any Dead Hang row for this workout" — so a
+// re-run is a no-op once a workout has been backfilled). Gated behind
+// POST so an accidental browser GET can't trigger it. Remove once the
+// data is correct.
+app.post("/api/debug/dead-hang-backfill/:userId", async function(req, res) {
+  try {
+    var pid = parseInt(req.params.userId, 10);
+    if (!pid || isNaN(pid)) return res.status(400).json({ error: "userId must be numeric" });
+
+    // Per-workout backfill spec. duration_minutes is per-hold (single-set).
+    // sets reflects the set count from the raw text when stated.
+    var spec = [
+      { workout_id: 10, rows: [{ sets: 3, duration_minutes: 17 / 60, raw_text: "Dead hangs - 3 x 15-20 seconds" }] },
+      { workout_id: 13, rows: [{ sets: 3, duration_minutes: 20 / 60, raw_text: "Dead hangs - 3x20 seconds" }] },
+      { workout_id: 22, rows: [{ sets: 4, duration_minutes: 30 / 60, raw_text: "Dead hangs - 4x30 seconds" }] },
+      { workout_id: 26, rows: [
+        { sets: 1, duration_minutes: 45 / 60, raw_text: "45 second dead hang" },
+        { sets: 1, duration_minutes: 45 / 60, raw_text: "45 second dead hang" }
+      ]},
+      { workout_id: 28, rows: [{ sets: 4, duration_minutes: 30 / 60, raw_text: "Dead Hang 4x30 seconds" }] },
+      { workout_id: 29, rows: [{ sets: 1, duration_minutes: 45 / 60, raw_text: "Dead Hang – 45 seconds" }] },
+      { workout_id: 31, rows: [{ sets: 4, duration_minutes: 30 / 60, raw_text: "Dead Hangs 4x30s" }] },
+      { workout_id: 32, rows: [{ sets: 1, duration_minutes: 45 / 60, raw_text: "Dead Hangs - 45s" }] },
+      { workout_id: 34, rows: [{ sets: 1, duration_minutes: 30 / 60, raw_text: "Dead Hang - 30 seconds" }] },
+      { workout_id: 39, rows: [{ sets: 1, duration_minutes: 52 / 60, raw_text: "Hang Hold - 52 seconds" }] },
+      { workout_id: 42, rows: [{ sets: 1, duration_minutes: 45 / 60, raw_text: "Dead Hang - 45s" }] },
+      { workout_id: 47, rows: [
+        { sets: 1, duration_minutes: 45 / 60, raw_text: "Dead Hang 0:45" },
+        { sets: 1, duration_minutes: 30 / 60, raw_text: "Dead Hang 0:30" }
+      ]},
+      { workout_id: 49, rows: [{ sets: 1, duration_minutes: 45 / 60, raw_text: "Dead Hang 45 seconds" }] },
+      { workout_id: 50, rows: [{ sets: 1, duration_minutes: 65 / 60, raw_text: "Dead hang - 65 seconds" }] },
+      { workout_id: 51, rows: [{ sets: 1, duration_minutes: 75 / 60, raw_text: "Dead Hang - 1 min 15 sec" }] },
+      { workout_id: 52, rows: [{ sets: 1, duration_minutes: 102 / 60, raw_text: "Dead Hang 1m 42s" }] },
+      { workout_id: 54, rows: [{ sets: 1, duration_minutes: 45 / 60, raw_text: "Dead Hang: 45 seconds" }] },
+      { workout_id: 55, rows: [{ sets: 1, duration_minutes: 45 / 60, raw_text: "Dead Hang 45 seconds" }] }
+    ];
+
+    var ids = spec.map(function(s) { return s.workout_id; });
+
+    // Single round-trip lookup for the parent workouts (date + ownership).
+    var wkUrl = SUPABASE_URL + "/rest/v1/workouts?profile_id=eq." + pid +
+      "&id=in.(" + ids.join(",") + ")&select=id,date,profile_id";
+    var wkR = await fetch(wkUrl, { headers: sbHeaders() });
+    if (!wkR.ok) {
+      var wkErrText = await wkR.text();
+      return res.status(500).json({ error: "workouts fetch failed", status: wkR.status, body: wkErrText });
+    }
+    var workouts = await wkR.json();
+    if (!Array.isArray(workouts)) workouts = [];
+    var workoutsById = {};
+    workouts.forEach(function(w) { workoutsById[w.id] = w; });
+
+    // Single round-trip for existing Dead Hang rows on those workouts —
+    // anything name ILIKE %hang% counts as "already backfilled" for that
+    // workout so we don't risk double-inserting on a second run.
+    var exUrl = SUPABASE_URL + "/rest/v1/exercises?profile_id=eq." + pid +
+      "&workout_id=in.(" + ids.join(",") + ")&name=ilike.*hang*&select=id,workout_id,name";
+    var exR = await fetch(exUrl, { headers: sbHeaders() });
+    if (!exR.ok) {
+      var exErrText = await exR.text();
+      return res.status(500).json({ error: "exercises fetch failed", status: exR.status, body: exErrText });
+    }
+    var existingRows = await exR.json();
+    if (!Array.isArray(existingRows)) existingRows = [];
+    var existingByWorkout = {};
+    existingRows.forEach(function(e) {
+      if (!existingByWorkout[e.workout_id]) existingByWorkout[e.workout_id] = [];
+      existingByWorkout[e.workout_id].push(e);
+    });
+
+    var inserted = [];
+    var skipped = [];
+    var errors = [];
+
+    for (var i = 0; i < spec.length; i++) {
+      var entry = spec[i];
+      var wk = workoutsById[entry.workout_id];
+      if (!wk) {
+        skipped.push({ workout_id: entry.workout_id, reason: "workout not found for this profile" });
+        continue;
+      }
+      if (existingByWorkout[entry.workout_id] && existingByWorkout[entry.workout_id].length) {
+        skipped.push({
+          workout_id: entry.workout_id,
+          reason: "already has hang-like exercise row(s)",
+          existing: existingByWorkout[entry.workout_id]
+        });
+        continue;
+      }
+
+      for (var j = 0; j < entry.rows.length; j++) {
+        var rowSpec = entry.rows[j];
+        var insertBody = {
+          profile_id: pid,
+          workout_id: entry.workout_id,
+          date: wk.date,
+          name: "Dead Hang",
+          category: "strength",
+          main_category: "strength",
+          subcategory: "calisthenics",
+          sets: rowSpec.sets,
+          reps: null,
+          weight_lbs: null,
+          distance_miles: null,
+          duration_minutes: +rowSpec.duration_minutes.toFixed(4),
+          notes: null,
+          raw_text: rowSpec.raw_text
+        };
+        var insRes = await fetch(SUPABASE_URL + "/rest/v1/exercises", {
+          method: "POST",
+          headers: sbHeaders("return=representation"),
+          body: JSON.stringify(insertBody)
+        });
+        if (insRes.ok) {
+          var insBody = await insRes.json();
+          inserted.push({
+            workout_id: entry.workout_id,
+            date: wk.date,
+            duration_minutes: insertBody.duration_minutes,
+            raw_text: insertBody.raw_text,
+            inserted_id: Array.isArray(insBody) && insBody[0] ? insBody[0].id : null
+          });
+        } else {
+          var insErr = await insRes.text();
+          errors.push({
+            workout_id: entry.workout_id,
+            raw_text: rowSpec.raw_text,
+            status: insRes.status,
+            body: insErr
+          });
+        }
+      }
+    }
+
+    res.json({
+      success: true,
+      profile_id: pid,
+      planned_workouts: ids.length,
+      inserted_count: inserted.length,
+      skipped_count: skipped.length,
+      error_count: errors.length,
+      inserted: inserted,
+      skipped: skipped,
+      errors: errors
+    });
+  } catch (e) {
+    console.error("[debug/dead-hang-backfill] error:", e);
     res.status(500).json({ error: e.message, stack: e.stack });
   }
 });
