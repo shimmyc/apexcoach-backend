@@ -13,7 +13,18 @@ const SUPABASE_URL   = process.env.SUPABASE_URL;
 const SUPABASE_KEY   = process.env.SUPABASE_KEY;
 
 app.use(express.json());
-app.use(express.static(path.join(__dirname, "public")));
+// Serve static assets but disable browser caching for HTML — without this,
+// Chrome/Render will hold an old index.html for the heuristic cache window
+// (often 10% of last-modified age), which makes deployed UI changes look
+// like they never shipped. Hashed JS/CSS aren't in play yet, so the only
+// asset we strictly need to bust is .html.
+app.use(express.static(path.join(__dirname, "public"), {
+  setHeaders: function(res, filePath) {
+    if (filePath.endsWith(".html")) {
+      res.setHeader("Cache-Control", "no-store, must-revalidate");
+    }
+  }
+}));
 
 function sbHeaders(prefer) {
   return {

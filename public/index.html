@@ -576,7 +576,10 @@ input[type=range]{width:100%;accent-color:var(--accent)}
     <div class="card" id="challenges-card">
       <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">
         <p class="clabel" style="margin-bottom:0">&#x1F3AF; active challenges</p>
-        <button onclick="openMicroGoalModal()" id="mg-add-btn" style="background:var(--accent-10);border:1px solid var(--accent-33);color:var(--accent);padding:5px 12px;border-radius:6px;cursor:pointer;font-size:13px;font-weight:600" title="Add challenge">+ Add</button>
+        <div style="display:flex;gap:6px;align-items:center">
+          <button onclick="refreshActiveChallenges(this)" id="mg-refresh-btn" style="background:transparent;border:1px solid var(--border-accent);color:var(--text-dim);padding:5px 10px;border-radius:6px;cursor:pointer;font-size:13px" title="Refresh challenge progress">&#8635;</button>
+          <button onclick="openMicroGoalModal()" id="mg-add-btn" style="background:var(--accent-10);border:1px solid var(--accent-33);color:var(--accent);padding:5px 12px;border-radius:6px;cursor:pointer;font-size:13px;font-weight:600" title="Add challenge">+ Add</button>
+        </div>
       </div>
       <div id="challenges-display"></div>
     </div>
@@ -4197,10 +4200,20 @@ function isMicroGoalTag(tag) {
 }
 
 function loadMicroGoals() {
-  if (!currentProfileId) return;
-  fetch('/api/profiles/' + currentProfileId + '/micro-goals')
+  if (!currentProfileId) return Promise.resolve();
+  return fetch('/api/profiles/' + currentProfileId + '/micro-goals')
     .then(function(r) { return r.json(); })
     .then(function(data) {
+      // Diagnostic log so it's obvious in DevTools whether the cards are
+      // rendering fresh server output. If you don't see this line on a
+      // reload, loadMicroGoals isn't being called — render is stale.
+      console.log('[MicroGoals] API response @', new Date().toISOString(), {
+        success: !!(data && data.success),
+        count: data && data.micro_goals ? data.micro_goals.length : 0,
+        first_goal_shape: data && data.micro_goals && data.micro_goals[0] ? Object.keys(data.micro_goals[0]) : null,
+        first_goal_progress: data && data.micro_goals && data.micro_goals[0] ? data.micro_goals[0].progress : null,
+        last_computed_at: data && data.micro_goals && data.micro_goals[0] ? data.micro_goals[0].last_computed_at : null
+      });
       if (data && data.success) {
         microGoals = data.micro_goals || [];
         renderProfileChallenges();
@@ -4209,6 +4222,40 @@ function loadMicroGoals() {
     })
     .catch(function(e) { console.error('[MicroGoals] load error:', e); });
 }
+
+// User-facing comprehensive refresh — fires when the ↻ button on the
+// Active Challenges card is tapped, OR when called from the console as
+// window.refreshAll(). Re-fetches workouts (which the matcher reads from
+// server-side), micro-goals (which re-derives current_value + progress),
+// and re-renders dependent profile-tab cards. Exposed as a global below.
+function refreshActiveChallenges(btn) {
+  console.log('[Refresh] full reload triggered @', new Date().toISOString());
+  var originalLabel = null;
+  if (btn) {
+    originalLabel = btn.innerHTML;
+    btn.disabled = true;
+    btn.innerHTML = '&#8635; …';
+  }
+  var jobs = [];
+  if (typeof loadWorkouts === 'function') jobs.push(loadWorkouts());
+  if (typeof loadMicroGoals === 'function') jobs.push(loadMicroGoals());
+  if (typeof loadDailySteps === 'function') jobs.push(Promise.resolve(loadDailySteps()));
+  if (typeof loadBodyMetrics === 'function') jobs.push(Promise.resolve(loadBodyMetrics()));
+  return Promise.all(jobs).then(function() {
+    if (typeof renderProfileChallenges === 'function') renderProfileChallenges();
+    if (typeof renderProfileGoals === 'function') renderProfileGoals();
+    if (typeof renderProfileTab === 'function') renderProfileTab();
+    console.log('[Refresh] complete @', new Date().toISOString());
+  }).catch(function(e) {
+    console.error('[Refresh] failed:', e);
+  }).then(function() {
+    if (btn && originalLabel != null) {
+      btn.disabled = false;
+      btn.innerHTML = originalLabel;
+    }
+  });
+}
+if (typeof window !== 'undefined') window.refreshAll = refreshActiveChallenges;
 
 function mgDaysRemaining(g) {
   if (!g.end_date) return null;
