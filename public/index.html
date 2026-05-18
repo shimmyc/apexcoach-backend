@@ -4204,18 +4204,31 @@ function loadMicroGoals() {
   return fetch('/api/profiles/' + currentProfileId + '/micro-goals')
     .then(function(r) { return r.json(); })
     .then(function(data) {
-      // Diagnostic log so it's obvious in DevTools whether the cards are
-      // rendering fresh server output. If you don't see this line on a
-      // reload, loadMicroGoals isn't being called — render is stale.
+      // Diagnostic log — proves in DevTools (a) loadMicroGoals fired on
+      // this page load, (b) the server attached progress to every
+      // daily_habit goal, and (c) the client is reading those fields.
+      // Logged per-goal so we can't be misled by goal[0] being a
+      // strength_milestone (which doesn't get a progress block).
+      var goals = (data && data.micro_goals) || [];
+      var perGoal = goals.map(function(g) {
+        return {
+          title: g.title,
+          type: g.type,
+          has_progress: g.progress != null,
+          progress: g.progress || null,
+          last_computed_at: g.last_computed_at
+        };
+      });
+      var dh = goals.filter(function(g) { return g.type === 'daily_habit'; });
       console.log('[MicroGoals] API response @', new Date().toISOString(), {
         success: !!(data && data.success),
-        count: data && data.micro_goals ? data.micro_goals.length : 0,
-        first_goal_shape: data && data.micro_goals && data.micro_goals[0] ? Object.keys(data.micro_goals[0]) : null,
-        first_goal_progress: data && data.micro_goals && data.micro_goals[0] ? data.micro_goals[0].progress : null,
-        last_computed_at: data && data.micro_goals && data.micro_goals[0] ? data.micro_goals[0].last_computed_at : null
+        count: goals.length,
+        daily_habit_count: dh.length,
+        daily_habit_with_progress: dh.filter(function(g) { return g.progress != null; }).length,
+        per_goal: perGoal
       });
       if (data && data.success) {
-        microGoals = data.micro_goals || [];
+        microGoals = goals;
         renderProfileChallenges();
         checkMicroGoalCompletions();
       }
