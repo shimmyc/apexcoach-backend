@@ -4164,6 +4164,13 @@ function renderProfileGoals() {
     } else {
       html += '<div class="mono" style="font-size:10px;color:' + sc + ';letter-spacing:1px">' + (g.status || 'IN PROGRESS') + '</div>';
     }
+    // Last-computed stamp — server sets prog.last_computed_at on every
+    // POST /api/profiles/:id/goal-progress so a fresh evaluation makes
+    // this read "Updated just now". Stale value = card is rendering from
+    // the localStorage cache, fresh server call hasn't fired since.
+    if (prog && prog.last_computed_at) {
+      html += '<div class="mono" style="font-size:9px;color:var(--text-dim);letter-spacing:1px;margin-top:6px;text-align:right" title="' + attrEsc(prog.last_computed_at) + '">Updated ' + escHtml(formatRelativeTimeAgo(prog.last_computed_at)) + '</div>';
+    }
     html += '</div>';
   }
   document.getElementById('goals-display').innerHTML = html;
@@ -4254,6 +4261,7 @@ function refreshActiveChallenges(btn) {
   if (typeof loadMicroGoals === 'function') jobs.push(loadMicroGoals());
   if (typeof loadDailySteps === 'function') jobs.push(Promise.resolve(loadDailySteps()));
   if (typeof loadBodyMetrics === 'function') jobs.push(Promise.resolve(loadBodyMetrics()));
+  if (typeof refreshGoalsAndMilestones === 'function') jobs.push(refreshGoalsAndMilestones('manual_refresh_button'));
   return Promise.all(jobs).then(function() {
     if (typeof renderProfileChallenges === 'function') renderProfileChallenges();
     if (typeof renderProfileGoals === 'function') renderProfileGoals();
@@ -5326,17 +5334,17 @@ function buildMicroGoalsPromptContext() {
 }
 
 function fetchGoalProgress() {
-  if (!currentProfileId) return;
+  if (!currentProfileId) return Promise.resolve();
   var pd = currentProfileData || {};
   var pGoals = pd.goals || [];
-  if (!pGoals.length) return;
+  if (!pGoals.length) return Promise.resolve();
 
   var medCount = 0;
   var thirtyAgo = new Date(); thirtyAgo.setDate(thirtyAgo.getDate() - 30);
   var cutoff30 = thirtyAgo.toISOString().slice(0, 10);
   medLog.forEach(function(d) { if (d >= cutoff30) medCount++; });
 
-  fetch('/api/profiles/' + currentProfileId + '/goal-progress', {
+  return fetch('/api/profiles/' + currentProfileId + '/goal-progress', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
@@ -5350,6 +5358,9 @@ function fetchGoalProgress() {
   })
   .then(function(r) { return r.json(); })
   .then(function(data) {
+    console.log('[Goals] progress refreshed @', new Date().toISOString(),
+      'count=' + (data && data.progress ? data.progress.length : 0) +
+      ' first_last_computed_at=' + (data && data.progress && data.progress[0] ? data.progress[0].last_computed_at : 'n/a'));
     if (data.success && data.progress) {
       goalProgressCache = data.progress;
       localStorage.setItem('ac_goal_progress', JSON.stringify({ ts: Date.now(), progress: data.progress }));
@@ -5362,7 +5373,18 @@ function fetchGoalProgress() {
 function refreshGoalProgress() {
   localStorage.removeItem('ac_goal_progress');
   goalProgressCache = null;
-  fetchGoalProgress();
+  return fetchGoalProgress();
+}
+
+// Called from every workout mutation path (save / edit / delete) so the
+// Goals & Milestones cards reflect the new history without waiting on the
+// 6h localStorage TTL. Clears the cache then refetches synchronously so a
+// follow-up renderProfileGoals() picks up fresh progress.
+function refreshGoalsAndMilestones(reason) {
+  console.log('[Goals] auto-refresh triggered (' + (reason || 'unknown') + ')');
+  localStorage.removeItem('ac_goal_progress');
+  goalProgressCache = null;
+  return fetchGoalProgress();
 }
 
 function openGoalUpdate(idx) {
@@ -6567,10 +6589,16 @@ function saveWorkoutToSupabase(entry) {
         }
         // Refresh micro-goal progress (auto-tracking reads workouts/exercises)
         if (typeof loadMicroGoals === 'function') loadMicroGoals();
+        // Refresh long-term Goals & Milestones — the new exercises row
+        // could shift a strength PR, consistency count, or AI estimate.
+        if (typeof refreshGoalsAndMilestones === 'function') refreshGoalsAndMilestones('workout_saved');
       })
       .catch(function(e) { console.error('[ApexCoach] Exercise extraction error:', e); });
-      } else if (typeof loadMicroGoals === 'function') {
-        loadMicroGoals();
+      } else {
+        if (typeof loadMicroGoals === 'function') loadMicroGoals();
+        // Even no-notes workouts (rest days, quick logs) shift consistency
+        // counts that feed the Goals cards, so refresh those too.
+        if (typeof refreshGoalsAndMilestones === 'function') refreshGoalsAndMilestones('workout_saved_no_notes');
       }
     }
   })
@@ -6578,17 +6606,31 @@ function saveWorkoutToSupabase(entry) {
 }
 
 function updateWorkoutInSupabase(id, entry) {
-  fetch('/api/workouts/' + id, {
+  return fetch('/api/workouts/' + id, {
     method: 'PATCH',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(entry)
-  }).catch(function(e) { console.error('Update error:', e); });
+  })
+  .then(function(r) { return r.json(); })
+  .then(function() {
+    // Edit can change the workout's type, notes, or done flag — any of
+    // which can shift strength PR / consistency / AI estimates on the
+    // Goals & Milestones cards.
+    if (typeof refreshGoalsAndMilestones === 'function') refreshGoalsAndMilestones('workout_edited');
+  })
+  .catch(function(e) { console.error('Update error:', e); });
 }
 
 function deleteWorkout(id) {
   workoutLog = workoutLog.filter(function(w) { return w.id !== id; });
   localStorage.setItem('ac_log', JSON.stringify(workoutLog));
-  fetch('/api/workouts/' + id, { method: 'DELETE' }).catch(function(e) { console.error('Delete error:', e); });
+  fetch('/api/workouts/' + id, { method: 'DELETE' })
+    .then(function() {
+      // Goals depend on history — a deleted workout might drop a strength
+      // PR or knock the consistency count below target.
+      if (typeof refreshGoalsAndMilestones === 'function') refreshGoalsAndMilestones('workout_deleted');
+    })
+    .catch(function(e) { console.error('Delete error:', e); });
   renderLogArea();
   renderWeek();
   renderLog();

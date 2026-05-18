@@ -1819,10 +1819,16 @@ app.post("/api/profiles/:id/goal-progress", async function(req, res) {
     var currentBelt = body.current_belt || null;
     var medDays = body.medDays || 0;
 
+    // One stamp shared across all results in this request — the endpoint is
+    // already stateless and recomputes live every call, so this just lets
+    // the client render "Updated X ago" per card without rolling its own
+    // clock against the localStorage ts.
+    var computedAt = new Date().toISOString();
+
     var results = [];
     for (var gi = 0; gi < goals.length; gi++) {
       var g = goals[gi];
-      var r = { index: gi, pct: 0, label: '', auto_tracked: false, source: 'manual', reasoning: '' };
+      var r = { index: gi, pct: 0, label: '', auto_tracked: false, source: 'manual', reasoning: '', last_computed_at: computedAt };
 
       if (g.type === 'strength') {
         var keywords = (g.title || '').toLowerCase().split(/\s+/);
