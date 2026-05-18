@@ -3194,6 +3194,118 @@ app.delete("/api/micro-goals/:id", async function(req, res) {
   }
 });
 
+// ── DEBUG: Dead Hang matcher visibility (TEMPORARY) ──────────────────────
+// Returns exactly what mgMatchesExercise sees for a given profile. Lets us
+// confirm whether the auto-tracker is missing rows due to name variants,
+// whether the max-duration row is being picked up correctly, and what the
+// distinct-date count actually is. Pass ?title=... to test a different goal
+// title; defaults to "Dead Hang every day" so the canonical matcher anchors
+// on "Dead Hang". Remove this endpoint once the deploy is verified.
+app.get("/api/debug/dead-hang/:userId", async function(req, res) {
+  try {
+    var pid = req.params.userId;
+    var title = req.query.title ? String(req.query.title) : "Dead Hang every day";
+    var canonical = extractCanonicalFromTitle(title);
+
+    var url = SUPABASE_URL + "/rest/v1/exercises?profile_id=eq." + pid +
+      "&select=id,name,date,duration_minutes,raw_text,notes,main_category,subcategory" +
+      "&order=date.desc&limit=5000";
+    var r = await fetch(url, { headers: sbHeaders() });
+    if (!r.ok) {
+      var errText = await r.text();
+      return res.status(500).json({ error: "supabase fetch failed", status: r.status, body: errText });
+    }
+    var rows = await r.json();
+    if (!Array.isArray(rows)) rows = [];
+
+    var matched = [];
+    var unmatched = [];
+    var distinctDates = new Set();
+    var maxSec = 0;
+    var maxSource = null;
+
+    rows.forEach(function(e) {
+      var isMatch = mgMatchesExercise(e.name, title);
+      var normalized = normalizeExerciseName(e.name);
+      var rtSec = parseDurationToSeconds(e.raw_text || '');
+      var ntSec = parseDurationToSeconds(e.notes || '');
+      var dmSec = Number(e.duration_minutes || 0) * 60;
+      var bestParsedSec = Math.max(rtSec, ntSec);
+      var rowSec = bestParsedSec > 0 ? bestParsedSec : dmSec;
+
+      var record = {
+        id: e.id,
+        name: e.name,
+        normalized: normalized,
+        date: e.date,
+        duration_minutes: e.duration_minutes,
+        raw_text: e.raw_text,
+        notes: e.notes,
+        main_category: e.main_category,
+        subcategory: e.subcategory,
+        parsed_seconds: {
+          from_raw_text: rtSec,
+          from_notes: ntSec,
+          from_duration_minutes: dmSec,
+          chosen: rowSec
+        }
+      };
+
+      if (isMatch) {
+        matched.push(record);
+        if (e.date) distinctDates.add(e.date);
+        if (rowSec > maxSec) {
+          maxSec = rowSec;
+          maxSource = {
+            id: e.id,
+            name: e.name,
+            date: e.date,
+            raw_text: e.raw_text,
+            notes: e.notes,
+            duration_minutes: e.duration_minutes,
+            parsed_seconds: rowSec,
+            parsed_mmss: Math.floor(rowSec / 60) + ":" + String(Math.round(rowSec % 60)).padStart(2, "0")
+          };
+        }
+      } else if (e.name && /hang/i.test(e.name)) {
+        // Surface near-miss rows so we can see if a hang variant is being
+        // dropped by the matcher (lets us iterate on the boundary logic).
+        unmatched.push(record);
+      }
+    });
+
+    var distinctDatesArr = Array.from(distinctDates).sort().reverse();
+
+    res.json({
+      success: true,
+      profile_id: pid,
+      title: title,
+      canonical_extracted: canonical,
+      total_exercise_rows_fetched: rows.length,
+      matched_row_count: matched.length,
+      distinct_date_count: distinctDatesArr.length,
+      distinct_dates: distinctDatesArr,
+      max_duration: maxSource ? {
+        seconds: maxSec,
+        mmss: maxSource.parsed_mmss,
+        source: {
+          id: maxSource.id,
+          exercise_name: maxSource.name,
+          date: maxSource.date,
+          raw_text: maxSource.raw_text,
+          notes: maxSource.notes,
+          duration_minutes: maxSource.duration_minutes
+        }
+      } : null,
+      matched_rows: matched,
+      near_miss_unmatched_rows_with_hang_in_name: unmatched
+    });
+  } catch (e) {
+    console.error("[debug/dead-hang] error:", e);
+    res.status(500).json({ error: e.message, stack: e.stack });
+  }
+});
+
 app.listen(PORT, function() {
   console.log("ApexCoach running on port " + PORT);
 });
