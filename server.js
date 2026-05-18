@@ -3506,6 +3506,12 @@ app.post("/api/debug/dead-hang-backfill/:userId", async function(req, res) {
 
       for (var j = 0; j < entry.rows.length; j++) {
         var rowSpec = entry.rows[j];
+        // exercises.duration_minutes is an integer column — fractional minutes
+        // (e.g. 0.75 for a 45-second hold) are rejected by Postgres. The PR
+        // scanner already prefers parseDurationToSeconds(raw_text) over the
+        // duration_minutes column, so we store null here and let the literal
+        // raw_text ("Dead Hang 1m 42s", "Dead Hang 0:45", etc.) carry the
+        // exact duration without truncation.
         var insertBody = {
           profile_id: pid,
           workout_id: entry.workout_id,
@@ -3518,7 +3524,7 @@ app.post("/api/debug/dead-hang-backfill/:userId", async function(req, res) {
           reps: null,
           weight_lbs: null,
           distance_miles: null,
-          duration_minutes: +rowSpec.duration_minutes.toFixed(4),
+          duration_minutes: null,
           notes: null,
           raw_text: rowSpec.raw_text
         };
