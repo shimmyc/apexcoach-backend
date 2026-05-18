@@ -3049,6 +3049,45 @@ async function computeMicroGoalProgress(goal, pid) {
   }
 }
 
+// Build the derived date-math block for a daily_habit goal: start_date,
+// days_elapsed (today - start, capped at total_goal_days if end_date set),
+// total_goal_days, and days_completed_pct = (current_value / days_elapsed)
+// * 100. Returned as a `progress` object on the goal so the client can
+// render without doing its own date math. Server is authoritative because
+// `created_at` is a UTC timestamp; the client doing the math would drift
+// for users east of UTC near midnight.
+function buildDailyHabitProgress(g) {
+  if (!g || g.type !== 'daily_habit') return null;
+  if (!g.created_at) return null;
+  var startDateStr = String(g.created_at).split('T')[0];
+  var startDate = new Date(startDateStr + 'T00:00:00Z');
+  var today = new Date();
+  var todayStr = mgYmdLocal(today);
+  var todayDate = new Date(todayStr + 'T00:00:00Z');
+  var msPerDay = 86400000;
+  // Inclusive day count — day 1 is the start date itself.
+  var rawElapsed = Math.floor((todayDate - startDate) / msPerDay) + 1;
+  if (rawElapsed < 1) rawElapsed = 1;
+  var totalGoalDays = null;
+  if (g.end_date) {
+    var endDate = new Date(String(g.end_date).split('T')[0] + 'T00:00:00Z');
+    var span = Math.floor((endDate - startDate) / msPerDay) + 1;
+    if (span >= 1) totalGoalDays = span;
+  }
+  var daysElapsed = (totalGoalDays != null) ? Math.min(rawElapsed, totalGoalDays) : rawElapsed;
+  var daysCompleted = Number(g.current_value || 0);
+  var pct = daysElapsed > 0 ? Math.round((daysCompleted / daysElapsed) * 100) : 0;
+  if (pct > 100) pct = 100;
+  if (pct < 0) pct = 0;
+  return {
+    start_date: startDateStr,
+    days_elapsed: daysElapsed,
+    total_goal_days: totalGoalDays,
+    days_completed: daysCompleted,
+    days_completed_pct: pct
+  };
+}
+
 app.get("/api/profiles/:id/micro-goals", async function(req, res) {
   try {
     const pid = req.params.id;
@@ -3069,6 +3108,11 @@ app.get("/api/profiles/:id/micro-goals", async function(req, res) {
           headers: sbHeaders("return=minimal"),
           body: JSON.stringify({ current_value: computed })
         }));
+      }
+      // Attach derived date-math for daily_habit cards. Server-computed so
+      // the client doesn't have to reason about created_at UTC drift.
+      if (g.type === 'daily_habit') {
+        g.progress = buildDailyHabitProgress(g);
       }
     }
     if (updates.length) await Promise.all(updates);

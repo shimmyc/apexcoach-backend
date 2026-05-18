@@ -4301,6 +4301,26 @@ function formatMgProgressLabel(g) {
   return cur + ' / ' + tgt + (g.target_unit ? ' ' + g.target_unit : '');
 }
 
+// Tier the daily-habit completion percentage: 85+ green, 65-84 yellow,
+// under 65 red. Returns the CSS color value for both the percentage label
+// and the progress-bar fill.
+function dailyHabitTierColor(pct) {
+  if (pct >= 85) return '#22c97a';
+  if (pct >= 65) return '#f5a623';
+  return '#e84545';
+}
+
+// "2026-04-12" → "Apr 12, 2026". Uses Date.UTC so the YYYY-MM-DD string is
+// interpreted as a wall-clock date, not a UTC midnight that could shift one
+// day west in negative-offset timezones.
+function formatStartDate(ymd) {
+  if (!ymd) return '';
+  var parts = String(ymd).split('-');
+  if (parts.length !== 3) return ymd;
+  var d = new Date(Date.UTC(parseInt(parts[0], 10), parseInt(parts[1], 10) - 1, parseInt(parts[2], 10)));
+  return d.toLocaleDateString('en-US', { timeZone: 'UTC', month: 'short', day: 'numeric', year: 'numeric' });
+}
+
 function renderProfileChallenges() {
   var host = document.getElementById('challenges-display');
   if (!host) return;
@@ -4329,17 +4349,38 @@ function renderProfileChallenges() {
     if (done) html += '<span class="mono" style="font-size:10px;color:var(--accent);letter-spacing:1.5px">&#x2705; DONE</span>';
     html += '</div>';
     html += '<div style="font-size:15px;font-weight:600;color:var(--text-bright);line-height:1.3">' + (g.title || '') + '</div>';
+    // Daily-habit cards show their start date below the title so users can
+    // see the running window at a glance. Server-derived (UTC-safe).
+    if (g.type === 'daily_habit' && g.progress && g.progress.start_date) {
+      html += '<div style="font-size:11px;color:var(--text-dim);margin-top:2px">Started ' + formatStartDate(g.progress.start_date) + '</div>';
+    }
     html += '</div>';
     html += '<div style="display:flex;gap:4px;flex-shrink:0">';
     html += '<button onclick="openMicroGoalModal(\'' + attrEsc(g.id) + '\')" title="Edit" style="background:transparent;border:none;color:var(--text-dim);cursor:pointer;font-size:14px;padding:4px">&#9998;</button>';
     html += '<button onclick="deleteMicroGoal(\'' + attrEsc(g.id) + '\')" title="Delete" style="background:transparent;border:none;color:var(--text-dim);cursor:pointer;font-size:14px;padding:4px">&#128465;</button>';
     html += '</div>';
     html += '</div>';
-    // daily_habit doesn't have a meaningful percentage — show the day count
-    // alone instead of a 0%/100% bar that flickers with each save.
+    // daily_habit now shows X/Y days completion + percentage with tier
+    // coloring. Server supplies all the date math via g.progress so the
+    // client doesn't have to reason about UTC drift on created_at.
     if (g.type === 'daily_habit') {
-      html += '<div style="display:flex;justify-content:space-between;align-items:center;margin-top:8px">';
-      html += '<span class="mono" style="font-size:11px;color:var(--text-muted)">' + formatMgProgressLabel(g) + '</span>';
+      var p = g.progress || {};
+      var dhPct = Number(p.days_completed_pct || 0);
+      var dhColor = dailyHabitTierColor(dhPct);
+      var dcompleted = Number(p.days_completed || cur || 0);
+      var delapsed = Number(p.days_elapsed || 0);
+      var dtotal = p.total_goal_days;
+      var label;
+      if (delapsed > 0) {
+        label = dcompleted + ' / ' + delapsed + ' days';
+        if (dtotal != null) label += ' (of ' + dtotal + ' total)';
+      } else {
+        label = formatMgProgressLabel(g);
+      }
+      html += '<div class="bar-track" style="height:6px;margin-top:8px"><div class="bar-fill" style="width:' + Math.min(100, dhPct) + '%;background:' + dhColor + '"></div></div>';
+      html += '<div style="display:flex;justify-content:space-between;align-items:center;margin-top:4px">';
+      html += '<span class="mono" style="font-size:11px;color:var(--text-muted)">' + label + '</span>';
+      html += '<span class="mono" style="font-size:11px;color:' + dhColor + ';font-weight:700">' + dhPct + '%</span>';
       html += '</div>';
     } else {
       html += '<div class="bar-track" style="height:6px;margin-top:8px"><div class="bar-fill" style="width:' + pct + '%;background:' + barColor + '"></div></div>';
