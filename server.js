@@ -3306,6 +3306,107 @@ app.get("/api/debug/dead-hang/:userId", async function(req, res) {
   }
 });
 
+// ── DEBUG: rows on specific suspected-missing dates (TEMPORARY) ──────────
+// For each hardcoded date, returns every exercises row + the parent workout
+// notes/type, so we can see exactly what exercise names the AI extractor
+// stored on the days the daily_habit counter is missing. Once we see the
+// names, we know what variants mgMatchesExercise needs to admit.
+app.get("/api/debug/missing-dates/:userId", async function(req, res) {
+  try {
+    var pid = req.params.userId;
+    var dates = [
+      '2026-04-12','2026-04-13','2026-04-17','2026-04-20','2026-04-22',
+      '2026-04-23','2026-04-25','2026-04-26','2026-04-27','2026-05-01',
+      '2026-05-04','2026-05-10','2026-05-12','2026-05-13','2026-05-14',
+      '2026-05-15','2026-05-16','2026-05-17'
+    ];
+    var dateFilter = "date=in.(" + dates.join(",") + ")";
+
+    var exUrl = SUPABASE_URL + "/rest/v1/exercises?profile_id=eq." + pid + "&" + dateFilter +
+      "&select=id,workout_id,date,name,raw_text,notes,duration_minutes,sets,reps,main_category,subcategory" +
+      "&order=date.asc&limit=5000";
+    var wkUrl = SUPABASE_URL + "/rest/v1/workouts?profile_id=eq." + pid + "&" + dateFilter +
+      "&select=id,date,type,notes,done&order=date.asc&limit=5000";
+
+    var exR = await fetch(exUrl, { headers: sbHeaders() });
+    var wkR = await fetch(wkUrl, { headers: sbHeaders() });
+    if (!exR.ok) {
+      var et = await exR.text();
+      return res.status(500).json({ error: "exercises fetch failed", status: exR.status, body: et });
+    }
+    if (!wkR.ok) {
+      var wt = await wkR.text();
+      return res.status(500).json({ error: "workouts fetch failed", status: wkR.status, body: wt });
+    }
+    var exRows = await exR.json();
+    var wkRows = await wkR.json();
+    if (!Array.isArray(exRows)) exRows = [];
+    if (!Array.isArray(wkRows)) wkRows = [];
+
+    // Group both by date
+    var byDate = {};
+    dates.forEach(function(d) {
+      byDate[d] = { date: d, workouts: [], exercises: [], hang_mentioned_in_workout_notes: false };
+    });
+    wkRows.forEach(function(w) {
+      if (!byDate[w.date]) byDate[w.date] = { date: w.date, workouts: [], exercises: [], hang_mentioned_in_workout_notes: false };
+      byDate[w.date].workouts.push({
+        id: w.id,
+        type: w.type,
+        done: w.done,
+        notes: w.notes
+      });
+      if (w.notes && /hang/i.test(w.notes)) {
+        byDate[w.date].hang_mentioned_in_workout_notes = true;
+      }
+    });
+    exRows.forEach(function(e) {
+      if (!byDate[e.date]) byDate[e.date] = { date: e.date, workouts: [], exercises: [], hang_mentioned_in_workout_notes: false };
+      byDate[e.date].exercises.push({
+        id: e.id,
+        workout_id: e.workout_id,
+        exercise_name: e.name,
+        raw_text: e.raw_text,
+        notes: e.notes,
+        duration_minutes: e.duration_minutes,
+        sets: e.sets,
+        reps: e.reps,
+        main_category: e.main_category,
+        subcategory: e.subcategory
+      });
+    });
+
+    // Summary signals — which dates have zero exercises, which have a hang
+    // mention in workout notes but no matching exercise row, etc.
+    var datesWithNoExercises = [];
+    var datesWithHangInNotesButNoHangExercise = [];
+    dates.forEach(function(d) {
+      var b = byDate[d];
+      if (!b.exercises.length) datesWithNoExercises.push(d);
+      var anyHangExercise = b.exercises.some(function(ex) { return ex.exercise_name && /hang/i.test(ex.exercise_name); });
+      if (b.hang_mentioned_in_workout_notes && !anyHangExercise) {
+        datesWithHangInNotesButNoHangExercise.push(d);
+      }
+    });
+
+    res.json({
+      success: true,
+      profile_id: pid,
+      dates_queried: dates,
+      total_exercises_rows: exRows.length,
+      total_workouts_rows: wkRows.length,
+      summary: {
+        dates_with_no_exercises: datesWithNoExercises,
+        dates_with_hang_in_workout_notes_but_no_hang_exercise_row: datesWithHangInNotesButNoHangExercise
+      },
+      by_date: dates.map(function(d) { return byDate[d]; })
+    });
+  } catch (e) {
+    console.error("[debug/missing-dates] error:", e);
+    res.status(500).json({ error: e.message, stack: e.stack });
+  }
+});
+
 app.listen(PORT, function() {
   console.log("ApexCoach running on port " + PORT);
 });
