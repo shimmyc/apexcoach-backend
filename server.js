@@ -2852,15 +2852,34 @@ function mgMatchesKeyword(haystack, needle) {
 
 // Canonical-aware exercise matcher used by the micro-goal auto-tracker. If
 // the goal title resolves to a known canonical exercise (e.g. "2-minute hang"
-// → "Dead Hang"), require an EXACT canonical match — no keyword fallback.
-// The fallback was producing false positives like "Hanging Leg Raise" being
-// counted as a "Dead Hang" via the shared "hang" token, which inflated some
-// goals and broke others when row names contained shared substrings.
+// → "Dead Hang"), accept either:
+//   1. an EXACT canonical match after normalization, OR
+//   2. the canonical name appearing as a whole-word substring of the
+//      normalized name (bounded by non-letter chars on both sides).
+// The substring branch admits row-name variants like "Dead Hang (Wide Grip)",
+// "Dead Hang 60s", and "Wide-Grip Dead Hang Hold" — which the AI extractor
+// produces when the user describes a hang with extra context — while still
+// excluding "Hanging Leg Raise" (which doesn't contain "Dead Hang" anywhere).
+// Strict equality alone was undercounting by ~50% of logged sessions.
 function mgMatchesExercise(exName, title) {
   if (!exName || !title) return false;
   var canonical = extractCanonicalFromTitle(title);
   if (canonical) {
-    return normalizeExerciseName(exName) === canonical;
+    var normEx = normalizeExerciseName(exName);
+    if (normEx === canonical) return true;
+    var nl = String(normEx).toLowerCase();
+    var cl = String(canonical).toLowerCase();
+    var idx = nl.indexOf(cl);
+    while (idx >= 0) {
+      var before = idx === 0 ? '' : nl.charAt(idx - 1);
+      var afterPos = idx + cl.length;
+      var after = afterPos >= nl.length ? '' : nl.charAt(afterPos);
+      var beforeOk = !before || !/[a-z0-9]/.test(before);
+      var afterOk = !after || !/[a-z0-9]/.test(after);
+      if (beforeOk && afterOk) return true;
+      idx = nl.indexOf(cl, idx + 1);
+    }
+    return false;
   }
   return mgMatchesKeyword(exName, title);
 }
