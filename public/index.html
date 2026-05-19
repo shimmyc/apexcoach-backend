@@ -4739,218 +4739,368 @@ function checkMicroGoalCompletions() {
   _mgCompletionTrackerInit = true;
 }
 
-// ─── WEARABLE SYNC REVIEW PANEL ─────────────────────────────────────────
-// State for the active review session. Cleared every time the panel is
-// opened. matched / unmatched are the working queues — entries are
-// spliced out of them as the user reviews. tallies track final summary.
+// ─── WEARABLE SYNC ──────────────────────────────────────────────────────
+// Two-step modal:
+//   step "config" — user picks date range + activity types
+//   step "review" — server-computed backlog rendered as collapsible
+//                   sections of cards with per-card and bulk actions
+//
+// Server is the source of truth: the "matched/unmatched/already_synced"
+// arrays come back from sync-backlog (and from each bulk-action call,
+// already recomputed). Client-side state is just a cache for rendering.
+
 var wsState = {
-  open: false,
-  loading: false,
+  step: 'config',                    // 'config' | 'loading' | 'review' | 'summary' | 'error'
   provider: 'fitbit',
+  startDate: '',
+  endDate: '',
+  activityTypes: [],                 // all types discovered server-side
+  selectedTypes: {},                 // { typeLower: true }  — checkbox state
   matched: [],
   unmatched: [],
   already_synced: [],
-  tallies: { matched: 0, imported: 0, skipped: 0, ignored: 0 },
+  expanded: { matches: true, unmatched: true, synced: false },
+  tallies: { matched: 0, imported: 0, skipped: 0 },
 };
 
-function wsTotal() { return wsState.matched.length + wsState.unmatched.length + wsState.tallies.matched + wsState.tallies.imported + wsState.tallies.skipped + wsState.tallies.ignored; }
-function wsDone()  { return wsState.tallies.matched + wsState.tallies.imported + wsState.tallies.skipped + wsState.tallies.ignored; }
-
-function openWearableSync() {
-  if (!currentProfileId) { alert('Sign in to a profile first.'); return; }
-  var ov = document.getElementById('ws-overlay');
-  ov.style.display = 'flex';
-  wsState.open = true;
-  wsState.loading = true;
-  wsState.matched = [];
-  wsState.unmatched = [];
-  wsState.already_synced = [];
-  wsState.tallies = { matched: 0, imported: 0, skipped: 0, ignored: 0 };
-  document.getElementById('ws-progress').textContent = '';
-  document.getElementById('ws-body').innerHTML = '<div style="padding:60px 20px;text-align:center;color:var(--text-muted)"><div style="font-size:32px;margin-bottom:14px">&#x231A;</div><p style="font-size:14px;margin:0">Fetching Fitbit activities&hellip;</p></div>';
-
-  // 6 weeks back is enough to cover the longest realistic gap without
-  // pulling years of irrelevant history. If the user wants older sessions
-  // we'll add a date-range picker later.
-  var endDate = ds(0);
-  var sixWeeks = new Date();
-  sixWeeks.setDate(sixWeeks.getDate() - 42);
-  var startDate = sixWeeks.getFullYear() + '-' + String(sixWeeks.getMonth() + 1).padStart(2, '0') + '-' + String(sixWeeks.getDate()).padStart(2, '0');
-
-  var url = '/api/wearables/sync-backlog/' + currentProfileId
-    + '?provider=' + encodeURIComponent(wsState.provider)
-    + '&start_date=' + startDate + '&end_date=' + endDate;
-
-  fetch(url)
-    .then(function(r) { return r.json().then(function(j){ return { status: r.status, body: j }; }); })
-    .then(function(resp) {
-      wsState.loading = false;
-      if (resp.status === 401 && resp.body && resp.body.code === 'RECONNECT_REQUIRED') {
-        document.getElementById('ws-body').innerHTML = '<div style="padding:40px 20px;text-align:center"><p style="font-size:14px;color:var(--text-sec);margin:0 0 16px">Your Fitbit connection needs to be refreshed.</p><a href="/auth?profile_id=' + currentProfileId + '" style="display:inline-block;background:var(--accent-10);border:1px solid var(--accent-33);color:var(--accent);padding:10px 18px;border-radius:6px;font-size:13px;font-weight:600;text-decoration:none">Reconnect Fitbit</a></div>';
-        document.getElementById('ws-progress').textContent = 'Reconnect required';
-        return;
-      }
-      if (!resp.body || !resp.body.success) {
-        document.getElementById('ws-body').innerHTML = '<div style="padding:40px 20px;text-align:center"><p style="font-size:14px;color:#e84545;margin:0">Sync failed: ' + wsEsc((resp.body && resp.body.error) || 'unknown error') + '</p></div>';
-        return;
-      }
-      wsState.matched = Array.isArray(resp.body.matched) ? resp.body.matched.slice() : [];
-      wsState.unmatched = Array.isArray(resp.body.unmatched) ? resp.body.unmatched.slice() : [];
-      wsState.already_synced = Array.isArray(resp.body.already_synced) ? resp.body.already_synced.slice() : [];
-      renderWearableSync();
-    })
-    .catch(function(e) {
-      wsState.loading = false;
-      document.getElementById('ws-body').innerHTML = '<div style="padding:40px 20px;text-align:center"><p style="font-size:14px;color:#e84545;margin:0">Network error: ' + wsEsc(e && e.message) + '</p></div>';
-    });
-}
-
-function closeWearableSync() {
-  document.getElementById('ws-overlay').style.display = 'none';
-  wsState.open = false;
-  // If anything was actually merged/imported, refresh the local workout
-  // log so the new wearable_data is visible on history cards immediately.
-  if (wsState.tallies.matched + wsState.tallies.imported > 0 && typeof loadWorkouts === 'function') {
-    loadWorkouts();
-  }
-}
-
-// Small HTML escaper. The card content includes user notes + Fitbit
-// activity names — both come from external sources so this is required.
 function wsEsc(s) {
   if (s == null) return '';
   return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 }
-
 function wsFmtDate(d) {
   if (!d) return '';
   var dt = new Date(d + 'T12:00:00');
   if (isNaN(dt.getTime())) return wsEsc(d);
   return dt.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
 }
+function wsIsoOffset(days) {
+  var d = new Date();
+  d.setDate(d.getDate() + days);
+  return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
+}
 
-function renderWearableSync() {
-  // Show summary screen once every item has been processed.
-  var pendingCount = wsState.matched.length + wsState.unmatched.length;
-  if (pendingCount === 0 && !wsState.loading) {
-    var t = wsState.tallies;
-    document.getElementById('ws-progress').textContent = 'All done';
-    var summary = '<div style="text-align:center;padding:30px 10px">'
-      + '<div style="font-size:40px;margin-bottom:12px">&#x2705;</div>'
-      + '<p style="font-size:16px;color:var(--text-bright);margin:0 0 18px;font-weight:600">'
-      + t.matched + ' matched &middot; ' + t.imported + ' imported &middot; ' + (t.skipped + t.ignored) + ' skipped'
-      + '</p>';
-    if (wsState.already_synced.length) {
-      summary += '<p style="font-size:12px;color:var(--text-muted);margin:0 0 22px">' + wsState.already_synced.length + ' session' + (wsState.already_synced.length === 1 ? '' : 's') + ' were already synced.</p>';
-    }
-    summary += '<button onclick="closeWearableSync()" class="btnPri" style="padding:11px 28px;font-size:14px">Done</button>'
-      + '</div>';
-    document.getElementById('ws-body').innerHTML = summary;
+// Selected types as a lowercase array suitable for the activity_types
+// query/body param. Returns null if every discovered type is checked
+// — server treats that as "no filter", which is more efficient than
+// sending the full list.
+function wsSelectedTypeFilter() {
+  if (!wsState.activityTypes.length) return null;
+  var picked = [];
+  for (var i = 0; i < wsState.activityTypes.length; i++) {
+    var t = wsState.activityTypes[i];
+    if (wsState.selectedTypes[t.toLowerCase()]) picked.push(t.toLowerCase());
+  }
+  if (!picked.length) return [];
+  if (picked.length === wsState.activityTypes.length) return null;
+  return picked;
+}
+
+function openWearableSync() {
+  if (!currentProfileId) { alert('Sign in to a profile first.'); return; }
+  document.getElementById('ws-overlay').style.display = 'flex';
+  wsState.step = 'config';
+  wsState.startDate = wsIsoOffset(-90);
+  wsState.endDate = wsIsoOffset(0);
+  wsState.activityTypes = [];
+  wsState.selectedTypes = {};
+  wsState.matched = [];
+  wsState.unmatched = [];
+  wsState.already_synced = [];
+  wsState.tallies = { matched: 0, imported: 0, skipped: 0 };
+  wsRender();
+  wsFetchActivityTypes();  // populate checkbox list for current range
+}
+
+function closeWearableSync() {
+  document.getElementById('ws-overlay').style.display = 'none';
+  // Server-side merges/imports/rejects all touched the workouts table,
+  // so refresh the local workoutLog so history cards pick up the new
+  // wearable_data immediately.
+  if ((wsState.tallies.matched + wsState.tallies.imported + wsState.tallies.skipped) > 0
+      && typeof loadWorkouts === 'function') {
+    loadWorkouts();
+  }
+}
+
+// Discover activity types for the current date range so the config
+// step can render real checkboxes (not a hardcoded list). Re-fired any
+// time the user changes the date range. RECONNECT_REQUIRED short-
+// circuits straight to the error step.
+function wsFetchActivityTypes() {
+  var url = '/api/wearables/activity-types/' + currentProfileId
+    + '?provider=' + encodeURIComponent(wsState.provider)
+    + '&start_date=' + wsState.startDate + '&end_date=' + wsState.endDate;
+  var typesEl = document.getElementById('ws-type-list');
+  if (typesEl) typesEl.innerHTML = '<p style="font-size:12px;color:var(--text-dim);margin:0">Loading activity types…</p>';
+  fetch(url)
+    .then(function(r) { return r.json().then(function(j) { return { status: r.status, body: j }; }); })
+    .then(function(resp) {
+      if (resp.status === 401 && resp.body && resp.body.code === 'RECONNECT_REQUIRED') {
+        wsState.step = 'reconnect';
+        wsRender();
+        return;
+      }
+      if (!resp.body || !resp.body.success) {
+        if (typesEl) typesEl.innerHTML = '<p style="font-size:12px;color:#e84545;margin:0">' + wsEsc((resp.body && resp.body.error) || 'Failed to load types') + '</p>';
+        return;
+      }
+      wsState.activityTypes = Array.isArray(resp.body.activity_types) ? resp.body.activity_types : [];
+      // Default: every discovered type checked.
+      wsState.selectedTypes = {};
+      for (var i = 0; i < wsState.activityTypes.length; i++) {
+        wsState.selectedTypes[wsState.activityTypes[i].toLowerCase()] = true;
+      }
+      wsRenderTypeList();
+    })
+    .catch(function(e) {
+      if (typesEl) typesEl.innerHTML = '<p style="font-size:12px;color:#e84545;margin:0">Network error: ' + wsEsc(e && e.message) + '</p>';
+    });
+}
+
+// ── render dispatch ─────────────────────────────────────────────────────
+function wsRender() {
+  var prog = document.getElementById('ws-progress');
+  var body = document.getElementById('ws-body');
+  if (wsState.step === 'config')      { prog.textContent = 'Configure sync'; body.innerHTML = wsRenderConfig(); wsRenderTypeList(); }
+  else if (wsState.step === 'loading'){ prog.textContent = 'Syncing…'; body.innerHTML = wsRenderLoading(); }
+  else if (wsState.step === 'review') { wsRenderReview(); }
+  else if (wsState.step === 'summary'){ prog.textContent = 'All done'; body.innerHTML = wsRenderSummary(); }
+  else if (wsState.step === 'reconnect') { prog.textContent = 'Reconnect required'; body.innerHTML = wsRenderReconnect(); }
+}
+
+// ── step: config ────────────────────────────────────────────────────────
+function wsRenderConfig() {
+  return ''
+    + '<div style="margin-bottom:18px">'
+    +   '<p class="mono" style="font-size:10px;color:var(--text-dim);letter-spacing:2px;margin:0 0 8px">DATE RANGE</p>'
+    +   '<div style="display:flex;gap:8px;align-items:center">'
+    +     '<input id="ws-start" type="date" value="' + wsState.startDate + '" max="' + wsState.endDate + '" onchange="wsOnDateChange()" style="flex:1;background:var(--bg-input);border:1px solid var(--border);color:var(--text);padding:9px 10px;border-radius:6px;font-size:13px;font-family:DM Sans,sans-serif">'
+    +     '<span style="font-size:12px;color:var(--text-dim)">to</span>'
+    +     '<input id="ws-end" type="date" value="' + wsState.endDate + '" max="' + wsIsoOffset(0) + '" onchange="wsOnDateChange()" style="flex:1;background:var(--bg-input);border:1px solid var(--border);color:var(--text);padding:9px 10px;border-radius:6px;font-size:13px;font-family:DM Sans,sans-serif">'
+    +   '</div>'
+    + '</div>'
+    + '<div style="margin-bottom:18px">'
+    +   '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">'
+    +     '<p class="mono" style="font-size:10px;color:var(--text-dim);letter-spacing:2px;margin:0">ACTIVITY TYPES</p>'
+    +     '<div style="display:flex;gap:6px"><button type="button" onclick="wsAllTypes(true)" style="background:transparent;border:1px solid var(--border-accent);color:var(--text-muted);padding:4px 9px;border-radius:4px;cursor:pointer;font-size:11px">All</button>'
+    +     '<button type="button" onclick="wsAllTypes(false)" style="background:transparent;border:1px solid var(--border-accent);color:var(--text-muted);padding:4px 9px;border-radius:4px;cursor:pointer;font-size:11px">None</button></div>'
+    +   '</div>'
+    +   '<div id="ws-type-list" style="display:flex;flex-wrap:wrap;gap:6px;min-height:28px"></div>'
+    + '</div>'
+    + '<button onclick="wsRunSync()" class="btnPri" style="width:100%;padding:11px;font-size:14px">Sync</button>';
+}
+
+function wsRenderTypeList() {
+  var el = document.getElementById('ws-type-list');
+  if (!el) return;
+  if (!wsState.activityTypes.length) {
+    el.innerHTML = '<p style="font-size:12px;color:var(--text-dim);margin:0">No activities found in this date range.</p>';
+    return;
+  }
+  var h = '';
+  for (var i = 0; i < wsState.activityTypes.length; i++) {
+    var t = wsState.activityTypes[i];
+    var checked = wsState.selectedTypes[t.toLowerCase()] !== false;
+    h += '<label style="display:inline-flex;align-items:center;gap:6px;background:' + (checked ? 'var(--accent-10)' : 'var(--bg-input)') + ';border:1px solid ' + (checked ? 'var(--accent-33)' : 'var(--border)') + ';color:' + (checked ? 'var(--accent)' : 'var(--text-muted)') + ';padding:5px 10px;border-radius:14px;cursor:pointer;font-size:12px;font-weight:600;user-select:none">'
+       + '<input type="checkbox" ' + (checked ? 'checked' : '') + ' onchange="wsToggleType(\'' + t.toLowerCase().replace(/'/g, "\\'") + '\')" style="margin:0;cursor:pointer">'
+       + wsEsc(t) + '</label>';
+  }
+  el.innerHTML = h;
+}
+
+function wsOnDateChange() {
+  var s = document.getElementById('ws-start').value;
+  var e = document.getElementById('ws-end').value;
+  if (s) wsState.startDate = s;
+  if (e) wsState.endDate = e;
+  if (wsState.startDate && wsState.endDate && wsState.startDate > wsState.endDate) {
+    wsState.startDate = wsState.endDate;
+    document.getElementById('ws-start').value = wsState.startDate;
+  }
+  wsFetchActivityTypes();
+}
+
+function wsToggleType(typeLower) {
+  wsState.selectedTypes[typeLower] = !wsState.selectedTypes[typeLower];
+  wsRenderTypeList();
+}
+
+function wsAllTypes(on) {
+  for (var i = 0; i < wsState.activityTypes.length; i++) {
+    wsState.selectedTypes[wsState.activityTypes[i].toLowerCase()] = !!on;
+  }
+  wsRenderTypeList();
+}
+
+// ── step: loading ───────────────────────────────────────────────────────
+function wsRenderLoading() {
+  return '<div style="padding:60px 20px;text-align:center;color:var(--text-muted)"><div style="font-size:32px;margin-bottom:14px">&#x231A;</div><p style="font-size:14px;margin:0">Fetching Fitbit activities&hellip;</p></div>';
+}
+
+function wsRunSync() {
+  wsState.step = 'loading';
+  wsRender();
+  var filter = wsSelectedTypeFilter();
+  var url = '/api/wearables/sync-backlog/' + currentProfileId
+    + '?provider=' + encodeURIComponent(wsState.provider)
+    + '&start_date=' + wsState.startDate + '&end_date=' + wsState.endDate;
+  if (filter !== null) {
+    url += '&activity_types=' + encodeURIComponent(JSON.stringify(filter));
+  }
+  fetch(url)
+    .then(function(r) { return r.json().then(function(j) { return { status: r.status, body: j }; }); })
+    .then(function(resp) {
+      if (resp.status === 401 && resp.body && resp.body.code === 'RECONNECT_REQUIRED') {
+        wsState.step = 'reconnect'; wsRender(); return;
+      }
+      if (!resp.body || !resp.body.success) {
+        document.getElementById('ws-body').innerHTML = '<div style="padding:40px 20px;text-align:center"><p style="font-size:14px;color:#e84545;margin:0">Sync failed: ' + wsEsc((resp.body && resp.body.error) || 'unknown error') + '</p><button onclick="openWearableSync()" style="margin-top:14px;background:transparent;border:1px solid var(--border-accent);color:var(--text-muted);padding:8px 16px;border-radius:6px;cursor:pointer;font-size:13px">Try again</button></div>';
+        return;
+      }
+      wsApplyBacklog(resp.body);
+      wsState.step = 'review';
+      wsRender();
+    })
+    .catch(function(e) {
+      document.getElementById('ws-body').innerHTML = '<div style="padding:40px 20px;text-align:center"><p style="font-size:14px;color:#e84545;margin:0">Network error: ' + wsEsc(e && e.message) + '</p></div>';
+    });
+}
+
+function wsApplyBacklog(body) {
+  wsState.matched = Array.isArray(body.matched) ? body.matched.slice() : [];
+  wsState.unmatched = Array.isArray(body.unmatched) ? body.unmatched.slice() : [];
+  wsState.already_synced = Array.isArray(body.already_synced) ? body.already_synced.slice() : [];
+}
+
+// ── step: review (header + bulk + collapsible sections) ─────────────────
+function wsRenderReview() {
+  var t = wsState.tallies;
+  var counts = wsState.matched.length + ' pending &middot; '
+             + wsState.unmatched.length + ' unmatched &middot; '
+             + wsState.already_synced.length + ' synced';
+  document.getElementById('ws-progress').innerHTML = counts;
+
+  if (!wsState.matched.length && !wsState.unmatched.length) {
+    wsState.step = 'summary';
+    wsRender();
     return;
   }
 
-  // Header counter — "X of Y reviewed". Total is fixed at panel-open and
-  // reflects "decisions you need to make", not already-synced rows.
-  var total = pendingCount + wsDone();
-  document.getElementById('ws-progress').textContent = wsDone() + ' of ' + total + ' reviewed';
-
-  var h = '';
-
-  // ── Section 1: pending matches ─────────────────────────────────────
-  if (wsState.matched.length) {
-    h += '<p class="mono" style="font-size:10px;color:var(--text-dim);letter-spacing:2px;margin:4px 0 10px">PENDING MATCHES (' + wsState.matched.length + ')</p>';
-    for (var i = 0; i < wsState.matched.length; i++) {
-      h += renderMatchCard(wsState.matched[i], i);
+  var hasBulk = wsState.matched.length || wsState.unmatched.length;
+  var bulkBar = '';
+  if (hasBulk) {
+    bulkBar = '<div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:14px;justify-content:flex-end">';
+    if (wsState.matched.length) {
+      bulkBar += '<button onclick="wsBulk(\'match_all\')" style="background:var(--accent-10);border:1px solid var(--accent-33);color:var(--accent);padding:6px 12px;border-radius:6px;cursor:pointer;font-size:12px;font-weight:600">Match All (&ge;70)</button>';
+      bulkBar += '<button onclick="wsBulk(\'skip_all\')" style="background:transparent;border:1px solid var(--border-accent);color:var(--text-muted);padding:6px 12px;border-radius:6px;cursor:pointer;font-size:12px">Skip All</button>';
     }
-  }
-
-  // ── Section 2: unmatched ───────────────────────────────────────────
-  if (wsState.unmatched.length) {
-    h += '<p class="mono" style="font-size:10px;color:var(--text-dim);letter-spacing:2px;margin:22px 0 10px">UNMATCHED FITBIT SESSIONS (' + wsState.unmatched.length + ')</p>';
-    for (var u = 0; u < wsState.unmatched.length; u++) {
-      h += renderUnmatchedCard(wsState.unmatched[u], u);
+    if (wsState.unmatched.length) {
+      bulkBar += '<button onclick="wsBulk(\'import_all\')" style="background:transparent;border:1px solid var(--accent-33);color:var(--accent);padding:6px 12px;border-radius:6px;cursor:pointer;font-size:12px;font-weight:600">Import All</button>';
     }
+    bulkBar += '</div>';
   }
 
-  // ── Section 3: already synced (collapsed count) ────────────────────
-  if (wsState.already_synced.length) {
-    h += '<div style="margin-top:22px;padding:12px 14px;background:var(--bg-input);border:1px solid var(--border);border-radius:8px;display:flex;align-items:center;gap:10px">'
-      + '<span style="font-size:18px">&#x2713;</span>'
-      + '<div style="flex:1"><p class="mono" style="font-size:10px;color:var(--text-dim);letter-spacing:2px;margin:0 0 2px">ALREADY SYNCED</p>'
-      + '<p style="font-size:13px;color:var(--text-muted);margin:0">' + wsState.already_synced.length + ' session' + (wsState.already_synced.length === 1 ? '' : 's') + ' already merged on a previous sync.</p></div></div>';
-  }
-
-  if (!h) {
-    h = '<div style="padding:40px 20px;text-align:center"><p style="font-size:14px;color:var(--text-muted);margin:0">No new Fitbit activities to review.</p></div>';
-    document.getElementById('ws-progress').textContent = 'Nothing to review';
-  }
+  var h = bulkBar
+    + wsRenderSection('matches', 'PENDING MATCHES', wsState.matched.length, wsState.matched.map(renderMatchCard).join(''))
+    + wsRenderSection('unmatched', 'UNMATCHED', wsState.unmatched.length, wsState.unmatched.map(renderUnmatchedCard).join(''))
+    + wsRenderSection('synced', 'ALREADY SYNCED', wsState.already_synced.length, wsRenderSyncedList());
 
   document.getElementById('ws-body').innerHTML = h;
 }
 
-function renderMatchCard(entry, idx) {
+function wsRenderSection(key, label, count, innerHTML) {
+  if (!count) return '';
+  var open = !!wsState.expanded[key];
+  var caret = open ? '&#9650;' : '&#9660;';
+  return '<div style="margin-bottom:14px">'
+    + '<button onclick="wsToggleSection(\'' + key + '\')" style="width:100%;background:transparent;border:none;color:var(--text-bright);display:flex;justify-content:space-between;align-items:center;padding:8px 4px;cursor:pointer;font-family:DM Sans,sans-serif">'
+    +   '<span class="mono" style="font-size:10px;color:var(--text-dim);letter-spacing:2px">' + label + ' (' + count + ')</span>'
+    +   '<span style="font-size:11px;color:var(--text-dim)">' + caret + '</span>'
+    + '</button>'
+    + (open ? '<div style="margin-top:8px">' + innerHTML + '</div>' : '')
+    + '</div>';
+}
+
+function wsToggleSection(key) {
+  wsState.expanded[key] = !wsState.expanded[key];
+  wsRenderReview();
+}
+
+function wsRenderSyncedList() {
+  // Compact one-liners; users rarely need detail here, just confirmation.
+  var rows = wsState.already_synced.map(function(e) {
+    var a = e.activity || {};
+    return '<div style="display:flex;justify-content:space-between;align-items:center;padding:8px 10px;background:var(--bg-input);border-radius:6px;margin-bottom:6px">'
+      + '<span style="font-size:13px;color:var(--text-sec)">' + wsEsc(a.activity_type || 'Activity') + '</span>'
+      + '<span class="mono" style="font-size:10px;color:var(--text-dim);letter-spacing:1.5px">' + wsFmtDate(a.date) + '</span>'
+      + '</div>';
+  });
+  return rows.join('');
+}
+
+function renderMatchCard(entry) {
   var act = entry.activity || {};
   var w = entry.workout || {};
   var score = entry.score || 0;
-  var nsId = entry.wearable_activity_id;
-  var notesPreview = w.notes ? String(w.notes).replace(/\s+/g, ' ').slice(0, 50) + (w.notes.length > 50 ? '…' : '') : '';
+  var notesPreview = w.notes ? String(w.notes).replace(/\s+/g, ' ').slice(0, 80) + (w.notes.length > 80 ? '…' : '') : '';
+  var scoreColor = score >= 70 ? 'var(--accent)' : score >= 50 ? '#f5a623' : 'var(--text-muted)';
 
-  var actStats = wsBuildActivityStats(act);
-
-  return '<div class="ws-card" data-ws-card="match-' + idx + '" style="border:1px solid var(--border);border-radius:10px;padding:14px;margin-bottom:10px;background:var(--bg-card);transition:opacity .25s,transform .25s">'
+  return '<div data-ws-card="match-' + entry.wearable_activity_id + '" style="border:1px solid var(--border);border-radius:10px;padding:14px;margin-bottom:10px;background:var(--bg-card);transition:opacity .25s,transform .25s">'
     + '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">'
     +   '<span class="mono" style="font-size:10px;color:var(--text-dim);letter-spacing:2px">' + wsFmtDate(act.date) + '</span>'
-    +   '<span class="mono" style="font-size:10px;background:var(--accent-18);color:var(--accent);padding:2px 8px;border-radius:4px;font-weight:700">' + score + ' pts</span>'
+    +   '<span class="mono" style="font-size:10px;background:' + scoreColor + '22;color:' + scoreColor + ';padding:2px 8px;border-radius:4px;font-weight:700">' + score + ' pts</span>'
     + '</div>'
     + '<div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:12px">'
-      // LEFT — manual workout
     +   '<div style="background:var(--bg-input);border-radius:6px;padding:10px">'
     +     '<p class="mono" style="font-size:9px;color:var(--text-dim);letter-spacing:2px;margin:0 0 4px">MANUAL LOG</p>'
     +     '<p style="font-size:13px;font-weight:600;color:var(--text-bright);margin:0 0 3px;line-height:1.3">' + wsEsc(w.type || 'Workout') + '</p>'
     +     (w.duration_minutes ? '<p style="font-size:11px;color:var(--text-muted);margin:0 0 4px">' + w.duration_minutes + ' min</p>' : '')
     +     (notesPreview ? '<p style="font-size:11px;color:var(--text-muted);margin:0;font-style:italic;line-height:1.4">' + wsEsc(notesPreview) + '</p>' : '')
     +   '</div>'
-      // RIGHT — wearable activity
     +   '<div style="background:var(--bg-input);border-radius:6px;padding:10px">'
     +     '<p class="mono" style="font-size:9px;color:var(--text-dim);letter-spacing:2px;margin:0 0 4px">FITBIT</p>'
     +     '<p style="font-size:13px;font-weight:600;color:var(--text-bright);margin:0 0 3px;line-height:1.3">' + wsEsc(act.activity_type || 'Activity') + '</p>'
     +     (act.duration_minutes != null ? '<p style="font-size:11px;color:var(--text-muted);margin:0 0 4px">' + act.duration_minutes + ' min</p>' : '')
-    +     actStats
+    +     wsBuildActivityStats(act)
     +   '</div>'
     + '</div>'
     + '<div style="display:flex;gap:8px;justify-content:flex-end">'
-    +   '<button onclick="wsReject(' + idx + ')" style="background:transparent;border:1px solid var(--border-accent);color:var(--text-muted);padding:8px 14px;border-radius:6px;cursor:pointer;font-size:13px;font-family:DM Sans,sans-serif">&#x2717; Skip</button>'
-    +   '<button onclick="wsMerge(' + idx + ')" class="btnPri" style="padding:8px 16px;font-size:13px">&#x2713; Match</button>'
+    +   '<button onclick="wsCardAction(\'reject\',\'' + entry.wearable_activity_id + '\')" style="background:transparent;border:1px solid var(--border-accent);color:var(--text-muted);padding:8px 14px;border-radius:6px;cursor:pointer;font-size:13px;font-family:DM Sans,sans-serif">&#x2717; Skip</button>'
+    +   '<button onclick="wsCardAction(\'merge\',\'' + entry.wearable_activity_id + '\')" class="btnPri" style="padding:8px 16px;font-size:13px">&#x2713; Match</button>'
     + '</div>'
     + '</div>';
 }
 
-function renderUnmatchedCard(entry, idx) {
+function renderUnmatchedCard(entry) {
   var act = entry.activity || {};
-  return '<div class="ws-card" data-ws-card="unmatched-' + idx + '" style="border:1px solid var(--border);border-radius:10px;padding:14px;margin-bottom:10px;background:var(--bg-card);transition:opacity .25s,transform .25s">'
-    + '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">'
-    +   '<div style="flex:1;min-width:0">'
-    +     '<p style="font-size:14px;font-weight:600;color:var(--text-bright);margin:0 0 2px">' + wsEsc(act.activity_type || 'Activity') + '</p>'
-    +     '<p class="mono" style="font-size:10px;color:var(--text-dim);letter-spacing:2px;margin:0">' + wsFmtDate(act.date) + (act.duration_minutes != null ? ' &middot; ' + act.duration_minutes + ' MIN' : '') + '</p>'
-    +   '</div>'
+  return '<div data-ws-card="unmatched-' + entry.wearable_activity_id + '" style="border:1px solid var(--border);border-radius:10px;padding:14px;margin-bottom:10px;background:var(--bg-card);transition:opacity .25s,transform .25s">'
+    + '<div style="margin-bottom:8px">'
+    +   '<p style="font-size:14px;font-weight:600;color:var(--text-bright);margin:0 0 2px">' + wsEsc(act.activity_type || 'Activity') + '</p>'
+    +   '<p class="mono" style="font-size:10px;color:var(--text-dim);letter-spacing:2px;margin:0">' + wsFmtDate(act.date) + (act.duration_minutes != null ? ' &middot; ' + act.duration_minutes + ' MIN' : '') + '</p>'
     + '</div>'
     + '<div style="margin-bottom:12px">' + wsBuildActivityStats(act) + '</div>'
     + '<div style="display:flex;gap:8px;justify-content:flex-end">'
-    +   '<button onclick="wsIgnore(' + idx + ')" style="background:transparent;border:1px solid var(--border-accent);color:var(--text-muted);padding:8px 14px;border-radius:6px;cursor:pointer;font-size:13px;font-family:DM Sans,sans-serif">&#x2717; Ignore</button>'
-    +   '<button onclick="wsImport(' + idx + ')" class="btnPri" style="padding:8px 16px;font-size:13px">+ Import</button>'
+    +   '<button onclick="wsCardAction(\'ignore\',\'' + entry.wearable_activity_id + '\')" style="background:transparent;border:1px solid var(--border-accent);color:var(--text-muted);padding:8px 14px;border-radius:6px;cursor:pointer;font-size:13px;font-family:DM Sans,sans-serif">&#x2717; Ignore</button>'
+    +   '<button onclick="wsCardAction(\'import\',\'' + entry.wearable_activity_id + '\')" class="btnPri" style="padding:8px 16px;font-size:13px">+ Import</button>'
     + '</div>'
     + '</div>';
 }
 
-// Inline stats row showing the data the wearable captured. Each metric
-// only renders when present so the card doesn't get cluttered for low-
-// detail providers.
+// Inline stats grid. Each metric renders only when the provider
+// captured it — keeps the card compact for low-detail sources. The HR-
+// samples indicator surfaces intraday data without rendering a full
+// chart inside the card (the workout detail view does that).
 function wsBuildActivityStats(act) {
   var parts = [];
-  if (act.steps != null)               parts.push({ k: 'STEPS', v: act.steps.toLocaleString() });
-  if (act.avg_hr != null)              parts.push({ k: 'AVG HR', v: act.avg_hr + ' bpm' });
-  if (act.active_zone_minutes != null) parts.push({ k: 'AZM', v: act.active_zone_minutes + ' min' });
-  if (act.calories != null)            parts.push({ k: 'CAL', v: act.calories });
+  if (act.steps != null)               parts.push({ k: 'STEPS',   v: Number(act.steps).toLocaleString() });
+  if (act.avg_hr != null)              parts.push({ k: 'AVG HR',  v: act.avg_hr + ' bpm' });
+  if (act.peak_hr != null)             parts.push({ k: 'PEAK HR', v: act.peak_hr + ' bpm' });
+  if (act.min_hr != null)              parts.push({ k: 'MIN HR',  v: act.min_hr + ' bpm' });
+  if (act.active_zone_minutes != null) parts.push({ k: 'AZM',     v: act.active_zone_minutes + ' min' });
+  if (act.calories != null)            parts.push({ k: 'CAL',     v: act.calories });
+  if (Array.isArray(act.heart_rate_samples) && act.heart_rate_samples.length) {
+    parts.push({ k: 'HR SERIES', v: act.heart_rate_samples.length + ' pts' });
+  }
   if (!parts.length) return '<p style="font-size:11px;color:var(--text-dim);margin:0">No biometric detail</p>';
   var rows = parts.map(function(p) {
     return '<div style="flex:1;min-width:60px"><p class="mono" style="font-size:9px;color:var(--text-dim);letter-spacing:1.5px;margin:0 0 2px">' + p.k + '</p><p style="font-size:12px;color:var(--text-sec);margin:0;font-weight:600">' + p.v + '</p></div>';
@@ -4959,9 +5109,9 @@ function wsBuildActivityStats(act) {
 }
 
 // Card-exit animation. Optimistically removes the card from the DOM so
-// the rest of the panel doesn't re-render and lose scroll position. The
-// caller still calls renderWearableSync() after the network round-trip
-// to refresh the counter + advance to the summary screen when empty.
+// scroll position is preserved; the post-action renderReview() doesn't
+// re-render unchanged cards because we never re-call innerHTML between
+// the splice and the next major update.
 function wsAnimateOut(selector, after) {
   var el = document.querySelector('[data-ws-card="' + selector + '"]');
   if (!el) { after && after(); return; }
@@ -4970,81 +5120,142 @@ function wsAnimateOut(selector, after) {
   setTimeout(function() { after && after(); }, 220);
 }
 
-// ── per-card actions ───────────────────────────────────────────────────
-function wsMerge(idx) {
-  var entry = wsState.matched[idx];
-  if (!entry) return;
-  wsAnimateOut('match-' + idx, function() {
-    wsState.matched.splice(idx, 1);
-    wsState.tallies.matched++;
-    renderWearableSync();
-  });
-  fetch('/api/wearables/merge/' + currentProfileId, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      workout_id: entry.workout.id,
-      provider: wsState.provider,
-      wearable_activity_id: entry.wearable_activity_id,
-    }),
-  })
-    .then(function(r) { return r.json(); })
-    .then(function(j) { if (!j || !j.success) console.warn('[Wearables] merge failed:', j); })
-    .catch(function(e) { console.warn('[Wearables] merge error:', e && e.message); });
+// Find an entry in the matched/unmatched arrays by namespaced id and
+// remove it. Returns the removed entry so the caller can use it for
+// the API call. Returns null if not found.
+function wsTakeMatched(nsId) {
+  for (var i = 0; i < wsState.matched.length; i++) {
+    if (wsState.matched[i].wearable_activity_id === nsId) {
+      return wsState.matched.splice(i, 1)[0];
+    }
+  }
+  return null;
+}
+function wsTakeUnmatched(nsId) {
+  for (var i = 0; i < wsState.unmatched.length; i++) {
+    if (wsState.unmatched[i].wearable_activity_id === nsId) {
+      return wsState.unmatched.splice(i, 1)[0];
+    }
+  }
+  return null;
 }
 
-function wsReject(idx) {
-  var entry = wsState.matched[idx];
-  if (!entry) return;
-  wsAnimateOut('match-' + idx, function() {
-    wsState.matched.splice(idx, 1);
-    wsState.tallies.skipped++;
-    renderWearableSync();
-  });
-  fetch('/api/wearables/reject/' + currentProfileId, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      workout_id: entry.workout.id,
-      provider: wsState.provider,
-      wearable_activity_id: entry.wearable_activity_id,
-    }),
-  })
-    .then(function(r) { return r.json(); })
-    .then(function(j) { if (!j || !j.success) console.warn('[Wearables] reject failed:', j); })
-    .catch(function(e) { console.warn('[Wearables] reject error:', e && e.message); });
+// Single dispatcher for all four per-card actions. Cards reference the
+// namespaced wearable_activity_id (stable per session) instead of an
+// array index — indices shift as items are spliced and would break
+// concurrent clicks during the exit animation.
+function wsCardAction(kind, nsId) {
+  if (kind === 'merge') {
+    var m = wsTakeMatched(nsId);
+    if (!m) return;
+    wsAnimateOut('match-' + nsId, function() {
+      wsState.tallies.matched++;
+      wsRenderReview();
+    });
+    fetch('/api/wearables/merge/' + currentProfileId, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ workout_id: m.workout.id, provider: wsState.provider, wearable_activity_id: m.wearable_activity_id }),
+    }).catch(function(e) { console.warn('[Wearables] merge error:', e && e.message); });
+  } else if (kind === 'reject') {
+    var r = wsTakeMatched(nsId);
+    if (!r) return;
+    wsAnimateOut('match-' + nsId, function() {
+      wsState.tallies.skipped++;
+      wsRenderReview();
+    });
+    fetch('/api/wearables/reject/' + currentProfileId, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ workout_id: r.workout.id, provider: wsState.provider, wearable_activity_id: r.wearable_activity_id }),
+    }).catch(function(e) { console.warn('[Wearables] reject error:', e && e.message); });
+  } else if (kind === 'import') {
+    var im = wsTakeUnmatched(nsId);
+    if (!im) return;
+    wsAnimateOut('unmatched-' + nsId, function() {
+      wsState.tallies.imported++;
+      wsRenderReview();
+    });
+    fetch('/api/wearables/import/' + currentProfileId, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ provider: wsState.provider, wearable_activity_id: im.wearable_activity_id }),
+    }).catch(function(e) { console.warn('[Wearables] import error:', e && e.message); });
+  } else if (kind === 'ignore') {
+    if (!wsTakeUnmatched(nsId)) return;
+    wsAnimateOut('unmatched-' + nsId, function() { wsRenderReview(); });
+    // No tally — ignore is purely local; the session will resurface
+    // on the next sync since we don't record anything server-side.
+  }
 }
 
-function wsImport(idx) {
-  var entry = wsState.unmatched[idx];
-  if (!entry) return;
-  wsAnimateOut('unmatched-' + idx, function() {
-    wsState.unmatched.splice(idx, 1);
-    wsState.tallies.imported++;
-    renderWearableSync();
-  });
-  fetch('/api/wearables/import/' + currentProfileId, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+// ── bulk actions ────────────────────────────────────────────────────────
+function wsBulk(action) {
+  var label = action === 'match_all' ? 'auto-match all high-confidence pairings (score ≥ 70)'
+            : action === 'import_all' ? 'import every unmatched session as a standalone workout'
+            : 'skip every pending match (each Fitbit session is logged as its own workout)';
+  if (!confirm('About to ' + label + '. Continue?')) return;
+
+  // Disable the panel during the round-trip so duplicate clicks can't
+  // double-fire mutations server-side.
+  document.getElementById('ws-body').innerHTML = '<div style="padding:60px 20px;text-align:center;color:var(--text-muted)"><div style="font-size:28px;margin-bottom:12px">&#x231A;</div><p style="font-size:14px;margin:0">Applying ' + wsEsc(action.replace(/_/g, ' ')) + '&hellip;</p></div>';
+
+  var filter = wsSelectedTypeFilter();
+  fetch('/api/wearables/bulk-action/' + currentProfileId, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
+      action: action,
       provider: wsState.provider,
-      wearable_activity_id: entry.wearable_activity_id,
+      start_date: wsState.startDate,
+      end_date: wsState.endDate,
+      filter_activity_types: filter,
     }),
   })
-    .then(function(r) { return r.json(); })
-    .then(function(j) { if (!j || !j.success) console.warn('[Wearables] import failed:', j); })
-    .catch(function(e) { console.warn('[Wearables] import error:', e && e.message); });
+    .then(function(r) { return r.json().then(function(j) { return { status: r.status, body: j }; }); })
+    .then(function(resp) {
+      if (resp.status === 401 && resp.body && resp.body.code === 'RECONNECT_REQUIRED') {
+        wsState.step = 'reconnect'; wsRender(); return;
+      }
+      if (!resp.body || !resp.body.success) {
+        alert('Bulk action failed: ' + ((resp.body && resp.body.error) || 'unknown'));
+        wsRenderReview();
+        return;
+      }
+      // Apply the recomputed state from the server, bump the appropriate
+      // tally counter, and re-render. The server-side recompute is the
+      // authoritative source — local mutations during animation are
+      // replaced wholesale here.
+      var acted = resp.body.acted || 0;
+      if (action === 'match_all')      wsState.tallies.matched += acted;
+      else if (action === 'import_all') wsState.tallies.imported += acted;
+      else if (action === 'skip_all')   wsState.tallies.skipped += acted;
+      wsApplyBacklog(resp.body);
+      wsRenderReview();
+    })
+    .catch(function(e) {
+      alert('Bulk action network error: ' + (e && e.message));
+      wsRenderReview();
+    });
 }
 
-// "Ignore" is purely local — no API call. The session stays on Fitbit's
-// side, doesn't get a workout row, and will resurface on the next sync.
-function wsIgnore(idx) {
-  if (!wsState.unmatched[idx]) return;
-  wsAnimateOut('unmatched-' + idx, function() {
-    wsState.unmatched.splice(idx, 1);
-    wsState.tallies.ignored++;
-    renderWearableSync();
-  });
+// ── step: summary ───────────────────────────────────────────────────────
+function wsRenderSummary() {
+  var t = wsState.tallies;
+  var h = '<div style="text-align:center;padding:30px 10px">'
+    + '<div style="font-size:40px;margin-bottom:12px">&#x2705;</div>'
+    + '<p style="font-size:16px;color:var(--text-bright);margin:0 0 18px;font-weight:600">'
+    +   t.matched + ' matched &middot; ' + t.imported + ' imported &middot; ' + t.skipped + ' skipped'
+    + '</p>';
+  if (wsState.already_synced.length) {
+    h += '<p style="font-size:12px;color:var(--text-muted);margin:0 0 22px">' + wsState.already_synced.length + ' already synced from previous runs.</p>';
+  }
+  h += '<button onclick="closeWearableSync()" class="btnPri" style="padding:11px 28px;font-size:14px">Done</button></div>';
+  return h;
+}
+
+// ── step: reconnect ─────────────────────────────────────────────────────
+function wsRenderReconnect() {
+  return '<div style="padding:40px 20px;text-align:center">'
+    + '<p style="font-size:14px;color:var(--text-sec);margin:0 0 16px">Your Fitbit connection needs to be refreshed.</p>'
+    + '<a href="/auth?profile_id=' + currentProfileId + '" style="display:inline-block;background:var(--accent-10);border:1px solid var(--accent-33);color:var(--accent);padding:10px 18px;border-radius:6px;font-size:13px;font-weight:600;text-decoration:none">Reconnect Fitbit</a>'
+    + '</div>';
 }
 
 // ─── CONFETTI (vanilla canvas) ──────────────────────────────────────────

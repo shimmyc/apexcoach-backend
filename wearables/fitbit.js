@@ -32,7 +32,9 @@ async function fitGet(endpoint, token) {
 }
 
 // Normalize one /activities/list.json or /activities/{id}.json entry
-// into the cross-provider NormalizedActivity shape.
+// into the cross-provider NormalizedActivity shape. Detail enrichment
+// (intraday HR, min/peak from samples) happens in fetchActivityDetail
+// — list rows are normalized as far as the list endpoint can take them.
 function normalize(activity) {
   if (!activity) return null;
   var startISO = activity.startTime || activity.originalStartTime || null;
@@ -48,11 +50,13 @@ function normalize(activity) {
   }
 
   // Zones come back as either heartRateZones[] or heartRateZonesNew[].
-  // Reshape to {fatBurn, cardio, peak} in minutes.
+  // Reshape to {fatBurn, cardio, peak} in minutes, but ALSO keep the
+  // raw zone array so per-provider variations (out-of-range, custom
+  // zones, calorie subtotals) survive into wearable_data.zones_raw.
   var zonesRaw = activity.heartRateZones || activity.heartRateZonesNew || null;
   var zones = null;
   if (Array.isArray(zonesRaw) && zonesRaw.length) {
-    zones = {};
+    zones = { fatBurn: 0, cardio: 0, peak: 0, out_of_range: 0, raw: zonesRaw };
     for (var i = 0; i < zonesRaw.length; i++) {
       var z = zonesRaw[i];
       if (!z || !z.name) continue;
@@ -60,24 +64,32 @@ function normalize(activity) {
       if (key === "fatburn") zones.fatBurn = z.minutes || 0;
       else if (key === "cardio") zones.cardio = z.minutes || 0;
       else if (key === "peak") zones.peak = z.minutes || 0;
+      else if (key === "outofrange") zones.out_of_range = z.minutes || 0;
     }
-    if (azm === null) azm = (zones.fatBurn || 0) + (zones.cardio || 0) + (zones.peak || 0);
+    if (azm === null) azm = zones.fatBurn + zones.cardio + zones.peak;
   }
 
   return {
     provider: PROVIDER,
     provider_activity_id: String(activity.logId || activity.activityId || ""),
     date: date,
+    start_time: startISO,
     activity_type: activity.activityName || activity.name || "Activity",
     duration_minutes: durationMin,
+    distance_miles: typeof activity.distance === "number" ? +activity.distance.toFixed(2) : null,
+    elevation_gain: typeof activity.elevationGain === "number" ? activity.elevationGain : null,
     steps: typeof activity.steps === "number" ? activity.steps : null,
     calories: typeof activity.calories === "number" ? activity.calories : null,
     avg_hr: typeof activity.averageHeartRate === "number" ? activity.averageHeartRate : null,
     peak_hr: typeof activity.maxHeartRate === "number" ? activity.maxHeartRate
             : typeof activity.peakHeartRate === "number" ? activity.peakHeartRate
             : null,
+    min_hr: null,                  // populated by intraday enrichment
     active_zone_minutes: azm,
     zones: zones,
+    heart_rate_samples: null,      // populated by intraday enrichment — array of { t, bpm }
+    raw_response: activity,
+    // Legacy alias kept so older callers that read `raw` still work.
     raw: activity,
   };
 }
@@ -115,9 +127,75 @@ async function fetchActivityDetail(accessToken, providerActivityId) {
   // Fitbit's per-activity endpoint is /1/user/-/activities/{logId}.json
   // — returns the same shape as a list entry plus richer HR/zone data.
   var resp = await fitGet("/1/user/-/activities/" + providerActivityId + ".json", accessToken);
-  // The endpoint sometimes wraps in {activityLog: {...}}, sometimes returns flat.
   var act = (resp && resp.activityLog) ? resp.activityLog : resp;
-  return normalize(act);
+  var normalized = normalize(act);
+  if (!normalized) return null;
+
+  // Intraday HR enrichment. The /heart/date/{d}/1d/1min/time/.../json
+  // endpoint requires the "Personal" app type AND the heartrate scope on
+  // the token (which the legacy OAuth flow grants). Network/permission
+  // failure is non-fatal — we just leave heart_rate_samples = null.
+  try {
+    var samples = await fetchIntradayHr(accessToken, normalized);
+    if (samples && samples.length) {
+      normalized.heart_rate_samples = samples;
+      // Re-derive min / peak from the samples — these are more accurate
+      // than the activity-level rollups, which average over the entire
+      // session including cooldown.
+      var lo = Infinity, hi = -Infinity;
+      for (var i = 0; i < samples.length; i++) {
+        var v = samples[i].bpm;
+        if (typeof v === "number") {
+          if (v < lo) lo = v;
+          if (v > hi) hi = v;
+        }
+      }
+      if (isFinite(lo)) normalized.min_hr = lo;
+      if (isFinite(hi) && (!normalized.peak_hr || hi > normalized.peak_hr)) normalized.peak_hr = hi;
+    }
+  } catch (e) {
+    // Personal-tier limitation: intraday HR may be denied. Swallow.
+    normalized.heart_rate_samples = null;
+  }
+  return normalized;
+}
+
+// Windowed intraday HR fetch — pulls per-minute bpm for the activity's
+// time range only (not the whole day) to keep the payload small.
+//
+// Endpoint:
+//   GET /1/user/-/activities/heart/date/{date}/1d/1min/time/{HH:mm}/{HH:mm}.json
+//   → response.activities-heart-intraday.dataset[] = [{ time: "HH:mm:ss", value: bpm }]
+//
+// We translate start_time + duration_minutes into the HH:mm window.
+async function fetchIntradayHr(accessToken, normalized) {
+  if (!normalized.start_time || !normalized.duration_minutes) return null;
+  // The start_time is ISO with timezone; we only need the wall-clock
+  // hours/minutes since the endpoint is scoped by date.
+  var startMs = Date.parse(normalized.start_time);
+  if (isNaN(startMs)) return null;
+  var endMs = startMs + normalized.duration_minutes * 60000;
+  var startISO = new Date(startMs).toISOString();
+  var endISO = new Date(endMs).toISOString();
+  var startHHMM = startISO.slice(11, 16);
+  var endHHMM = endISO.slice(11, 16);
+  var url = "/1/user/-/activities/heart/date/" + normalized.date
+    + "/1d/1min/time/" + startHHMM + "/" + endHHMM + ".json";
+  var resp = await fitGet(url, accessToken);
+  var ds = resp && resp["activities-heart-intraday"] && resp["activities-heart-intraday"].dataset;
+  if (!Array.isArray(ds) || !ds.length) return null;
+  // Compact shape — { t: epoch_ms, bpm } so consumers can chart without
+  // re-parsing time strings. Cap at 600 samples (10 hours @ 1/min) to
+  // keep the JSONB column reasonable even for very long sessions.
+  var out = [];
+  for (var i = 0; i < ds.length && i < 600; i++) {
+    var row = ds[i];
+    if (!row || !row.time || typeof row.value !== "number") continue;
+    var t = Date.parse(normalized.date + "T" + row.time);
+    if (isNaN(t)) continue;
+    out.push({ t: t, bpm: row.value });
+  }
+  return out;
 }
 
 async function refreshToken(refreshTokenValue) {
