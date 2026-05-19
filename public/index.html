@@ -8651,11 +8651,12 @@ function renderProfileCompletenessCard() {
       h += '</div>';
     }
     h += '<button onclick="openProfileBuilder()" style="background:var(--accent);color:#040605;border:none;padding:12px 24px;font-size:14px;font-weight:700;cursor:pointer;border-radius:8px;font-family:DM Sans,sans-serif;width:100%">Build Profile</button>';
-    // Review mode is for users who already have some saved answers —
-    // skip the secondary button when nothing is saved yet (new users
-    // have no _builder_answers to review).
-    var hasAnyAnswers = !!(currentProfileData && currentProfileData._builder_answers && Object.keys(currentProfileData._builder_answers).length);
-    if (hasAnyAnswers) {
+    // Show Review & Edit for anyone with a saved profile. _builder_answers
+    // is the replay source for inputs but only gets written on section
+    // saves made after c3008b2 — gating on it hid the button for every
+    // user whose profile was built before this commit shipped.
+    var hasSavedProfile = !!(currentProfileData && Object.keys(currentProfileData).length);
+    if (hasSavedProfile) {
       h += '<button onclick="openProfileReview()" style="background:transparent;border:1px solid var(--border-accent);color:var(--text-sec);padding:10px 20px;font-size:13px;cursor:pointer;border-radius:8px;font-family:DM Sans,sans-serif;width:100%;margin-top:8px">&#9998; Review &amp; Edit Answers</button>';
     }
   } else {
