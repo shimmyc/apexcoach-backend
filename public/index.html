@@ -1015,7 +1015,9 @@ var currentProfileBody = {
   birth_date: null,
   sex: null,
   goal_weight_lbs: null,
-  goal_weight_timeline_months: null
+  goal_weight_timeline_months: null,
+  gym_access: null,
+  gym_type: null
 };
 var bodyMetricsLog = [];     // last 90 days, ordered date desc
 var bodyMetricsLatest = null; // most recent row with weight
@@ -5238,8 +5240,20 @@ function buildSystemPrompt(opts) {
 
   var persona = 'You are ApexCoach — an elite, deeply personal AI fitness coach. You think like a world-class personal trainer who has studied this athlete for months. You know their schedule, their history, their goals, their injuries, their tendencies, and their life context. You adapt to real human life — if they skipped a workout, you don\'t lecture them, you adjust. You are specific, never generic. Every recommendation is tailored to this exact person on this exact day. You never suggest something contraindicated by their injuries. You always factor in their micro-goals as non-negotiable daily commitments.\n\n';
 
+  // Profile-table gym fields — separate signal from the settings-driven
+  // equipment list. Equipment says "I own a kettlebell"; gym_access says
+  // "I can walk into a commercial gym today". Both feed the AI.
+  var pbBody = currentProfileBody || {};
+  var gymAccessLine = '';
+  if (pbBody.gym_access) {
+    gymAccessLine = 'GYM ACCESS: ' + pbBody.gym_access;
+    if (pbBody.gym_access === 'yes' && pbBody.gym_type) gymAccessLine += ' (' + pbBody.gym_type + ')';
+    gymAccessLine += '\n';
+  }
+
   var style = 'COACHING STYLE: ' + aiTone + ' tone. ' + aiLang + ' language. Detail level: ' + aiDetail + '. Give ' + aiNumOpts + ' specific, data-driven workout options ordered by best fit first.\n' +
     'AVAILABLE EQUIPMENT: ' + equipStr + '\n' +
+    gymAccessLine +
     'WORKOUT LOCATION: ' + wkLoc + '. MAX DURATION: ' + (maxDur ? maxDur + ' min' : 'no limit') + '. PREFERRED TIME: ' + prefTime + '.\n\n';
 
   var rulesCommon = 'IMPORTANT RULES:\n' +
@@ -5344,6 +5358,7 @@ function fetchGoalProgress() {
   var cutoff30 = thirtyAgo.toISOString().slice(0, 10);
   medLog.forEach(function(d) { if (d >= cutoff30) medCount++; });
 
+  var pbBody = currentProfileBody || {};
   return fetch('/api/profiles/' + currentProfileId + '/goal-progress', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -5353,7 +5368,9 @@ function fetchGoalProgress() {
       exercises: (libExercises || []).reduce(function(a, e) { return a.concat(e.sessions || []); }, []),
       fitbitSteps: fitData && fitData.steps ? fitData.steps : 0,
       current_belt: pd.current_belt || null,
-      medDays: medCount
+      medDays: medCount,
+      gym_access: pbBody.gym_access || null,
+      gym_type: pbBody.gym_type || null
     })
   })
   .then(function(r) { return r.json(); })
@@ -5734,7 +5751,7 @@ function saveProfileDataToServer(pd) {
 function captureProfileBody(p) {
   if (!p) return;
   var numKeys = { height_inches: true, goal_weight_lbs: true, goal_weight_timeline_months: true };
-  ['height_inches', 'birth_date', 'sex', 'goal_weight_lbs', 'goal_weight_timeline_months'].forEach(function(k) {
+  ['height_inches', 'birth_date', 'sex', 'goal_weight_lbs', 'goal_weight_timeline_months', 'gym_access', 'gym_type'].forEach(function(k) {
     var v = p[k];
     if (v == null || v === '') { currentProfileBody[k] = null; return; }
     if (numKeys[k]) {
@@ -8682,7 +8699,19 @@ var PB_SECTIONS = [
       { key: 'job', emoji: '\uD83D\uDCBC', title: "What\u2019s your job like physically?", subtitle: "Desk job, on your feet all day, physical labor, unpredictable?", input: 'textarea' },
       { key: 'home', emoji: '\uD83C\uDFE0', title: "Tell me about your home situation", subtitle: "Kids, partner who trains with you, time constraints? Just want to build something realistic.", input: 'textarea' },
       { key: 'equipment', emoji: '\uD83D\uDD27', title: "What equipment do you have access to?", subtitle: "Home gym, commercial gym, just bodyweight, etc.", input: 'textarea' },
-    ]
+      { key: 'gym_access', emoji: '\uD83C\uDFCB', title: "Do you have access to a gym?", subtitle: "Stored on your profile and factored into every workout recommendation.", input: 'pills', options: [
+        { value: 'yes', label: 'Yes' },
+        { value: 'no', label: 'No' },
+        { value: 'sometimes', label: 'Sometimes' }
+      ]},
+      // gym_type is conditionally injected after gym_access when value === 'yes' (see pbNext).
+    ],
+    gymTypeQuestion: { key: 'gym_type', emoji: '\uD83C\uDFEC', title: "What type of gym?", subtitle: "Helps me tailor recommendations to what\u2019s actually available.", input: 'pills', options: [
+      { value: 'Commercial gym', label: 'Commercial gym' },
+      { value: 'Home gym', label: 'Home gym' },
+      { value: 'CrossFit/functional fitness', label: 'CrossFit / functional' },
+      { value: 'Multiple', label: 'Multiple' }
+    ]}
   },
   {
     id: 'mindset', label: 'Mindset & Motivation', icon: '\uD83E\uDDE0',
@@ -8741,9 +8770,10 @@ function pbBuildQuestionList() {
   var sec = pbCurrentSection;
   for (var i = 0; i < sec.questions.length; i++) {
     var q = sec.questions[i];
-    pbAllQuestions.push({ key: q.key, emoji: q.emoji, title: q.title, subtitle: q.subtitle, input: q.input || 'textarea' });
+    pbAllQuestions.push({ key: q.key, emoji: q.emoji, title: q.title, subtitle: q.subtitle, input: q.input || 'textarea', options: q.options || null });
   }
-  // Injury follow-ups are added dynamically after answering injuries_list
+  // Injury follow-ups are added dynamically after answering injuries_list.
+  // gym_type is conditionally injected when gym_access === 'yes' (see pbNext).
 }
 
 function startPBSection(sectionId) {
@@ -8784,10 +8814,20 @@ function pbRender() {
     h += '<div class="ob-emoji">' + qi.emoji + '</div>';
     h += '<h2 class="ob-title">' + qi.title + '</h2>';
     h += '<p class="ob-subtitle">' + qi.subtitle + '</p>';
-    h += '<div class="ob-answer-area"><div class="ob-textarea-wrap">';
-    h += '<textarea class="ob-textarea" id="pb-ta-' + i + '" placeholder="Type your answer..." oninput="obAutoExpand(this);pbCheckContinue()">' + val + '</textarea>';
-    h += '<button class="ob-mic" onclick="pbStartVoice(' + i + ')" id="pb-mic-' + i + '">\uD83C\uDF99</button>';
-    h += '</div></div>';
+    if (qi.input === 'pills' && qi.options && qi.options.length) {
+      h += '<div class="ob-answer-area"><div class="ob-pills" style="display:flex;flex-wrap:wrap;gap:8px;justify-content:center;max-width:560px;margin:0 auto">';
+      for (var pi = 0; pi < qi.options.length; pi++) {
+        var opt = qi.options[pi];
+        var active = (val === opt.value);
+        h += '<button type="button" class="ob-pill' + (active ? ' active' : '') + '" data-pb-pill="' + i + '" data-pb-val="' + opt.value.replace(/"/g,'&quot;') + '" onclick="pbSelectPill(' + i + ',\'' + opt.value.replace(/'/g,"\\'") + '\')" style="background:' + (active ? 'var(--accent-18)' : 'var(--bg-input)') + ';border:1px solid ' + (active ? 'var(--accent-33)' : 'var(--border)') + ';color:' + (active ? 'var(--accent)' : 'var(--text-sec)') + ';padding:12px 20px;border-radius:10px;cursor:pointer;font-size:15px;font-weight:600;font-family:DM Sans,sans-serif">' + opt.label + '</button>';
+      }
+      h += '</div></div>';
+    } else {
+      h += '<div class="ob-answer-area"><div class="ob-textarea-wrap">';
+      h += '<textarea class="ob-textarea" id="pb-ta-' + i + '" placeholder="Type your answer..." oninput="obAutoExpand(this);pbCheckContinue()">' + val + '</textarea>';
+      h += '<button class="ob-mic" onclick="pbStartVoice(' + i + ')" id="pb-mic-' + i + '">\uD83C\uDF99</button>';
+      h += '</div></div>';
+    }
     if (i === pbStep) {
       var hasVal = (pbAnswers[q.key] || '').length > 0;
       h += '<div class="ob-footer ob-footer-inline" id="pb-footer-inline" style="display:none;max-width:560px;width:100%"><button class="ob-continue"' + (!hasVal ? ' disabled' : '') + ' onclick="pbNext()">Continue \u2192</button></div>';
@@ -8821,8 +8861,8 @@ function pbRender() {
 }
 
 function pbCheckContinue() {
-  var ta = document.getElementById('pb-ta-' + pbStep);
   var q = pbAllQuestions[pbStep];
+  var ta = document.getElementById('pb-ta-' + pbStep);
   if (ta) pbAnswers[q.key] = ta.value.trim();
   var dis = !(pbAnswers[q.key] || '').length;
   var btns = document.querySelectorAll('#profile-builder-screen .ob-continue');
@@ -8833,12 +8873,47 @@ function pbSaveCurrent() {
   if (pbStep < 0 || pbStep >= pbAllQuestions.length) return;
   var ta = document.getElementById('pb-ta-' + pbStep);
   if (ta) pbAnswers[pbAllQuestions[pbStep].key] = ta.value.trim();
+  // Pill questions persist their value via pbSelectPill; nothing to read.
+}
+
+// Pill-select handler — stores the chosen value, paints the active style on
+// the buttons for this step, and enables the Continue button. Skipping the
+// re-render keeps focus + scroll position; the visual update is local.
+function pbSelectPill(stepIdx, value) {
+  var q = pbAllQuestions[stepIdx];
+  if (!q) return;
+  pbAnswers[q.key] = String(value);
+  var pills = document.querySelectorAll('.ob-pill[data-pb-pill="' + stepIdx + '"]');
+  for (var i = 0; i < pills.length; i++) {
+    var p = pills[i];
+    var active = p.getAttribute('data-pb-val') === String(value);
+    p.classList.toggle('active', active);
+    p.style.background = active ? 'var(--accent-18)' : 'var(--bg-input)';
+    p.style.borderColor = active ? 'var(--accent-33)' : 'var(--border)';
+    p.style.color = active ? 'var(--accent)' : 'var(--text-sec)';
+  }
+  var btns = document.querySelectorAll('#profile-builder-screen .ob-continue');
+  for (var j = 0; j < btns.length; j++) btns[j].disabled = false;
 }
 
 function pbNext() {
   pbSaveCurrent();
   var q = pbAllQuestions[pbStep];
   if (!(pbAnswers[q.key] || '').length) return;
+
+  // Gym follow-up: if the user picked "yes" for gym_access, inject the
+  // gym_type pill question right after this step. Skipped for no/sometimes.
+  // Idempotent — won't double-inject if the user goes back and forward.
+  if (pbCurrentSection.id === 'lifestyle' && q.key === 'gym_access') {
+    var alreadyInjected = pbAllQuestions.some(function(x) { return x.key === 'gym_type'; });
+    if (!alreadyInjected && pbAnswers.gym_access === 'yes' && pbCurrentSection.gymTypeQuestion) {
+      var gt = pbCurrentSection.gymTypeQuestion;
+      pbAllQuestions.splice(pbStep + 1, 0, {
+        key: gt.key, emoji: gt.emoji, title: gt.title, subtitle: gt.subtitle,
+        input: gt.input || 'pills', options: gt.options || null
+      });
+    }
+  }
 
   // Handle injury follow-ups: after injuries_list, inject follow-up questions
   if (pbCurrentSection.id === 'injuries' && q.key === 'injuries_list' && !pbInInjuryFollowUp) {
@@ -8925,9 +9000,18 @@ function pbFinishSection(el) {
   var timer = setInterval(function() { pct += 1; if (pct > 90) clearInterval(timer); if (fill) fill.style.width = pct + '%'; }, 110);
 
   var pd = currentProfileData || {};
+  // gym_access / gym_type are top-level columns on the profiles table, not
+  // part of profile_data. Pull them out of the answers so the AI doesn't
+  // try to merge them into the JSON blob — we PATCH them separately via
+  // saveProfileBody below after the section save completes.
+  var gymAccessAnswer = pbAnswers.gym_access || null;
+  var gymTypeAnswer = pbAnswers.gym_type || null;
   var answersText = '';
   var keys = Object.keys(pbAnswers);
-  for (var i = 0; i < keys.length; i++) answersText += keys[i] + ': ' + pbAnswers[keys[i]] + '\n';
+  for (var i = 0; i < keys.length; i++) {
+    if (keys[i] === 'gym_access' || keys[i] === 'gym_type') continue;
+    answersText += keys[i] + ': ' + pbAnswers[keys[i]] + '\n';
+  }
 
   var sectionId = pbCurrentSection.id;
   var prompt = 'You are updating a fitness coaching profile with new information from a deep-dive questionnaire. The user completed the "' + sectionId + '" section.\n\n' +
@@ -8970,6 +9054,14 @@ function pbFinishSection(el) {
       else currentProfileData = updatedData;
       localStorage.setItem('ac_profile_data', JSON.stringify(currentProfileData));
       if (currentProfileData.ai_prompt_context) FULL_PROFILE = currentProfileData.ai_prompt_context;
+      // Persist the gym pill answers as top-level profile columns (not in
+      // profile_data). If the user picked no/sometimes, clear gym_type so
+      // a stale value from a previous "yes" doesn't linger.
+      if (sectionId === 'lifestyle' && gymAccessAnswer && typeof saveProfileBody === 'function') {
+        var gymPatch = { gym_access: gymAccessAnswer };
+        gymPatch.gym_type = (gymAccessAnswer === 'yes' && gymTypeAnswer) ? gymTypeAnswer : null;
+        saveProfileBody(gymPatch);
+      }
       renderProfileTab();
 
       setTimeout(function() {

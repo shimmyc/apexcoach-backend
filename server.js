@@ -547,7 +547,7 @@ app.get("/api/profiles", async function(req, res) {
 // Top-level body columns surfaced alongside profile_data on every profile
 // fetch/verify/patch response so the client can render the Body card and feed
 // TDEE math into the AI prompt without a second round-trip.
-var PROFILE_BODY_FIELDS = ["height_inches", "birth_date", "sex", "goal_weight_lbs", "goal_weight_timeline_months"];
+var PROFILE_BODY_FIELDS = ["height_inches", "birth_date", "sex", "goal_weight_lbs", "goal_weight_timeline_months", "gym_access", "gym_type"];
 function pickProfileBody(p) {
   var out = {};
   PROFILE_BODY_FIELDS.forEach(function(k) { out[k] = p && p[k] != null ? p[k] : null; });
@@ -1818,6 +1818,16 @@ app.post("/api/profiles/:id/goal-progress", async function(req, res) {
     var steps = body.fitbitSteps || 0;
     var currentBelt = body.current_belt || null;
     var medDays = body.medDays || 0;
+    // Gym context — passed from the client out of currentProfileBody so the
+    // AI scoring branches (distance + general) factor in equipment access.
+    // Format: "Yes (Commercial gym)" / "No" / "Sometimes" / "" if unknown.
+    var gymAccess = body.gym_access || null;
+    var gymType = body.gym_type || null;
+    var gymLine = '';
+    if (gymAccess) {
+      gymLine = 'Gym access: ' + gymAccess;
+      if (gymAccess === 'yes' && gymType) gymLine += ' (' + gymType + ')';
+    }
 
     // One stamp shared across all results in this request — the endpoint is
     // already stateless and recomputes live every call, so this just lets
@@ -1866,7 +1876,7 @@ app.post("/api/profiles/:id/goal-progress", async function(req, res) {
         var manualVal = g.current_value || 0;
 
         try {
-          var aiPrompt = "Athlete goal: " + g.title + " (" + (g.target_value || '?') + " " + (g.unit || 'miles') + ").\nTraining data last 90 days:\n- Longest cardio session: " + longestCardio + " minutes\n- Weekly cardio sessions: " + weeklyCardio + " avg\n- Daily steps avg: " + steps + "\n- Distance logged: " + totalDist + " miles\n- Manual progress reported: " + manualVal + " " + (g.unit || '') + "\nEstimate 0-100% readiness. Return JSON only: {\"readiness_pct\": number, \"reasoning\": \"1 sentence\"}";
+          var aiPrompt = "Athlete goal: " + g.title + " (" + (g.target_value || '?') + " " + (g.unit || 'miles') + ").\nTraining data last 90 days:\n- Longest cardio session: " + longestCardio + " minutes\n- Weekly cardio sessions: " + weeklyCardio + " avg\n- Daily steps avg: " + steps + "\n- Distance logged: " + totalDist + " miles\n- Manual progress reported: " + manualVal + " " + (g.unit || '') + (gymLine ? "\n- " + gymLine : "") + "\nEstimate 0-100% readiness. Return JSON only: {\"readiness_pct\": number, \"reasoning\": \"1 sentence\"}";
           var aiText = await callAI(aiPrompt, 200, MODEL_HAIKU);
           var aiJson = JSON.parse(aiText.substring(aiText.indexOf('{'), aiText.lastIndexOf('}') + 1));
           r.pct = Math.min(100, aiJson.readiness_pct || 0);
@@ -1917,7 +1927,7 @@ app.post("/api/profiles/:id/goal-progress", async function(req, res) {
         } else {
           try {
             var recentLog = workouts.slice(0, 10).map(function(w) { return w.date + ': ' + w.type + (w.notes ? ' (' + w.notes.substring(0, 50) + ')' : ''); }).join('\n');
-            var aiP = "Athlete goal: " + g.title + ".\nRecent workouts:\n" + recentLog + "\nEstimate 0-100% progress. Be conservative.\nReturn JSON only: {\"estimate_pct\": number, \"reasoning\": \"1 sentence\"}";
+            var aiP = "Athlete goal: " + g.title + ".\nRecent workouts:\n" + recentLog + (gymLine ? "\n" + gymLine : "") + "\nEstimate 0-100% progress. Be conservative.\nReturn JSON only: {\"estimate_pct\": number, \"reasoning\": \"1 sentence\"}";
             var aiT = await callAI(aiP, 200, MODEL_HAIKU);
             var aiJ = JSON.parse(aiT.substring(aiT.indexOf('{'), aiT.lastIndexOf('}') + 1));
             r.pct = Math.min(100, aiJ.estimate_pct || 0);
@@ -2617,8 +2627,17 @@ app.post("/api/profiles/:id/roadmap", async function(req, res) {
       });
     }
 
+    // Gym access line for the prompt — same shape used by goal-progress.
+    var gymLine = '';
+    if (profile.gym_access) {
+      gymLine = 'GYM ACCESS: ' + profile.gym_access;
+      if (profile.gym_access === 'yes' && profile.gym_type) gymLine += ' (' + profile.gym_type + ')';
+      gymLine += '\n\n';
+    }
+
     const prompt = 'You are a personal fitness coach creating a realistic road map for this athlete based on their current progress and goals.\n\n' +
       'ATHLETE PROFILE:\n' + (pd.ai_prompt_context || pd.name || 'Athlete') + '\n\n' +
+      gymLine +
       'GOAL PRIORITIES AND CURRENT PROGRESS:\n' + (goalCtx || 'No goals set yet.\n') + '\n' +
       'RECENT CONSISTENCY: ' + doneCount + ' sessions in last 30 days (~' + Math.round(doneCount / 4.3) + '/week). Types: ' + typeStr + '\n\n' +
       (scheduleStr ? 'ATHLETE\'S ACTUAL WEEKLY SCHEDULE (use this exactly, do not suggest different days):\n' + scheduleStr + '\nWhen writing the Weekly Blueprint section, build around these specific days. For example if Tuesday and Thursday are MMA days, the blueprint must show MMA on Tuesday and Thursday, not Monday or Saturday.\n\n' : '') +
