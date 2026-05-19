@@ -8783,40 +8783,118 @@ function openProfileReview() {
   pbRenderReview(el);
 }
 
-// Pull the saved answer for a given section + question key. Falls back to
-// the relevant top-level profile column for gym_* keys so review mode
-// still reflects the live value even though they aren't stored in
-// _builder_answers.
+// Pull the saved answer for a given section + question key. Order:
+//   1. _builder_answers[sectionId][key] — the verbatim Q→A map written
+//      by pbFinishSection (only exists for sections saved post-c3008b2)
+//   2. currentProfileBody for the gym_* top-level columns
+//   3. AI-merged structured shape inside currentProfileData (life_context,
+//      goals[], injuries[], training_preferences, motivation_why, etc.)
+//      — this is the fallback for users whose profile was built before
+//      _builder_answers existed.
 function pbReviewSavedAnswer(sectionId, key) {
   if (key === 'gym_access') return (currentProfileBody && currentProfileBody.gym_access) || '';
   if (key === 'gym_type') return (currentProfileBody && currentProfileBody.gym_type) || '';
   var all = (currentProfileData && currentProfileData._builder_answers) || {};
   var sec = all[sectionId] || {};
-  return sec[key] || '';
+  if (sec[key]) return sec[key];
+  return pbReviewProfileDataFallback(sectionId, key);
+}
+
+// Reverse-map the AI-merged structured profile_data shape back to the
+// free-text question keys so pre-c3008b2 profiles get their textareas
+// pre-populated. Returns '' when there is no clean source — questions
+// added in c3008b2 (typical_day, milestones, priorities, six_month) have
+// no equivalent in the older shape and stay blank/NEW until answered.
+function pbReviewProfileDataFallback(sectionId, key) {
+  var pd = currentProfileData || {};
+
+  if (sectionId === 'goals' && key === 'all_goals') {
+    var goals = pd.goals || [];
+    if (!goals.length) return '';
+    var lines = [];
+    for (var i = 0; i < goals.length; i++) {
+      var g = goals[i];
+      if (typeof g === 'string') lines.push(g);
+      else if (g && g.title) lines.push(g.title + (g.description ? ' — ' + g.description : ''));
+    }
+    return lines.join('\n');
+  }
+
+  if (sectionId === 'injuries' && key === 'injuries_list') {
+    var injs = pd.injuries || [];
+    if (!injs.length) return '';
+    var parts = [];
+    for (var i = 0; i < injs.length; i++) {
+      var inj = injs[i];
+      if (typeof inj === 'string') parts.push(inj);
+      else if (inj && (inj.name || inj.title)) parts.push(inj.name || inj.title);
+    }
+    return parts.join(', ');
+  }
+
+  if (sectionId === 'training') {
+    if (key === 'experience') return pd.experience_level || '';
+    if (key === 'enjoy_dread') {
+      var prefs = pd.training_preferences;
+      if (!prefs) return '';
+      if (typeof prefs === 'string') return prefs;
+      var likes = prefs.likes || prefs.enjoy;
+      var dislikes = prefs.dislikes || prefs.dread;
+      var out = [];
+      if (likes) out.push('Enjoy: ' + (Array.isArray(likes) ? likes.join(', ') : likes));
+      if (dislikes) out.push('Dread: ' + (Array.isArray(dislikes) ? dislikes.join(', ') : dislikes));
+      return out.join('\n');
+    }
+    if (key === 'best_period') return pd.best_training_period || '';
+    if (key === 'fall_off') {
+      var f = pd.fall_off_reasons;
+      if (!f) return '';
+      return Array.isArray(f) ? f.join(', ') : f;
+    }
+  }
+
+  if (sectionId === 'lifestyle') {
+    var ctx = pd.life_context || {};
+    if (key === 'job') return ctx.work || ctx.job || '';
+    if (key === 'home') return ctx.family || ctx.home || '';
+    if (key === 'equipment') return ctx.equipment || pd.equipment || '';
+    // typical_day: schedule is a structured day-of-week object, not a
+    // free-text "walk me through a typical day" answer — leave blank.
+  }
+
+  if (sectionId === 'mindset') {
+    if (key === 'why_now') return pd.motivation_why || '';
+    if (key === 'consistency') {
+      var c = pd.consistency_drivers;
+      if (!c) return '';
+      return Array.isArray(c) ? c.join(', ') : c;
+    }
+    if (key === 'bad_week') {
+      var b = pd.bad_week_triggers;
+      if (!b) return '';
+      return Array.isArray(b) ? b.join(', ') : b;
+    }
+  }
+
+  return '';
 }
 
 // Short preview text for the collapsed card. Picks the first non-empty
 // answer in the section (or the first 120 chars of all answers joined)
 // so the user can scan all five sections without expanding any.
 function pbReviewSectionSummary(section) {
-  var all = (currentProfileData && currentProfileData._builder_answers) || {};
-  var sec = all[section.id];
-  if (section.id === 'lifestyle' && currentProfileBody && currentProfileBody.gym_access) {
-    // Fall through to also show the gym answer if no other lifestyle
-    // answers exist yet.
-  }
-  if (!sec || !Object.keys(sec).length) {
-    if (section.id === 'lifestyle' && currentProfileBody && currentProfileBody.gym_access) {
-      return 'Gym access: ' + currentProfileBody.gym_access + (currentProfileBody.gym_access === 'yes' && currentProfileBody.gym_type ? ' (' + currentProfileBody.gym_type + ')' : '');
-    }
-    return 'Not yet answered — tap to fill in.';
-  }
+  // Walk the section's questions through pbReviewSavedAnswer so pre-
+  // c3008b2 profiles get a meaningful preview from the structured
+  // life_context / goals[] / injuries[] / etc. fallback, not just
+  // "Not yet answered".
   var parts = [];
   for (var i = 0; i < section.questions.length; i++) {
-    var k = section.questions[i].key;
-    var v = sec[k];
+    var v = pbReviewSavedAnswer(section.id, section.questions[i].key);
     if (v) parts.push(String(v));
     if (parts.join(' · ').length > 140) break;
+  }
+  if (section.id === 'lifestyle' && currentProfileBody && currentProfileBody.gym_access && !parts.length) {
+    return 'Gym access: ' + currentProfileBody.gym_access + (currentProfileBody.gym_access === 'yes' && currentProfileBody.gym_type ? ' (' + currentProfileBody.gym_type + ')' : '');
   }
   var s = parts.join(' · ');
   if (!s) return 'Not yet answered — tap to fill in.';
@@ -8840,18 +8918,13 @@ function pbRenderReviewSectionForm(section) {
     questions.push(section.gymTypeQuestion);
   }
 
-  var savedAnswers = (currentProfileData && currentProfileData._builder_answers && currentProfileData._builder_answers[section.id]) || {};
-
   for (var i = 0; i < questions.length; i++) {
     var q = questions[i];
     var saved = pbReviewSavedAnswer(section.id, q.key);
-    // "NEW" if the question key isn't present in saved answers — for
-    // top-level body fields (gym_access / gym_type), check against the
-    // column value via currentProfileBody.
-    var isAnswered;
-    if (q.key === 'gym_access') isAnswered = !!(currentProfileBody && currentProfileBody.gym_access);
-    else if (q.key === 'gym_type') isAnswered = !!(currentProfileBody && currentProfileBody.gym_type);
-    else isAnswered = Object.prototype.hasOwnProperty.call(savedAnswers, q.key) && savedAnswers[q.key];
+    // "NEW" pill: any source (verbatim _builder_answers, top-level
+    // profile column, OR AI-merged structured fallback) counts as
+    // answered — pbReviewSavedAnswer already collapses all three.
+    var isAnswered = !!saved;
 
     var inputId = 'pb-rev-' + section.id + '-' + q.key;
     h += '<div data-pb-rev-q="' + q.key + '">';
@@ -8899,7 +8972,6 @@ function pbRenderReview(el) {
     var s = PB_SECTIONS[i];
     var isExpanded = pbReviewExpandedSection === s.id;
     var isDone = completed.indexOf(s.id) >= 0;
-    var hasRaw = !!(savedAll[s.id] && Object.keys(savedAll[s.id]).length);
     // Count of "new" questions in this section the user hasn't answered.
     var newCount = 0;
     var totalQs = s.questions.length;
@@ -8908,13 +8980,18 @@ function pbRenderReview(el) {
       checkQs.push(s.gymTypeQuestion);
       totalQs++;
     }
+    var anyAnswered = false;
     for (var qi = 0; qi < checkQs.length; qi++) {
-      var k = checkQs[qi].key;
-      var saved = (savedAll[s.id] || {})[k];
-      if (k === 'gym_access') saved = currentProfileBody && currentProfileBody.gym_access;
-      else if (k === 'gym_type') saved = currentProfileBody && currentProfileBody.gym_type;
-      if (!saved) newCount++;
+      // Route through pbReviewSavedAnswer so the structured-profile_data
+      // fallback also counts as "answered" (otherwise every pre-c3008b2
+      // section shows every question as NEW).
+      if (pbReviewSavedAnswer(s.id, checkQs[qi].key)) anyAnswered = true;
+      else newCount++;
     }
+    // hasRaw drives the UNANSWERED vs "<N> NEW" badge — count any
+    // resolvable answer (verbatim, profile column, or fallback) as
+    // "has content", not just _builder_answers presence.
+    var hasRaw = anyAnswered;
 
     var summary = pbReviewSectionSummary(s);
 
