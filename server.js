@@ -3716,6 +3716,22 @@ app.post("/api/debug/dead-hang-backfill/:userId", async function(req, res) {
 // adapter contract is documented in wearables/base.js. Adding a new
 // provider requires zero changes here — only a new file in wearables/.
 
+// All wearables endpoints return live state and must never be served
+// from cache. Two things together prevent 304-with-empty-body:
+//   1. no-store / no-cache response headers so the browser doesn't
+//      retain anything for future revalidation.
+//   2. stripping If-None-Match / If-Modified-Since on the way in —
+//      Express's default req.fresh check would otherwise short-circuit
+//      to 304 when a browser sends a stale ETag from a previous deploy.
+app.use("/api/wearables", function(req, res, next) {
+  delete req.headers["if-none-match"];
+  delete req.headers["if-modified-since"];
+  res.set("Cache-Control", "no-store, no-cache, must-revalidate, max-age=0");
+  res.set("Pragma", "no-cache");
+  res.set("Expires", "0");
+  next();
+});
+
 // ── token helpers (wearable_connections, with legacy fallback for Fitbit) ──
 async function loadWearableTokens(profileId, provider) {
   try {

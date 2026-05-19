@@ -102,35 +102,34 @@ function categorize(text) {
 }
 
 // Activity type labels the wearable falls back to when it can't
-// classify the session. Match-strength on these is +20 (low confidence)
-// — the manual side could be anything.
+// classify the session. Many wearables don't support niche activities
+// (martial arts, rock climbing, rowing, dance, etc.) so users default
+// to one of these — a generic type should never PREVENT a match.
 var GENERIC_ACTIVITY_TYPES = [
-  "workout", "activity", "exercise", "generic workout",
+  "workout", "sport", "exercise", "training", "activity", "generic workout",
 ];
 
 // Score the duration component of a pairing.
-//   ±2 min   → 50 points (clearly the same session)
-//   ±15 min  → 30 points
-//   ±30 min  → 15 points
-//   >30 min  → 0 points
-// Returns 0 if either side has no duration — manual logs frequently
-// lack a duration field, so we can't penalize that. Activity-type
-// scoring still applies, just no duration bonus.
+//   ≤15 min apart  → 40 points
+//   ≤30 min apart  → 20 points
+//   >30 min apart  → 0 points
+// Returns 0 if either side has no duration — manual logs often lack a
+// duration field, and we can't penalize that. The activity-type and
+// auto-match-by-date paths still apply.
 function scoreDuration(actDuration, manDuration) {
   var a = Number(actDuration) || 0;
   var m = Number(manDuration) || 0;
   if (a <= 0 || m <= 0) return 0;
   var diff = Math.abs(a - m);
-  if (diff <= 2) return 50;
-  if (diff <= 15) return 30;
-  if (diff <= 30) return 15;
+  if (diff <= 15) return 40;
+  if (diff <= 30) return 20;
   return 0;
 }
 
 // Score the activity-type component of a pairing.
-//   exact keyword match     → 40   ("walk" on both sides)
-//   related (same category) → 30   ("cycling" vs "bike ride" — both → cycling)
-//   generic wearable type   → 20   ("Workout" + anything on manual side)
+//   exact keyword match     → 30   ("walk" appears on both sides)
+//   related (same category) → 20   ("cycling" vs "bike ride" — both → cycling)
+//   generic wearable type   → 15   ("Workout" + anything on manual side)
 //   no overlap              → 0
 function scoreActivityType(activityType, manualText) {
   if (!activityType) return 0;
@@ -138,7 +137,7 @@ function scoreActivityType(activityType, manualText) {
   var manLower = String(manualText || "").toLowerCase();
 
   if (GENERIC_ACTIVITY_TYPES.indexOf(actLower) >= 0) {
-    return manLower.trim() ? 20 : 0;
+    return manLower.trim() ? 15 : 0;
   }
 
   var actCat = categorize(actLower);
@@ -147,19 +146,30 @@ function scoreActivityType(activityType, manualText) {
   if (manCat !== actCat) return 0;
 
   // Same canonical category — check whether both sides surface the SAME
-  // keyword. If yes, exact (+40); otherwise related (+30).
+  // keyword. If yes, exact (+30); otherwise related (+20).
   var kws = KEYWORD_MAP[actCat];
   for (var i = 0; i < kws.length; i++) {
     var kw = kws[i];
-    if (actLower.indexOf(kw) >= 0 && manLower.indexOf(kw) >= 0) return 40;
+    if (actLower.indexOf(kw) >= 0 && manLower.indexOf(kw) >= 0) return 30;
   }
-  return 30;
+  return 20;
 }
 
-// Combined score: 0..90 in practice (50 duration + 40 type ceiling).
-// We describe the surface as 0–100 because future signals (location,
-// HR overlap with manual heart-rate notes, time-of-day) will push the
-// ceiling up.
+// Combined per-pair score used in the multi-workout-per-date case. The
+// single-workout case bypasses this entirely (matchWearableToManual
+// short-circuits to score 60 — see below).
+//
+// Score bands:
+//   Exact keyword type match + ≤15min duration  → 70
+//   Exact keyword type match + ≤30min duration  → 50
+//   Related-category type + ≤15min duration     → 60
+//   Related-category type + ≤30min duration     → 40
+//   Generic wearable type + ≤30min duration     → 35  (the "+35 combined"
+//                                                      signal — wearable
+//                                                      didn't classify, so
+//                                                      we lean on duration)
+//   Generic + ≤15min duration                   → 55
+//   Duration-only (no type signal) + ≤15min     → 40
 function scorePair(normalizedActivity, manualWorkout) {
   var dur = scoreDuration(normalizedActivity.duration_minutes, manualWorkout.duration_minutes);
   var manualText = (manualWorkout.type || "") + " " + (manualWorkout.notes || "");
@@ -167,36 +177,46 @@ function scorePair(normalizedActivity, manualWorkout) {
   return dur + type;
 }
 
-// For one wearable activity, return EVERY candidate manual workout on
-// the same date with its score (where score >= 40), sorted desc. The
-// endpoint layer can then take[0] for the best match, or surface all
-// candidates if it wants to let the user pick. Never crosses dates.
+// Pick the best manual workout to pair with this wearable activity.
 //
-// Returns: Array<{ manual_workout, wearable_activity, score }>
-//   wearable_activity is the same normalizedActivity passed in — denormalized
-//   into every row so callers building a flat candidate list don't have to
-//   carry the activity reference separately.
-function rankManualMatches(normalizedActivity, manualWorkouts) {
-  if (!normalizedActivity || !normalizedActivity.date) return [];
-  if (!Array.isArray(manualWorkouts) || !manualWorkouts.length) return [];
-  var out = [];
-  for (var i = 0; i < manualWorkouts.length; i++) {
-    var w = manualWorkouts[i];
-    if (!w || w.date !== normalizedActivity.date) continue;
+// Contract:
+//   1. Same date only (no cross-date matching ever).
+//   2. If exactly ONE manual workout exists on that date → auto-match
+//      it with a flat score of 60. Reasoning: the wearable session and
+//      the only logged session on the same day are almost certainly the
+//      same workout regardless of type metadata. The user can still
+//      Skip if they're separate. This unblocks niche-activity users
+//      whose wearable returns "Workout" for everything.
+//   3. If MULTIPLE workouts share that date → score each via scorePair,
+//      return the top scorer ≥30. Threshold 30 is intentionally
+//      permissive — bulk-match defaults to 70 so casual candidates
+//      require human review.
+//
+// Returns: { manual_workout, wearable_activity, score, auto_matched? } | null
+function matchWearableToManual(normalizedActivity, manualWorkouts) {
+  if (!normalizedActivity || !normalizedActivity.date) return null;
+  if (!Array.isArray(manualWorkouts) || !manualWorkouts.length) return null;
+  var sameDate = manualWorkouts.filter(function(w) { return w && w.date === normalizedActivity.date; });
+  if (!sameDate.length) return null;
+
+  if (sameDate.length === 1) {
+    return {
+      manual_workout: sameDate[0],
+      wearable_activity: normalizedActivity,
+      score: 60,
+      auto_matched: true,
+    };
+  }
+
+  var best = null;
+  for (var i = 0; i < sameDate.length; i++) {
+    var w = sameDate[i];
     var s = scorePair(normalizedActivity, w);
-    if (s >= 40) {
-      out.push({ manual_workout: w, wearable_activity: normalizedActivity, score: s });
+    if (s >= 30 && (!best || s > best.score)) {
+      best = { manual_workout: w, wearable_activity: normalizedActivity, score: s };
     }
   }
-  out.sort(function(a, b) { return b.score - a.score; });
-  return out;
-}
-
-// Single-best convenience wrapper — returns the top-ranked match or
-// null. Kept for backward-compat with sync-backlog's existing shape.
-function matchWearableToManual(normalizedActivity, manualWorkouts) {
-  var ranked = rankManualMatches(normalizedActivity, manualWorkouts);
-  return ranked.length ? ranked[0] : null;
+  return best;
 }
 
 module.exports = {
@@ -206,6 +226,5 @@ module.exports = {
   scoreDuration: scoreDuration,
   scoreActivityType: scoreActivityType,
   scorePair: scorePair,
-  rankManualMatches: rankManualMatches,
   matchWearableToManual: matchWearableToManual,
 };
