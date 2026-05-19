@@ -715,6 +715,35 @@ The `/api/profiles/:id/extract-exercises` prompt has explicit data-integrity rul
 - `GET /api/profiles/:id/exercises/audit?name=...&min_weight=...&max_weight=...`
 - `DELETE /api/profiles/:id/exercises/:exerciseId`
 
+## Wearable Adapter System (provider-agnostic)
+
+All wearable workout-matching flows route through a provider abstraction layer in `wearables/`. New providers are added by dropping a file in that directory — no `server.js` changes needed.
+
+**Files**:
+- `wearables/base.js` — adapter contract (JSDoc) + `KEYWORD_MAP` + `matchWearableToManual()` scoring (+40 within 15min, +20 within 30min, +30 keyword category match, threshold ≥40).
+- `wearables/fitbit.js` — full implementation. OAuth 2.0, `/1/user/-/activities/list.json` pagination, per-activity detail via `/1/user/-/activities/{logId}.json`, refresh against `/oauth2/token`.
+- `wearables/{google_health,apple_health,samsung_health,garmin}.js` — stubs with documented endpoints + integration strategy (HealthKit/Health Connect companion-app pattern, Garmin OAuth 1.0a notes).
+- `wearables/index.js` — `getProviderAdapter(provider)` factory, `listProviders()`, `namespacedId(provider, id)` helper.
+
+**NormalizedActivity shape** (every provider maps to this): `{ provider, provider_activity_id, date, activity_type, duration_minutes, steps, calories, avg_hr, peak_hr, active_zone_minutes, zones, raw }`. The `raw` field preserves the original provider payload for future use.
+
+**Endpoints** (all in `server.js`, routed through the factory):
+- `GET  /api/wearables/providers/:userId` — list providers + connection status
+- `POST /api/wearables/connect/:provider`  — returns `auth_url` for OAuth
+- `POST /api/wearables/disconnect/:provider`
+- `GET  /api/wearables/sync-backlog/:userId?provider=&start_date=&end_date=` — returns `{ matched, unmatched, already_synced }`
+- `POST /api/wearables/merge/:userId`  — attach wearable session to an existing workout
+- `POST /api/wearables/reject/:userId` — record rejection + create standalone wearable workout
+- `POST /api/wearables/import/:userId` — create standalone workout from an unmatched session
+
+**Token storage**: `wearable_connections (profile_id, provider, access_token, refresh_token, token_expires_at, last_synced_at)`. `getValidWearableToken()` auto-refreshes expired tokens; refresh failure throws with `code: "RECONNECT_REQUIRED"` mapped to HTTP 401 so the UI can prompt reconnection.
+
+**Dedupe**: `workouts.wearable_activity_id` is unique (when not null) and stored in `"provider:id"` form so the same numeric id from two providers cannot collide. `rejected_wearable_matches` keeps backlog sync idempotent — rejected pairings don't re-appear on subsequent runs.
+
+**Coexistence with legacy Fitbit code**: `profiles.fitbit_access_token`/`refresh_token`/`expires_at` columns and the `buildDailyData` / `runFitbitBackfill` / `/api/profiles/:id/fitbit-pending-imports` / `/api/profiles/:id/fitbit-import` flows are untouched. Token writes are mirrored to both stores. The legacy auto-import path (`diffAndQueueFitbitImports` triggered from the daily fetch) and the new explicit `sync-backlog` path both work; client UI can migrate at its own pace.
+
+**Schema**: see `migrations/2026-05-19_wearables.sql`.
+
 ## Migrations
 
 One-time data fixes that should be run in the Supabase SQL editor.

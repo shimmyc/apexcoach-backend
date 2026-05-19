@@ -2,6 +2,7 @@ const express = require("express");
 const fetch   = require("node-fetch");
 const path    = require("path");
 const crypto  = require("crypto");
+const wearables = require("./wearables");
 
 const app  = express();
 const PORT = process.env.PORT || 3000;
@@ -488,6 +489,10 @@ app.get("/callback", async function(req, res) {
     if (profileId) {
       console.log("[OAuth] Saving tokens to PROFILES table, id=" + profileId);
       await saveProfileTokens(profileId, tokenData);
+      // Dual-write into wearable_connections so the new provider-agnostic
+      // adapters pick this up without forcing a reconnect.
+      try { await saveWearableTokens(profileId, "fitbit", tokenData); }
+      catch (e) { console.warn("[OAuth] wearable_connections dual-write failed: " + e.message); }
       console.log("[OAuth] SUCCESS: Tokens saved to profile " + profileId + ". expires_at=" + new Date(tokenData.expires_at).toISOString());
       // First-connect 90-day backfill: fire-and-forget so the OAuth redirect
       // isn't held up by the data import. Idempotent — guarded by the
@@ -3703,6 +3708,465 @@ app.post("/api/debug/dead-hang-backfill/:userId", async function(req, res) {
     res.status(500).json({ error: e.message, stack: e.stack });
   }
 });
+
+// ──────────────────────────────────────────────────────────────────────────
+// WEARABLES — provider-agnostic activity sync + workout matching
+// ──────────────────────────────────────────────────────────────────────────
+// All endpoints route through wearables.getProviderAdapter(provider). The
+// adapter contract is documented in wearables/base.js. Adding a new
+// provider requires zero changes here — only a new file in wearables/.
+
+// ── token helpers (wearable_connections, with legacy fallback for Fitbit) ──
+async function loadWearableTokens(profileId, provider) {
+  try {
+    var r = await fetch(
+      SUPABASE_URL + "/rest/v1/wearable_connections?profile_id=eq." + profileId
+        + "&provider=eq." + provider
+        + "&select=access_token,refresh_token,token_expires_at,last_synced_at",
+      { headers: sbHeaders() }
+    );
+    var rows = await r.json();
+    if (rows && rows.length) {
+      return {
+        access_token: rows[0].access_token || "",
+        refresh_token: rows[0].refresh_token || "",
+        expires_at: rows[0].token_expires_at || 0,
+        last_synced_at: rows[0].last_synced_at || null,
+      };
+    }
+  } catch (e) {
+    console.warn("[Wearables] loadWearableTokens(" + provider + ") read failed: " + e.message);
+  }
+  // Fall back to legacy profiles.fitbit_* so users connected before the
+  // migration backfill ran still work. (The migration SQL covers this for
+  // existing rows, but the fallback is cheap insurance.)
+  if (provider === "fitbit") {
+    try {
+      var pr = await fetch(
+        SUPABASE_URL + "/rest/v1/profiles?id=eq." + profileId
+          + "&select=fitbit_access_token,fitbit_refresh_token,fitbit_expires_at",
+        { headers: sbHeaders() }
+      );
+      var pRows = await pr.json();
+      if (pRows && pRows.length && pRows[0].fitbit_access_token) {
+        return {
+          access_token: pRows[0].fitbit_access_token,
+          refresh_token: pRows[0].fitbit_refresh_token || "",
+          expires_at: pRows[0].fitbit_expires_at || 0,
+          last_synced_at: null,
+        };
+      }
+    } catch (e) {
+      console.warn("[Wearables] legacy fitbit fallback failed: " + e.message);
+    }
+  }
+  return { access_token: "", refresh_token: "", expires_at: 0, last_synced_at: null };
+}
+
+async function saveWearableTokens(profileId, provider, tokens) {
+  var payload = {
+    profile_id: parseInt(profileId, 10),
+    provider: provider,
+    access_token: tokens.access_token,
+    refresh_token: tokens.refresh_token,
+    token_expires_at: tokens.expires_at,
+    updated_at: new Date().toISOString(),
+  };
+  await fetch(SUPABASE_URL + "/rest/v1/wearable_connections?on_conflict=profile_id,provider", {
+    method: "POST",
+    headers: sbHeaders("return=minimal,resolution=merge-duplicates"),
+    body: JSON.stringify(payload),
+  });
+  // Mirror Fitbit tokens to profiles.fitbit_* so the legacy buildDailyData
+  // / runFitbitBackfill paths keep working without changes.
+  if (provider === "fitbit") {
+    try {
+      await fetch(SUPABASE_URL + "/rest/v1/profiles?id=eq." + profileId, {
+        method: "PATCH",
+        headers: sbHeaders("return=minimal"),
+        body: JSON.stringify({
+          fitbit_access_token: tokens.access_token,
+          fitbit_refresh_token: tokens.refresh_token,
+          fitbit_expires_at: tokens.expires_at,
+        }),
+      });
+    } catch (e) {
+      console.warn("[Wearables] legacy fitbit mirror failed: " + e.message);
+    }
+  }
+}
+
+async function stampLastSynced(profileId, provider) {
+  try {
+    await fetch(
+      SUPABASE_URL + "/rest/v1/wearable_connections?profile_id=eq." + profileId
+        + "&provider=eq." + provider,
+      {
+        method: "PATCH",
+        headers: sbHeaders("return=minimal"),
+        body: JSON.stringify({ last_synced_at: new Date().toISOString() }),
+      }
+    );
+  } catch (e) { /* non-fatal */ }
+}
+
+// Auto-refreshes if the stored token is expired. Throws an error with
+// code RECONNECT_REQUIRED if refresh fails — the endpoint handler maps
+// that to a 401 so the UI can show "reconnect your <provider>" instead
+// of a generic 500.
+async function getValidWearableToken(profileId, provider) {
+  var tokens = await loadWearableTokens(profileId, provider);
+  if (tokens.access_token && Date.now() < Number(tokens.expires_at)) {
+    return tokens.access_token;
+  }
+  if (!tokens.refresh_token) {
+    var e1 = new Error("No " + provider + " connection — user must connect first");
+    e1.code = "RECONNECT_REQUIRED";
+    throw e1;
+  }
+  var adapter = wearables.getProviderAdapter(provider);
+  var fresh;
+  try {
+    fresh = await adapter.refreshToken(tokens.refresh_token);
+  } catch (refreshErr) {
+    refreshErr.code = refreshErr.code || "RECONNECT_REQUIRED";
+    throw refreshErr;
+  }
+  await saveWearableTokens(profileId, provider, fresh);
+  return fresh.access_token;
+}
+
+// Maps RECONNECT_REQUIRED errors → 401 with a structured payload the UI
+// can branch on; everything else → 500.
+function sendWearableError(res, err, provider) {
+  var msg = err && err.message ? err.message : "Unknown error";
+  if (err && err.code === "RECONNECT_REQUIRED") {
+    return res.status(401).json({
+      success: false,
+      error: msg,
+      code: "RECONNECT_REQUIRED",
+      provider: provider || null,
+    });
+  }
+  if (err && /not implemented/i.test(msg)) {
+    return res.status(501).json({ success: false, error: msg, provider: provider || null });
+  }
+  console.error("[Wearables] error:", msg);
+  return res.status(500).json({ success: false, error: msg, provider: provider || null });
+}
+
+// ── endpoints ─────────────────────────────────────────────────────────────
+
+// GET /api/wearables/providers/:userId
+// → { providers: [{ provider, label, connected, last_synced_at }] }
+app.get("/api/wearables/providers/:userId", async function(req, res) {
+  try {
+    var pid = req.params.userId;
+    var connRes = await fetch(
+      SUPABASE_URL + "/rest/v1/wearable_connections?profile_id=eq." + pid
+        + "&select=provider,last_synced_at,token_expires_at",
+      { headers: sbHeaders() }
+    );
+    var conns = await connRes.json();
+    var byProvider = {};
+    (Array.isArray(conns) ? conns : []).forEach(function(c) { byProvider[c.provider] = c; });
+
+    var all = wearables.listProviders();
+    var out = all.map(function(p) {
+      var c = byProvider[p.provider];
+      return {
+        provider: p.provider,
+        label: p.label,
+        connected: !!c,
+        last_synced_at: c ? c.last_synced_at : null,
+      };
+    });
+    res.json({ success: true, providers: out });
+  } catch (e) {
+    sendWearableError(res, e);
+  }
+});
+
+// POST /api/wearables/connect/:provider
+// body: { profile_id }
+// → { auth_url } that the client should open to complete OAuth. The
+// provider's callback writes tokens (Fitbit reuses the existing /callback
+// which dual-writes to wearable_connections — see OAuth callback above).
+app.post("/api/wearables/connect/:provider", async function(req, res) {
+  var provider = req.params.provider;
+  try {
+    var profileId = (req.body && req.body.profile_id) || null;
+    if (!profileId) return res.status(400).json({ success: false, error: "profile_id required" });
+    var adapter = wearables.getProviderAdapter(provider);
+    var redirectUri = (req.headers["x-forwarded-proto"] || "https") + "://"
+      + req.headers.host + (provider === "fitbit" ? "/callback" : "/api/wearables/callback/" + provider);
+    var url = adapter.buildAuthUrl(redirectUri, String(profileId));
+    res.json({ success: true, auth_url: url, provider: provider });
+  } catch (e) {
+    sendWearableError(res, e, provider);
+  }
+});
+
+// POST /api/wearables/disconnect/:provider
+// body: { profile_id }
+app.post("/api/wearables/disconnect/:provider", async function(req, res) {
+  var provider = req.params.provider;
+  try {
+    var profileId = (req.body && req.body.profile_id) || null;
+    if (!profileId) return res.status(400).json({ success: false, error: "profile_id required" });
+    await fetch(
+      SUPABASE_URL + "/rest/v1/wearable_connections?profile_id=eq." + profileId
+        + "&provider=eq." + provider,
+      { method: "DELETE", headers: sbHeaders("return=minimal") }
+    );
+    // For Fitbit, also clear the legacy mirror columns so the user is
+    // fully disconnected from both code paths.
+    if (provider === "fitbit") {
+      await fetch(SUPABASE_URL + "/rest/v1/profiles?id=eq." + profileId, {
+        method: "PATCH",
+        headers: sbHeaders("return=minimal"),
+        body: JSON.stringify({
+          fitbit_access_token: null,
+          fitbit_refresh_token: null,
+          fitbit_expires_at: null,
+        }),
+      });
+    }
+    res.json({ success: true, provider: provider });
+  } catch (e) {
+    sendWearableError(res, e, provider);
+  }
+});
+
+// GET /api/wearables/sync-backlog/:userId?provider=fitbit&start_date=...&end_date=...
+// Pulls activities from the provider over the window, scores them against
+// the user's manual workouts, and partitions into matched / unmatched /
+// already_synced. Idempotent — running it twice returns the same shape;
+// nothing is written.
+app.get("/api/wearables/sync-backlog/:userId", async function(req, res) {
+  var provider = req.query.provider;
+  try {
+    var pid = req.params.userId;
+    var startDate = req.query.start_date;
+    var endDate = req.query.end_date;
+    if (!provider || !startDate || !endDate) {
+      return res.status(400).json({ success: false, error: "provider, start_date, end_date required" });
+    }
+    var adapter = wearables.getProviderAdapter(provider);
+    var token = await getValidWearableToken(pid, provider);
+    var activities = await adapter.fetchActivities(token, startDate, endDate);
+    await stampLastSynced(pid, provider);
+
+    // Workouts in window — note we pull wearable_activity_id so we can
+    // detect already-synced sessions AND duration_minutes if it exists
+    // (the column may not — exercises table has duration_minutes; the
+    // workouts table doesn't currently, so duration scoring on the manual
+    // side is best-effort using whatever fields exist).
+    var wRes = await fetch(
+      SUPABASE_URL + "/rest/v1/workouts?profile_id=eq." + pid
+        + "&date=gte." + startDate + "&date=lte." + endDate
+        + "&select=id,date,type,notes,wearable_activity_id",
+      { headers: sbHeaders() }
+    );
+    var workouts = await wRes.json();
+    if (!Array.isArray(workouts)) workouts = [];
+
+    var alreadySyncedIds = {};
+    workouts.forEach(function(w) {
+      if (w.wearable_activity_id) alreadySyncedIds[w.wearable_activity_id] = true;
+    });
+
+    // Rejected pairs for this profile — keyed by namespaced activity id
+    // so we can check "is THIS workout rejected against THIS activity".
+    var rRes = await fetch(
+      SUPABASE_URL + "/rest/v1/rejected_wearable_matches?profile_id=eq." + pid
+        + "&select=workout_id,wearable_activity_id",
+      { headers: sbHeaders() }
+    );
+    var rejected = await rRes.json();
+    if (!Array.isArray(rejected)) rejected = [];
+    var rejectedSet = {};
+    rejected.forEach(function(r) { rejectedSet[r.wearable_activity_id + "|" + r.workout_id] = true; });
+
+    // Only un-synced manual workouts are eligible for matching.
+    var manualPool = workouts.filter(function(w) { return !w.wearable_activity_id; });
+
+    var matched = [];
+    var unmatched = [];
+    var alreadySynced = [];
+
+    for (var i = 0; i < activities.length; i++) {
+      var act = activities[i];
+      var nsId = wearables.namespacedId(provider, act.provider_activity_id);
+      if (alreadySyncedIds[nsId]) {
+        alreadySynced.push({ activity: act, wearable_activity_id: nsId });
+        continue;
+      }
+      var sameDate = manualPool.filter(function(w) { return w.date === act.date; });
+      var best = wearables.matchWearableToManual(act, sameDate);
+      if (best && !rejectedSet[nsId + "|" + best.workout.id]) {
+        matched.push({
+          activity: act,
+          wearable_activity_id: nsId,
+          workout: best.workout,
+          score: best.score,
+        });
+      } else {
+        unmatched.push({ activity: act, wearable_activity_id: nsId });
+      }
+    }
+
+    res.json({
+      success: true,
+      provider: provider,
+      matched: matched,
+      unmatched: unmatched,
+      already_synced: alreadySynced,
+    });
+  } catch (e) {
+    sendWearableError(res, e, provider);
+  }
+});
+
+// POST /api/wearables/merge/:userId
+// body: { workout_id, provider, wearable_activity_id }
+// Attaches the wearable session's normalized payload to an existing
+// manual workout. wearable_activity_id arrives in the "provider:id"
+// namespaced form — we strip the prefix before calling the adapter.
+app.post("/api/wearables/merge/:userId", async function(req, res) {
+  var b = req.body || {};
+  var provider = b.provider;
+  try {
+    if (!b.workout_id || !provider || !b.wearable_activity_id) {
+      return res.status(400).json({ success: false, error: "workout_id, provider, wearable_activity_id required" });
+    }
+    var bareId = String(b.wearable_activity_id).indexOf(provider + ":") === 0
+      ? String(b.wearable_activity_id).slice(provider.length + 1)
+      : String(b.wearable_activity_id);
+    var nsId = wearables.namespacedId(provider, bareId);
+    var adapter = wearables.getProviderAdapter(provider);
+    var token = await getValidWearableToken(req.params.userId, provider);
+    var detail = await adapter.fetchActivityDetail(token, bareId);
+    if (!detail) return res.status(404).json({ success: false, error: "Activity not found on provider" });
+
+    var patchRes = await fetch(SUPABASE_URL + "/rest/v1/workouts?id=eq." + b.workout_id, {
+      method: "PATCH",
+      headers: sbHeaders("return=representation"),
+      body: JSON.stringify({
+        wearable_data: detail,
+        wearable_activity_id: nsId,
+      }),
+    });
+    var rows = await patchRes.json();
+    var workout = Array.isArray(rows) ? rows[0] : rows;
+    clearProgressBriefCache(req.params.userId);
+    res.json({ success: true, workout: workout, wearable_activity_id: nsId });
+  } catch (e) {
+    sendWearableError(res, e, provider);
+  }
+});
+
+// POST /api/wearables/reject/:userId
+// body: { workout_id, provider, wearable_activity_id }
+// User said "these are separate sessions" — record the rejection so the
+// pairing doesn't keep getting suggested, and create the wearable session
+// as its own standalone workout row (no data lost).
+app.post("/api/wearables/reject/:userId", async function(req, res) {
+  var b = req.body || {};
+  var provider = b.provider;
+  try {
+    if (!b.workout_id || !provider || !b.wearable_activity_id) {
+      return res.status(400).json({ success: false, error: "workout_id, provider, wearable_activity_id required" });
+    }
+    var nsId = String(b.wearable_activity_id).indexOf(provider + ":") === 0
+      ? b.wearable_activity_id
+      : wearables.namespacedId(provider, b.wearable_activity_id);
+
+    // Idempotent rejection record (UNIQUE constraint handles dupes).
+    await fetch(SUPABASE_URL + "/rest/v1/rejected_wearable_matches", {
+      method: "POST",
+      headers: sbHeaders("return=minimal,resolution=merge-duplicates"),
+      body: JSON.stringify({
+        profile_id: parseInt(req.params.userId, 10),
+        workout_id: parseInt(b.workout_id, 10),
+        provider: provider,
+        wearable_activity_id: nsId,
+      }),
+    });
+
+    // Create the wearable session as its own workout — same shape as
+    // /import, just triggered by the reject path.
+    var created = await createWearableWorkout(req.params.userId, provider, nsId);
+    res.json({ success: true, workout: created, wearable_activity_id: nsId });
+  } catch (e) {
+    sendWearableError(res, e, provider);
+  }
+});
+
+// POST /api/wearables/import/:userId
+// body: { provider, wearable_activity_id }
+// Unmatched session the user wants to import as a standalone workout.
+app.post("/api/wearables/import/:userId", async function(req, res) {
+  var b = req.body || {};
+  var provider = b.provider;
+  try {
+    if (!provider || !b.wearable_activity_id) {
+      return res.status(400).json({ success: false, error: "provider, wearable_activity_id required" });
+    }
+    var nsId = String(b.wearable_activity_id).indexOf(provider + ":") === 0
+      ? b.wearable_activity_id
+      : wearables.namespacedId(provider, b.wearable_activity_id);
+    var created = await createWearableWorkout(req.params.userId, provider, nsId);
+    res.json({ success: true, workout: created, wearable_activity_id: nsId });
+  } catch (e) {
+    sendWearableError(res, e, provider);
+  }
+});
+
+// Shared by /reject and /import. Fetches the detail through the adapter,
+// shapes a workouts-table row (mirrors the existing /fitbit-import notes
+// format for consistency in the History tab), and inserts.
+async function createWearableWorkout(profileId, provider, namespacedActivityId) {
+  var bareId = namespacedActivityId.indexOf(provider + ":") === 0
+    ? namespacedActivityId.slice(provider.length + 1)
+    : namespacedActivityId;
+  var adapter = wearables.getProviderAdapter(provider);
+  var token = await getValidWearableToken(profileId, provider);
+  var detail = await adapter.fetchActivityDetail(token, bareId);
+  if (!detail) throw new Error("Activity not found on provider");
+
+  var noteParts = ["Auto-imported from " + provider + ": "
+    + (detail.duration_minutes != null ? detail.duration_minutes + " min" : "?")];
+  if (detail.calories != null) noteParts.push(detail.calories + " cal burned");
+  if (detail.avg_hr != null) noteParts.push("avg HR: " + detail.avg_hr + " bpm");
+  var notes = noteParts.join(", ")
+    + "\n[source: " + provider + "_activity, activityId=" + bareId + "]";
+
+  var payload = {
+    profile_id: parseInt(profileId, 10),
+    date: detail.date,
+    type: detail.activity_type || "Workout",
+    notes: notes,
+    done: true,
+    mobility: false,
+    med: false,
+    ts: Date.now(),
+    wearable_data: detail,
+    wearable_activity_id: namespacedActivityId,
+  };
+  var wRes = await fetch(SUPABASE_URL + "/rest/v1/workouts", {
+    method: "POST",
+    headers: sbHeaders("return=representation"),
+    body: JSON.stringify(payload),
+  });
+  if (!wRes.ok) {
+    var t = await wRes.text();
+    throw new Error("workout insert failed: " + t);
+  }
+  var rows = await wRes.json();
+  clearProgressBriefCache(profileId);
+  return Array.isArray(rows) ? rows[0] : rows;
+}
 
 app.listen(PORT, function() {
   console.log("ApexCoach running on port " + PORT);
