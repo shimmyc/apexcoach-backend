@@ -4339,18 +4339,23 @@ app.post("/api/debug/backfill-wearable-hr/:userId", async function(req, res) {
       }
     }
 
-    // ── Pass 2: derive peak_hr from intraday HR samples ───────────────────
+    // ── Pass 2: derive peak_hr ────────────────────────────────────────────
     // peak_hr is NEVER on the list endpoint (no maxHeartRate), so pass 1 can't
-    // fill it. For each wearable row still missing peak_hr: reuse any
-    // heart_rate_samples already stored (free), else pull the activity's
-    // intraday HR window from the provider and take the max bpm. Throttled to
-    // ~1 provider call/sec; every call is non-fatal so one bad session can't
-    // abort the run. Optional ?max_intraday=N caps provider calls per run —
-    // PATCHes persist as they go, so re-running continues where it left off.
+    // fill it. For each wearable row still missing peak_hr, mirror the priority
+    // chain in fetchActivityDetail:
+    //   (a) reuse heart_rate_samples already stored on the row  — free
+    //   (b) TCX export (MaximumHeartRateBpm)  — Server-type apps, needs only id
+    //   (c) intraday HR window (max bpm)      — Personal-type apps, needs window
+    // The optional ?max_intraday=N budget + the ~1/sec throttle apply to ALL
+    // provider calls (TCX + intraday), since both count against Fitbit's rate
+    // limit. Every call is non-fatal; PATCHes persist as they go so re-running
+    // continues where it left off. peak_hr_from_* counts show which path works.
     var updated_peak_hr = 0, peak_hr_skipped = 0, peak_hr_errors = 0;
+    var peak_hr_from_samples = 0, peak_hr_from_tcx = 0, peak_hr_from_intraday = 0;
     var hasIntraday = typeof adapter.fetchIntradayHr === "function";
-    var maxIntraday = parseInt(req.query.max_intraday, 10);
-    if (!(maxIntraday > 0)) maxIntraday = Infinity;
+    var hasTcx = typeof adapter.fetchActivityTcxPeakHr === "function";
+    var maxCalls = parseInt(req.query.max_intraday, 10);
+    if (!(maxCalls > 0)) maxCalls = Infinity;
     var apiCalls = 0;
     var sleep = function(ms) { return new Promise(function(r) { setTimeout(r, ms); }); };
 
@@ -4364,15 +4369,36 @@ app.post("/api/debug/backfill-wearable-hr/:userId", async function(req, res) {
         var hiLocal = maxBpm(pwd.heart_rate_samples);
         if (hiLocal != null) {
           pwd.peak_hr = hiLocal;
-          if (await patchWearableData(pw.id, pwd)) updated_peak_hr++; else peak_hr_errors++;
+          if (await patchWearableData(pw.id, pwd)) { updated_peak_hr++; peak_hr_from_samples++; } else peak_hr_errors++;
         } else { peak_hr_skipped++; }
         continue;
       }
 
-      // (b) Need a provider intraday call — requires the activity time window.
+      var bareId = splitNamespacedId(provider, pw.wearable_activity_id).bare;
+
+      // (b) TCX peak HR — Server-type apps. Needs only the activity id, so it
+      // works even for rows without a stored start_time/duration window.
+      if (hasTcx && bareId && apiCalls < maxCalls) {
+        if (apiCalls > 0) await sleep(1000); // ~1 req/sec across all provider calls
+        apiCalls++;
+        try {
+          var tcxPeak = await adapter.fetchActivityTcxPeakHr(token, bareId);
+          if (tcxPeak != null) {
+            pwd.peak_hr = tcxPeak;
+            if (await patchWearableData(pw.id, pwd)) { updated_peak_hr++; peak_hr_from_tcx++; } else peak_hr_errors++;
+            continue;
+          }
+          // TCX returned no peak → fall through to intraday below.
+        } catch (e) {
+          console.warn("[Backfill] TCX HR failed for workout " + pw.id + ": " + e.message);
+          // non-fatal → fall through to intraday below.
+        }
+      }
+
+      // (c) Intraday HR — Personal-type apps. Requires the activity time window.
       if (!hasIntraday || !pwd.start_time || pwd.duration_minutes == null) { peak_hr_skipped++; continue; }
-      if (apiCalls >= maxIntraday) { peak_hr_skipped++; continue; }
-      if (apiCalls > 0) await sleep(1000); // ~1 req/sec to stay under Fitbit limits
+      if (apiCalls >= maxCalls) { peak_hr_skipped++; continue; }
+      if (apiCalls > 0) await sleep(1000); // ~1 req/sec across all provider calls
       apiCalls++;
       try {
         var samples = await adapter.fetchIntradayHr(token, {
@@ -4385,7 +4411,7 @@ app.post("/api/debug/backfill-wearable-hr/:userId", async function(req, res) {
         if (hi == null) { peak_hr_skipped++; continue; }
         pwd.peak_hr = hi;
         pwd.heart_rate_samples = samples; // adapter caps at 600 samples
-        if (await patchWearableData(pw.id, pwd)) updated_peak_hr++; else peak_hr_errors++;
+        if (await patchWearableData(pw.id, pwd)) { updated_peak_hr++; peak_hr_from_intraday++; } else peak_hr_errors++;
       } catch (e) {
         peak_hr_errors++;
         console.warn("[Backfill] intraday HR failed for workout " + pw.id + ": " + e.message);
@@ -4394,13 +4420,18 @@ app.post("/api/debug/backfill-wearable-hr/:userId", async function(req, res) {
 
     console.log("[Backfill] wearable-hr profile=" + pid + " checked=" + rows.length +
       " targets=" + targets.length + " updated=" + updated + " skipped=" + skipped + " errors=" + errors +
-      " | peak_hr: updated=" + updated_peak_hr + " skipped=" + peak_hr_skipped +
-      " errors=" + peak_hr_errors + " providerCalls=" + apiCalls);
+      " | peak_hr: updated=" + updated_peak_hr + " (samples=" + peak_hr_from_samples +
+      " tcx=" + peak_hr_from_tcx + " intraday=" + peak_hr_from_intraday + ")" +
+      " skipped=" + peak_hr_skipped + " errors=" + peak_hr_errors + " providerCalls=" + apiCalls);
     res.json({
       success: true,
       checked: rows.length,
       updated: updated, skipped: skipped, errors: errors,
-      updated_peak_hr: updated_peak_hr, peak_hr_skipped: peak_hr_skipped, peak_hr_errors: peak_hr_errors,
+      updated_peak_hr: updated_peak_hr,
+      peak_hr_from_samples: peak_hr_from_samples,
+      peak_hr_from_tcx: peak_hr_from_tcx,
+      peak_hr_from_intraday: peak_hr_from_intraday,
+      peak_hr_skipped: peak_hr_skipped, peak_hr_errors: peak_hr_errors,
     });
   } catch (e) {
     sendWearableError(res, e, provider);

@@ -300,6 +300,9 @@ module.exports = {
   // activity using only the start_time + duration stored in wearable_data
   // (no second detail fetch). Optional in the adapter contract.
   fetchIntradayHr: fetchIntradayHr,
+  // Exposed so the HR backfill can try TCX peak HR (Server-type apps) before
+  // falling back to intraday (Personal-type apps). Optional in the contract.
+  fetchActivityTcxPeakHr: fetchActivityTcxPeakHr,
   // Exposed so the merge/import path can normalize a raw list activity passed
   // back from the client (the HR-loss fix). Optional in the adapter contract.
   normalize: normalize,
