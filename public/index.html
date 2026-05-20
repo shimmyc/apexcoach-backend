@@ -4337,15 +4337,18 @@ function anActivityRow(a) {
   var selected = analyticsState.selectedActivity === a.type;
   var rowsHtml = open ? anSessionTable(a.recent_sessions || []) : '';
   var caret = open ? '▾' : '▸';
+  // Averages visible without expanding (issue 6).
+  var subParts = ['Avg HR: ' + hr];
+  if (a.avg_min_per_session != null) subParts.push('Avg ' + a.avg_min_per_session + ' min/session');
+  subParts.push('Peak: ' + peak);
+  subParts.push('Cal: ' + cal);
   return '<div style="border:1px solid ' + (selected ? color : 'var(--border)') + ';border-left:3px solid ' + color + ';border-radius:8px;margin-bottom:8px;overflow:hidden;background:' + (selected ? color + '0d' : 'transparent') + '">' +
     '<div onclick="toggleActivityRow(\'' + a.type + '\')" style="padding:10px 12px;cursor:pointer">' +
       '<div style="display:flex;justify-content:space-between;align-items:center">' +
         '<span style="font-weight:600;color:var(--text)">' + caret + ' ' + escHtml(a.label) + ' <span style="color:var(--text-dim);font-weight:400;font-size:12px">(' + a.total_sessions + ')</span></span>' +
         '<span style="font-size:13px;color:' + arrowCol + '">' + arrow + ' ' + anFmtNum(a.total_minutes) + ' min</span>' +
       '</div>' +
-      '<div class="mono" style="font-size:11px;color:var(--text-muted);margin-top:5px;display:flex;gap:14px;flex-wrap:wrap">' +
-        '<span>Avg HR: ' + hr + '</span><span>Peak: ' + peak + '</span><span>Cal: ' + cal + '</span>' +
-      '</div>' +
+      '<div class="mono" style="font-size:11px;color:var(--text-muted);margin-top:5px">' + subParts.join(' · ') + '</div>' +
     '</div>' + rowsHtml + '</div>';
 }
 
@@ -4365,27 +4368,29 @@ function anSessionTable(sessions) {
 }
 
 function toggleActivityRow(type) {
-  // In By Activity mode, clicking a row both expands its session table AND
-  // promotes it to the headline dashboard. Clicking the selected row again
-  // collapses it and returns to the all-activities headline.
+  // In By Activity mode, clicking a row isolates it: collapses every other row,
+  // expands only this one, and promotes it to the headline dashboard. Clicking
+  // the active row again returns to the full all-activities overview.
   if (analyticsState.selectedActivity === type) {
     analyticsState.selectedActivity = null;
-    analyticsState.open[type] = false;
+    analyticsState.open = {};
   } else {
     analyticsState.selectedActivity = type;
-    analyticsState.open[type] = true;
+    analyticsState.open = {};        // collapse all others
+    analyticsState.open[type] = true; // expand only the selected one
   }
   renderAnalytics(analyticsState.data);
 }
 
 function setAnalyticsMode(mode) {
   analyticsState.mode = mode;
-  if (mode === 'overview') analyticsState.selectedActivity = null;
+  if (mode === 'overview') { analyticsState.selectedActivity = null; analyticsState.open = {}; }
   renderAnalytics(analyticsState.data);
 }
 
 function clearActivityDrill() {
   analyticsState.selectedActivity = null;
+  analyticsState.open = {};
   renderAnalytics(analyticsState.data);
 }
 
@@ -4399,6 +4404,11 @@ function anOverallGrid(o, cmp) {
   html += anStatBox('Total Min', anFmtNum(o.total_workout_minutes || 0), cmp.total_minutes, true);
   html += anStatBox('Sessions', o.total_sessions || 0, cmp.total_sessions, true);
   html += anStatBox('Calories', o.total_calories != null ? anFmtNum(o.total_calories) : 'N/A', cmp.total_calories, true);
+  html += '</div><div style="display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-top:10px">';
+  html += anStatBox('Avg Min/Sess', o.avg_min_per_session != null ? o.avg_min_per_session : '—', null, false);
+  html += anStatBox('Avg Cal/Sess', o.avg_calories_per_session != null ? anFmtNum(o.avg_calories_per_session) : 'N/A', null, false);
+  html += anStatBox('Avg HR', o.avg_hr != null ? o.avg_hr + ' bpm' : 'N/A', cmp.avg_hr, false);
+  html += anStatBox('Peak HR', o.peak_hr != null ? o.peak_hr + ' bpm' : 'N/A', null, false);
   html += '</div><div style="display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-top:10px">';
   html += anStatBox('Top Day', o.most_active_day_of_week ? o.most_active_day_of_week.slice(0, 3) : '—', null, false);
   html += anStatBox('Streak', (o.current_streak || 0) + 'd', null, false);
@@ -7785,12 +7795,12 @@ var LIB_COLORS = { 'Strength':'#4488bb','Cardio':'#f5a623','Martial Arts':'#e845
 var CAT_COLORS = { strength:'#4488bb', cardio:'#f5a623', martial_arts:'#e84545', sports:'#22c97a', mind_body:'#9966cc', rehab:'#f07020', mixed:'#22c97a', rest:'#555', other:'#888', combat:'#e84545', core:'#ff6b35', mobility:'#9966cc' };
 var libMainFilter = 'all';
 var libSubFilter = 'all';
-var LIB_SORTS = ['most_logged', 'az', 'za', 'recent'];
-var LIB_SORT_LABEL = { most_logged: 'Most Logged', az: 'A→Z', za: 'Z→A', recent: 'Most Recent' };
+var LIB_SORTS = ['most_logged', 'least_logged', 'az', 'za', 'recent', 'least_recent'];
+var LIB_SORT_LABEL = { most_logged: 'Most Logged', least_logged: 'Least Logged', az: 'A→Z', za: 'Z→A', recent: 'Most Recent', least_recent: 'Least Recent' };
 var libSort = (function() { try { var s = localStorage.getItem('ac_lib_sort'); return LIB_SORTS.indexOf(s) >= 0 ? s : 'most_logged'; } catch (e) { return 'most_logged'; } })();
-function cycleLibSort() {
-  var i = LIB_SORTS.indexOf(libSort);
-  libSort = LIB_SORTS[(i + 1) % LIB_SORTS.length];
+function setLibSort(val) {
+  if (LIB_SORTS.indexOf(val) < 0) val = 'most_logged';
+  libSort = val;
   try { localStorage.setItem('ac_lib_sort', libSort); } catch (e) {}
   renderLibExercises();
 }
@@ -7799,6 +7809,8 @@ function applyLibSort(arr) {
   if (libSort === 'az') a.sort(function(x, y) { return x.name.localeCompare(y.name); });
   else if (libSort === 'za') a.sort(function(x, y) { return y.name.localeCompare(x.name); });
   else if (libSort === 'recent') a.sort(function(x, y) { return String(y.last_date || '').localeCompare(String(x.last_date || '')); });
+  else if (libSort === 'least_recent') a.sort(function(x, y) { return String(x.last_date || '').localeCompare(String(y.last_date || '')); });
+  else if (libSort === 'least_logged') a.sort(function(x, y) { return (x.count || 0) - (y.count || 0); });
   else a.sort(function(x, y) { return (y.count || 0) - (x.count || 0); }); // most_logged (default)
   return a;
 }
@@ -8354,7 +8366,7 @@ function renderLibDashboard() {
   html += '</div>';
 
   // Donut chart
-  html += '<div class="card" style="margin-bottom:16px"><p class="clabel">workout distribution</p><div style="max-width:280px;margin:0 auto"><canvas id="lib-donut"></canvas></div><div id="lib-donut-legend" style="margin-top:12px"></div></div>';
+  html += '<div class="card" style="margin-bottom:16px"><p class="clabel">workout distribution</p><div style="position:relative;height:240px;max-width:280px;margin:0 auto"><canvas id="lib-donut" width="280" height="240"></canvas></div><div id="lib-donut-legend" style="margin-top:12px"></div></div>';
 
   // Volume chart
   html += '<div class="card" style="margin-bottom:16px"><p class="clabel">weekly training volume</p><canvas id="lib-volume" style="max-height:200px"></canvas></div>';
@@ -8623,6 +8635,7 @@ function renderDonutChart() {
     data: { labels: labels, datasets: [{ data: values, backgroundColor: colors, borderWidth: 0 }] },
     options: {
       responsive: true,
+      maintainAspectRatio: false,
       cutout: '65%',
       plugins: {
         legend: { display: false },
@@ -8698,7 +8711,8 @@ function renderLibExercises() {
     html += '</div>';
   }
   html += '</div>';
-  html += '<div style="display:flex;justify-content:flex-end;margin-bottom:8px"><button onclick="cycleLibSort()" title="Change sort order" style="background:transparent;border:1px solid var(--border-accent);color:var(--text-muted);padding:5px 12px;border-radius:6px;cursor:pointer;font-size:12px;font-family:IBM Plex Mono,monospace">&#8645; ' + LIB_SORT_LABEL[libSort] + '</button></div>';
+  var sortOpts = LIB_SORTS.map(function(k) { return '<option value="' + k + '"' + (libSort === k ? ' selected' : '') + '>' + LIB_SORT_LABEL[k] + '</option>'; }).join('');
+  html += '<div style="display:flex;justify-content:flex-end;align-items:center;gap:6px;margin-bottom:8px"><span class="mono" style="font-size:10px;color:var(--text-dim)">SORT</span><select onchange="setLibSort(this.value)" style="background:var(--bg-input);border:1px solid var(--border-accent);color:var(--text);padding:5px 10px;border-radius:6px;cursor:pointer;font-size:12px;font-family:IBM Plex Mono,monospace">' + sortOpts + '</select></div>';
   html += '<div id="lib-exercise-list"></div>';
   el.innerHTML = html;
   filterLibExercises();
@@ -8741,6 +8755,7 @@ function filterLibExercises() {
     var bestStr = '';
     if (ex.best_weight) bestStr = ex.best_weight + ' lbs';
     else if (ex.best_reps) bestStr = ex.best_reps + ' reps';
+    else if (ex.best_duration_seconds) bestStr = fmtMMSS(ex.best_duration_seconds);
     html += '<div onclick="showExerciseDetail(\'' + escAttr(ex.name) + '\')" style="display:flex;align-items:center;justify-content:space-between;padding:12px;background:var(--bg-input);border:1px solid var(--border);border-radius:8px;margin-bottom:6px;cursor:pointer">' +
       '<div><div style="font-size:15px;color:var(--text);font-weight:500">' + escHtml(ex.name) + '</div>' +
       '<div style="display:flex;gap:6px;align-items:center;margin-top:4px"><span class="mono" style="font-size:9px;color:' + cc + ';letter-spacing:1px;text-transform:uppercase;background:' + cc + '18;padding:1px 6px;border-radius:3px">' + mc.replace('_', ' ') + '</span>' +
@@ -8837,35 +8852,61 @@ function showExerciseDetail(name) {
     .catch(function() { det.innerHTML = '<p style="color:#e84545">Error loading exercise.</p>'; });
 }
 
+// Client mirror of the server parseDurationToSeconds — extracts the best single
+// hold/duration in seconds from free text ("3x30s", "1 min 42 sec", "2:00").
+function parseDurationToSeconds(text) {
+  if (!text) return 0;
+  var s = String(text).toLowerCase(), max = 0, m;
+  var combinedRe = /(\d+(?:\.\d+)?)\s*(?:minutes?|mins?|m)\s*(?:and\s+)?(\d+(?:\.\d+)?)\s*(?:seconds?|secs?|s)\b/g;
+  while ((m = combinedRe.exec(s)) !== null) { var combo = parseFloat(m[1]) * 60 + parseFloat(m[2]); if (!isNaN(combo) && combo > max) max = combo; }
+  var mmssRe = /(\d{1,3}):([0-5]\d)\b/g;
+  while ((m = mmssRe.exec(s)) !== null) { var sec = parseInt(m[1], 10) * 60 + parseInt(m[2], 10); if (sec > max) max = sec; }
+  var secRe = /(\d+(?:\.\d+)?)\s*(?:seconds?|secs?)\b/g;
+  while ((m = secRe.exec(s)) !== null) { var n = parseFloat(m[1]); if (!isNaN(n) && n > max) max = n; }
+  var sShortRe = /(?:^|[\s,x])(\d+(?:\.\d+)?)s(?=$|[\s,.;])/g;
+  while ((m = sShortRe.exec(s)) !== null) { var n2 = parseFloat(m[1]); if (!isNaN(n2) && n2 > max) max = n2; }
+  var minRe = /(\d+(?:\.\d+)?)[\s-]*(?:minutes?|mins?)\b/g;
+  while ((m = minRe.exec(s)) !== null) { var nm = parseFloat(m[1]) * 60; if (!isNaN(nm) && nm > max) max = nm; }
+  return max;
+}
+function fmtMMSS(sec) {
+  sec = Math.round(Number(sec) || 0);
+  var m = Math.floor(sec / 60), s = sec % 60;
+  return m + ':' + String(s).padStart(2, '0');
+}
+
 function renderExDetailChart(hist, pr) {
   var canvas = document.getElementById('lib-ex-chart');
   if (!canvas || !hist.length) return;
   if (libCharts.detail) libCharts.detail.destroy();
 
   var hasWeight = hist.some(function(h) { return h.weight_lbs; });
+  var hasReps = hist.some(function(h) { return h.reps; });
   var hasDistance = hist.some(function(h) { return h.distance_miles; });
+  // Per-session hold seconds for time-based moves (Dead Hang, Plank).
+  var secs = hist.map(function(h) {
+    var dm = (h.duration_minutes != null && h.duration_minutes !== '') ? Number(h.duration_minutes) * 60 : 0;
+    return dm || parseDurationToSeconds(h.raw_text || '') || parseDurationToSeconds(h.notes || '');
+  });
+  var isDurationBased = secs.some(function(v) { return v > 0; }) && !hasReps; // mirror API is_duration_based
 
   var labels = hist.map(function(h) { return h.date.slice(5); });
-  var values, ylabel;
-  if (hasWeight) { values = hist.map(function(h) { return h.weight_lbs || null; }); ylabel = 'Weight (lbs)'; }
-  else if (hasDistance) { values = hist.map(function(h) { return h.distance_miles || null; }); ylabel = 'Distance (mi)'; }
-  else { values = hist.map(function(h) { return h.reps || null; }); ylabel = 'Reps'; }
+  var values, ylabel, isTime = false, maxVal;
+  if (isDurationBased) { values = secs.map(function(v) { return v || null; }); ylabel = 'Seconds'; isTime = true; maxVal = Math.max.apply(null, secs); }
+  else if (hasWeight) { values = hist.map(function(h) { return h.weight_lbs || null; }); ylabel = 'Weight (lbs)'; maxVal = pr.max_weight; }
+  else if (hasDistance) { values = hist.map(function(h) { return h.distance_miles || null; }); ylabel = 'Distance (mi)'; maxVal = pr.max_distance; }
+  else { values = hist.map(function(h) { return h.reps || null; }); ylabel = 'Reps'; maxVal = pr.max_reps; }
 
-  var pointColors = values.map(function(v) {
-    var maxVal = hasWeight ? pr.max_weight : hasDistance ? pr.max_distance : pr.max_reps;
-    return v === maxVal ? '#f5c842' : '#22c97a';
-  });
-  var pointSizes = values.map(function(v) {
-    var maxVal = hasWeight ? pr.max_weight : hasDistance ? pr.max_distance : pr.max_reps;
-    return v === maxVal ? 8 : 4;
-  });
+  var pointColors = values.map(function(v) { return v === maxVal ? '#f5c842' : '#22c97a'; });
+  var pointSizes = values.map(function(v) { return v === maxVal ? 8 : 4; });
+  var tooltipCfg = isTime ? { callbacks: { label: function(ctx) { return fmtMMSS(ctx.parsed.y); } } } : {};
 
   libCharts.detail = new Chart(canvas, {
     type: 'line',
     data: { labels: labels, datasets: [{ data: values, borderColor: '#22c97a', backgroundColor: '#22c97a22', fill: true, tension: 0.3, pointBackgroundColor: pointColors, pointRadius: pointSizes, spanGaps: true }] },
     options: {
       responsive: true,
-      plugins: { legend: { display: false } },
+      plugins: { legend: { display: false }, tooltip: tooltipCfg },
       scales: {
         x: { ticks: { color: '#555', font: { size: 10 } }, grid: { display: false } },
         y: { ticks: { color: '#555', font: { size: 10 } }, grid: { color: '#1a1c22' }, title: { display: true, text: ylabel, color: '#555', font: { size: 10 } } }

@@ -2232,13 +2232,18 @@ app.get("/api/profiles/:id/exercises", async function(req, res) {
     for (var i = 0; i < exercises.length; i++) {
       var ex = exercises[i];
       if (!grouped[ex.name]) {
-        grouped[ex.name] = { name: ex.name, category: ex.category, main_category: ex.main_category || ex.category, subcategory: ex.subcategory || 'general', count: 0, last_date: null, best_weight: null, best_reps: null, sessions: [] };
+        grouped[ex.name] = { name: ex.name, category: ex.category, main_category: ex.main_category || ex.category, subcategory: ex.subcategory || 'general', count: 0, last_date: null, best_weight: null, best_reps: null, best_duration_seconds: null, sessions: [] };
       }
       var g = grouped[ex.name];
       g.count++;
       if (!g.last_date || ex.date > g.last_date) g.last_date = ex.date;
       if (ex.weight_lbs && (!g.best_weight || ex.weight_lbs > g.best_weight)) g.best_weight = ex.weight_lbs;
       if (ex.reps && (!g.best_reps || ex.reps > g.best_reps)) g.best_reps = ex.reps;
+      // Best single hold in seconds — duration_minutes column first, else parsed
+      // from raw_text/notes. Lets duration-based moves (Dead Hang) show a stat.
+      var dm = numOrNull(ex.duration_minutes);
+      var holdSec = dm != null ? Math.round(dm * 60) : (parseDurationToSeconds(ex.raw_text || '') || parseDurationToSeconds(ex.notes || ''));
+      if (holdSec && (!g.best_duration_seconds || holdSec > g.best_duration_seconds)) g.best_duration_seconds = holdSec;
       g.sessions.push(ex);
     }
 
@@ -4464,26 +4469,30 @@ app.get("/api/analytics/activity-stats/:userId", async function(req, res) {
     // not exist if the wearables migration hasn't run — fall back gracefully.
     var wBase = SUPABASE_URL + "/rest/v1/workouts?profile_id=eq." + encodeURIComponent(pid) + "&order=date.asc&limit=20000";
     var wRange = allTime ? "" : "&date=gte." + prevStart + "&date=lte." + endDate;
-    var wr = await fetch(wBase + "&select=id,date,type,done,notes,wearable_data" + wRange, { headers: sbHeaders() });
+    var wr = await fetch(wBase + "&select=id,date,type,done,notes,wearable_activity_id,wearable_data" + wRange, { headers: sbHeaders() });
     if (!wr.ok) wr = await fetch(wBase + "&select=id,date,type,done,notes" + wRange, { headers: sbHeaders() });
     var workouts = await wr.json();
     if (!Array.isArray(workouts)) workouts = [];
 
-    // Diagnostic: how many sessions actually carry HR, and from where. Confirms
-    // wearable_data is being read (it is) vs. it simply being absent on most
-    // rows (HR only lands in wearable_data via the new wearable-adapter merge/
-    // import paths; legacy Fitbit auto-imports put it in notes — see notesMetrics).
-    var diag = { total: workouts.length, withWearableData: 0, withWearableHR: 0, withNotesHR: 0 };
+    // Diagnostic: how many sessions carry HR and from where. Confirms wearable_data
+    // is read correctly (it is) vs. simply being absent. wearable-synced sessions
+    // have wearable_activity_id set — if those lack wearable_data.avg_hr, the gap is
+    // that Fitbit didn't return averageHeartRate for the activity (no HR strap data),
+    // not a query bug. Legacy Fitbit auto-imports carry HR in notes only (notesMetrics).
+    var diag = { total: workouts.length, withWearableData: 0, withWearableHR: 0, withNotesHR: 0, withActivityId: 0, activityIdWithHR: 0 };
     workouts.forEach(function(w) {
       var hasW = !!(w.wearable_data && typeof w.wearable_data === "object");
+      var hasHrW = hasW && numOrNull(w.wearable_data.avg_hr) != null;
       if (hasW) diag.withWearableData++;
-      if (hasW && numOrNull(w.wearable_data.avg_hr) != null) diag.withWearableHR++;
+      if (hasHrW) diag.withWearableHR++;
       else if (notesMetrics(w.notes).avg_hr != null) diag.withNotesHR++;
+      if (w.wearable_activity_id) { diag.withActivityId++; if (hasHrW) diag.activityIdWithHR++; }
     });
     console.log("[Analytics] activity-stats profile=" + pid +
       " range=" + (allTime ? "all-time" : (startDate + ".." + endDate)) +
       " workouts=" + diag.total + " withWearableData=" + diag.withWearableData +
-      " withWearableHR=" + diag.withWearableHR + " withNotesHR=" + diag.withNotesHR);
+      " withWearableHR=" + diag.withWearableHR + " withNotesHR=" + diag.withNotesHR +
+      " wearableActivityId=" + diag.withActivityId + " activityId+HR=" + diag.activityIdWithHR);
 
     // Exercise durations for the same window fill in manual sessions that have
     // no wearable_data. Summed per workout_id.
@@ -4503,7 +4512,7 @@ app.get("/api/analytics/activity-stats/:userId", async function(req, res) {
 
     function aggregate(lo, hi) {
       var acts = {}, doneDates = new Set(), dayOfWeek = [0, 0, 0, 0, 0, 0, 0];
-      var totalMin = 0, totalCal = 0, totalSessions = 0, hrAll = [];
+      var totalMin = 0, totalCal = 0, calCount = 0, totalSessions = 0, hrAll = [], peakHrAll = null;
       workouts.forEach(function(w) {
         if (!inWindow(w.date, lo, hi)) return;
         var cat = inferWorkoutCategoryServer(w.type);
@@ -4515,14 +4524,14 @@ app.get("/api/analytics/activity-stats/:userId", async function(req, res) {
         a.total_minutes += minutes;
         if (wm.calories != null) { a._calSum += wm.calories; a._calCount++; }
         if (wm.avg_hr != null) { a._hr.push(wm.avg_hr); hrAll.push(wm.avg_hr); }
-        if (wm.peak_hr != null) a.peak_hr = a.peak_hr == null ? wm.peak_hr : Math.max(a.peak_hr, wm.peak_hr);
+        if (wm.peak_hr != null) { a.peak_hr = a.peak_hr == null ? wm.peak_hr : Math.max(a.peak_hr, wm.peak_hr); peakHrAll = peakHrAll == null ? wm.peak_hr : Math.max(peakHrAll, wm.peak_hr); }
         a.sessions.push({ date: w.date, duration: minutes || null, avg_hr: wm.avg_hr, peak_hr: wm.peak_hr, calories: wm.calories });
         totalMin += minutes;
-        if (wm.calories != null) totalCal += wm.calories;
+        if (wm.calories != null) { totalCal += wm.calories; calCount++; }
         totalSessions++;
         if (w.done) { doneDates.add(w.date); dayOfWeek[new Date(w.date + "T12:00:00").getDay()]++; }
       });
-      return { acts: acts, doneDates: doneDates, dayOfWeek: dayOfWeek, totalMin: totalMin, totalCal: totalCal, totalSessions: totalSessions, hrAll: hrAll };
+      return { acts: acts, doneDates: doneDates, dayOfWeek: dayOfWeek, totalMin: totalMin, totalCal: totalCal, calCount: calCount, totalSessions: totalSessions, hrAll: hrAll, peakHrAll: peakHrAll };
     }
     function mean(arr) { return arr.length ? Math.round(arr.reduce(function(x, y) { return x + y; }, 0) / arr.length) : null; }
 
@@ -4541,6 +4550,7 @@ app.get("/api/analytics/activity-stats/:userId", async function(req, res) {
         label: a.label,
         total_sessions: a.total_sessions,
         total_minutes: Math.round(a.total_minutes),
+        avg_min_per_session: a.total_sessions ? Math.round(a.total_minutes / a.total_sessions) : null,
         avg_hr: avgHr,
         peak_hr: a.peak_hr,
         total_calories: a._calCount ? Math.round(a._calSum) : null,
@@ -4556,6 +4566,10 @@ app.get("/api/analytics/activity-stats/:userId", async function(req, res) {
       total_workout_minutes: Math.round(cur.totalMin),
       total_sessions: cur.totalSessions,
       total_calories: cur.totalCal ? Math.round(cur.totalCal) : null,
+      avg_min_per_session: cur.totalSessions ? Math.round(cur.totalMin / cur.totalSessions) : null,
+      avg_calories_per_session: cur.calCount ? Math.round(cur.totalCal / cur.calCount) : null,
+      avg_hr: mean(cur.hrAll),
+      peak_hr: cur.peakHrAll,
       most_active_day_of_week: mostActiveDay,
       current_streak: currentStreakFromDates(cur.doneDates),
       longest_streak: longestStreakFromDates(cur.doneDates),
