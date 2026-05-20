@@ -4258,12 +4258,21 @@ app.post("/api/wearables/import/:userId", async function(req, res) {
   }
 });
 
-// POST /api/debug/backfill-wearable-hr/:userId?provider=fitbit[&secret=ADMIN_SECRET]
-// One-time repair for already-synced workouts whose wearable_data.avg_hr is null:
-// re-reads HR from the LIST endpoint (which carries averageHeartRate, unlike the
-// detail endpoint that originally populated these rows) and fills the missing HR
-// fields. Returns { updated, skipped, errors, checked }. Idempotent — re-running
-// only touches rows still missing avg_hr.
+// POST /api/debug/backfill-wearable-hr/:userId?provider=fitbit[&secret=ADMIN_SECRET][&max_intraday=N]
+// One-time HR repair for already-synced workouts, in two passes:
+//   Pass 1 (avg_hr): for rows whose wearable_data.avg_hr is null, re-reads HR
+//     from the LIST endpoint (which carries averageHeartRate, unlike the detail
+//     endpoint that originally populated these rows) and fills the missing
+//     avg_hr / calories / active_zone_minutes / zones.
+//   Pass 2 (peak_hr): for rows still missing peak_hr, derives it from intraday
+//     HR — reusing heart_rate_samples already stored when present (no API call),
+//     otherwise fetching the activity's intraday HR window from the provider and
+//     taking the max bpm (also stores heart_rate_samples, capped at 600). The
+//     LIST endpoint never carries maxHeartRate, so this is the only way to get
+//     peak_hr. Throttled to ~1 provider call/sec; non-fatal per session.
+// ?max_intraday=N caps provider calls per run (PATCHes persist as they go, so
+// re-running continues). Returns { checked, updated, skipped, errors,
+// updated_peak_hr, peak_hr_skipped, peak_hr_errors }. Idempotent.
 app.post("/api/debug/backfill-wearable-hr/:userId", async function(req, res) {
   var provider = req.query.provider || "fitbit";
   try {
@@ -4280,46 +4289,119 @@ app.post("/api/debug/backfill-wearable-hr/:userId", async function(req, res) {
     var rows = await wr.json();
     if (!Array.isArray(rows)) rows = [];
 
-    // Only rows missing avg_hr need work.
+    var token = await getValidWearableToken(pid, provider);
+
+    // Helpers shared by both passes.
+    var maxBpm = function(samples) {
+      var hi = null;
+      for (var k = 0; k < samples.length; k++) {
+        var v = (samples[k] && typeof samples[k].bpm === "number") ? samples[k].bpm : null;
+        if (v != null && (hi == null || v > hi)) hi = v;
+      }
+      return hi;
+    };
+    var patchWearableData = async function(id, wd) {
+      var pr = await fetch(SUPABASE_URL + "/rest/v1/workouts?id=eq." + id, {
+        method: "PATCH", headers: sbHeaders("return=minimal"),
+        body: JSON.stringify({ wearable_data: wd }),
+      });
+      return pr.ok;
+    };
+
+    // ── Pass 1: fill avg_hr / calories / zones from the LIST endpoint ──────
+    // The list carries averageHeartRate; the detail endpoint that first
+    // populated these rows dropped it. Only rows missing avg_hr need this.
     var targets = rows.filter(function(w) {
       var wd = w.wearable_data;
       return !wd || typeof wd !== "object" || wd.avg_hr == null;
     });
-    if (!targets.length) {
-      return res.json({ success: true, updated: 0, skipped: rows.length, errors: 0, checked: rows.length, message: "nothing to backfill" });
-    }
-
-    // One list fetch spanning all target dates; index by bare activity id.
-    var dates = targets.map(function(w) { return w.date; }).filter(Boolean).sort();
-    var token = await getValidWearableToken(pid, provider);
-    var activities = await adapter.fetchActivities(token, dates[0], dates[dates.length - 1]);
-    var byId = {};
-    activities.forEach(function(a) { if (a && a.provider_activity_id != null) byId[String(a.provider_activity_id)] = a; });
-
     var updated = 0, skipped = 0, errors = 0;
-    for (var i = 0; i < targets.length; i++) {
-      var w = targets[i];
-      try {
-        var bareId = splitNamespacedId(provider, w.wearable_activity_id).bare;
-        var ln = byId[String(bareId)];
-        if (!ln || (ln.avg_hr == null && ln.peak_hr == null)) { skipped++; continue; } // list has no HR either
-        var wd = (w.wearable_data && typeof w.wearable_data === "object") ? w.wearable_data : {};
-        var changed = false;
-        ["avg_hr", "peak_hr", "calories", "active_zone_minutes"].forEach(function(f) {
-          if (wd[f] == null && ln[f] != null) { wd[f] = ln[f]; changed = true; }
-        });
-        if (wd.zones == null && ln.zones != null) { wd.zones = ln.zones; changed = true; }
-        if (!changed) { skipped++; continue; }
-        var pr = await fetch(SUPABASE_URL + "/rest/v1/workouts?id=eq." + w.id, {
-          method: "PATCH", headers: sbHeaders("return=minimal"),
-          body: JSON.stringify({ wearable_data: wd }),
-        });
-        if (pr.ok) updated++; else errors++;
-      } catch (e) { errors++; }
+    if (targets.length) {
+      var dates = targets.map(function(w) { return w.date; }).filter(Boolean).sort();
+      var activities = await adapter.fetchActivities(token, dates[0], dates[dates.length - 1]);
+      var byId = {};
+      activities.forEach(function(a) { if (a && a.provider_activity_id != null) byId[String(a.provider_activity_id)] = a; });
+      for (var i = 0; i < targets.length; i++) {
+        var w = targets[i];
+        try {
+          var bareId = splitNamespacedId(provider, w.wearable_activity_id).bare;
+          var ln = byId[String(bareId)];
+          if (!ln || (ln.avg_hr == null && ln.peak_hr == null)) { skipped++; continue; } // list has no HR either
+          var wd = (w.wearable_data && typeof w.wearable_data === "object") ? w.wearable_data : {};
+          var changed = false;
+          ["avg_hr", "peak_hr", "calories", "active_zone_minutes"].forEach(function(f) {
+            if (wd[f] == null && ln[f] != null) { wd[f] = ln[f]; changed = true; }
+          });
+          if (wd.zones == null && ln.zones != null) { wd.zones = ln.zones; changed = true; }
+          if (!changed) { skipped++; continue; }
+          if (await patchWearableData(w.id, wd)) updated++; else errors++;
+        } catch (e) { errors++; }
+      }
     }
+
+    // ── Pass 2: derive peak_hr from intraday HR samples ───────────────────
+    // peak_hr is NEVER on the list endpoint (no maxHeartRate), so pass 1 can't
+    // fill it. For each wearable row still missing peak_hr: reuse any
+    // heart_rate_samples already stored (free), else pull the activity's
+    // intraday HR window from the provider and take the max bpm. Throttled to
+    // ~1 provider call/sec; every call is non-fatal so one bad session can't
+    // abort the run. Optional ?max_intraday=N caps provider calls per run —
+    // PATCHes persist as they go, so re-running continues where it left off.
+    var updated_peak_hr = 0, peak_hr_skipped = 0, peak_hr_errors = 0;
+    var hasIntraday = typeof adapter.fetchIntradayHr === "function";
+    var maxIntraday = parseInt(req.query.max_intraday, 10);
+    if (!(maxIntraday > 0)) maxIntraday = Infinity;
+    var apiCalls = 0;
+    var sleep = function(ms) { return new Promise(function(r) { setTimeout(r, ms); }); };
+
+    for (var j = 0; j < rows.length; j++) {
+      var pw = rows[j];
+      var pwd = (pw.wearable_data && typeof pw.wearable_data === "object") ? pw.wearable_data : null;
+      if (!pwd || pwd.peak_hr != null) { peak_hr_skipped++; continue; } // no wearable_data, or already has peak
+
+      // (a) Derive from samples already on the row — no provider call.
+      if (Array.isArray(pwd.heart_rate_samples) && pwd.heart_rate_samples.length) {
+        var hiLocal = maxBpm(pwd.heart_rate_samples);
+        if (hiLocal != null) {
+          pwd.peak_hr = hiLocal;
+          if (await patchWearableData(pw.id, pwd)) updated_peak_hr++; else peak_hr_errors++;
+        } else { peak_hr_skipped++; }
+        continue;
+      }
+
+      // (b) Need a provider intraday call — requires the activity time window.
+      if (!hasIntraday || !pwd.start_time || pwd.duration_minutes == null) { peak_hr_skipped++; continue; }
+      if (apiCalls >= maxIntraday) { peak_hr_skipped++; continue; }
+      if (apiCalls > 0) await sleep(1000); // ~1 req/sec to stay under Fitbit limits
+      apiCalls++;
+      try {
+        var samples = await adapter.fetchIntradayHr(token, {
+          date: pwd.date || pw.date,
+          start_time: pwd.start_time,
+          duration_minutes: pwd.duration_minutes,
+        });
+        if (!samples || !samples.length) { peak_hr_skipped++; continue; }
+        var hi = maxBpm(samples);
+        if (hi == null) { peak_hr_skipped++; continue; }
+        pwd.peak_hr = hi;
+        pwd.heart_rate_samples = samples; // adapter caps at 600 samples
+        if (await patchWearableData(pw.id, pwd)) updated_peak_hr++; else peak_hr_errors++;
+      } catch (e) {
+        peak_hr_errors++;
+        console.warn("[Backfill] intraday HR failed for workout " + pw.id + ": " + e.message);
+      }
+    }
+
     console.log("[Backfill] wearable-hr profile=" + pid + " checked=" + rows.length +
-      " targets=" + targets.length + " updated=" + updated + " skipped=" + skipped + " errors=" + errors);
-    res.json({ success: true, updated: updated, skipped: skipped, errors: errors, checked: rows.length });
+      " targets=" + targets.length + " updated=" + updated + " skipped=" + skipped + " errors=" + errors +
+      " | peak_hr: updated=" + updated_peak_hr + " skipped=" + peak_hr_skipped +
+      " errors=" + peak_hr_errors + " providerCalls=" + apiCalls);
+    res.json({
+      success: true,
+      checked: rows.length,
+      updated: updated, skipped: skipped, errors: errors,
+      updated_peak_hr: updated_peak_hr, peak_hr_skipped: peak_hr_skipped, peak_hr_errors: peak_hr_errors,
+    });
   } catch (e) {
     sendWearableError(res, e, provider);
   }

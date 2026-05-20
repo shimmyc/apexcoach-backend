@@ -250,6 +250,10 @@ module.exports = {
   fetchActivityDetail: fetchActivityDetail,
   refreshToken: refreshToken,
   buildAuthUrl: buildAuthUrl,
+  // Exposed so the HR backfill can pull intraday peak HR for an already-synced
+  // activity using only the start_time + duration stored in wearable_data
+  // (no second detail fetch). Optional in the adapter contract.
+  fetchIntradayHr: fetchIntradayHr,
   // Exposed so the merge/import path can normalize a raw list activity passed
   // back from the client (the HR-loss fix). Optional in the adapter contract.
   normalize: normalize,
