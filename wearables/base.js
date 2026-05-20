@@ -30,6 +30,13 @@
 //     Throws if the refresh token is rejected — caller surfaces this to
 //     the UI as "reconnect required".
 //
+//   normalize(rawProviderActivity)   [OPTIONAL]
+//     → NormalizedActivity
+//     Synchronous mapper from a raw list/detail payload to NormalizedActivity.
+//     Used by the merge/import path to backfill HR fields the detail endpoint
+//     drops from the list activity. Providers that don't export it just skip
+//     that backfill.
+//
 // ──────────────────────────────────────────────────────────────────────────
 // NormalizedActivity shape (every provider maps to this)
 // ──────────────────────────────────────────────────────────────────────────

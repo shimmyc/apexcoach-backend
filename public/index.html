@@ -5512,7 +5512,7 @@ function wsCardAction(kind, nsId) {
     });
     fetch('/api/wearables/merge/' + currentProfileId, {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ workout_id: m.workout.id, provider: wsState.provider, wearable_activity_id: m.wearable_activity_id }),
+      body: JSON.stringify({ workout_id: m.workout.id, provider: wsState.provider, wearable_activity_id: m.wearable_activity_id, list_activity: m.activity }),
     }).catch(function(e) { console.warn('[Wearables] merge error:', e && e.message); });
   } else if (kind === 'reject') {
     var r = wsTakeMatched(nsId);
@@ -5523,7 +5523,7 @@ function wsCardAction(kind, nsId) {
     });
     fetch('/api/wearables/reject/' + currentProfileId, {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ workout_id: r.workout.id, provider: wsState.provider, wearable_activity_id: r.wearable_activity_id }),
+      body: JSON.stringify({ workout_id: r.workout.id, provider: wsState.provider, wearable_activity_id: r.wearable_activity_id, list_activity: r.activity }),
     }).catch(function(e) { console.warn('[Wearables] reject error:', e && e.message); });
   } else if (kind === 'import') {
     var im = wsTakeUnmatched(nsId);
@@ -5534,7 +5534,7 @@ function wsCardAction(kind, nsId) {
     });
     fetch('/api/wearables/import/' + currentProfileId, {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ provider: wsState.provider, wearable_activity_id: im.wearable_activity_id }),
+      body: JSON.stringify({ provider: wsState.provider, wearable_activity_id: im.wearable_activity_id, list_activity: im.activity }),
     }).catch(function(e) { console.warn('[Wearables] import error:', e && e.message); });
   } else if (kind === 'ignore') {
     if (!wsTakeUnmatched(nsId)) return;

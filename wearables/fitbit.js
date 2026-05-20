@@ -120,6 +120,11 @@ async function fetchActivities(accessToken, startDate, endDate) {
     if (stop || arr.length < limit) break;
     offset += limit;
   }
+  // Each item is a full NormalizedActivity — the list endpoint carries
+  // averageHeartRate / heartRateZones / calories, which normalize() maps to
+  // avg_hr / peak_hr / zones / calories AND keeps verbatim in raw_response.
+  // The merge/import path uses these to backfill the HR fields that the
+  // /activities/{id}.json detail endpoint omits.
   return out;
 }
 
@@ -245,4 +250,7 @@ module.exports = {
   fetchActivityDetail: fetchActivityDetail,
   refreshToken: refreshToken,
   buildAuthUrl: buildAuthUrl,
+  // Exposed so the merge/import path can normalize a raw list activity passed
+  // back from the client (the HR-loss fix). Optional in the adapter contract.
+  normalize: normalize,
 };

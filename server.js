@@ -4112,12 +4112,31 @@ function splitNamespacedId(provider, id) {
 
 // ── action helpers (shared by single + bulk endpoints) ────────────────
 
-async function performMerge(profileId, workoutId, provider, namespacedActivityId) {
+// The /activities/{id}.json detail endpoint drops HR fields that the list
+// endpoint (fetchActivities) carries. When a list activity is available at
+// merge/import time, fill the detail's MISSING HR fields from it (detail wins
+// for anything it already has). listActivity may be an already-normalized
+// activity (from the sync-backlog response) or a raw provider list entry.
+function mergeListHr(adapter, detail, listActivity) {
+  if (!detail || !listActivity || typeof listActivity !== "object") return detail;
+  var ln = ("avg_hr" in listActivity || "peak_hr" in listActivity)
+    ? listActivity
+    : (typeof adapter.normalize === "function" ? adapter.normalize(listActivity) : null);
+  if (!ln) return detail;
+  ["avg_hr", "peak_hr", "calories", "active_zone_minutes"].forEach(function(f) {
+    if (detail[f] == null && ln[f] != null) detail[f] = ln[f];
+  });
+  if (detail.zones == null && ln.zones != null) detail.zones = ln.zones;
+  return detail;
+}
+
+async function performMerge(profileId, workoutId, provider, namespacedActivityId, listActivity) {
   var ids = splitNamespacedId(provider, namespacedActivityId);
   var adapter = wearables.getProviderAdapter(provider);
   var token = await getValidWearableToken(profileId, provider);
   var detail = await adapter.fetchActivityDetail(token, ids.bare);
   if (!detail) throw new Error("Activity not found on provider");
+  mergeListHr(adapter, detail, listActivity);
   var patchRes = await fetch(SUPABASE_URL + "/rest/v1/workouts?id=eq." + workoutId, {
     method: "PATCH",
     headers: sbHeaders("return=representation"),
@@ -4128,7 +4147,7 @@ async function performMerge(profileId, workoutId, provider, namespacedActivityId
   return { workout: Array.isArray(rows) ? rows[0] : rows, wearable_activity_id: ids.ns };
 }
 
-async function performReject(profileId, workoutId, provider, namespacedActivityId) {
+async function performReject(profileId, workoutId, provider, namespacedActivityId, listActivity) {
   var ids = splitNamespacedId(provider, namespacedActivityId);
   await fetch(SUPABASE_URL + "/rest/v1/rejected_wearable_matches", {
     method: "POST",
@@ -4142,13 +4161,13 @@ async function performReject(profileId, workoutId, provider, namespacedActivityI
   });
   // Reject still creates a standalone — the user said "these are
   // separate sessions", not "throw away the wearable data".
-  var created = await createWearableWorkout(profileId, provider, ids.ns);
+  var created = await createWearableWorkout(profileId, provider, ids.ns, listActivity);
   return { workout: created, wearable_activity_id: ids.ns };
 }
 
-async function performImport(profileId, provider, namespacedActivityId) {
+async function performImport(profileId, provider, namespacedActivityId, listActivity) {
   var ids = splitNamespacedId(provider, namespacedActivityId);
-  var created = await createWearableWorkout(profileId, provider, ids.ns);
+  var created = await createWearableWorkout(profileId, provider, ids.ns, listActivity);
   return { workout: created, wearable_activity_id: ids.ns };
 }
 
@@ -4161,7 +4180,7 @@ app.post("/api/wearables/merge/:userId", async function(req, res) {
     if (!b.workout_id || !provider || !b.wearable_activity_id) {
       return res.status(400).json({ success: false, error: "workout_id, provider, wearable_activity_id required" });
     }
-    var out = await performMerge(req.params.userId, b.workout_id, provider, b.wearable_activity_id);
+    var out = await performMerge(req.params.userId, b.workout_id, provider, b.wearable_activity_id, b.list_activity);
     res.json(Object.assign({ success: true }, out));
   } catch (e) {
     sendWearableError(res, e, provider);
@@ -4177,7 +4196,7 @@ app.post("/api/wearables/reject/:userId", async function(req, res) {
     if (!b.workout_id || !provider || !b.wearable_activity_id) {
       return res.status(400).json({ success: false, error: "workout_id, provider, wearable_activity_id required" });
     }
-    var out = await performReject(req.params.userId, b.workout_id, provider, b.wearable_activity_id);
+    var out = await performReject(req.params.userId, b.workout_id, provider, b.wearable_activity_id, b.list_activity);
     res.json(Object.assign({ success: true }, out));
   } catch (e) {
     sendWearableError(res, e, provider);
@@ -4193,8 +4212,75 @@ app.post("/api/wearables/import/:userId", async function(req, res) {
     if (!provider || !b.wearable_activity_id) {
       return res.status(400).json({ success: false, error: "provider, wearable_activity_id required" });
     }
-    var out = await performImport(req.params.userId, provider, b.wearable_activity_id);
+    var out = await performImport(req.params.userId, provider, b.wearable_activity_id, b.list_activity);
     res.json(Object.assign({ success: true }, out));
+  } catch (e) {
+    sendWearableError(res, e, provider);
+  }
+});
+
+// POST /api/debug/backfill-wearable-hr/:userId?provider=fitbit[&secret=ADMIN_SECRET]
+// One-time repair for already-synced workouts whose wearable_data.avg_hr is null:
+// re-reads HR from the LIST endpoint (which carries averageHeartRate, unlike the
+// detail endpoint that originally populated these rows) and fills the missing HR
+// fields. Returns { updated, skipped, errors, checked }. Idempotent — re-running
+// only touches rows still missing avg_hr.
+app.post("/api/debug/backfill-wearable-hr/:userId", async function(req, res) {
+  var provider = req.query.provider || "fitbit";
+  try {
+    // Light guard: when ADMIN_SECRET is configured, require it.
+    if (process.env.ADMIN_SECRET) {
+      var got = req.query.secret || req.headers["x-admin-secret"];
+      if (got !== process.env.ADMIN_SECRET) return res.status(403).json({ success: false, error: "forbidden" });
+    }
+    var pid = req.params.userId;
+    var adapter = wearables.getProviderAdapter(provider);
+
+    var wr = await fetch(SUPABASE_URL + "/rest/v1/workouts?profile_id=eq." + encodeURIComponent(pid) +
+      "&wearable_activity_id=not.is.null&select=id,date,wearable_activity_id,wearable_data&limit=5000", { headers: sbHeaders() });
+    var rows = await wr.json();
+    if (!Array.isArray(rows)) rows = [];
+
+    // Only rows missing avg_hr need work.
+    var targets = rows.filter(function(w) {
+      var wd = w.wearable_data;
+      return !wd || typeof wd !== "object" || wd.avg_hr == null;
+    });
+    if (!targets.length) {
+      return res.json({ success: true, updated: 0, skipped: rows.length, errors: 0, checked: rows.length, message: "nothing to backfill" });
+    }
+
+    // One list fetch spanning all target dates; index by bare activity id.
+    var dates = targets.map(function(w) { return w.date; }).filter(Boolean).sort();
+    var token = await getValidWearableToken(pid, provider);
+    var activities = await adapter.fetchActivities(token, dates[0], dates[dates.length - 1]);
+    var byId = {};
+    activities.forEach(function(a) { if (a && a.provider_activity_id != null) byId[String(a.provider_activity_id)] = a; });
+
+    var updated = 0, skipped = 0, errors = 0;
+    for (var i = 0; i < targets.length; i++) {
+      var w = targets[i];
+      try {
+        var bareId = splitNamespacedId(provider, w.wearable_activity_id).bare;
+        var ln = byId[String(bareId)];
+        if (!ln || (ln.avg_hr == null && ln.peak_hr == null)) { skipped++; continue; } // list has no HR either
+        var wd = (w.wearable_data && typeof w.wearable_data === "object") ? w.wearable_data : {};
+        var changed = false;
+        ["avg_hr", "peak_hr", "calories", "active_zone_minutes"].forEach(function(f) {
+          if (wd[f] == null && ln[f] != null) { wd[f] = ln[f]; changed = true; }
+        });
+        if (wd.zones == null && ln.zones != null) { wd.zones = ln.zones; changed = true; }
+        if (!changed) { skipped++; continue; }
+        var pr = await fetch(SUPABASE_URL + "/rest/v1/workouts?id=eq." + w.id, {
+          method: "PATCH", headers: sbHeaders("return=minimal"),
+          body: JSON.stringify({ wearable_data: wd }),
+        });
+        if (pr.ok) updated++; else errors++;
+      } catch (e) { errors++; }
+    }
+    console.log("[Backfill] wearable-hr profile=" + pid + " checked=" + rows.length +
+      " targets=" + targets.length + " updated=" + updated + " skipped=" + skipped + " errors=" + errors);
+    res.json({ success: true, updated: updated, skipped: skipped, errors: errors, checked: rows.length });
   } catch (e) {
     sendWearableError(res, e, provider);
   }
@@ -4243,7 +4329,7 @@ app.post("/api/wearables/bulk-action/:userId", async function(req, res) {
         var m = backlog.matched[i];
         if ((m.score || 0) < threshold) continue;
         try {
-          await performMerge(req.params.userId, m.workout.id, provider, m.wearable_activity_id);
+          await performMerge(req.params.userId, m.workout.id, provider, m.wearable_activity_id, m.activity);
           acted++;
         } catch (e) { failed++; errors.push(e.message); }
       }
@@ -4251,7 +4337,7 @@ app.post("/api/wearables/bulk-action/:userId", async function(req, res) {
       for (var j = 0; j < backlog.unmatched.length; j++) {
         var u = backlog.unmatched[j];
         try {
-          await performImport(req.params.userId, provider, u.wearable_activity_id);
+          await performImport(req.params.userId, provider, u.wearable_activity_id, u.activity);
           acted++;
         } catch (e) { failed++; errors.push(e.message); }
       }
@@ -4262,7 +4348,7 @@ app.post("/api/wearables/bulk-action/:userId", async function(req, res) {
       for (var k = 0; k < backlog.matched.length; k++) {
         var s = backlog.matched[k];
         try {
-          await performReject(req.params.userId, s.workout.id, provider, s.wearable_activity_id);
+          await performReject(req.params.userId, s.workout.id, provider, s.wearable_activity_id, s.activity);
           acted++;
         } catch (e) { failed++; errors.push(e.message); }
       }
@@ -4292,7 +4378,7 @@ app.post("/api/wearables/bulk-action/:userId", async function(req, res) {
 // Shared by /reject and /import. Fetches the detail through the adapter,
 // shapes a workouts-table row (mirrors the existing /fitbit-import notes
 // format for consistency in the History tab), and inserts.
-async function createWearableWorkout(profileId, provider, namespacedActivityId) {
+async function createWearableWorkout(profileId, provider, namespacedActivityId, listActivity) {
   var bareId = namespacedActivityId.indexOf(provider + ":") === 0
     ? namespacedActivityId.slice(provider.length + 1)
     : namespacedActivityId;
@@ -4300,6 +4386,7 @@ async function createWearableWorkout(profileId, provider, namespacedActivityId) 
   var token = await getValidWearableToken(profileId, provider);
   var detail = await adapter.fetchActivityDetail(token, bareId);
   if (!detail) throw new Error("Activity not found on provider");
+  mergeListHr(adapter, detail, listActivity); // fill HR the detail endpoint dropped
 
   var noteParts = ["Auto-imported from " + provider + ": "
     + (detail.duration_minutes != null ? detail.duration_minutes + " min" : "?")];
