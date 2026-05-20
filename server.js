@@ -161,6 +161,28 @@ async function saveProfileTokens(profileId, tokens) {
       }),
     });
     console.log("[Fitbit] saveProfileTokens response status:", patchRes.status);
+    // Mirror the rotated pair into wearable_connections so the new
+    // provider-agnostic path (getValidWearableToken / sync-backlog / backfill)
+    // never reads a refresh token that this profiles-side refresh just rotated
+    // out from under it. Symmetric with saveWearableTokens, which mirrors the
+    // other direction. Best-effort: a failure here must not break the core
+    // profiles token save that the daily sync depends on.
+    try {
+      await fetch(SUPABASE_URL + "/rest/v1/wearable_connections?on_conflict=profile_id,provider", {
+        method: "POST",
+        headers: sbHeaders("return=minimal,resolution=merge-duplicates"),
+        body: JSON.stringify({
+          profile_id: parseInt(profileId, 10),
+          provider: "fitbit",
+          access_token: tokens.access_token,
+          refresh_token: tokens.refresh_token,
+          token_expires_at: tokens.expires_at,
+          updated_at: new Date().toISOString(),
+        }),
+      });
+    } catch (e) {
+      console.warn("[Fitbit] saveProfileTokens wearable_connections mirror failed: " + e.message);
+    }
   } catch (e) {
     console.error("saveProfileTokens error:", e.message);
   }
