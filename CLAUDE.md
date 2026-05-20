@@ -1,5 +1,7 @@
 # ApexCoach — Project Context
 
+> See [`ROADMAP.md`](ROADMAP.md) for the project source of truth — full schema, all endpoints, features built (with commit refs), provider status, roadmap, onboarding flow, tech debt, and env vars. This file holds the deep implementation notes; `FORMULAS.md` holds the readiness/sleep math.
+
 ## What This Is
 
 ApexCoach is a personalized AI fitness coaching web app. Users connect their Fitbit, which auto-syncs sleep/HRV/RHR/zone minutes daily. A custom readiness formula scores recovery (0-100), and Claude AI gives specific daily workout recommendations based on biometrics and training history.
