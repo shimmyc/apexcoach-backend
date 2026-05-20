@@ -4329,6 +4329,281 @@ async function createWearableWorkout(profileId, provider, namespacedActivityId) 
   return Array.isArray(rows) ? rows[0] : rows;
 }
 
+// ─────────────────────────────────────────────────────────────────────────
+// ANALYTICS  —  Workout Analytics Dashboard + Library Exercise Analytics
+// ─────────────────────────────────────────────────────────────────────────
+// Server-side mirror of the client inferWorkoutCategory() in index.html so the
+// activity-stats endpoint buckets workouts the same way the rest of the app
+// does. Keep the two in sync if the taxonomy changes.
+function inferWorkoutCategoryServer(workoutType) {
+  if (!workoutType) return "other";
+  var t = String(workoutType).toLowerCase();
+  if (/rest|recovery day|day off|off day/.test(t)) return "rest";
+  if (/\b(mma|bjj|jiu.?jitsu|muay|boxing|kickbox|martial|spar|wrestling|judo|grappl|striking)\b/.test(t)) return "martial_arts";
+  if (/\b(strength|lift|weights?|squat|deadlift|bench|press|row|powerlift|olympic|calisthenic|upper|lower|full body|pushup|pullup|chinup)\b/.test(t)) return "strength";
+  if (/\b(cardio|run|jog|walk|hike|cycle|bike|elliptic|treadmill|swim|row|erg|hiit|conditioning|jump rope)\b/.test(t)) return "cardio";
+  if (/\b(yoga|pilates|stretch|mobility|meditat|breath|mind ?body)\b/.test(t)) return "mind_body";
+  if (/\b(pt|physical therapy|rehab|foam roll|active recovery)\b/.test(t)) return "rehab";
+  if (/\b(tennis|basketball|soccer|volleyball|golf|ski|snowboard|surf|climb|sport)\b/.test(t)) return "sports";
+  return "other";
+}
+var CATEGORY_PRETTY_SERVER = {
+  strength: "Strength", cardio: "Cardio", martial_arts: "Martial Arts",
+  sports: "Sports", mind_body: "Mind & Body", rehab: "Rehab",
+  rest: "Rest", other: "Other",
+};
+
+var YMD_RE = /^\d{4}-\d{2}-\d{2}$/;
+function validYmd(s) { return typeof s === "string" && YMD_RE.test(s); }
+function ymdLocal(x) {
+  return x.getFullYear() + "-" + String(x.getMonth() + 1).padStart(2, "0") + "-" + String(x.getDate()).padStart(2, "0");
+}
+function numOrNull(v) {
+  if (v === null || v === undefined || v === "") return null;
+  var n = Number(v);
+  return isFinite(n) ? n : null;
+}
+
+// Pull HR / calories / duration out of a workout's wearable_data JSONB blob.
+// Returns nulls when the column/field is absent so everything degrades to N/A
+// when no wearable is connected.
+function wearableMetrics(wd) {
+  if (!wd || typeof wd !== "object") return { minutes: null, calories: null, avg_hr: null, peak_hr: null };
+  return {
+    minutes: numOrNull(wd.duration_minutes),
+    calories: numOrNull(wd.calories),
+    avg_hr: numOrNull(wd.avg_hr),
+    peak_hr: numOrNull(wd.peak_hr),
+  };
+}
+
+// Longest run of consecutive calendar days inside a Set of YYYY-MM-DD strings.
+function longestStreakFromDates(dateSet) {
+  var dates = Array.from(dateSet).sort();
+  if (!dates.length) return 0;
+  var longest = 1, run = 1;
+  for (var i = 1; i < dates.length; i++) {
+    var gap = Math.round((new Date(dates[i] + "T12:00:00") - new Date(dates[i - 1] + "T12:00:00")) / 86400000);
+    if (gap === 1) { run++; if (run > longest) longest = run; }
+    else if (gap > 1) { run = 1; }
+  }
+  return longest;
+}
+// Current streak: consecutive done-days ending today (or yesterday if nothing
+// logged yet today). Mirrors the streak math used elsewhere in server.js.
+function currentStreakFromDates(dateSet) {
+  var streak = 0, d = new Date(), check = ymdLocal(d);
+  if (!dateSet.has(check)) { d.setDate(d.getDate() - 1); check = ymdLocal(d); }
+  while (dateSet.has(check)) { streak++; d.setDate(d.getDate() - 1); check = ymdLocal(d); }
+  return streak;
+}
+// up if curr beats prev by >5%, down if below by >5%, else stable. pct is the
+// rounded % change (null when there's no previous baseline to compare against).
+function trendOf(curr, prev) {
+  curr = Number(curr) || 0;
+  if (prev === null || prev === undefined || !isFinite(prev) || prev === 0) {
+    return { current: curr, previous: (prev == null ? null : prev), pct: null, direction: curr > 0 ? "up" : "stable" };
+  }
+  var pct = Math.round(((curr - prev) / prev) * 100);
+  return { current: curr, previous: prev, pct: pct, direction: pct > 5 ? "up" : pct < -5 ? "down" : "stable" };
+}
+
+// GET /api/analytics/activity-stats/:userId?start_date=&end_date=
+// Per-activity-type + overall workout aggregates, with current-vs-previous
+// same-length-period trends. Defaults to all-time when no dates are given.
+app.get("/api/analytics/activity-stats/:userId", async function(req, res) {
+  try {
+    var pid = req.params.userId;
+    var startDate = validYmd(req.query.start_date) ? req.query.start_date : null;
+    var endDate = validYmd(req.query.end_date) ? req.query.end_date : null;
+    var allTime = !startDate || !endDate;
+
+    // Previous comparison window: same length, immediately before the current one.
+    var prevStart = null, prevEnd = null;
+    if (!allTime) {
+      var s = new Date(startDate + "T12:00:00");
+      var e = new Date(endDate + "T12:00:00");
+      var days = Math.round((e - s) / 86400000) + 1; // inclusive
+      var pe = new Date(s); pe.setDate(pe.getDate() - 1);
+      var ps = new Date(pe); ps.setDate(ps.getDate() - (days - 1));
+      prevEnd = ymdLocal(pe); prevStart = ymdLocal(ps);
+    }
+
+    // One workouts query covering prev+current (or all-time). wearable_data may
+    // not exist if the wearables migration hasn't run — fall back gracefully.
+    var wBase = SUPABASE_URL + "/rest/v1/workouts?profile_id=eq." + encodeURIComponent(pid) + "&order=date.asc&limit=20000";
+    var wRange = allTime ? "" : "&date=gte." + prevStart + "&date=lte." + endDate;
+    var wr = await fetch(wBase + "&select=id,date,type,done,wearable_data" + wRange, { headers: sbHeaders() });
+    if (!wr.ok) wr = await fetch(wBase + "&select=id,date,type,done" + wRange, { headers: sbHeaders() });
+    var workouts = await wr.json();
+    if (!Array.isArray(workouts)) workouts = [];
+
+    // Exercise durations for the same window fill in manual sessions that have
+    // no wearable_data. Summed per workout_id.
+    var exBase = SUPABASE_URL + "/rest/v1/exercises?profile_id=eq." + encodeURIComponent(pid) +
+      "&select=workout_id,date,duration_minutes&order=date.asc&limit=50000";
+    var exUrl = exBase + (allTime ? "" : "&date=gte." + prevStart + "&date=lte." + endDate);
+    var er = await fetch(exUrl, { headers: sbHeaders() });
+    var exRows = await er.json();
+    if (!Array.isArray(exRows)) exRows = [];
+    var durByWorkout = {};
+    exRows.forEach(function(ex) {
+      var m = numOrNull(ex.duration_minutes);
+      if (m && ex.workout_id != null) durByWorkout[ex.workout_id] = (durByWorkout[ex.workout_id] || 0) + m;
+    });
+
+    function inWindow(dateStr, lo, hi) { return (!lo || dateStr >= lo) && (!hi || dateStr <= hi); }
+
+    function aggregate(lo, hi) {
+      var acts = {}, doneDates = new Set(), dayOfWeek = [0, 0, 0, 0, 0, 0, 0];
+      var totalMin = 0, totalCal = 0, totalSessions = 0, hrAll = [];
+      workouts.forEach(function(w) {
+        if (!inWindow(w.date, lo, hi)) return;
+        var cat = inferWorkoutCategoryServer(w.type);
+        var wm = wearableMetrics(w.wearable_data);
+        var minutes = wm.minutes != null ? wm.minutes : (durByWorkout[w.id] || 0);
+        if (!acts[cat]) acts[cat] = { type: cat, label: CATEGORY_PRETTY_SERVER[cat] || cat, total_sessions: 0, total_minutes: 0, _calSum: 0, _calCount: 0, _hr: [], peak_hr: null, sessions: [] };
+        var a = acts[cat];
+        a.total_sessions++;
+        a.total_minutes += minutes;
+        if (wm.calories != null) { a._calSum += wm.calories; a._calCount++; }
+        if (wm.avg_hr != null) { a._hr.push(wm.avg_hr); hrAll.push(wm.avg_hr); }
+        if (wm.peak_hr != null) a.peak_hr = a.peak_hr == null ? wm.peak_hr : Math.max(a.peak_hr, wm.peak_hr);
+        a.sessions.push({ date: w.date, duration: minutes || null, avg_hr: wm.avg_hr, peak_hr: wm.peak_hr, calories: wm.calories });
+        totalMin += minutes;
+        if (wm.calories != null) totalCal += wm.calories;
+        totalSessions++;
+        if (w.done) { doneDates.add(w.date); dayOfWeek[new Date(w.date + "T12:00:00").getDay()]++; }
+      });
+      return { acts: acts, doneDates: doneDates, dayOfWeek: dayOfWeek, totalMin: totalMin, totalCal: totalCal, totalSessions: totalSessions, hrAll: hrAll };
+    }
+    function mean(arr) { return arr.length ? Math.round(arr.reduce(function(x, y) { return x + y; }, 0) / arr.length) : null; }
+
+    var cur = aggregate(allTime ? null : startDate, allTime ? null : endDate);
+    var prev = allTime ? null : aggregate(prevStart, prevEnd);
+
+    var dayNames = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
+    var activities = Object.keys(cur.acts).map(function(cat) {
+      var a = cur.acts[cat];
+      var avgHr = mean(a._hr);
+      var prevA = (prev && prev.acts[cat]) ? prev.acts[cat] : null;
+      var prevAvgHr = prevA ? mean(prevA._hr) : null;
+      var recent = a.sessions.slice().sort(function(p, q) { return p.date < q.date ? 1 : p.date > q.date ? -1 : 0; }).slice(0, 10);
+      return {
+        type: a.type,
+        label: a.label,
+        total_sessions: a.total_sessions,
+        total_minutes: Math.round(a.total_minutes),
+        avg_hr: avgHr,
+        peak_hr: a.peak_hr,
+        total_calories: a._calCount ? Math.round(a._calSum) : null,
+        avg_calories_per_session: a._calCount ? Math.round(a._calSum / a._calCount) : null,
+        trend_minutes: trendOf(a.total_minutes, prevA ? prevA.total_minutes : null),
+        trend_avg_hr: trendOf(avgHr || 0, prevAvgHr),
+        recent_sessions: recent,
+      };
+    }).sort(function(p, q) { return q.total_minutes - p.total_minutes; });
+
+    var mostActiveDay = cur.totalSessions ? dayNames[cur.dayOfWeek.indexOf(Math.max.apply(null, cur.dayOfWeek))] : null;
+    var overall = {
+      total_workout_minutes: Math.round(cur.totalMin),
+      total_sessions: cur.totalSessions,
+      total_calories: cur.totalCal ? Math.round(cur.totalCal) : null,
+      most_active_day_of_week: mostActiveDay,
+      current_streak: currentStreakFromDates(cur.doneDates),
+      longest_streak: longestStreakFromDates(cur.doneDates),
+    };
+
+    var comparison = null;
+    if (prev) {
+      comparison = {
+        total_minutes: trendOf(cur.totalMin, prev.totalMin),
+        total_sessions: trendOf(cur.totalSessions, prev.totalSessions),
+        total_calories: trendOf(cur.totalCal, prev.totalCal),
+        avg_hr: trendOf(mean(cur.hrAll) || 0, mean(prev.hrAll)),
+      };
+    }
+
+    res.json({
+      success: true,
+      range: { start: startDate, end: endDate, all_time: allTime, previous_start: prevStart, previous_end: prevEnd },
+      overall: overall,
+      comparison: comparison,
+      activities: activities,
+    });
+  } catch (e) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+// GET /api/analytics/exercise-stats/:userId/:exerciseName?start_date=&end_date=
+// Per-day + all-time stats for a single exercise. daily_data is sorted asc for
+// charting. Weight fields (max_weight_ever, estimated_1rm via Epley) are only
+// populated when the exercise has logged weight.
+app.get("/api/analytics/exercise-stats/:userId/:exerciseName", async function(req, res) {
+  try {
+    var pid = req.params.userId;
+    var name = decodeURIComponent(req.params.exerciseName);
+    var startDate = validYmd(req.query.start_date) ? req.query.start_date : null;
+    var endDate = validYmd(req.query.end_date) ? req.query.end_date : null;
+    var allTime = !startDate || !endDate;
+
+    var url = SUPABASE_URL + "/rest/v1/exercises?profile_id=eq." + encodeURIComponent(pid) +
+      "&name=eq." + encodeURIComponent(name) +
+      "&select=date,sets,reps,weight_lbs,duration_minutes,distance_miles&order=date.asc&limit=10000";
+    if (!allTime) url += "&date=gte." + startDate + "&date=lte." + endDate;
+    var r = await fetch(url, { headers: sbHeaders() });
+    var rows = await r.json();
+    if (!Array.isArray(rows)) rows = [];
+
+    var byDay = {}, bestSingleSet = 0, maxWeightEver = null, est1rm = null, isWeightBased = false;
+    rows.forEach(function(ex) {
+      var reps = numOrNull(ex.reps) || 0;
+      var setsRaw = numOrNull(ex.sets);
+      var sets = setsRaw != null ? setsRaw : (reps ? 1 : 0); // a row with reps but no set count = at least 1 set
+      var weight = numOrNull(ex.weight_lbs);
+      var d = ex.date;
+      if (!byDay[d]) byDay[d] = { date: d, highest_set: 0, total_reps: 0, total_sets: 0, max_weight: null };
+      var day = byDay[d];
+      if (reps > day.highest_set) day.highest_set = reps;
+      day.total_reps += sets * reps;
+      day.total_sets += sets;
+      if (weight != null && (day.max_weight == null || weight > day.max_weight)) day.max_weight = weight;
+      if (reps > bestSingleSet) bestSingleSet = reps;
+      if (weight != null) {
+        isWeightBased = true;
+        if (maxWeightEver == null || weight > maxWeightEver) maxWeightEver = weight;
+        if (reps > 0) { var e1 = weight * (1 + reps / 30); if (est1rm == null || e1 > est1rm) est1rm = e1; }
+      }
+    });
+
+    var daily = Object.keys(byDay).sort().map(function(k) { return byDay[k]; });
+    var totalReps = daily.reduce(function(s, d) { return s + d.total_reps; }, 0);
+    var totalSets = daily.reduce(function(s, d) { return s + d.total_sets; }, 0);
+    var bestVolDay = null;
+    daily.forEach(function(d) { if (!bestVolDay || d.total_reps > bestVolDay.total_reps) bestVolDay = { date: d.date, total_reps: d.total_reps }; });
+
+    res.json({
+      success: true,
+      exercise: name,
+      range: { start: startDate, end: endDate, all_time: allTime },
+      daily_data: daily,
+      aggregate: {
+        total_reps: totalReps,
+        avg_reps_per_set: totalSets ? Math.round((totalReps / totalSets) * 10) / 10 : null,
+        best_single_set: bestSingleSet || null,
+        best_volume_day: bestVolDay,
+        total_sessions: daily.length,
+        is_weight_based: isWeightBased,
+        max_weight_ever: maxWeightEver,
+        estimated_1rm: est1rm != null ? Math.round(est1rm) : null,
+      },
+    });
+  } catch (e) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
 app.listen(PORT, function() {
   console.log("ApexCoach running on port " + PORT);
 });

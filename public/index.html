@@ -572,6 +572,15 @@ input[type=range]{width:100%;accent-color:var(--accent)}
     <!-- 3. Belt Journey (rendered dynamically) -->
     <div id="belt-section"></div>
 
+    <!-- 3.4 Analytics Dashboard -->
+    <div class="card" id="analytics-card">
+      <div onclick="toggleAnalyticsCard()" style="display:flex;justify-content:space-between;align-items:center;cursor:pointer">
+        <p class="clabel" style="margin-bottom:0">&#x1F4CA; analytics</p>
+        <span id="analytics-chevron" style="color:var(--text-dim);font-size:13px;transition:transform .2s;display:inline-block">&#9656;</span>
+      </div>
+      <div id="analytics-body" style="display:none;margin-top:14px"></div>
+    </div>
+
     <!-- 3.5 Active Challenges (Micro-Goals) -->
     <div class="card" id="challenges-card">
       <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">
@@ -4205,6 +4214,256 @@ function renderProfileGoals() {
 
   // Fetch progress if not cached
   if (!cached && currentProfileId && pGoals.length) fetchGoalProgress();
+}
+
+// ─── ANALYTICS (shared date-range helpers) ─────────────────────────────
+function anYmd(d) {
+  return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
+}
+function anFmtNum(n) {
+  if (n == null) return '0';
+  return String(n).replace(/\B(?=(\d{3})+(?!\d))/g, ',');
+}
+// Resolve a preset key (or read the custom date inputs) into {start, end}.
+// 'All' returns nulls (server treats that as all-time). Custom returns null
+// if either date input is empty.
+function anResolveRange(key, idPrefix) {
+  var today = new Date();
+  function ago(n) { var d = new Date(today); d.setDate(d.getDate() - n); return d; }
+  if (key === '7D')  return { start: anYmd(ago(6)),   end: anYmd(today) };
+  if (key === '30D') return { start: anYmd(ago(29)),  end: anYmd(today) };
+  if (key === '90D') return { start: anYmd(ago(89)),  end: anYmd(today) };
+  if (key === '1YR') return { start: anYmd(ago(364)), end: anYmd(today) };
+  if (key === 'All') return { start: null, end: null };
+  if (key === 'Custom') {
+    var s = document.getElementById(idPrefix + '-start');
+    var e = document.getElementById(idPrefix + '-end');
+    if (s && e && s.value && e.value) return { start: s.value, end: e.value };
+    return null;
+  }
+  return { start: null, end: null };
+}
+// Render the 7D|30D|90D|1YR|All|Custom pill bar + (hidden unless active) custom
+// date inputs. fnName is the global handler name; it's called with the pill key,
+// or '__apply__' from the custom Apply button.
+function anRangePills(activeKey, fnName, idPrefix, startVal, endVal) {
+  var keys = ['7D', '30D', '90D', '1YR', 'All', 'Custom'];
+  var pills = keys.map(function(k) {
+    var on = (k === activeKey);
+    return '<button onclick="' + fnName + '(\'' + k + '\')" style="padding:5px 11px;border-radius:14px;border:1px solid ' + (on ? 'var(--accent)' : 'var(--border)') + ';background:' + (on ? 'var(--accent-10)' : 'transparent') + ';color:' + (on ? 'var(--accent)' : 'var(--text-muted)') + ';font-size:12px;font-weight:' + (on ? '600' : '400') + ';cursor:pointer;font-family:inherit">' + k + '</button>';
+  }).join('');
+  var showCustom = (activeKey === 'Custom');
+  var inStyle = 'background:var(--bg-input);border:1px solid var(--border);border-radius:6px;color:var(--text);padding:6px 8px;font-size:13px;font-family:inherit';
+  var customRow = '<div id="' + idPrefix + '-custom" style="display:' + (showCustom ? 'flex' : 'none') + ';gap:8px;align-items:center;flex-wrap:wrap;margin-top:8px">' +
+    '<input type="date" id="' + idPrefix + '-start" value="' + (startVal || '') + '" max="' + anYmd(new Date()) + '" style="' + inStyle + '">' +
+    '<span style="color:var(--text-dim)">&rarr;</span>' +
+    '<input type="date" id="' + idPrefix + '-end" value="' + (endVal || '') + '" max="' + anYmd(new Date()) + '" style="' + inStyle + '">' +
+    '<button onclick="' + fnName + '(\'__apply__\')" style="padding:6px 14px;border-radius:6px;border:1px solid var(--accent-33);background:var(--accent-10);color:var(--accent);font-size:13px;font-weight:600;cursor:pointer;font-family:inherit">Apply</button>' +
+    '</div>';
+  return '<div style="display:flex;gap:6px;flex-wrap:wrap">' + pills + '</div>' + customRow;
+}
+
+// ─── ANALYTICS: Workout Dashboard (Profile tab) ─────────────────────────
+var analyticsState = { loaded: false, profileId: null, range: '30D', start: null, end: null, data: null, open: {} };
+
+function toggleAnalyticsCard() {
+  var body = document.getElementById('analytics-body');
+  var chev = document.getElementById('analytics-chevron');
+  if (!body) return;
+  var show = (body.style.display === 'none');
+  body.style.display = show ? 'block' : 'none';
+  if (chev) chev.style.transform = show ? 'rotate(90deg)' : 'rotate(0)';
+  if (show && (!analyticsState.loaded || analyticsState.profileId !== currentProfileId)) {
+    setAnalyticsRange(analyticsState.range || '30D');
+  }
+}
+
+function setAnalyticsRange(key) {
+  if (key === 'Custom') {
+    analyticsState.range = 'Custom';
+    var ph = document.getElementById('an1-pills');
+    if (ph) ph.innerHTML = anRangePills('Custom', 'setAnalyticsRange', 'an1', analyticsState.start, analyticsState.end);
+    return;
+  }
+  var r;
+  if (key === '__apply__') { r = anResolveRange('Custom', 'an1'); if (!r) return; analyticsState.range = 'Custom'; }
+  else { r = anResolveRange(key, 'an1'); analyticsState.range = key; }
+  analyticsState.start = r.start; analyticsState.end = r.end;
+  loadAnalytics();
+}
+
+function loadAnalytics() {
+  if (!currentProfileId) return;
+  analyticsState.loaded = true;
+  analyticsState.profileId = currentProfileId;
+  var body = document.getElementById('analytics-body');
+  if (!body) return;
+  if (!document.getElementById('an1-pills')) {
+    body.innerHTML = '<div id="an1-pills"></div><div id="an1-content" style="margin-top:14px"></div>';
+  }
+  document.getElementById('an1-pills').innerHTML = anRangePills(analyticsState.range, 'setAnalyticsRange', 'an1', analyticsState.start, analyticsState.end);
+  var content = document.getElementById('an1-content');
+  if (content) content.innerHTML = '<p class="mono" style="font-size:11px;color:#22c97a;letter-spacing:3px;animation:pulse 1.6s infinite">LOADING...</p>';
+  var qs = (analyticsState.start && analyticsState.end) ? ('?start_date=' + analyticsState.start + '&end_date=' + analyticsState.end) : '';
+  fetch('/api/analytics/activity-stats/' + currentProfileId + qs)
+    .then(function(r) { return r.json(); })
+    .then(function(data) { analyticsState.data = data; renderAnalytics(data); })
+    .catch(function() { if (content) content.innerHTML = '<p style="color:#e84545">Error loading analytics.</p>'; });
+}
+
+function anStatBox(label, value, trend, colorByDelta) {
+  var delta = '';
+  if (trend && trend.pct != null) {
+    var up = trend.direction === 'up', down = trend.direction === 'down';
+    var col = colorByDelta ? (up ? '#22c97a' : down ? '#e84545' : 'var(--text-dim)') : 'var(--text-dim)';
+    var arrow = up ? '▲' : down ? '▼' : '→';
+    var sign = trend.pct > 0 ? '+' : '';
+    delta = '<div class="mono" style="font-size:10px;color:' + col + ';margin-top:2px">' + arrow + ' ' + sign + trend.pct + '% vs prev</div>';
+  }
+  return '<div style="background:var(--bg-input);border-radius:8px;padding:12px;text-align:center">' +
+    '<div class="mono" style="font-size:10px;color:var(--text-muted);margin-bottom:4px">' + label + '</div>' +
+    '<div class="oswald" style="font-size:20px;font-weight:700;color:var(--text)">' + value + '</div>' + delta + '</div>';
+}
+
+function anActivityRow(a) {
+  var color = (typeof CAT_COLORS !== 'undefined' && CAT_COLORS[a.type]) ? CAT_COLORS[a.type] : '#888';
+  var tm = a.trend_minutes || {};
+  var arrow = tm.direction === 'up' ? '▲' : tm.direction === 'down' ? '▼' : '→';
+  var arrowCol = tm.direction === 'up' ? '#22c97a' : tm.direction === 'down' ? '#e84545' : 'var(--text-dim)';
+  var hr = a.avg_hr != null ? a.avg_hr + ' bpm' : 'N/A';
+  var peak = a.peak_hr != null ? a.peak_hr : 'N/A';
+  var cal = a.total_calories != null ? anFmtNum(a.total_calories) : 'N/A';
+  var open = !!analyticsState.open[a.type];
+  var rowsHtml = open ? anSessionTable(a.recent_sessions || []) : '';
+  var caret = open ? '▾' : '▸';
+  return '<div style="border:1px solid var(--border);border-left:3px solid ' + color + ';border-radius:8px;margin-bottom:8px;overflow:hidden">' +
+    '<div onclick="toggleActivityRow(\'' + a.type + '\')" style="padding:10px 12px;cursor:pointer">' +
+      '<div style="display:flex;justify-content:space-between;align-items:center">' +
+        '<span style="font-weight:600;color:var(--text)">' + caret + ' ' + escHtml(a.label) + ' <span style="color:var(--text-dim);font-weight:400;font-size:12px">(' + a.total_sessions + ')</span></span>' +
+        '<span style="font-size:13px;color:' + arrowCol + '">' + arrow + ' ' + anFmtNum(a.total_minutes) + ' min</span>' +
+      '</div>' +
+      '<div class="mono" style="font-size:11px;color:var(--text-muted);margin-top:5px;display:flex;gap:14px;flex-wrap:wrap">' +
+        '<span>Avg HR: ' + hr + '</span><span>Peak: ' + peak + '</span><span>Cal: ' + cal + '</span>' +
+      '</div>' +
+    '</div>' + rowsHtml + '</div>';
+}
+
+function anSessionTable(sessions) {
+  var grid = 'display:grid;grid-template-columns:1.5fr 1fr 1fr 1fr 1fr;gap:4px;padding:6px 12px';
+  if (!sessions.length) return '<div style="padding:10px 12px;border-top:1px solid var(--border);font-size:12px;color:var(--text-dim)">No sessions in range.</div>';
+  var head = '<div class="mono" style="' + grid + ';background:var(--bg-input);font-size:10px;color:var(--text-muted)"><span>DATE</span><span>MIN</span><span>AVG HR</span><span>PEAK</span><span>CAL</span></div>';
+  var body = sessions.map(function(s) {
+    return '<div style="' + grid + ';border-top:1px solid var(--border);font-size:12px;color:var(--text-sec)">' +
+      '<span>' + (s.date || '') + '</span>' +
+      '<span>' + (s.duration != null ? s.duration : '—') + '</span>' +
+      '<span>' + (s.avg_hr != null ? s.avg_hr : 'N/A') + '</span>' +
+      '<span>' + (s.peak_hr != null ? s.peak_hr : 'N/A') + '</span>' +
+      '<span>' + (s.calories != null ? anFmtNum(s.calories) : 'N/A') + '</span></div>';
+  }).join('');
+  return '<div style="border-top:1px solid var(--border)">' + head + body + '</div>';
+}
+
+function toggleActivityRow(type) {
+  analyticsState.open[type] = !analyticsState.open[type];
+  renderAnalytics(analyticsState.data);
+}
+
+function renderAnalytics(data) {
+  var content = document.getElementById('an1-content');
+  if (!content) return;
+  if (!data || !data.success) { content.innerHTML = '<p style="color:#e84545">Error loading analytics.</p>'; return; }
+  var o = data.overall || {};
+  var cmp = data.comparison || {};
+  var html = '<div style="display:grid;grid-template-columns:repeat(3,1fr);gap:10px">';
+  html += anStatBox('Total Min', anFmtNum(o.total_workout_minutes || 0), cmp.total_minutes, true);
+  html += anStatBox('Sessions', o.total_sessions || 0, cmp.total_sessions, true);
+  html += anStatBox('Calories', o.total_calories != null ? anFmtNum(o.total_calories) : 'N/A', cmp.total_calories, true);
+  html += '</div><div style="display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-top:10px">';
+  html += anStatBox('Top Day', o.most_active_day_of_week ? o.most_active_day_of_week.slice(0, 3) : '—', null, false);
+  html += anStatBox('Streak', (o.current_streak || 0) + 'd', null, false);
+  html += anStatBox('Longest', (o.longest_streak || 0) + 'd', null, false);
+  html += '</div>';
+  var acts = data.activities || [];
+  html += '<div style="margin-top:16px"><p class="clabel">by activity</p>';
+  if (!acts.length) html += '<p style="font-size:13px;color:var(--text-dim);font-style:italic">No workouts logged in this period.</p>';
+  else acts.forEach(function(a) { html += anActivityRow(a); });
+  html += '</div>';
+  content.innerHTML = html;
+}
+
+// ─── ANALYTICS: Exercise charts (Library detail view) ───────────────────
+var exAnalyticsState = { name: null, range: 'All', start: null, end: null, data: null };
+
+function setExRange(key) {
+  if (key === 'Custom') {
+    exAnalyticsState.range = 'Custom';
+    var ph = document.getElementById('an2-pills');
+    if (ph) ph.innerHTML = anRangePills('Custom', 'setExRange', 'an2', exAnalyticsState.start, exAnalyticsState.end);
+    return;
+  }
+  var r;
+  if (key === '__apply__') { r = anResolveRange('Custom', 'an2'); if (!r) return; exAnalyticsState.range = 'Custom'; }
+  else { r = anResolveRange(key, 'an2'); exAnalyticsState.range = key; }
+  exAnalyticsState.start = r.start; exAnalyticsState.end = r.end;
+  loadExAnalytics();
+}
+
+function loadExAnalytics() {
+  if (!currentProfileId || !exAnalyticsState.name) return;
+  var host = document.getElementById('lib-ex-analytics');
+  if (!host) return;
+  if (!document.getElementById('an2-pills')) {
+    host.innerHTML = '<p class="clabel">performance analytics</p><div id="an2-pills"></div><div id="an2-content" style="margin-top:12px"></div>';
+  }
+  document.getElementById('an2-pills').innerHTML = anRangePills(exAnalyticsState.range, 'setExRange', 'an2', exAnalyticsState.start, exAnalyticsState.end);
+  var content = document.getElementById('an2-content');
+  if (content) content.innerHTML = '<p class="mono" style="font-size:11px;color:#22c97a;letter-spacing:3px;animation:pulse 1.6s infinite">LOADING...</p>';
+  var qs = (exAnalyticsState.start && exAnalyticsState.end) ? ('?start_date=' + exAnalyticsState.start + '&end_date=' + exAnalyticsState.end) : '';
+  fetch('/api/analytics/exercise-stats/' + currentProfileId + '/' + encodeURIComponent(exAnalyticsState.name) + qs)
+    .then(function(r) { return r.json(); })
+    .then(function(data) { exAnalyticsState.data = data; renderExAnalytics(data); })
+    .catch(function() { if (content) content.innerHTML = '<p style="color:#e84545">Error loading analytics.</p>'; });
+}
+
+function renderExAnalytics(data) {
+  var content = document.getElementById('an2-content');
+  if (!content) return;
+  if (!data || !data.success) { content.innerHTML = '<p style="color:#e84545">Error loading analytics.</p>'; return; }
+  var daily = data.daily_data || [];
+  var agg = data.aggregate || {};
+  if (!daily.length) { content.innerHTML = '<p style="font-size:13px;color:var(--text-dim);font-style:italic">No data logged in this period.</p>'; return; }
+  var html = '<div style="display:flex;flex-wrap:wrap;gap:12px">' +
+    '<div style="flex:1 1 280px;min-width:240px"><p class="clabel" style="font-size:10px">best set (reps/day)</p><canvas id="an2-bestset" style="max-height:190px"></canvas></div>' +
+    '<div style="flex:1 1 280px;min-width:240px"><p class="clabel" style="font-size:10px">total volume (reps/day)</p><canvas id="an2-volume" style="max-height:190px"></canvas></div>' +
+    '</div>';
+  html += '<div style="display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-top:14px">';
+  html += statCard('Total Reps', anFmtNum(agg.total_reps || 0), 'period');
+  html += statCard('Avg/Set', agg.avg_reps_per_set != null ? agg.avg_reps_per_set : '—', 'reps');
+  html += statCard('Best Set', agg.best_single_set != null ? agg.best_single_set : '—', 'reps');
+  var bvd = agg.best_volume_day;
+  html += statCard('Best Day', bvd ? anFmtNum(bvd.total_reps) : '—', bvd ? bvd.date.slice(5) : '');
+  html += '</div>';
+  if (agg.is_weight_based) {
+    html += '<div style="display:grid;grid-template-columns:repeat(2,1fr);gap:10px;margin-top:10px">';
+    html += statCard('Max Weight', agg.max_weight_ever != null ? agg.max_weight_ever + ' lbs' : '—', 'all-time');
+    html += statCard('Est. 1RM', agg.estimated_1rm != null ? agg.estimated_1rm + ' lbs' : '—', 'Epley');
+    html += '</div>';
+  }
+  content.innerHTML = html;
+  setTimeout(function() { renderExAnalyticsCharts(daily); }, 50);
+}
+
+function renderExAnalyticsCharts(daily) {
+  var labels = daily.map(function(d) { return d.date.slice(5); });
+  var bestSet = daily.map(function(d) { return d.highest_set || 0; });
+  var volume = daily.map(function(d) { return d.total_reps || 0; });
+  var bc = document.getElementById('an2-bestset');
+  var vc = document.getElementById('an2-volume');
+  if (libCharts.exBest) libCharts.exBest.destroy();
+  if (libCharts.exVolume) libCharts.exVolume.destroy();
+  var axisOpts = { x: { ticks: { color: '#555', font: { size: 9 } }, grid: { display: false } }, y: { beginAtZero: true, ticks: { color: '#555', font: { size: 9 } }, grid: { color: '#1a1c22' } } };
+  if (bc) libCharts.exBest = new Chart(bc, { type: 'line', data: { labels: labels, datasets: [{ data: bestSet, borderColor: '#22c97a', backgroundColor: '#22c97a22', fill: true, tension: 0.3, pointRadius: 3, pointBackgroundColor: '#22c97a' }] }, options: { responsive: true, plugins: { legend: { display: false } }, scales: axisOpts } });
+  if (vc) libCharts.exVolume = new Chart(vc, { type: 'bar', data: { labels: labels, datasets: [{ data: volume, backgroundColor: '#4488bbcc', borderColor: '#4488bb', borderWidth: 1 }] }, options: { responsive: true, plugins: { legend: { display: false } }, scales: axisOpts } });
 }
 
 // ─── MICRO-GOALS / ACTIVE CHALLENGES ────────────────────────────────────
@@ -8429,6 +8688,9 @@ function showExerciseDetail(name) {
       }
       html += '</div>';
 
+      // Performance analytics (date-filtered Best Set + Volume charts, stats)
+      html += '<div id="lib-ex-analytics" style="margin-top:16px;border-top:1px solid var(--border);padding-top:12px"></div>';
+
       // Session history with PR highlighting
       html += '<div style="margin-top:16px;border-top:1px solid var(--border);padding-top:12px"><p class="clabel">session history</p>';
       var recent = hist.slice(-10).reverse();
@@ -8456,6 +8718,10 @@ function showExerciseDetail(name) {
 
       // Render progression chart
       setTimeout(function() { renderExDetailChart(hist, pr); }, 50);
+
+      // Performance analytics — date-filtered Best Set / Volume charts + stats
+      exAnalyticsState = { name: name, range: 'All', start: null, end: null, data: null };
+      loadExAnalytics();
 
       // Fetch AI insight
       fetchExInsight(name, hist);

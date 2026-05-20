@@ -787,6 +787,25 @@ The log modal renders an "Active Challenges" section listing every active, incom
 
 The check-ins are merged into the notes textarea before the workout is saved, so they ride through the existing extract-exercises + auto-tracker flow. After save, `loadMicroGoals()` runs and `checkMicroGoalCompletions()` triggers `fireConfetti()` for any newly-completed goal.
 
+## Analytics
+
+Two read-only analytics endpoints (all aggregation done in Node after PostgREST fetches; all date math server-side; both degrade gracefully to N/A with no wearable connected).
+
+### Workout Analytics Dashboard
+`GET /api/analytics/activity-stats/:userId?start_date=&end_date=` (userId = profile_id; omit dates = all-time).
+- Buckets workouts by **inferred category** via `inferWorkoutCategoryServer()` — a server-side mirror of the client `inferWorkoutCategory()` (strength/cardio/martial_arts/sports/mind_body/rehab/rest/other → `CATEGORY_PRETTY_SERVER` labels). Keep the two in sync.
+- Per-workout duration = `workouts.wearable_data.duration_minutes` → else sum of that workout's `exercises.duration_minutes` → else 0. HR/calories come **only** from `wearable_data` (JSONB column on `workouts`, added by the 2026-05-19 wearables migration); the workouts query falls back to a `wearable_data`-less select if the column doesn't exist.
+- Returns `overall` (total_workout_minutes, total_sessions, total_calories, most_active_day_of_week, current_streak, longest_streak — streaks scoped to the queried window), `comparison` (current vs previous same-length window for total_minutes/sessions/calories/avg_hr; null for all-time), and `activities[]` sorted by total_minutes desc. Each activity: total_sessions, total_minutes, avg_hr, peak_hr, total_calories, avg_calories_per_session, `trend_minutes`/`trend_avg_hr` (`{current, previous, pct, direction: up|down|stable}`, ±5% threshold), and `recent_sessions` (last 10: date, duration, avg_hr, peak_hr, calories).
+- **UI**: collapsible `#analytics-card` on the Profile tab, above Active Challenges. Lazy-loads on first expand (reloads on profile switch). 7D/30D/90D/1YR/All/Custom pill bar (`anRangePills`); overall stat grid with green/red delta indicators; per-activity collapsible rows that expand to the last-10-sessions table.
+
+### Library Exercise Analytics
+`GET /api/analytics/exercise-stats/:userId/:exerciseName?start_date=&end_date=`.
+- Aggregates `exercises` rows where `name=eq.` matches. A row stores `sets`×`reps` (set count, reps-per-set); rows with reps but no set count = 1 set.
+- Per day (`daily_data`, sorted asc for charting): highest_set (max reps in one set), total_reps (Σ sets×reps), total_sets, max_weight. Aggregate: total_reps, avg_reps_per_set, best_single_set, best_volume_day `{date,total_reps}`, total_sessions (distinct days), is_weight_based, max_weight_ever, estimated_1rm (Epley `weight×(1+reps/30)`, max over all sets). Weight fields null for bodyweight exercises.
+- **UI**: added to the Library exercise detail view (`#lib-ex-analytics`, populated by `loadExAnalytics`). Same pill-bar filter; two Chart.js charts (Best Set line + Total Volume bar, side-by-side desktop / stacked mobile via flex-wrap); 4 stat boxes (+2 weight boxes when weight-based). Chart instances stored in `libCharts.exBest`/`libCharts.exVolume`.
+
+Shared client helpers: `anYmd`, `anFmtNum`, `anResolveRange`, `anRangePills`.
+
 ## Maintenance Instructions
 
 This file should be kept up to date as the project evolves. After any significant change - new features, schema changes, new endpoints, formula updates, or architectural decisions - update the relevant section of this CLAUDE.md automatically as part of the commit. This way the file always reflects the current state of the project.
