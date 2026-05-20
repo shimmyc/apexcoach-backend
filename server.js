@@ -3836,6 +3836,23 @@ async function stampLastSynced(profileId, provider) {
 // that to a 401 so the UI can show "reconnect your <provider>" instead
 // of a generic 500.
 async function getValidWearableToken(profileId, provider) {
+  // Fitbit: the live, continually-rotated token lives in profiles.fitbit_*.
+  // The daily sync (getValidProfileToken → refreshProfileToken) refreshes it
+  // there every day, and Fitbit ROTATES the refresh_token on each refresh,
+  // invalidating the previous one. saveProfileTokens writes that rotation back
+  // ONLY to profiles.fitbit_*, never to wearable_connections — so the copy
+  // cached in wearable_connections goes stale and any refresh attempt off it
+  // fails with a 400 (invalid_grant) → RECONNECT_REQUIRED, even while the daily
+  // sync keeps working. Use the same source as the daily sync; fall back to
+  // wearable_connections only when profiles.fitbit_* has never been populated
+  // (e.g. a user connected purely via the newer wearable flow).
+  if (provider === "fitbit") {
+    var legacy = await loadProfileTokens(profileId);
+    if (legacy.access_token || legacy.refresh_token) {
+      return await getValidProfileToken(profileId);
+    }
+  }
+
   var tokens = await loadWearableTokens(profileId, provider);
   if (tokens.access_token && Date.now() < Number(tokens.expires_at)) {
     return tokens.access_token;
