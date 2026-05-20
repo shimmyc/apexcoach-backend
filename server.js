@@ -4500,11 +4500,27 @@ function numOrNull(v) {
 // when no wearable is connected.
 function wearableMetrics(wd) {
   if (!wd || typeof wd !== "object") return { minutes: null, calories: null, avg_hr: null, peak_hr: null };
+  // peak_hr is stored only when intraday enrichment ran at import time. The
+  // Fitbit LIST endpoint (the backfill's only source) carries averageHeartRate
+  // but NOT maxHeartRate, so backfilled rows get avg_hr while peak_hr stays
+  // null. When the explicit field is absent, recover peak HR from the
+  // per-minute intraday samples if they were captured. NOTE: wd.zones.peak is
+  // *minutes spent in the peak zone*, NOT a bpm value — never read it as peak_hr.
+  var peak = numOrNull(wd.peak_hr);
+  if (peak == null && Array.isArray(wd.heart_rate_samples)) {
+    var hi = null;
+    for (var i = 0; i < wd.heart_rate_samples.length; i++) {
+      var s = wd.heart_rate_samples[i];
+      var v = numOrNull(s && s.bpm);
+      if (v != null && (hi == null || v > hi)) hi = v;
+    }
+    peak = hi;
+  }
   return {
     minutes: numOrNull(wd.duration_minutes),
     calories: numOrNull(wd.calories),
     avg_hr: numOrNull(wd.avg_hr),
-    peak_hr: numOrNull(wd.peak_hr),
+    peak_hr: peak,
   };
 }
 // Fallback metrics parsed from a workout's free-text notes. Legacy Fitbit
