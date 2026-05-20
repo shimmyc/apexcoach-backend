@@ -590,9 +590,18 @@ app.get("/api/profiles/:id", async function(req, res) {
     var rows = await r.json();
     if (!rows || !rows.length) return res.json({ success: false, error: "Profile not found." });
     var p = rows[0];
+    var pd = cleanProfileData(p.profile_data || {});
+    // Backfill stable goal ids; persist (fire-and-forget) only if any were added.
+    if (ensureGoalIds(pd)) {
+      fetch(SUPABASE_URL + "/rest/v1/profiles?id=eq." + req.params.id, {
+        method: "PATCH",
+        headers: sbHeaders("return=minimal"),
+        body: JSON.stringify({ profile_data: pd }),
+      }).catch(function(e) { console.error("[Goals] ensureGoalIds persist failed:", e.message); });
+    }
     res.json({ success: true, profile: Object.assign({
       id: p.id, name: p.name, avatar_color: p.avatar_color,
-      profile_data: cleanProfileData(p.profile_data || {}),
+      profile_data: pd,
       created_at: p.created_at,
     }, pickProfileBody(p)) });
   } catch (e) {
@@ -688,7 +697,9 @@ app.patch("/api/profiles/:id", async function(req, res) {
           merged[key] = body.profile_data[key];
         }
       }
-      updatePayload.profile_data = cleanProfileData(merged);
+      var cleanedMerged = cleanProfileData(merged);
+      ensureGoalIds(cleanedMerged); // newly added goals always get a stable id
+      updatePayload.profile_data = cleanedMerged;
     }
 
     if (Object.keys(updatePayload).length === 0) {
@@ -1496,6 +1507,8 @@ app.post("/api/workouts", async function(req, res) {
     // a workout logged for a past date doesn't change today's biometric or
     // schedule context.
     if (body.profile_id) clearProgressBriefCache(body.profile_id);
+    // Fire-and-forget weekly goal-roadmap maintenance (adapts roadmaps >7 days stale).
+    if (body.profile_id) maybeAdaptGoalRoadmaps(body.profile_id).catch(function(e) { console.error("Goal roadmap adaptation error:", e); });
     res.json({ success: true, workout: data });
   } catch (e) {
     res.status(500).json({ success: false, error: e.message });
@@ -1679,8 +1692,11 @@ var CALL_TYPE_MODEL = {
   historical_brief:  MODEL_SONNET,
   roadmap:           MODEL_SONNET,
   history_search:    MODEL_SONNET,
+  goal_roadmap_generate: MODEL_SONNET,
   // Cheap tasks — Haiku
   format_notes:      MODEL_HAIKU,
+  goal_intake_questions: MODEL_HAIKU,
+  goal_roadmap_adapt:    MODEL_HAIKU,
   workout_title:     MODEL_HAIKU,
   extract_exercises: MODEL_HAIKU,
   progress_brief:    MODEL_HAIKU,
@@ -2710,6 +2726,329 @@ app.post("/api/profiles/:id/roadmap", async function(req, res) {
   } catch (e) {
     console.error("[Roadmap] Error:", e.message);
     res.status(500).json({ error: e.message });
+  }
+});
+
+// ── LIVING GOAL ROADMAPS ────────────────────────────────────────────────────
+// Per-goal roadmaps stored as fields on each goal object inside
+// profile_data.goals[] (jsonb on profiles) — no new tables. Each goal can carry:
+//   id, intake_questions[], intake_answers[], intake_completed,
+//   roadmap { phases[], estimated_completion, date_confidence, date_note,
+//             summary, generated_at, version, adaptation_log[] },
+//   last_adapted_at
+// Phase: { name, description, duration_weeks, completion_signals[], status }
+// adaptation_log entry: { date, summary, trigger: 'weekly'|'checkin'|'manual' }
+
+// Goals historically had no stable id. Assign a uuid (in place) to any goal
+// missing one. Returns true if it added any, so the caller can persist.
+function ensureGoalIds(profileData) {
+  if (!profileData || typeof profileData !== "object" || !Array.isArray(profileData.goals)) return false;
+  var changed = false;
+  profileData.goals.forEach(function(g) {
+    if (g && typeof g === "object" && !g.id) { g.id = crypto.randomUUID(); changed = true; }
+  });
+  return changed;
+}
+
+// Find a goal by id in profile_data.goals[]. Returns { goal, index }; throws a
+// 404-tagged error when absent (route catch maps e.status → HTTP status).
+function findGoalById(profileData, goalId) {
+  var goals = (profileData && Array.isArray(profileData.goals)) ? profileData.goals : [];
+  for (var i = 0; i < goals.length; i++) {
+    if (goals[i] && goals[i].id === goalId) return { goal: goals[i], index: i };
+  }
+  var err = new Error("Goal not found");
+  err.status = 404;
+  throw err;
+}
+
+// Load a profile row + its profile_data (with goal ids ensured in memory).
+// Throws a 404-tagged error if missing. Returns { profile, profileData }.
+async function loadProfileWithGoals(profileId) {
+  var r = await fetch(SUPABASE_URL + "/rest/v1/profiles?id=eq." + profileId + "&select=id,profile_data,coaching_brief", { headers: sbHeaders() });
+  var rows = await r.json();
+  if (!rows || !rows.length) { var err = new Error("Profile not found"); err.status = 404; throw err; }
+  var profileData = rows[0].profile_data || {};
+  ensureGoalIds(profileData);
+  return { profile: rows[0], profileData: profileData };
+}
+
+// Write the updated goal back into profile_data.goals[index] and PATCH the full
+// profile_data. cleanProfileData only collapses \r\n (not bare \n), so AI text
+// formatting survives.
+async function saveGoalToProfile(profileId, profileData, goalIndex, updatedGoal) {
+  profileData.goals[goalIndex] = updatedGoal;
+  await fetch(SUPABASE_URL + "/rest/v1/profiles?id=eq." + profileId, {
+    method: "PATCH",
+    headers: sbHeaders("return=minimal"),
+    body: JSON.stringify({ profile_data: cleanProfileData(profileData) }),
+  });
+  return updatedGoal;
+}
+
+// Direct Anthropic call with a separate system prompt + single user message.
+// Mirrors callAI() but adds the top-level `system` field.
+async function callAISystem(system, userMsg, maxTokens, model) {
+  var response = await fetch("https://api.anthropic.com/v1/messages", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "x-api-key": process.env.ANTHROPIC_KEY,
+      "anthropic-version": "2023-06-01",
+    },
+    body: JSON.stringify({
+      model: model || MODEL_SONNET,
+      max_tokens: maxTokens || 1500,
+      system: system,
+      messages: [{ role: "user", content: userMsg }],
+    }),
+  });
+  var data = await response.json();
+  if (data && data.error) throw new Error(data.error.message || "Anthropic error");
+  return (data.content && data.content[0]) ? data.content[0].text : "";
+}
+
+// Extract the first JSON value (object or array) from an AI response, tolerating
+// ```json fences and surrounding prose.
+function parseAIJson(text) {
+  if (!text) throw new Error("Empty AI response");
+  var t = String(text).replace(/```json/gi, "").replace(/```/g, "").trim();
+  var firstObj = t.indexOf("{"), firstArr = t.indexOf("[");
+  var start, endChar;
+  if (firstArr !== -1 && (firstObj === -1 || firstArr < firstObj)) { start = firstArr; endChar = "]"; }
+  else { start = firstObj; endChar = "}"; }
+  if (start === -1) throw new Error("No JSON found in AI response");
+  var end = t.lastIndexOf(endChar);
+  if (end < start) throw new Error("Malformed JSON in AI response");
+  return JSON.parse(t.substring(start, end + 1));
+}
+
+// Adapt an existing goal.roadmap via Haiku. `notes` is the athlete's check-in
+// (empty for weekly auto-adaptation). Returns the new roadmap object — version
+// incremented, generated_at preserved, adaptation_log appended.
+async function adaptGoalRoadmap(goal, notes, workouts, trigger) {
+  var today = new Date().toISOString().slice(0, 10);
+  var workoutsStr = (workouts || []).map(function(w) { return w.date + ": " + (w.type || "Workout"); }).join("\n");
+  var sys = "You are a fitness coach adapting a training roadmap based on a check-in from the athlete. Return ONLY valid JSON with the same shape as the existing roadmap: { phases: [...], estimated_completion: 'YYYY-MM-DD', date_confidence: 'high'|'medium'|'low', date_note: string, summary: string }. Update phase statuses if appropriate (upcoming/current/complete). Adjust estimated_completion if trajectory has changed. Keep phases that are still valid — only modify what the check-in justifies.";
+  var userMsg = "GOAL: " + (goal.title || "Untitled") + "\n\n" +
+    "CURRENT ROADMAP:\n" + JSON.stringify(goal.roadmap) + "\n\n" +
+    "ATHLETE CHECK-IN:\n" + (notes || "(no notes — automatic weekly review based on recent training)") + "\n\n" +
+    "RECENT WORKOUTS (last 10):\n" + (workoutsStr || "none") + "\n\n" +
+    "Today: " + today + "\n\nAdapt the roadmap based on this check-in.";
+  var text = await callAISystem(sys, userMsg, 2000, MODEL_HAIKU);
+  var parsed = parseAIJson(text);
+  if (!parsed || !Array.isArray(parsed.phases)) throw new Error("AI returned an invalid adapted roadmap");
+
+  var prev = goal.roadmap || {};
+  var now = new Date().toISOString();
+  var log = Array.isArray(prev.adaptation_log) ? prev.adaptation_log.slice() : [];
+  log.push({ date: now, summary: parsed.summary || "Roadmap adapted", trigger: trigger });
+  return {
+    phases: parsed.phases,
+    estimated_completion: parsed.estimated_completion || prev.estimated_completion || null,
+    date_confidence: parsed.date_confidence || prev.date_confidence || null,
+    date_note: parsed.date_note || prev.date_note || null,
+    summary: parsed.summary || prev.summary || "",
+    generated_at: prev.generated_at || now,           // preserve original generation time
+    version: (typeof prev.version === "number" ? prev.version : 1) + 1,
+    adaptation_log: log,
+  };
+}
+
+// Fire-and-forget weekly maintenance, called after a workout save. Re-adapts
+// each goal whose roadmap is >7 days stale (or never adapted). Loads the profile
+// once, adapts in place, writes profile_data back once.
+async function maybeAdaptGoalRoadmaps(profileId) {
+  if (!profileId) return;
+  var r = await fetch(SUPABASE_URL + "/rest/v1/profiles?id=eq." + profileId + "&select=id,profile_data,coaching_brief", { headers: sbHeaders() });
+  var rows = await r.json();
+  if (!rows || !rows.length) return;
+  var profileData = rows[0].profile_data || {};
+  if (!Array.isArray(profileData.goals) || !profileData.goals.length) return;
+
+  var WEEK_MS = 7 * 24 * 60 * 60 * 1000;
+  var nowMs = Date.now();
+  var due = profileData.goals.filter(function(g) {
+    if (!g || !g.intake_completed || !g.roadmap) return false;
+    if (!g.last_adapted_at) return true;
+    var t = Date.parse(g.last_adapted_at);
+    return isNaN(t) || (nowMs - t) > WEEK_MS;
+  });
+  if (!due.length) return;
+
+  // One workouts fetch reused for every due goal.
+  var wRes = await fetch(SUPABASE_URL + "/rest/v1/workouts?profile_id=eq." + profileId + "&order=date.desc&limit=10&select=date,type", { headers: sbHeaders() });
+  var workouts = await wRes.json();
+  if (!Array.isArray(workouts)) workouts = [];
+
+  var changed = false;
+  for (var i = 0; i < due.length; i++) {
+    var g = due[i];   // same object reference as in profileData.goals
+    try {
+      g.roadmap = await adaptGoalRoadmap(g, "", workouts, "weekly");
+      g.last_adapted_at = new Date().toISOString();
+      changed = true;
+    } catch (e) {
+      console.error("[GoalRoadmap] weekly adapt failed for goal " + (g.id || "?") + ": " + e.message);
+    }
+  }
+  if (!changed) return;
+
+  await fetch(SUPABASE_URL + "/rest/v1/profiles?id=eq." + profileId, {
+    method: "PATCH",
+    headers: sbHeaders("return=minimal"),
+    body: JSON.stringify({ profile_data: cleanProfileData(profileData) }),
+  });
+  console.log("[GoalRoadmap] weekly adapted " + due.length + " goal(s) for profile " + profileId);
+}
+
+// GET intake questions for a goal — generates them (Haiku) on first call.
+app.get("/api/profiles/:id/goals/:goalId/intake", async function(req, res) {
+  try {
+    var loaded = await loadProfileWithGoals(req.params.id);
+    var found = findGoalById(loaded.profileData, req.params.goalId);
+    var goal = found.goal;
+
+    if (goal.intake_completed) {
+      return res.json({ success: true, intake_questions: goal.intake_questions || [], intake_answers: goal.intake_answers || [], intake_completed: true });
+    }
+    if (Array.isArray(goal.intake_questions) && goal.intake_questions.length) {
+      return res.json({ success: true, intake_questions: goal.intake_questions, intake_answers: goal.intake_answers || [], intake_completed: false });
+    }
+
+    var ctx = (loaded.profileData.ai_prompt_context || "").substring(0, 800);
+    var sys = "You are a fitness coach generating intake questions to build a personalized roadmap for a specific goal. Return ONLY a JSON array of question objects with shape { question: string, key: string } where key is a short camelCase identifier. Generate 4-6 questions that are targeted to THIS goal — do not ask about things already in the athlete profile. Focus on specifics: current baseline, obstacles, time availability for this goal, what success looks like to them.";
+    var userMsg = "Goal: " + (goal.title || "Untitled") + " (" + (goal.type || "general") + ")\n" +
+      "Description: " + (goal.description || "none") + "\n" +
+      "Athlete profile summary: " + ctx + "\n\nGenerate intake questions for this specific goal.";
+    var text = await callAISystem(sys, userMsg, 800, MODEL_HAIKU);
+    var questions = parseAIJson(text);
+    if (!Array.isArray(questions)) throw new Error("AI did not return a question array");
+    questions = questions.filter(function(q) { return q && q.question; }).map(function(q, i) {
+      return { question: String(q.question), key: q.key ? String(q.key) : ("q" + (i + 1)) };
+    });
+
+    goal.intake_questions = questions;
+    if (!Array.isArray(goal.intake_answers)) goal.intake_answers = [];
+    goal.intake_completed = false;
+    await saveGoalToProfile(req.params.id, loaded.profileData, found.index, goal);
+    res.json({ success: true, intake_questions: questions, intake_answers: [], intake_completed: false });
+  } catch (e) {
+    console.error("[GoalRoadmap] intake GET error:", e.message);
+    res.status(e.status || 500).json({ success: false, error: e.message });
+  }
+});
+
+// POST intake answers — completes the intake.
+app.post("/api/profiles/:id/goals/:goalId/intake", async function(req, res) {
+  try {
+    var answers = (req.body && Array.isArray(req.body.answers)) ? req.body.answers : null;
+    if (!answers) return res.status(400).json({ success: false, error: "answers array required" });
+    var loaded = await loadProfileWithGoals(req.params.id);
+    var found = findGoalById(loaded.profileData, req.params.goalId);
+    var goal = found.goal;
+    var questions = Array.isArray(goal.intake_questions) ? goal.intake_questions : [];
+
+    // Index submitted answers by key; rebuild the full list with question text
+    // preserved from intake_questions.
+    var byKey = {};
+    answers.forEach(function(a) { if (a && a.key != null) byKey[String(a.key)] = a.answer; });
+    var intakeAnswers = questions.map(function(q) {
+      return { question: q.question, key: q.key, answer: byKey[q.key] != null ? String(byKey[q.key]) : "" };
+    });
+
+    goal.intake_answers = intakeAnswers;
+    goal.intake_completed = true;
+    await saveGoalToProfile(req.params.id, loaded.profileData, found.index, goal);
+    res.json({ success: true, intake_completed: true, intake_answers: intakeAnswers });
+  } catch (e) {
+    console.error("[GoalRoadmap] intake POST error:", e.message);
+    res.status(e.status || 500).json({ success: false, error: e.message });
+  }
+});
+
+// POST generate the initial roadmap (Sonnet). Requires completed intake.
+app.post("/api/profiles/:id/goals/:goalId/roadmap", async function(req, res) {
+  try {
+    var loaded = await loadProfileWithGoals(req.params.id);
+    var found = findGoalById(loaded.profileData, req.params.goalId);
+    var goal = found.goal;
+    if (!goal.intake_completed) return res.status(400).json({ success: false, error: "Intake must be completed before generating a roadmap" });
+
+    var wRes = await fetch(SUPABASE_URL + "/rest/v1/workouts?profile_id=eq." + req.params.id + "&order=date.desc&limit=20&select=date,type", { headers: sbHeaders() });
+    var workouts = await wRes.json();
+    if (!Array.isArray(workouts)) workouts = [];
+
+    var today = new Date().toISOString().slice(0, 10);
+    var ctx = (loaded.profileData.ai_prompt_context || "").substring(0, 1200);
+    var brief = (loaded.profile.coaching_brief || "").substring(0, 400);
+    var answersStr = (goal.intake_answers || []).map(function(a) { return a.question + ": " + a.answer; }).join("\n");
+    var workoutsStr = workouts.map(function(w) { return w.date + ": " + (w.type || "Workout"); }).join("\n");
+
+    var sys = "You are an elite fitness coach building a personalized training roadmap for a specific goal. Return ONLY valid JSON with this exact shape: { phases: [{ name: string, description: string, duration_weeks: number, completion_signals: string[], status: string }], estimated_completion: 'YYYY-MM-DD', date_confidence: 'high'|'medium'|'low', date_note: string, summary: string }. Phases should be 3-5 phases that build progressively. The first phase status is 'current', rest are 'upcoming'. completion_signals are 2-3 specific, measurable things the athlete will be able to do/achieve to know they're ready to move to the next phase. estimated_completion should be a realistic best-guess date from today. date_confidence: 'high' for goals achievable in under 6 months with clear metrics (e.g. 20 pushups); 'medium' for 6-24 month goals; 'low' for multi-year or skill-dependent goals like martial arts belts where the timeline genuinely depends on too many variables to predict. date_note: an honest one-sentence caveat about the estimate — for low-confidence goals, acknowledge that the timeline could vary significantly based on training consistency, natural progression, and factors outside anyone's control.";
+    var userMsg = "GOAL: " + (goal.title || "Untitled") + " (" + (goal.type || "general") + ")\n" +
+      "DESCRIPTION: " + (goal.description || "none") + "\n\n" +
+      "INTAKE ANSWERS:\n" + (answersStr || "none") + "\n\n" +
+      "ATHLETE PROFILE:\n" + (ctx || "none") + "\n\n" +
+      "COACHING BRIEF:\n" + (brief || "none") + "\n\n" +
+      "RECENT WORKOUTS (last 20):\n" + (workoutsStr || "none") + "\n\n" +
+      "Today's date: " + today + "\n\nBuild a realistic, phased roadmap for this specific goal.";
+
+    var text = await callAISystem(sys, userMsg, 2000, MODEL_SONNET);
+    var parsed = parseAIJson(text);
+    if (!parsed || !Array.isArray(parsed.phases)) throw new Error("AI returned an invalid roadmap");
+
+    var now = new Date().toISOString();
+    goal.roadmap = {
+      phases: parsed.phases,
+      estimated_completion: parsed.estimated_completion || null,
+      date_confidence: parsed.date_confidence || null,
+      date_note: parsed.date_note || null,
+      summary: parsed.summary || "",
+      generated_at: now,
+      version: 1,
+      adaptation_log: [],
+    };
+    goal.last_adapted_at = now;
+    await saveGoalToProfile(req.params.id, loaded.profileData, found.index, goal);
+    res.json({ success: true, goal: goal });
+  } catch (e) {
+    console.error("[GoalRoadmap] generate error:", e.message);
+    res.status(e.status || 500).json({ success: false, error: e.message });
+  }
+});
+
+// POST a check-in — adapts the roadmap (Haiku) from the athlete's reflection.
+app.post("/api/profiles/:id/goals/:goalId/checkin", async function(req, res) {
+  try {
+    var notes = (req.body && req.body.notes != null) ? String(req.body.notes) : "";
+    var loaded = await loadProfileWithGoals(req.params.id);
+    var found = findGoalById(loaded.profileData, req.params.goalId);
+    var goal = found.goal;
+    if (!goal.roadmap) return res.status(400).json({ success: false, error: "No roadmap to adapt — generate one first" });
+
+    var wRes = await fetch(SUPABASE_URL + "/rest/v1/workouts?profile_id=eq." + req.params.id + "&order=date.desc&limit=10&select=date,type", { headers: sbHeaders() });
+    var workouts = await wRes.json();
+    if (!Array.isArray(workouts)) workouts = [];
+
+    goal.roadmap = await adaptGoalRoadmap(goal, notes, workouts, "checkin");
+    goal.last_adapted_at = new Date().toISOString();
+    await saveGoalToProfile(req.params.id, loaded.profileData, found.index, goal);
+    res.json({ success: true, goal: goal });
+  } catch (e) {
+    console.error("[GoalRoadmap] checkin error:", e.message);
+    res.status(e.status || 500).json({ success: false, error: e.message });
+  }
+});
+
+// GET a single goal (with roadmap, intake, etc.) without fetching the full profile.
+app.get("/api/profiles/:id/goals/:goalId", async function(req, res) {
+  try {
+    var loaded = await loadProfileWithGoals(req.params.id);
+    var found = findGoalById(loaded.profileData, req.params.goalId);
+    res.json({ success: true, goal: found.goal });
+  } catch (e) {
+    res.status(e.status || 500).json({ success: false, error: e.message });
   }
 });
 

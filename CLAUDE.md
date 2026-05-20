@@ -553,6 +553,34 @@ AI-generated 3/6/12-month training plan shown on Profile tab after Coaching Brie
 - **Auto-load**: `loadRoadmap()` called in bootApp() alongside coaching brief fetch.
 - **Sections generated**: Current Status, 30-Day Milestones, 90-Day Milestones, 6-Month Vision, 12-Month Vision, Weekly Blueprint, Biggest Risk.
 
+## Living Goal Roadmaps (Per-Goal)
+
+Distinct from the profile-level Personal Road Map above: each **individual goal** in `profile_data.goals[]` can carry its own phased, adaptive roadmap. **No new tables** — everything is stored as fields on the goal object (jsonb).
+
+**Goal object fields** (added on demand, not pre-populated):
+- `id` — uuid (backfilled by `ensureGoalIds()`; see below)
+- `intake_questions` — `[{ question, key }]` (AI-generated, Haiku)
+- `intake_answers` — `[{ question, key, answer }]`
+- `intake_completed` — boolean
+- `roadmap` — `{ phases[], estimated_completion, date_confidence, date_note, summary, generated_at, version, adaptation_log[] }`
+- `last_adapted_at` — ISO timestamp
+- Phase: `{ name, description, duration_weeks, completion_signals[], status: 'upcoming'|'current'|'complete' }`
+- Adaptation log entry: `{ date, summary, trigger: 'weekly'|'checkin'|'manual' }`
+- `date_confidence` ∈ `high` (<6mo, clear metric) / `medium` (6–24mo) / `low` (multi-year / skill-dependent like belts); `date_note` is an honest one-sentence caveat.
+
+**Goal IDs**: goals historically had no stable id. `ensureGoalIds(profileData)` assigns `crypto.randomUUID()` to any goal missing one. Called in `GET /api/profiles/:id` (fire-and-forget PATCH if any added) and `PATCH /api/profiles/:id` (before write, so new goals always get an id).
+
+**Endpoints**:
+- `GET  /api/profiles/:id/goals/:goalId` — full goal object (roadmap, intake, etc.)
+- `GET  /api/profiles/:id/goals/:goalId/intake` — returns existing intake or generates 4–6 targeted questions (Haiku) on first call
+- `POST /api/profiles/:id/goals/:goalId/intake` — body `{ answers: [{ key, answer }] }`; rebuilds `intake_answers` with question text preserved, sets `intake_completed`
+- `POST /api/profiles/:id/goals/:goalId/roadmap` — requires completed intake; generates phased roadmap (Sonnet) from intake + profile + coaching brief + last 20 workouts
+- `POST /api/profiles/:id/goals/:goalId/checkin` — body `{ notes }`; adapts the roadmap (Haiku), increments `version`, appends an `adaptation_log` entry (trigger `checkin`)
+
+**Weekly auto-adaptation**: `maybeAdaptGoalRoadmaps(profileId)` (fire-and-forget on `POST /api/workouts`) re-adapts each goal whose roadmap is >7 days stale (or never adapted), using the last 10 workouts and no user notes (trigger `weekly`). Loads the profile once, adapts in place, writes `profile_data` back once.
+
+**Model routing** (`CALL_TYPE_MODEL`): `goal_intake_questions`→Haiku, `goal_roadmap_generate`→Sonnet, `goal_roadmap_adapt`→Haiku. The endpoints call Anthropic directly via `callAISystem(system, user, maxTokens, model)`; `parseAIJson()` extracts JSON from fenced/prose responses.
+
 ## Previous Days Navigation
 
 Left/right arrow navigation on Today tab to browse past days.
