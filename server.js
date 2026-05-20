@@ -4376,6 +4376,37 @@ function wearableMetrics(wd) {
     peak_hr: numOrNull(wd.peak_hr),
   };
 }
+// Fallback metrics parsed from a workout's free-text notes. Legacy Fitbit
+// auto-imports (/api/profiles/:id/fitbit-import) store HR / calories / duration
+// in the notes string ONLY — they never populate the wearable_data column — so
+// without this, HR shows N/A for every auto-imported session.
+function notesMetrics(notes) {
+  var out = { minutes: null, calories: null, avg_hr: null, peak_hr: null };
+  if (!notes) return out;
+  var s = String(notes);
+  var hr = s.match(/avg(?:erage)?\s*hr:?\s*(\d{2,3})\b/i);
+  if (hr) out.avg_hr = parseInt(hr[1], 10);
+  var cal = s.match(/(\d{1,5})\s*cal(?:orie)?s?\s*burned/i);
+  if (cal) out.calories = parseInt(cal[1], 10);
+  // Only trust a bare "N min" as duration when the note is a Fitbit import —
+  // free-text workout notes mention minutes for all sorts of reasons.
+  if (/fitbit/i.test(s)) {
+    var mins = s.match(/(\d{1,4})\s*min\b/i);
+    if (mins) out.minutes = parseInt(mins[1], 10);
+  }
+  return out;
+}
+// Combined per-workout metrics: wearable_data first, notes as fallback.
+function sessionMetrics(w) {
+  var wm = wearableMetrics(w.wearable_data);
+  var nm = notesMetrics(w.notes);
+  return {
+    minutes: wm.minutes != null ? wm.minutes : nm.minutes,
+    calories: wm.calories != null ? wm.calories : nm.calories,
+    avg_hr: wm.avg_hr != null ? wm.avg_hr : nm.avg_hr,
+    peak_hr: wm.peak_hr != null ? wm.peak_hr : nm.peak_hr,
+  };
+}
 
 // Longest run of consecutive calendar days inside a Set of YYYY-MM-DD strings.
 function longestStreakFromDates(dateSet) {
@@ -4433,10 +4464,26 @@ app.get("/api/analytics/activity-stats/:userId", async function(req, res) {
     // not exist if the wearables migration hasn't run — fall back gracefully.
     var wBase = SUPABASE_URL + "/rest/v1/workouts?profile_id=eq." + encodeURIComponent(pid) + "&order=date.asc&limit=20000";
     var wRange = allTime ? "" : "&date=gte." + prevStart + "&date=lte." + endDate;
-    var wr = await fetch(wBase + "&select=id,date,type,done,wearable_data" + wRange, { headers: sbHeaders() });
-    if (!wr.ok) wr = await fetch(wBase + "&select=id,date,type,done" + wRange, { headers: sbHeaders() });
+    var wr = await fetch(wBase + "&select=id,date,type,done,notes,wearable_data" + wRange, { headers: sbHeaders() });
+    if (!wr.ok) wr = await fetch(wBase + "&select=id,date,type,done,notes" + wRange, { headers: sbHeaders() });
     var workouts = await wr.json();
     if (!Array.isArray(workouts)) workouts = [];
+
+    // Diagnostic: how many sessions actually carry HR, and from where. Confirms
+    // wearable_data is being read (it is) vs. it simply being absent on most
+    // rows (HR only lands in wearable_data via the new wearable-adapter merge/
+    // import paths; legacy Fitbit auto-imports put it in notes — see notesMetrics).
+    var diag = { total: workouts.length, withWearableData: 0, withWearableHR: 0, withNotesHR: 0 };
+    workouts.forEach(function(w) {
+      var hasW = !!(w.wearable_data && typeof w.wearable_data === "object");
+      if (hasW) diag.withWearableData++;
+      if (hasW && numOrNull(w.wearable_data.avg_hr) != null) diag.withWearableHR++;
+      else if (notesMetrics(w.notes).avg_hr != null) diag.withNotesHR++;
+    });
+    console.log("[Analytics] activity-stats profile=" + pid +
+      " range=" + (allTime ? "all-time" : (startDate + ".." + endDate)) +
+      " workouts=" + diag.total + " withWearableData=" + diag.withWearableData +
+      " withWearableHR=" + diag.withWearableHR + " withNotesHR=" + diag.withNotesHR);
 
     // Exercise durations for the same window fill in manual sessions that have
     // no wearable_data. Summed per workout_id.
@@ -4460,7 +4507,7 @@ app.get("/api/analytics/activity-stats/:userId", async function(req, res) {
       workouts.forEach(function(w) {
         if (!inWindow(w.date, lo, hi)) return;
         var cat = inferWorkoutCategoryServer(w.type);
-        var wm = wearableMetrics(w.wearable_data);
+        var wm = sessionMetrics(w);
         var minutes = wm.minutes != null ? wm.minutes : (durByWorkout[w.id] || 0);
         if (!acts[cat]) acts[cat] = { type: cat, label: CATEGORY_PRETTY_SERVER[cat] || cat, total_sessions: 0, total_minutes: 0, _calSum: 0, _calCount: 0, _hr: [], peak_hr: null, sessions: [] };
         var a = acts[cat];
@@ -4550,38 +4597,55 @@ app.get("/api/analytics/exercise-stats/:userId/:exerciseName", async function(re
 
     var url = SUPABASE_URL + "/rest/v1/exercises?profile_id=eq." + encodeURIComponent(pid) +
       "&name=eq." + encodeURIComponent(name) +
-      "&select=date,sets,reps,weight_lbs,duration_minutes,distance_miles&order=date.asc&limit=10000";
+      "&select=date,sets,reps,weight_lbs,duration_minutes,distance_miles,raw_text,notes&order=date.asc&limit=10000";
     if (!allTime) url += "&date=gte." + startDate + "&date=lte." + endDate;
     var r = await fetch(url, { headers: sbHeaders() });
     var rows = await r.json();
     if (!Array.isArray(rows)) rows = [];
 
-    var byDay = {}, bestSingleSet = 0, maxWeightEver = null, est1rm = null, isWeightBased = false;
+    var byDay = {}, bestSingleSet = 0, maxWeightEver = null, est1rm = null;
+    var hasReps = false, hasDuration = false, bestHoldSec = 0;
     rows.forEach(function(ex) {
       var reps = numOrNull(ex.reps) || 0;
       var setsRaw = numOrNull(ex.sets);
-      var sets = setsRaw != null ? setsRaw : (reps ? 1 : 0); // a row with reps but no set count = at least 1 set
       var weight = numOrNull(ex.weight_lbs);
+      // Per-hold/per-set duration in seconds: duration_minutes column first, else
+      // parse it out of raw_text / notes (e.g. "Dead Hang 3x30s", "Plank 60 sec").
+      var durMin = numOrNull(ex.duration_minutes);
+      var holdSec = durMin != null ? Math.round(durMin * 60)
+        : (parseDurationToSeconds(ex.raw_text || "") || parseDurationToSeconds(ex.notes || ""));
+      var sets = setsRaw != null ? setsRaw : ((reps || holdSec) ? 1 : 0); // reps OR a hold = at least 1 set
       var d = ex.date;
-      if (!byDay[d]) byDay[d] = { date: d, highest_set: 0, total_reps: 0, total_sets: 0, max_weight: null };
+      if (!byDay[d]) byDay[d] = { date: d, highest_set: 0, total_reps: 0, total_sets: 0, max_weight: null, highest_hold: 0, total_seconds: 0 };
       var day = byDay[d];
       if (reps > day.highest_set) day.highest_set = reps;
       day.total_reps += sets * reps;
       day.total_sets += sets;
+      if (holdSec > day.highest_hold) day.highest_hold = holdSec;
+      day.total_seconds += sets * holdSec;
       if (weight != null && (day.max_weight == null || weight > day.max_weight)) day.max_weight = weight;
-      if (reps > bestSingleSet) bestSingleSet = reps;
+      if (reps > 0) { hasReps = true; if (reps > bestSingleSet) bestSingleSet = reps; }
+      if (holdSec > 0) { hasDuration = true; if (holdSec > bestHoldSec) bestHoldSec = holdSec; }
       if (weight != null) {
-        isWeightBased = true;
         if (maxWeightEver == null || weight > maxWeightEver) maxWeightEver = weight;
         if (reps > 0) { var e1 = weight * (1 + reps / 30); if (est1rm == null || e1 > est1rm) est1rm = e1; }
       }
     });
 
+    // Duration-based exercise = has hold/duration data and no reps (Dead Hang,
+    // Plank, etc.). The UI switches its axes/labels/stats to seconds for these.
+    var isDurationBased = hasDuration && !hasReps;
+    var isWeightBased = maxWeightEver != null;
+
     var daily = Object.keys(byDay).sort().map(function(k) { return byDay[k]; });
     var totalReps = daily.reduce(function(s, d) { return s + d.total_reps; }, 0);
     var totalSets = daily.reduce(function(s, d) { return s + d.total_sets; }, 0);
-    var bestVolDay = null;
-    daily.forEach(function(d) { if (!bestVolDay || d.total_reps > bestVolDay.total_reps) bestVolDay = { date: d.date, total_reps: d.total_reps }; });
+    var totalSeconds = daily.reduce(function(s, d) { return s + d.total_seconds; }, 0);
+    var bestVolDay = null, bestDurDay = null;
+    daily.forEach(function(d) {
+      if (!bestVolDay || d.total_reps > bestVolDay.total_reps) bestVolDay = { date: d.date, total_reps: d.total_reps };
+      if (!bestDurDay || d.total_seconds > bestDurDay.total_seconds) bestDurDay = { date: d.date, total_seconds: d.total_seconds };
+    });
 
     res.json({
       success: true,
@@ -4597,6 +4661,11 @@ app.get("/api/analytics/exercise-stats/:userId/:exerciseName", async function(re
         is_weight_based: isWeightBased,
         max_weight_ever: maxWeightEver,
         estimated_1rm: est1rm != null ? Math.round(est1rm) : null,
+        is_duration_based: isDurationBased,
+        total_seconds: totalSeconds,
+        avg_seconds_per_set: totalSets ? Math.round((totalSeconds / totalSets) * 10) / 10 : null,
+        best_hold_seconds: bestHoldSec || null,
+        best_duration_day: bestDurDay,
       },
     });
   } catch (e) {

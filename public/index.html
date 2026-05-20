@@ -4264,7 +4264,7 @@ function anRangePills(activeKey, fnName, idPrefix, startVal, endVal) {
 }
 
 // ─── ANALYTICS: Workout Dashboard (Profile tab) ─────────────────────────
-var analyticsState = { loaded: false, profileId: null, range: '30D', start: null, end: null, data: null, open: {} };
+var analyticsState = { loaded: false, profileId: null, range: '30D', start: null, end: null, data: null, open: {}, mode: 'overview', selectedActivity: null };
 
 function toggleAnalyticsCard() {
   var body = document.getElementById('analytics-body');
@@ -4334,9 +4334,10 @@ function anActivityRow(a) {
   var peak = a.peak_hr != null ? a.peak_hr : 'N/A';
   var cal = a.total_calories != null ? anFmtNum(a.total_calories) : 'N/A';
   var open = !!analyticsState.open[a.type];
+  var selected = analyticsState.selectedActivity === a.type;
   var rowsHtml = open ? anSessionTable(a.recent_sessions || []) : '';
   var caret = open ? '▾' : '▸';
-  return '<div style="border:1px solid var(--border);border-left:3px solid ' + color + ';border-radius:8px;margin-bottom:8px;overflow:hidden">' +
+  return '<div style="border:1px solid ' + (selected ? color : 'var(--border)') + ';border-left:3px solid ' + color + ';border-radius:8px;margin-bottom:8px;overflow:hidden;background:' + (selected ? color + '0d' : 'transparent') + '">' +
     '<div onclick="toggleActivityRow(\'' + a.type + '\')" style="padding:10px 12px;cursor:pointer">' +
       '<div style="display:flex;justify-content:space-between;align-items:center">' +
         '<span style="font-weight:600;color:var(--text)">' + caret + ' ' + escHtml(a.label) + ' <span style="color:var(--text-dim);font-weight:400;font-size:12px">(' + a.total_sessions + ')</span></span>' +
@@ -4364,16 +4365,36 @@ function anSessionTable(sessions) {
 }
 
 function toggleActivityRow(type) {
-  analyticsState.open[type] = !analyticsState.open[type];
+  // In By Activity mode, clicking a row both expands its session table AND
+  // promotes it to the headline dashboard. Clicking the selected row again
+  // collapses it and returns to the all-activities headline.
+  if (analyticsState.selectedActivity === type) {
+    analyticsState.selectedActivity = null;
+    analyticsState.open[type] = false;
+  } else {
+    analyticsState.selectedActivity = type;
+    analyticsState.open[type] = true;
+  }
   renderAnalytics(analyticsState.data);
 }
 
-function renderAnalytics(data) {
-  var content = document.getElementById('an1-content');
-  if (!content) return;
-  if (!data || !data.success) { content.innerHTML = '<p style="color:#e84545">Error loading analytics.</p>'; return; }
-  var o = data.overall || {};
-  var cmp = data.comparison || {};
+function setAnalyticsMode(mode) {
+  analyticsState.mode = mode;
+  if (mode === 'overview') analyticsState.selectedActivity = null;
+  renderAnalytics(analyticsState.data);
+}
+
+function clearActivityDrill() {
+  analyticsState.selectedActivity = null;
+  renderAnalytics(analyticsState.data);
+}
+
+function anModeBtn(key, label, active) {
+  var on = (key === active);
+  return '<button onclick="setAnalyticsMode(\'' + key + '\')" style="flex:1;padding:7px 0;border-radius:6px;border:1px solid ' + (on ? 'var(--accent)' : 'var(--border)') + ';background:' + (on ? 'var(--accent-10)' : 'transparent') + ';color:' + (on ? 'var(--accent)' : 'var(--text-muted)') + ';font-size:13px;font-weight:' + (on ? '600' : '400') + ';cursor:pointer;font-family:inherit">' + label + '</button>';
+}
+
+function anOverallGrid(o, cmp) {
   var html = '<div style="display:grid;grid-template-columns:repeat(3,1fr);gap:10px">';
   html += anStatBox('Total Min', anFmtNum(o.total_workout_minutes || 0), cmp.total_minutes, true);
   html += anStatBox('Sessions', o.total_sessions || 0, cmp.total_sessions, true);
@@ -4383,11 +4404,58 @@ function renderAnalytics(data) {
   html += anStatBox('Streak', (o.current_streak || 0) + 'd', null, false);
   html += anStatBox('Longest', (o.longest_streak || 0) + 'd', null, false);
   html += '</div>';
-  var acts = data.activities || [];
-  html += '<div style="margin-top:16px"><p class="clabel">by activity</p>';
-  if (!acts.length) html += '<p style="font-size:13px;color:var(--text-dim);font-style:italic">No workouts logged in this period.</p>';
-  else acts.forEach(function(a) { html += anActivityRow(a); });
+  return html;
+}
+
+function anFindActivity(acts, type) {
+  for (var i = 0; i < acts.length; i++) if (acts[i].type === type) return acts[i];
+  return null;
+}
+
+// Headline dashboard scoped to one activity type (shown when drilled in).
+function anActivityHeadline(a) {
+  var color = (typeof CAT_COLORS !== 'undefined' && CAT_COLORS[a.type]) ? CAT_COLORS[a.type] : '#888';
+  var html = '<div style="display:flex;align-items:center;gap:8px;margin-bottom:10px"><span style="width:10px;height:10px;border-radius:50%;background:' + color + ';display:inline-block"></span><span class="oswald" style="font-size:22px;font-weight:700;color:var(--text-bright)">' + escHtml(a.label) + '</span></div>';
+  html += '<div style="display:grid;grid-template-columns:repeat(3,1fr);gap:10px">';
+  html += anStatBox('Total Min', anFmtNum(a.total_minutes || 0), a.trend_minutes, true);
+  html += anStatBox('Sessions', a.total_sessions || 0, null, false);
+  html += anStatBox('Calories', a.total_calories != null ? anFmtNum(a.total_calories) : 'N/A', null, false);
+  html += '</div><div style="display:grid;grid-template-columns:repeat(2,1fr);gap:10px;margin-top:10px">';
+  html += anStatBox('Avg HR', a.avg_hr != null ? a.avg_hr + ' bpm' : 'N/A', a.trend_avg_hr, false);
+  html += anStatBox('Peak HR', a.peak_hr != null ? a.peak_hr + ' bpm' : 'N/A', null, false);
   html += '</div>';
+  return html;
+}
+
+function renderAnalytics(data) {
+  var content = document.getElementById('an1-content');
+  if (!content) return;
+  if (!data || !data.success) { content.innerHTML = '<p style="color:#e84545">Error loading analytics.</p>'; return; }
+  var o = data.overall || {};
+  var cmp = data.comparison || {};
+  var acts = data.activities || [];
+  // Drop a stale selection if that activity isn't in the current data set.
+  if (analyticsState.selectedActivity && !anFindActivity(acts, analyticsState.selectedActivity)) analyticsState.selectedActivity = null;
+  var mode = analyticsState.mode || 'overview';
+
+  var html = '<div style="display:flex;gap:6px;margin-bottom:14px">' +
+    anModeBtn('overview', 'Overview', mode) + anModeBtn('activity', 'By Activity', mode) + '</div>';
+
+  if (mode === 'overview') {
+    html += anOverallGrid(o, cmp);
+  } else {
+    var sel = analyticsState.selectedActivity ? anFindActivity(acts, analyticsState.selectedActivity) : null;
+    if (sel) {
+      html += '<div style="margin-bottom:10px"><button onclick="clearActivityDrill()" style="background:transparent;border:none;color:var(--accent);cursor:pointer;font-size:13px;padding:0;font-family:inherit">&larr; All Activities</button></div>';
+      html += anActivityHeadline(sel);
+    } else {
+      html += anOverallGrid(o, cmp);
+    }
+    html += '<div style="margin-top:16px"><p class="clabel">by activity</p>';
+    if (!acts.length) html += '<p style="font-size:13px;color:var(--text-dim);font-style:italic">No workouts logged in this period.</p>';
+    else acts.forEach(function(a) { html += anActivityRow(a); });
+    html += '</div>';
+  }
   content.innerHTML = html;
 }
 
@@ -4425,6 +4493,13 @@ function loadExAnalytics() {
     .catch(function() { if (content) content.innerHTML = '<p style="color:#e84545">Error loading analytics.</p>'; });
 }
 
+function anFmtSec(sec) {
+  sec = Math.round(Number(sec) || 0);
+  if (sec < 60) return sec + 's';
+  var m = Math.floor(sec / 60), s = sec % 60;
+  return m + ':' + String(s).padStart(2, '0');
+}
+
 function renderExAnalytics(data) {
   var content = document.getElementById('an2-content');
   if (!content) return;
@@ -4432,16 +4507,29 @@ function renderExAnalytics(data) {
   var daily = data.daily_data || [];
   var agg = data.aggregate || {};
   if (!daily.length) { content.innerHTML = '<p style="font-size:13px;color:var(--text-dim);font-style:italic">No data logged in this period.</p>'; return; }
+  // Time-based moves (Dead Hang, Plank, …) have duration but no reps → chart
+  // and label everything in seconds instead of reps.
+  var dur = !!agg.is_duration_based;
+  var bestLabel = dur ? 'best hold (seconds/day)' : 'best set (reps/day)';
+  var volLabel = dur ? 'total duration (seconds/day)' : 'total volume (reps/day)';
   var html = '<div style="display:flex;flex-wrap:wrap;gap:12px">' +
-    '<div style="flex:1 1 280px;min-width:240px"><p class="clabel" style="font-size:10px">best set (reps/day)</p><canvas id="an2-bestset" style="max-height:190px"></canvas></div>' +
-    '<div style="flex:1 1 280px;min-width:240px"><p class="clabel" style="font-size:10px">total volume (reps/day)</p><canvas id="an2-volume" style="max-height:190px"></canvas></div>' +
+    '<div style="flex:1 1 280px;min-width:240px"><p class="clabel" style="font-size:10px">' + bestLabel + '</p><canvas id="an2-bestset" style="max-height:190px"></canvas></div>' +
+    '<div style="flex:1 1 280px;min-width:240px"><p class="clabel" style="font-size:10px">' + volLabel + '</p><canvas id="an2-volume" style="max-height:190px"></canvas></div>' +
     '</div>';
   html += '<div style="display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-top:14px">';
-  html += statCard('Total Reps', anFmtNum(agg.total_reps || 0), 'period');
-  html += statCard('Avg/Set', agg.avg_reps_per_set != null ? agg.avg_reps_per_set : '—', 'reps');
-  html += statCard('Best Set', agg.best_single_set != null ? agg.best_single_set : '—', 'reps');
-  var bvd = agg.best_volume_day;
-  html += statCard('Best Day', bvd ? anFmtNum(bvd.total_reps) : '—', bvd ? bvd.date.slice(5) : '');
+  if (dur) {
+    var bdd = agg.best_duration_day;
+    html += statCard('Total Time', anFmtSec(agg.total_seconds || 0), 'period');
+    html += statCard('Avg Hold', agg.avg_seconds_per_set != null ? anFmtSec(agg.avg_seconds_per_set) : '—', 'per set');
+    html += statCard('Best Hold', agg.best_hold_seconds != null ? anFmtSec(agg.best_hold_seconds) : '—', 'single');
+    html += statCard('Best Day', bdd ? anFmtSec(bdd.total_seconds) : '—', bdd ? bdd.date.slice(5) : '');
+  } else {
+    var bvd = agg.best_volume_day;
+    html += statCard('Total Reps', anFmtNum(agg.total_reps || 0), 'period');
+    html += statCard('Avg/Set', agg.avg_reps_per_set != null ? agg.avg_reps_per_set : '—', 'reps');
+    html += statCard('Best Set', agg.best_single_set != null ? agg.best_single_set : '—', 'reps');
+    html += statCard('Best Day', bvd ? anFmtNum(bvd.total_reps) : '—', bvd ? bvd.date.slice(5) : '');
+  }
   html += '</div>';
   if (agg.is_weight_based) {
     html += '<div style="display:grid;grid-template-columns:repeat(2,1fr);gap:10px;margin-top:10px">';
@@ -4450,20 +4538,21 @@ function renderExAnalytics(data) {
     html += '</div>';
   }
   content.innerHTML = html;
-  setTimeout(function() { renderExAnalyticsCharts(daily); }, 50);
+  setTimeout(function() { renderExAnalyticsCharts(daily, dur); }, 50);
 }
 
-function renderExAnalyticsCharts(daily) {
+function renderExAnalyticsCharts(daily, dur) {
   var labels = daily.map(function(d) { return d.date.slice(5); });
-  var bestSet = daily.map(function(d) { return d.highest_set || 0; });
-  var volume = daily.map(function(d) { return d.total_reps || 0; });
+  var best = daily.map(function(d) { return (dur ? d.highest_hold : d.highest_set) || 0; });
+  var volume = daily.map(function(d) { return (dur ? d.total_seconds : d.total_reps) || 0; });
   var bc = document.getElementById('an2-bestset');
   var vc = document.getElementById('an2-volume');
   if (libCharts.exBest) libCharts.exBest.destroy();
   if (libCharts.exVolume) libCharts.exVolume.destroy();
-  var axisOpts = { x: { ticks: { color: '#555', font: { size: 9 } }, grid: { display: false } }, y: { beginAtZero: true, ticks: { color: '#555', font: { size: 9 } }, grid: { color: '#1a1c22' } } };
-  if (bc) libCharts.exBest = new Chart(bc, { type: 'line', data: { labels: labels, datasets: [{ data: bestSet, borderColor: '#22c97a', backgroundColor: '#22c97a22', fill: true, tension: 0.3, pointRadius: 3, pointBackgroundColor: '#22c97a' }] }, options: { responsive: true, plugins: { legend: { display: false } }, scales: axisOpts } });
-  if (vc) libCharts.exVolume = new Chart(vc, { type: 'bar', data: { labels: labels, datasets: [{ data: volume, backgroundColor: '#4488bbcc', borderColor: '#4488bb', borderWidth: 1 }] }, options: { responsive: true, plugins: { legend: { display: false } }, scales: axisOpts } });
+  var yTitle = dur ? 'seconds' : 'reps';
+  function axis(title) { return { x: { ticks: { color: '#555', font: { size: 9 } }, grid: { display: false } }, y: { beginAtZero: true, ticks: { color: '#555', font: { size: 9 } }, grid: { color: '#1a1c22' }, title: { display: true, text: title, color: '#555', font: { size: 9 } } } }; }
+  if (bc) libCharts.exBest = new Chart(bc, { type: 'line', data: { labels: labels, datasets: [{ data: best, borderColor: '#22c97a', backgroundColor: '#22c97a22', fill: true, tension: 0.3, pointRadius: 3, pointBackgroundColor: '#22c97a' }] }, options: { responsive: true, plugins: { legend: { display: false } }, scales: axis(yTitle) } });
+  if (vc) libCharts.exVolume = new Chart(vc, { type: 'bar', data: { labels: labels, datasets: [{ data: volume, backgroundColor: '#4488bbcc', borderColor: '#4488bb', borderWidth: 1 }] }, options: { responsive: true, plugins: { legend: { display: false } }, scales: axis(yTitle) } });
 }
 
 // ─── MICRO-GOALS / ACTIVE CHALLENGES ────────────────────────────────────
@@ -7696,6 +7785,23 @@ var LIB_COLORS = { 'Strength':'#4488bb','Cardio':'#f5a623','Martial Arts':'#e845
 var CAT_COLORS = { strength:'#4488bb', cardio:'#f5a623', martial_arts:'#e84545', sports:'#22c97a', mind_body:'#9966cc', rehab:'#f07020', mixed:'#22c97a', rest:'#555', other:'#888', combat:'#e84545', core:'#ff6b35', mobility:'#9966cc' };
 var libMainFilter = 'all';
 var libSubFilter = 'all';
+var LIB_SORTS = ['most_logged', 'az', 'za', 'recent'];
+var LIB_SORT_LABEL = { most_logged: 'Most Logged', az: 'A→Z', za: 'Z→A', recent: 'Most Recent' };
+var libSort = (function() { try { var s = localStorage.getItem('ac_lib_sort'); return LIB_SORTS.indexOf(s) >= 0 ? s : 'most_logged'; } catch (e) { return 'most_logged'; } })();
+function cycleLibSort() {
+  var i = LIB_SORTS.indexOf(libSort);
+  libSort = LIB_SORTS[(i + 1) % LIB_SORTS.length];
+  try { localStorage.setItem('ac_lib_sort', libSort); } catch (e) {}
+  renderLibExercises();
+}
+function applyLibSort(arr) {
+  var a = arr.slice();
+  if (libSort === 'az') a.sort(function(x, y) { return x.name.localeCompare(y.name); });
+  else if (libSort === 'za') a.sort(function(x, y) { return y.name.localeCompare(x.name); });
+  else if (libSort === 'recent') a.sort(function(x, y) { return String(y.last_date || '').localeCompare(String(x.last_date || '')); });
+  else a.sort(function(x, y) { return (y.count || 0) - (x.count || 0); }); // most_logged (default)
+  return a;
+}
 var SUBCATEGORY_PILLS = {
   strength: ['all','upper body','lower body','core','full body','calisthenics','olympic lifting','powerlifting'],
   cardio: ['all','machine','outdoor','class','hiit','jump rope','general'],
@@ -8592,6 +8698,7 @@ function renderLibExercises() {
     html += '</div>';
   }
   html += '</div>';
+  html += '<div style="display:flex;justify-content:flex-end;margin-bottom:8px"><button onclick="cycleLibSort()" title="Change sort order" style="background:transparent;border:1px solid var(--border-accent);color:var(--text-muted);padding:5px 12px;border-radius:6px;cursor:pointer;font-size:12px;font-family:IBM Plex Mono,monospace">&#8645; ' + LIB_SORT_LABEL[libSort] + '</button></div>';
   html += '<div id="lib-exercise-list"></div>';
   el.innerHTML = html;
   filterLibExercises();
@@ -8619,6 +8726,7 @@ function filterLibExercises() {
     if (search && ex.name.toLowerCase().indexOf(search) < 0) return false;
     return true;
   });
+  filtered = applyLibSort(filtered);
 
   var list = document.getElementById('lib-exercise-list');
   if (!list) return;
