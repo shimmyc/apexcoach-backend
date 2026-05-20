@@ -136,6 +136,20 @@ async function fetchActivityDetail(accessToken, providerActivityId) {
   var normalized = normalize(act);
   if (!normalized) return null;
 
+  // TCX peak-HR enrichment. The activity JSON rarely carries maxHeartRate, and
+  // intraday HR needs a Personal-type app — but Server-type apps can export the
+  // activity's TCX, which carries MaximumHeartRateBpm. Use it to fill peak_hr
+  // when the JSON didn't. Non-fatal: any failure (403/404/429/parse) leaves
+  // peak_hr untouched and we fall through to the intraday attempt below.
+  if (normalized.peak_hr == null) {
+    try {
+      var tcxPeak = await fetchActivityTcxPeakHr(accessToken, providerActivityId);
+      if (tcxPeak != null) normalized.peak_hr = tcxPeak;
+    } catch (e) {
+      // ignore — intraday enrichment below may still recover peak from samples
+    }
+  }
+
   // Intraday HR enrichment. The /heart/date/{d}/1d/1min/time/.../json
   // endpoint requires the "Personal" app type AND the heartrate scope on
   // the token (which the legacy OAuth flow grants). Network/permission
@@ -201,6 +215,38 @@ async function fetchIntradayHr(accessToken, normalized) {
     out.push({ t: t, bpm: row.value });
   }
   return out;
+}
+
+// Peak HR from the activity's TCX export.
+//
+//   GET /1/user/-/activities/{logId}.tcx  →  TrainingCenterDatabase XML
+//
+// TCX is available to Server-type Fitbit apps, which (unlike Personal-type
+// apps) are denied the intraday HR endpoint — so this recovers peak HR where
+// intraday is unavailable. The TCX carries one
+//   <MaximumHeartRateBpm><Value>N</Value></MaximumHeartRateBpm>
+// per <Lap>; the activity peak is the max across laps. We regex-extract that
+// one field rather than pull in an XML-parser dependency. Returns the rounded
+// max bpm, or null if the export is missing / non-OK / unparseable. Fully
+// non-fatal — callers treat null as "no TCX peak available".
+async function fetchActivityTcxPeakHr(accessToken, providerActivityId) {
+  var res = await fetch(FITBIT_BASE + "/1/user/-/activities/" + providerActivityId + ".tcx", {
+    headers: { "Authorization": "Bearer " + accessToken },
+  });
+  // 403 on Personal-type apps, 404 for logs with no track (e.g. manual logs),
+  // 429 on rate limit — all just mean "no TCX peak", not an error to surface.
+  if (!res.ok) return null;
+  var xml = await res.text();
+  if (!xml) return null;
+  // Tolerant of attributes (xsi:type=…), whitespace/newlines, and optional
+  // namespace prefixes on the elements.
+  var re = /<(?:\w+:)?MaximumHeartRateBpm[^>]*>[\s\S]*?<(?:\w+:)?Value[^>]*>\s*([\d.]+)/gi;
+  var hi = null, m;
+  while ((m = re.exec(xml)) !== null) {
+    var v = parseFloat(m[1]);
+    if (isFinite(v) && (hi == null || v > hi)) hi = v;
+  }
+  return hi != null ? Math.round(hi) : null;
 }
 
 async function refreshToken(refreshTokenValue) {
