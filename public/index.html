@@ -4325,13 +4325,25 @@ function anStatBox(label, value, trend, colorByDelta) {
     '<div class="oswald" style="font-size:20px;font-weight:700;color:var(--text)">' + value + '</div>' + delta + '</div>';
 }
 
+// Peak HR display. Measured → "172 bpm"; zone-estimated floor → "185+ bpm (est.)";
+// none → "N/A". `est` is the server's peak_hr_est flag — a lower-bound estimate
+// from the highest HR zone the session entered (not a measured value). withBpm
+// adds the unit: stat boxes use it; the compact session-table column omits it,
+// like the AVG HR column.
+function anFmtPeak(peak, est, withBpm) {
+  if (peak == null) return 'N/A';
+  var s = peak + (est ? '+' : '') + (withBpm ? ' bpm' : '');
+  if (est) s += ' <span style="font-size:9px;color:var(--text-muted);font-style:italic">(est.)</span>';
+  return s;
+}
+
 function anActivityRow(a) {
   var color = (typeof CAT_COLORS !== 'undefined' && CAT_COLORS[a.type]) ? CAT_COLORS[a.type] : '#888';
   var tm = a.trend_minutes || {};
   var arrow = tm.direction === 'up' ? '▲' : tm.direction === 'down' ? '▼' : '→';
   var arrowCol = tm.direction === 'up' ? '#22c97a' : tm.direction === 'down' ? '#e84545' : 'var(--text-dim)';
   var hr = a.avg_hr != null ? a.avg_hr + ' bpm' : 'N/A';
-  var peak = a.peak_hr != null ? a.peak_hr : 'N/A';
+  var peak = anFmtPeak(a.peak_hr, a.peak_hr_est, false);
   var cal = a.total_calories != null ? anFmtNum(a.total_calories) : 'N/A';
   var open = !!analyticsState.open[a.type];
   var selected = analyticsState.selectedActivity === a.type;
@@ -4361,7 +4373,7 @@ function anSessionTable(sessions) {
       '<span>' + (s.date || '') + '</span>' +
       '<span>' + (s.duration != null ? s.duration : '—') + '</span>' +
       '<span>' + (s.avg_hr != null ? s.avg_hr : 'N/A') + '</span>' +
-      '<span>' + (s.peak_hr != null ? s.peak_hr : 'N/A') + '</span>' +
+      '<span>' + anFmtPeak(s.peak_hr, s.peak_hr_est, false) + '</span>' +
       '<span>' + (s.calories != null ? anFmtNum(s.calories) : 'N/A') + '</span></div>';
   }).join('');
   return '<div style="border-top:1px solid var(--border)">' + head + body + '</div>';
@@ -4408,7 +4420,7 @@ function anOverallGrid(o, cmp) {
   html += anStatBox('Avg Min/Sess', o.avg_min_per_session != null ? o.avg_min_per_session : '—', null, false);
   html += anStatBox('Avg Cal/Sess', o.avg_calories_per_session != null ? anFmtNum(o.avg_calories_per_session) : 'N/A', null, false);
   html += anStatBox('Avg HR', o.avg_hr != null ? o.avg_hr + ' bpm' : 'N/A', cmp.avg_hr, false);
-  html += anStatBox('Peak HR', o.peak_hr != null ? o.peak_hr + ' bpm' : 'N/A', null, false);
+  html += anStatBox('Peak HR', anFmtPeak(o.peak_hr, o.peak_hr_est, true), null, false);
   html += '</div><div style="display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-top:10px">';
   html += anStatBox('Top Day', o.most_active_day_of_week ? o.most_active_day_of_week.slice(0, 3) : '—', null, false);
   html += anStatBox('Streak', (o.current_streak || 0) + 'd', null, false);
@@ -4432,7 +4444,7 @@ function anActivityHeadline(a) {
   html += anStatBox('Calories', a.total_calories != null ? anFmtNum(a.total_calories) : 'N/A', null, false);
   html += '</div><div style="display:grid;grid-template-columns:repeat(2,1fr);gap:10px;margin-top:10px">';
   html += anStatBox('Avg HR', a.avg_hr != null ? a.avg_hr + ' bpm' : 'N/A', a.trend_avg_hr, false);
-  html += anStatBox('Peak HR', a.peak_hr != null ? a.peak_hr + ' bpm' : 'N/A', null, false);
+  html += anStatBox('Peak HR', anFmtPeak(a.peak_hr, a.peak_hr_est, true), null, false);
   html += '</div>';
   return html;
 }

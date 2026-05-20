@@ -4608,11 +4608,19 @@ function numOrNull(v) {
   return isFinite(n) ? n : null;
 }
 
+// Standard Fitbit HR-zone floors (bpm) — the lowest heart rate that counts as
+// having ENTERED each zone. Used to estimate a peak-HR floor when a session has
+// no measured/sampled peak but did record minutes in a zone. (The 4 standard
+// thresholds are 108/132/163/185; 132 is the moderate/vigorous internal split
+// and isn't a zone floor we estimate from.)
+var FITBIT_ZONE_FLOOR = { peak: 185, vigorous: 163, moderate: 108 };
+
 // Pull HR / calories / duration out of a workout's wearable_data JSONB blob.
 // Returns nulls when the column/field is absent so everything degrades to N/A
-// when no wearable is connected.
+// when no wearable is connected. peak_hr_est=true marks a zone-derived estimate
+// (a lower-bound "floor") rather than a measured/sampled peak.
 function wearableMetrics(wd) {
-  if (!wd || typeof wd !== "object") return { minutes: null, calories: null, avg_hr: null, peak_hr: null };
+  if (!wd || typeof wd !== "object") return { minutes: null, calories: null, avg_hr: null, peak_hr: null, peak_hr_est: false };
   // peak_hr is stored only when intraday enrichment ran at import time. The
   // Fitbit LIST endpoint (the backfill's only source) carries averageHeartRate
   // but NOT maxHeartRate, so backfilled rows get avg_hr while peak_hr stays
@@ -4629,11 +4637,21 @@ function wearableMetrics(wd) {
     }
     peak = hi;
   }
+  // Last resort: estimate a peak-HR floor from the highest zone the session
+  // entered. zones = { fatBurn (moderate), cardio (vigorous), peak } minutes.
+  var peakEst = false;
+  if (peak == null && wd.zones && typeof wd.zones === "object") {
+    var z = wd.zones;
+    if (numOrNull(z.peak) > 0)         { peak = FITBIT_ZONE_FLOOR.peak;     peakEst = true; }
+    else if (numOrNull(z.cardio) > 0)  { peak = FITBIT_ZONE_FLOOR.vigorous; peakEst = true; }
+    else if (numOrNull(z.fatBurn) > 0) { peak = FITBIT_ZONE_FLOOR.moderate; peakEst = true; }
+  }
   return {
     minutes: numOrNull(wd.duration_minutes),
     calories: numOrNull(wd.calories),
     avg_hr: numOrNull(wd.avg_hr),
     peak_hr: peak,
+    peak_hr_est: peakEst,
   };
 }
 // Fallback metrics parsed from a workout's free-text notes. Legacy Fitbit
@@ -4641,7 +4659,7 @@ function wearableMetrics(wd) {
 // in the notes string ONLY — they never populate the wearable_data column — so
 // without this, HR shows N/A for every auto-imported session.
 function notesMetrics(notes) {
-  var out = { minutes: null, calories: null, avg_hr: null, peak_hr: null };
+  var out = { minutes: null, calories: null, avg_hr: null, peak_hr: null, peak_hr_est: false };
   if (!notes) return out;
   var s = String(notes);
   var hr = s.match(/avg(?:erage)?\s*hr:?\s*(\d{2,3})\b/i);
@@ -4665,6 +4683,7 @@ function sessionMetrics(w) {
     calories: wm.calories != null ? wm.calories : nm.calories,
     avg_hr: wm.avg_hr != null ? wm.avg_hr : nm.avg_hr,
     peak_hr: wm.peak_hr != null ? wm.peak_hr : nm.peak_hr,
+    peak_hr_est: wm.peak_hr != null ? wm.peak_hr_est : false,
   };
 }
 
@@ -4767,26 +4786,32 @@ app.get("/api/analytics/activity-stats/:userId", async function(req, res) {
 
     function aggregate(lo, hi) {
       var acts = {}, doneDates = new Set(), dayOfWeek = [0, 0, 0, 0, 0, 0, 0];
-      var totalMin = 0, totalCal = 0, calCount = 0, totalSessions = 0, hrAll = [], peakHrAll = null;
+      var totalMin = 0, totalCal = 0, calCount = 0, totalSessions = 0, hrAll = [], peakHrAll = null, peakHrAllEst = false;
       workouts.forEach(function(w) {
         if (!inWindow(w.date, lo, hi)) return;
         var cat = inferWorkoutCategoryServer(w.type);
         var wm = sessionMetrics(w);
         var minutes = wm.minutes != null ? wm.minutes : (durByWorkout[w.id] || 0);
-        if (!acts[cat]) acts[cat] = { type: cat, label: CATEGORY_PRETTY_SERVER[cat] || cat, total_sessions: 0, total_minutes: 0, _calSum: 0, _calCount: 0, _hr: [], peak_hr: null, sessions: [] };
+        if (!acts[cat]) acts[cat] = { type: cat, label: CATEGORY_PRETTY_SERVER[cat] || cat, total_sessions: 0, total_minutes: 0, _calSum: 0, _calCount: 0, _hr: [], peak_hr: null, peak_hr_est: false, sessions: [] };
         var a = acts[cat];
         a.total_sessions++;
         a.total_minutes += minutes;
         if (wm.calories != null) { a._calSum += wm.calories; a._calCount++; }
         if (wm.avg_hr != null) { a._hr.push(wm.avg_hr); hrAll.push(wm.avg_hr); }
-        if (wm.peak_hr != null) { a.peak_hr = a.peak_hr == null ? wm.peak_hr : Math.max(a.peak_hr, wm.peak_hr); peakHrAll = peakHrAll == null ? wm.peak_hr : Math.max(peakHrAll, wm.peak_hr); }
-        a.sessions.push({ date: w.date, duration: minutes || null, avg_hr: wm.avg_hr, peak_hr: wm.peak_hr, calories: wm.calories });
+        // Track the max peak per activity + overall, carrying its estimated
+        // flag. On a tie a measured value beats an estimate.
+        if (wm.peak_hr != null) {
+          var pk = wm.peak_hr, pkEst = wm.peak_hr_est;
+          if (a.peak_hr == null || pk > a.peak_hr || (pk === a.peak_hr && a.peak_hr_est && !pkEst)) { a.peak_hr = pk; a.peak_hr_est = pkEst; }
+          if (peakHrAll == null || pk > peakHrAll || (pk === peakHrAll && peakHrAllEst && !pkEst)) { peakHrAll = pk; peakHrAllEst = pkEst; }
+        }
+        a.sessions.push({ date: w.date, duration: minutes || null, avg_hr: wm.avg_hr, peak_hr: wm.peak_hr, peak_hr_est: wm.peak_hr_est, calories: wm.calories });
         totalMin += minutes;
         if (wm.calories != null) { totalCal += wm.calories; calCount++; }
         totalSessions++;
         if (w.done) { doneDates.add(w.date); dayOfWeek[new Date(w.date + "T12:00:00").getDay()]++; }
       });
-      return { acts: acts, doneDates: doneDates, dayOfWeek: dayOfWeek, totalMin: totalMin, totalCal: totalCal, calCount: calCount, totalSessions: totalSessions, hrAll: hrAll, peakHrAll: peakHrAll };
+      return { acts: acts, doneDates: doneDates, dayOfWeek: dayOfWeek, totalMin: totalMin, totalCal: totalCal, calCount: calCount, totalSessions: totalSessions, hrAll: hrAll, peakHrAll: peakHrAll, peakHrAllEst: peakHrAllEst };
     }
     function mean(arr) { return arr.length ? Math.round(arr.reduce(function(x, y) { return x + y; }, 0) / arr.length) : null; }
 
@@ -4808,6 +4833,7 @@ app.get("/api/analytics/activity-stats/:userId", async function(req, res) {
         avg_min_per_session: a.total_sessions ? Math.round(a.total_minutes / a.total_sessions) : null,
         avg_hr: avgHr,
         peak_hr: a.peak_hr,
+        peak_hr_est: a.peak_hr_est,
         total_calories: a._calCount ? Math.round(a._calSum) : null,
         avg_calories_per_session: a._calCount ? Math.round(a._calSum / a._calCount) : null,
         trend_minutes: trendOf(a.total_minutes, prevA ? prevA.total_minutes : null),
@@ -4825,6 +4851,7 @@ app.get("/api/analytics/activity-stats/:userId", async function(req, res) {
       avg_calories_per_session: cur.calCount ? Math.round(cur.totalCal / cur.calCount) : null,
       avg_hr: mean(cur.hrAll),
       peak_hr: cur.peakHrAll,
+      peak_hr_est: cur.peakHrAllEst,
       most_active_day_of_week: mostActiveDay,
       current_streak: currentStreakFromDates(cur.doneDates),
       longest_streak: longestStreakFromDates(cur.doneDates),
