@@ -949,6 +949,18 @@ input[type=range]{width:100%;accent-color:var(--accent)}
   </div>
 </div>
 
+<!-- WEARABLE MATCH MODAL (auto-import on save) -->
+<div class="overlay" id="wm-modal" style="display:none" onclick="closeWearableMatchModal()">
+  <div class="modal" onclick="event.stopPropagation()" style="max-width:400px">
+    <p class="oswald" style="font-size:20px;color:var(--accent);margin-bottom:10px">Fitbit Activity Found</p>
+    <p id="wm-body" style="font-size:15px;color:var(--text-sec);line-height:1.6;margin-bottom:18px"></p>
+    <div style="display:flex;gap:8px;justify-content:flex-end">
+      <button class="btnSec" onclick="wmReject()">No, Keep Separate</button>
+      <button class="btnPri" onclick="wmLink()">Yes, Link It</button>
+    </div>
+  </div>
+</div>
+
 <!-- BUILD PROFILE (full-page paginated) -->
 <div id="profile-builder-screen" class="ob-overlay" style="display:none">
   <!-- filled dynamically by profile builder JS -->
@@ -7504,6 +7516,14 @@ function saveWorkoutToSupabase(entry) {
         renderLogArea();
         console.log('[ApexCoach] Workout ID assigned:', wkId);
       }
+      // Auto-import on save: the server may have found a same-day Fitbit
+      // activity that looks like this workout. Prompt the user to link it
+      // (never silent). Delayed so it appears AFTER the log modal closes and
+      // the new card renders, rather than interrupting the save.
+      if (wk && wk.wearable_match && wkId) {
+        var _wMatch = wk.wearable_match;
+        setTimeout(function() { showWearableMatchModal(wkId, _wMatch); }, 500);
+      }
       if (entry.notes && entry.notes.trim() && currentProfileId) {
       console.log('[ApexCoach] Auto-extracting exercises from workout notes...');
       fetch('/api/profiles/' + currentProfileId + '/extract-exercises', {
@@ -7534,6 +7554,95 @@ function saveWorkoutToSupabase(entry) {
     }
   })
   .catch(function(e) { console.error('Save error:', e); });
+}
+
+// ── AUTO-IMPORT ON SAVE: WEARABLE MATCH PROMPT ─────────────────────────────
+// When POST /api/workouts returns a `wearable_match`, ask the user whether the
+// same-day Fitbit activity is the workout they just logged. Always prompt —
+// the server never auto-attaches. "Yes" merges; "No" records a rejection
+// (keeping the sessions separate). Uses the same merge/reject contract as the
+// wearable-sync review UI (wsCardAction).
+var wmCurrent = null;
+
+function wmFormatTime(iso) {
+  try {
+    var d = new Date(iso);
+    if (isNaN(d.getTime())) return '';
+    return d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+  } catch (e) { return ''; }
+}
+
+function showWearableMatchModal(workoutId, match) {
+  if (!match) return;
+  wmCurrent = { workout_id: workoutId, match: match };
+  var bits = [];
+  if (match.duration_minutes != null) bits.push(match.duration_minutes + ' min');
+  if (match.avg_hr != null) bits.push(match.avg_hr + ' avg HR');
+  if (match.calories != null) bits.push(match.calories + ' cal');
+  var detail = bits.length ? ' (' + bits.join(', ') + ')' : '';
+  var actType = match.activity_type || 'workout';
+  var html = 'Fitbit recorded a <strong style="color:var(--text)">' + wsEsc(actType)
+    + '</strong> session on this day' + wsEsc(detail) + '. Is this the same workout?';
+  if (match.start_time) {
+    var t = wmFormatTime(match.start_time);
+    if (t) html += '<br><span style="font-size:13px;color:var(--text-muted)">Started at ' + wsEsc(t) + '</span>';
+  }
+  document.getElementById('wm-body').innerHTML = html;
+  document.getElementById('wm-modal').style.display = 'flex';
+}
+
+function closeWearableMatchModal() {
+  document.getElementById('wm-modal').style.display = 'none';
+  wmCurrent = null;
+}
+
+function wmLink() {
+  if (!wmCurrent) { closeWearableMatchModal(); return; }
+  var cur = wmCurrent;
+  closeWearableMatchModal();
+  fetch('/api/wearables/merge/' + currentProfileId, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      workout_id: cur.workout_id,
+      provider: cur.match.provider,
+      wearable_activity_id: cur.match.provider_activity_id,
+      list_activity: cur.match,
+    }),
+  })
+  .then(function(r) { return r.json(); })
+  .then(function(resp) {
+    if (resp && resp.success) {
+      showToast('Fitbit data linked ✓');
+      // Refresh the workout cards so the wearable badge + enriched stats appear.
+      if (typeof loadWorkouts === 'function') {
+        loadWorkouts().then(function() {
+          if (typeof renderLog === 'function') renderLog();
+          if (typeof renderLogArea === 'function') renderLogArea();
+          if (typeof renderWeek === 'function') renderWeek();
+        });
+      }
+    } else {
+      console.warn('[AutoImport] merge failed:', resp && resp.error);
+    }
+  })
+  .catch(function(e) { console.warn('[AutoImport] merge error:', e && e.message); });
+}
+
+function wmReject() {
+  if (!wmCurrent) { closeWearableMatchModal(); return; }
+  var cur = wmCurrent;
+  closeWearableMatchModal();
+  // Records the rejection so this pairing won't resurface; the existing
+  // endpoint also preserves the Fitbit session as its own standalone workout.
+  fetch('/api/wearables/reject/' + currentProfileId, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      workout_id: cur.workout_id,
+      provider: cur.match.provider,
+      wearable_activity_id: cur.match.provider_activity_id,
+      list_activity: cur.match,
+    }),
+  }).catch(function(e) { console.warn('[AutoImport] reject error:', e && e.message); });
 }
 
 function updateWorkoutInSupabase(id, entry) {

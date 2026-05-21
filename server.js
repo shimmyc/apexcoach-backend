@@ -1474,6 +1474,99 @@ async function getWorkoutProfileId(wid) {
   }
 }
 
+// ── Auto-import on save ─────────────────────────────────────────────────────
+// After a manual workout is saved, opportunistically check whether the user's
+// Fitbit recorded an activity on the SAME date that looks like the same
+// session, and return the single best candidate so the client can PROMPT the
+// user to link it (never silently auto-attached). Fully additive: any failure
+// returns null and the save proceeds normally. The POST handler caps this with
+// a 4s Promise.race so it can never slow the save down.
+async function findWearableMatchOnSave(profileId, workout) {
+  if (!profileId || !workout || !workout.date) return null;
+  var provider = "fitbit";
+
+  // 1. Token — same retrieval path as every other Fitbit endpoint. Skip
+  //    silently if the user has never connected (RECONNECT_REQUIRED / no token).
+  var token;
+  try {
+    token = await getValidWearableToken(profileId, provider);
+  } catch (e) {
+    return null;
+  }
+  if (!token) return null;
+
+  var adapter = wearables.getProviderAdapter(provider);
+  var date = workout.date;
+
+  // 2. Fetch the day's activities (start_date = end_date = the workout's date).
+  var activities = await adapter.fetchActivities(token, date, date);
+  if (!Array.isArray(activities) || !activities.length) return null;
+
+  // 3a. Drop activities already matched to one of this profile's workouts
+  //     (deduped by the namespaced "provider:id" stored in wearable_activity_id).
+  var syncedSet = {};
+  try {
+    var syncedRes = await fetch(
+      SUPABASE_URL + "/rest/v1/workouts?profile_id=eq." + profileId
+        + "&date=eq." + date
+        + "&wearable_activity_id=not.is.null&select=wearable_activity_id",
+      { headers: sbHeaders() }
+    );
+    var syncedRows = await syncedRes.json();
+    (Array.isArray(syncedRows) ? syncedRows : []).forEach(function(w) {
+      if (w.wearable_activity_id) syncedSet[w.wearable_activity_id] = true;
+    });
+  } catch (e) { /* non-fatal — worst case we re-suggest an already-linked one */ }
+
+  // 3b. Drop activities the user already rejected for THIS workout.
+  var rejectedSet = {};
+  try {
+    var rejRes = await fetch(
+      SUPABASE_URL + "/rest/v1/rejected_wearable_matches?profile_id=eq." + profileId
+        + "&workout_id=eq." + workout.id
+        + "&select=wearable_activity_id",
+      { headers: sbHeaders() }
+    );
+    var rejRows = await rejRes.json();
+    (Array.isArray(rejRows) ? rejRows : []).forEach(function(r) {
+      if (r.wearable_activity_id) rejectedSet[r.wearable_activity_id] = true;
+    });
+  } catch (e) { /* non-fatal */ }
+
+  // 4. Score each remaining activity against the just-saved workout using the
+  //    existing matcher; keep candidates scoring >= 40 (the existing threshold).
+  var candidates = [];
+  for (var i = 0; i < activities.length; i++) {
+    var act = activities[i];
+    var nsId = wearables.namespacedId(provider, act.provider_activity_id);
+    if (syncedSet[nsId] || rejectedSet[nsId]) continue;
+    var match = wearables.matchWearableToManual(act, [workout]);
+    if (match && match.score >= 40) {
+      candidates.push({ activity: act, score: match.score });
+    }
+  }
+  if (!candidates.length) return null;
+
+  // 5. Best candidate only.
+  candidates.sort(function(a, b) { return (b.score || 0) - (a.score || 0); });
+  var top = candidates[0];
+  var a = top.activity;
+
+  // 6. Trim to the wearable_match response shape the client prompt consumes.
+  //    (avg_hr is always present as a key, so the merge endpoint's mergeListHr
+  //    treats this object as already-normalized and backfills HR from it.)
+  return {
+    provider: provider,
+    provider_activity_id: a.provider_activity_id,
+    activity_type: a.activity_type,
+    duration_minutes: a.duration_minutes,
+    avg_hr: a.avg_hr,
+    calories: a.calories,
+    score: top.score,
+    start_time: a.start_time || null,
+  };
+}
+
 app.post("/api/workouts", async function(req, res) {
   try {
     var body = req.body || {};
@@ -1509,6 +1602,23 @@ app.post("/api/workouts", async function(req, res) {
     if (body.profile_id) clearProgressBriefCache(body.profile_id);
     // Fire-and-forget weekly goal-roadmap maintenance (adapts roadmaps >7 days stale).
     if (body.profile_id) maybeAdaptGoalRoadmaps(body.profile_id).catch(function(e) { console.error("Goal roadmap adaptation error:", e); });
+
+    // Auto-import on save: opportunistically look for a same-day Fitbit activity
+    // that matches this workout and surface it under `wearable_match` so the
+    // client can prompt to link it. Awaited so it rides the response, but capped
+    // at 4s and fully non-fatal — it must never delay or break the save.
+    var savedRow = Array.isArray(data) ? data[0] : data;
+    if (body.profile_id && savedRow && savedRow.id && savedRow.date) {
+      try {
+        var wearableMatch = await Promise.race([
+          findWearableMatchOnSave(body.profile_id, savedRow),
+          new Promise(function(resolve) { setTimeout(function() { resolve(null); }, 4000); }),
+        ]);
+        if (wearableMatch) savedRow.wearable_match = wearableMatch;
+      } catch (e) {
+        console.warn("[AutoImport] wearable match lookup failed:", e && e.message);
+      }
+    }
     res.json({ success: true, workout: data });
   } catch (e) {
     res.status(500).json({ success: false, error: e.message });

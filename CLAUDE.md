@@ -777,6 +777,22 @@ All wearable workout-matching flows route through a provider abstraction layer i
 
 **Schema**: see `migrations/2026-05-19_wearables.sql`.
 
+## Auto-Import on Workout Save
+
+When a user saves a workout (`POST /api/workouts`), the server immediately checks whether Fitbit recorded a same-day activity that looks like the same session and, if so, returns the single best candidate so the client can **prompt** the user to link it. It never silently auto-attaches — the user always confirms. This is distinct from the daily-sync "Fitbit Workout Auto-Import" (pending-imports queue) and the explicit `sync-backlog` review UI; it's the save-time, one-candidate, prompt-on-the-spot path, and it routes through the same provider-agnostic merge/reject endpoints.
+
+**Server** (`findWearableMatchOnSave(profileId, workout)` in `server.js`, called from the `POST /api/workouts` handler after the insert):
+1. Resolves the Fitbit token via `getValidWearableToken()`; skips silently if the user hasn't connected.
+2. Calls the Fitbit adapter's `fetchActivities(token, date, date)` for the workout's date (start = end = that date).
+3. Dedupes: drops activities whose namespaced `provider:id` is already on a workout for that date (`wearable_activity_id`), and any in `rejected_wearable_matches` for this workout.
+4. Scores each remaining activity against the new workout with `wearables.matchWearableToManual(act, [workout])`; keeps candidates scoring ≥ 40.
+5. Sorts by score desc, takes the **top 1**, and trims it to a `wearable_match` object: `{ provider, provider_activity_id, activity_type, duration_minutes, avg_hr, calories, score, start_time }`.
+6. Attaches `wearable_match` onto the returned workout row. Omitted entirely (not null) when there's no candidate.
+
+The whole lookup is **awaited but capped at 4s** via `Promise.race` (timeout → resolve null), and is fully non-fatal — any error is logged and the save response returns normally. It can never delay or break the save.
+
+**Client** (`public/index.html`): `saveWorkoutToSupabase()` checks the POST response for `wk.wearable_match`; if present it shows `#wm-modal` after a 500ms delay (so it follows the log-modal close + card render rather than interrupting the save). The modal ("Fitbit Activity Found") summarizes the activity (type, duration, avg HR, calories, and start time when available). **Yes, Link It** → `POST /api/wearables/merge/:userId` with `{ workout_id, provider, wearable_activity_id: provider_activity_id, list_activity: <wearable_match> }`, then a "Fitbit data linked ✓" toast and `loadWorkouts()` → re-render to surface the wearable badge + enriched stats. **No, Keep Separate** → `POST /api/wearables/reject/:userId` (same payload shape), which records the rejection and keeps the Fitbit session as its own standalone workout, then closes the modal silently. The merge/reject calls reuse the exact contract of the wearable-sync review UI (`wsCardAction`) — note the endpoints take `wearable_activity_id`, not `activity_id`.
+
 ## Migrations
 
 One-time data fixes that should be run in the Supabase SQL editor.
