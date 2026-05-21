@@ -4635,7 +4635,7 @@ async function performMerge(profileId, workoutId, provider, namespacedActivityId
   return { workout: Array.isArray(rows) ? rows[0] : rows, wearable_activity_id: ids.ns };
 }
 
-async function performReject(profileId, workoutId, provider, namespacedActivityId, listActivity) {
+async function performReject(profileId, workoutId, provider, namespacedActivityId, listActivity, createStandalone) {
   var ids = splitNamespacedId(provider, namespacedActivityId);
   await fetch(SUPABASE_URL + "/rest/v1/rejected_wearable_matches", {
     method: "POST",
@@ -4647,8 +4647,14 @@ async function performReject(profileId, workoutId, provider, namespacedActivityI
       wearable_activity_id: ids.ns,
     }),
   });
-  // Reject still creates a standalone — the user said "these are
-  // separate sessions", not "throw away the wearable data".
+  // By default reject also preserves the wearable session as its own standalone
+  // workout — the user said "these are separate sessions", not "throw away the
+  // wearable data". The auto-import-on-save flow passes create_standalone:false
+  // to skip that: there it only wants the rejection recorded so the pairing
+  // won't resurface, without adding a second workout to the day.
+  if (createStandalone === false) {
+    return { workout: null, wearable_activity_id: ids.ns };
+  }
   var created = await createWearableWorkout(profileId, provider, ids.ns, listActivity);
   return { workout: created, wearable_activity_id: ids.ns };
 }
@@ -4684,7 +4690,9 @@ app.post("/api/wearables/reject/:userId", async function(req, res) {
     if (!b.workout_id || !provider || !b.wearable_activity_id) {
       return res.status(400).json({ success: false, error: "workout_id, provider, wearable_activity_id required" });
     }
-    var out = await performReject(req.params.userId, b.workout_id, provider, b.wearable_activity_id, b.list_activity);
+    // create_standalone defaults to true (existing behavior); only an explicit
+    // false skips the standalone-workout creation (auto-import-on-save flow).
+    var out = await performReject(req.params.userId, b.workout_id, provider, b.wearable_activity_id, b.list_activity, b.create_standalone);
     res.json(Object.assign({ success: true }, out));
   } catch (e) {
     sendWearableError(res, e, provider);

@@ -7632,8 +7632,10 @@ function wmReject() {
   if (!wmCurrent) { closeWearableMatchModal(); return; }
   var cur = wmCurrent;
   closeWearableMatchModal();
-  // Records the rejection so this pairing won't resurface; the existing
-  // endpoint also preserves the Fitbit session as its own standalone workout.
+  // Records the rejection so this pairing won't resurface. create_standalone:
+  // false skips the standalone-workout creation the endpoint does by default —
+  // here "keep separate" means leave the manual workout alone, not add a second
+  // Fitbit-sourced workout to the day.
   fetch('/api/wearables/reject/' + currentProfileId, {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
@@ -7641,6 +7643,7 @@ function wmReject() {
       provider: cur.match.provider,
       wearable_activity_id: cur.match.provider_activity_id,
       list_activity: cur.match,
+      create_standalone: false,
     }),
   }).catch(function(e) { console.warn('[AutoImport] reject error:', e && e.message); });
 }
