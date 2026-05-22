@@ -120,6 +120,10 @@ Calculated from workoutLog entries where done=true. Counts backwards from today 
 
 - GET /api/profiles/:id/daily — Fitbit data for profile
 
+- GET /api/profiles/:id/unmatched-fitbit — last-7-day Fitbit activities not yet linked to a workout, rejected, or dismissed; each carries its same-day match candidates. Powers the Today-tab "Unmatched Fitbit Activities" card. Never 500s — returns `{activities:[]}` (no token) or `{activities:[], error:"fitbit_unavailable"}` on a Fitbit failure.
+
+- POST /api/profiles/:id/dismiss-fitbit-activity — body `{provider_activity_id}`; appends the namespaced `fitbit:<id>` to `profiles.dismissed_fitbit_activities` (jsonb) so the activity never resurfaces in the card. Returns `{dismissed:true}`.
+
 - GET /api/workouts?profile_id= — workout history
 
 - POST /api/workouts — save workout
@@ -725,15 +729,20 @@ Saved routines (`workout_templates` table). User flow:
 
 Endpoints: `GET/POST /api/profiles/:id/templates`, `PATCH/DELETE /api/templates/:id`.
 
-## Fitbit Workout Auto-Import
+## Unmatched Fitbit Activities (Today-tab card)
 
-The daily Fitbit sync also calls `/1/user/-/activities/list.json?afterDate=TODAY&sort=asc&limit=10`. Activities that started today and don't already match an existing workout (deduped by activityId in the queue OR by matching `type` ILIKE the activity name) are pushed onto `profiles.fitbit_pending_imports` (jsonb array). Each entry: `{ activityId, name, durationMinutes, calories, steps, startTime, heartRateZones, avgHeartRate }`.
+Replaces the legacy `fitbit_pending_imports` card. A card per unmatched Fitbit activity from the last 7 days renders between the body-metrics card and the check-in card (`#unmatched-fitbit-card`). Routes through the provider-agnostic wearable adapter — the actions reuse the `/api/wearables/merge` and `/api/wearables/import` endpoints.
 
-Today tab renders a card per pending import between the body-metrics card and the check-in card with **Import to Log** / **Dismiss** buttons:
-- Import: creates a `workouts` row with auto-generated notes ("Auto-imported from Fitbit: X min, Y cal, avg HR Z bpm"), `done=true`, type mapped via `mapFitbitActivityType()` (Run/Walk/Hike/Bike/Swim/Elliptical → Cardio, Weights/Strength Training → Strength, Yoga/Pilates/Meditation → Mind & Body, Martial Arts/MMA/Boxing → Martial Arts, else verbatim). The notes also embed a `[source: fitbit_activity, activityId=...]` tag so future syncs dedupe against it. Removes from pending. Invalidates the progress brief cache.
-- Dismiss: removes from pending without creating a workout.
+**Server** — `GET /api/profiles/:id/unmatched-fitbit` calls `adapter.fetchActivities(token, 7-days-ago, today)`, then drops any activity that is (a) already linked to a workout (`workouts.wearable_activity_id`), (b) in `rejected_wearable_matches` for ANY workout of this profile (filtered by `profile_id` only, not `workout_id` — a rejection here is global), or (c) in `profiles.dismissed_fitbit_activities`. For each surviving activity it attaches `same_day_workouts` — this profile's completed, not-yet-linked workouts on that date. Returns `{activities:[…]}`; degrades to `{activities:[]}` (no token) or `{activities:[], error:"fitbit_unavailable"}` rather than 500ing.
 
-Endpoints: `GET /api/profiles/:id/fitbit-pending-imports`, `POST /api/profiles/:id/fitbit-import` (body `{activityId, action: "import"|"dismiss"}`).
+**Client** (`public/index.html`) — `loadUnmatchedFitbit()` fetches once per day, caching in `localStorage.ac_unmatched_fitbit` (`{date, activities}`); a same-day cache renders instantly without a fetch. Called from `bootApp()` (cached render) and from the Fitbit-sync success path (`after Fitbit data loads`); an `_ufInFlight` guard prevents a double-fetch. `invalidateUnmatchedFitbit()` clears the cache and refetches; it fires after a workout is **saved** (`saveWorkoutToSupabase`), **merged**, or **rejected** (the `wm-modal` link/keep-separate paths). Per-card actions:
+- **Match to [workout.type]** (shown per same-day workout, max 2) → `POST /api/wearables/merge/:id` with `{workout_id, provider:"fitbit", wearable_activity_id:"fitbit:<id>", list_activity}`; toast "Fitbit data linked to [type] ✓", reload workouts.
+- **Import as Workout / Import as New** → `POST /api/wearables/import/:id` with `{provider, wearable_activity_id, list_activity}`; toast "Imported as workout ✓", reload workouts.
+- **Dismiss** → `POST /api/profiles/:id/dismiss-fitbit-activity` `{provider_activity_id}`; removes the card silently (no toast). 
+
+All three remove the card locally first (`ufRemoveActivity` splices the array + updates the cache + re-renders); the section disappears when empty. A subtle skeleton (`renderUnmatchedFitbitSkeleton`, `@keyframes pulse`) shows while fetching; an empty/errored fetch renders nothing. Past-day navigation hides the card (`renderDayView`).
+
+**Legacy queue retained server-side, unused by client**: the daily Fitbit sync still populates `profiles.fitbit_pending_imports` via `diffAndQueueFitbitImports()`, and `GET /api/profiles/:id/fitbit-pending-imports` + `POST /api/profiles/:id/fitbit-import` still exist — but the client no longer calls them (the `loadFitbitPendingImports` / `renderFitbitImportPrompts` / `confirmFitbitImport` / `dismissFitbitImport` functions were removed). The save-time auto-import `wm-modal` prompt (see Auto-Import on Workout Save) is unaffected and still useful for immediate post-save matching.
 
 ## Past-Day Navigation (Fixed)
 
@@ -798,6 +807,14 @@ The whole lookup is **awaited but capped at 4s** via `Promise.race` (timeout →
 ## Migrations
 
 One-time data fixes that should be run in the Supabase SQL editor.
+
+### Dismissed Fitbit activities (2026-05-22)
+Backs the Today-tab "Unmatched Fitbit Activities" card's Dismiss action. A dismissal is global (not tied to one workout), but `rejected_wearable_matches.workout_id` is `NOT NULL`, so dismissals are stored as an array of namespaced `fitbit:<activityId>` strings on the profile instead. See `migrations/2026-05-22_dismissed_fitbit_activities.sql`.
+
+```sql
+ALTER TABLE profiles
+  ADD COLUMN IF NOT EXISTS dismissed_fitbit_activities jsonb DEFAULT '[]'::jsonb;
+```
 
 ### Gym access fields (2026-05-18)
 Two top-level columns on `profiles` populated from the Profile Builder "Lifestyle & Schedule" section. Injected into the daily-rec system prompt (after `AVAILABLE EQUIPMENT`), the `POST /api/profiles/:id/goal-progress` distance + general AI prompts, and the roadmap prompt. PATCH `/api/profiles/:id` accepts both via `PROFILE_BODY_FIELDS`. `gym_type` is cleared to null whenever `gym_access` is set to anything other than `'yes'`.

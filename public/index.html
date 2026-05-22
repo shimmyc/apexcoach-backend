@@ -408,8 +408,8 @@ input[type=range]{width:100%;accent-color:var(--accent)}
     <div id="streak-card" style="display:none"></div>
     <div id="readiness-card" class="card" style="display:none"></div>
     <div id="body-metrics-card" class="card" style="display:none"></div>
-    <!-- Fitbit auto-import prompts (Agent 4). One card per pending activity. -->
-    <div id="fitbit-import-prompts"></div>
+    <!-- Unmatched Fitbit activities (last 7 days). One card per activity. -->
+    <div id="unmatched-fitbit-card"></div>
     <div id="feeling-checkin-card" class="card" style="display:none;background:#0d1018;border-color:#22c97a22">
       <div id="feeling-checkin-full">
         <p class="clabel">how are you feeling today?</p>
@@ -1069,7 +1069,8 @@ var bodyMetricsLog = [];     // last 90 days, ordered date desc
 var bodyMetricsLatest = null; // most recent row with weight
 var bodyMetricsByDate = {};  // YYYY-MM-DD -> row, for past-day lookups
 var workoutTemplates = [];    // saved workout templates (Agent 3)
-var fitbitPendingImports = []; // queued Fitbit-tracked activities (Agent 4)
+var unmatchedFitbitActivities = []; // unmatched Fitbit activities (last 7 days)
+var _ufInFlight = false;            // in-flight guard so boot + sync don't double-fetch
 var coachingBrief = '';
 var historicalBrief = '';
 var briefUpdatedAt = null;
@@ -1797,7 +1798,8 @@ function bootApp() {
     syncFitbit();
   });
   if (typeof loadTemplates === 'function') loadTemplates();
-  if (typeof loadFitbitPendingImports === 'function') loadFitbitPendingImports();
+  // Renders instantly from today's cache if present; otherwise fetches.
+  if (typeof loadUnmatchedFitbit === 'function') loadUnmatchedFitbit();
 
   // Load coaching briefs and road map
   if (currentProfileId) {
@@ -1853,8 +1855,8 @@ function renderDayView() {
     document.getElementById('feeling-checkin-card').style.display = (document.getElementById('readiness-card').style.display === 'block' || document.getElementById('checkin-card').style.display === 'block') ? 'block' : '';
     document.getElementById('ai-card').style.display = '';
     document.getElementById('progress-card').style.display = '';
-    // Restore today-only Fitbit-import + recent-workouts cards (past-day mode hides them).
-    var imp = document.getElementById('fitbit-import-prompts');
+    // Restore today-only unmatched-Fitbit + recent-workouts cards (past-day mode hides them).
+    var imp = document.getElementById('unmatched-fitbit-card');
     if (imp) imp.style.display = '';
     var rec = document.getElementById('recent-workouts-card');
     if (rec) rec.style.display = '';
@@ -1875,8 +1877,8 @@ function renderDayView() {
   document.getElementById('progress-card').style.display = 'none';
   var bodyCard = document.getElementById('body-metrics-card');
   if (bodyCard) bodyCard.style.display = 'none';
-  // Hide today-only Fitbit-import prompts and recent-workouts card too.
-  var importsCard = document.getElementById('fitbit-import-prompts');
+  // Hide today-only unmatched-Fitbit card and recent-workouts card too.
+  var importsCard = document.getElementById('unmatched-fitbit-card');
   if (importsCard) importsCard.style.display = 'none';
   var recentCard = document.getElementById('recent-workouts-card');
   if (recentCard) recentCard.style.display = 'none';
@@ -2939,9 +2941,9 @@ function syncFitbit(forceRefresh) {
       loadDailySteps();
       // Server may have also upserted today's weight from Fitbit body API.
       loadBodyMetrics();
-      // Server diffed today's Fitbit-tracked activities into the
-      // import queue — surface any new prompts.
-      if (typeof loadFitbitPendingImports === 'function') loadFitbitPendingImports();
+      // Fitbit data just loaded — surface any unmatched activities from the
+      // last 7 days (cached once per day; guarded against the boot-time call).
+      if (typeof loadUnmatchedFitbit === 'function') loadUnmatchedFitbit();
     })
     .catch(function(e) {
       // Auth/token errors → show manual check-in with Fitbit connect banner
@@ -7404,94 +7406,229 @@ function deleteTemplate(templateId) {
     });
 }
 
-// ── FITBIT WORKOUT AUTO-IMPORT ────────────────────────────────────────────
-function loadFitbitPendingImports() {
-  if (!currentProfileId) return Promise.resolve();
-  return fetch('/api/profiles/' + currentProfileId + '/fitbit-pending-imports')
-    .then(function(r) { return r.json(); })
-    .then(function(data) {
-      if (!data || !data.success) return;
-      fitbitPendingImports = Array.isArray(data.pending) ? data.pending : [];
-      renderFitbitImportPrompts();
-    })
-    .catch(function(e) { console.error('[FitbitImport] load error:', e); });
+// ── UNMATCHED FITBIT ACTIVITIES (Today tab) ───────────────────────────────
+// Shows Fitbit activities from the last 7 days that aren't yet linked to a
+// workout and haven't been dismissed. Each card can be matched to a same-day
+// manual workout, imported as a new workout, or dismissed forever. Replaces the
+// legacy fitbit_pending_imports card. Cached in localStorage once per day
+// (ac_unmatched_fitbit); invalidated whenever a workout is saved/merged/rejected.
+
+// Date label: "Today" / "Yesterday" / "Mon May 19".
+function ufFormatDate(dateStr) {
+  if (dateStr === ds(0)) return 'Today';
+  if (dateStr === ds(-1)) return 'Yesterday';
+  var d = new Date(dateStr + 'T12:00:00');
+  if (isNaN(d.getTime())) return dateStr;
+  var wd = d.toLocaleDateString('en-US', { weekday: 'short' });
+  var mo = d.toLocaleDateString('en-US', { month: 'short' });
+  return wd + ' ' + mo + ' ' + d.getDate();
 }
 
-function renderFitbitImportPrompts() {
-  var el = document.getElementById('fitbit-import-prompts');
+function ufFormatTime(iso) {
+  if (!iso) return '';
+  var d = new Date(iso);
+  if (isNaN(d.getTime())) return '';
+  return d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+}
+
+function loadUnmatchedFitbit(force) {
+  if (!currentProfileId) return Promise.resolve();
+  var today = ds(0);
+  // Same-day cache → render instantly, no fetch (unless forced).
+  if (!force) {
+    try {
+      var cached = JSON.parse(localStorage.getItem('ac_unmatched_fitbit') || 'null');
+      if (cached && cached.date === today && Array.isArray(cached.activities)) {
+        unmatchedFitbitActivities = cached.activities;
+        renderUnmatchedFitbit();
+        return Promise.resolve();
+      }
+    } catch (e) { /* ignore bad cache */ }
+  }
+  if (_ufInFlight) return Promise.resolve();
+  _ufInFlight = true;
+  renderUnmatchedFitbitSkeleton();
+  return fetch('/api/profiles/' + currentProfileId + '/unmatched-fitbit')
+    .then(function(r) { return r.json(); })
+    .then(function(data) {
+      var acts = (data && Array.isArray(data.activities)) ? data.activities : [];
+      unmatchedFitbitActivities = acts;
+      try { localStorage.setItem('ac_unmatched_fitbit', JSON.stringify({ date: today, activities: acts })); } catch (e) {}
+      renderUnmatchedFitbit();
+    })
+    .catch(function(e) {
+      console.warn('[UnmatchedFitbit] load error:', e && e.message);
+      unmatchedFitbitActivities = [];
+      renderUnmatchedFitbit(); // empty → renders nothing (no error state shown)
+    })
+    .then(function() { _ufInFlight = false; });
+}
+
+// Clear the day-cache and refetch — call after a workout is saved, merged, or
+// rejected so newly-linked/created activities drop off the card.
+function invalidateUnmatchedFitbit() {
+  try { localStorage.removeItem('ac_unmatched_fitbit'); } catch (e) {}
+  loadUnmatchedFitbit(true);
+}
+
+function renderUnmatchedFitbitSkeleton() {
+  var el = document.getElementById('unmatched-fitbit-card');
   if (!el) return;
-  if (!fitbitPendingImports.length) { el.innerHTML = ''; return; }
+  el.innerHTML = '<div class="card" style="background:var(--accent-08);border-color:var(--accent-33);margin-bottom:12px">'
+    + '<div style="height:11px;width:150px;background:var(--accent-33);border-radius:4px;margin-bottom:10px;animation:pulse 1.4s ease-in-out infinite"></div>'
+    + '<div style="height:16px;width:55%;background:var(--border);border-radius:4px;margin-bottom:8px;animation:pulse 1.4s ease-in-out infinite"></div>'
+    + '<div style="height:11px;width:38%;background:var(--border);border-radius:4px;animation:pulse 1.4s ease-in-out infinite"></div>'
+    + '</div>';
+}
+
+function ufFindActivity(provider_activity_id) {
+  for (var i = 0; i < unmatchedFitbitActivities.length; i++) {
+    if (String(unmatchedFitbitActivities[i].provider_activity_id) === String(provider_activity_id)) {
+      return unmatchedFitbitActivities[i];
+    }
+  }
+  return null;
+}
+
+// Remove a card locally (after match/import/dismiss) and keep the day-cache in
+// sync, then re-render. If everything is gone the section disappears.
+function ufRemoveActivity(provider_activity_id) {
+  unmatchedFitbitActivities = unmatchedFitbitActivities.filter(function(a) {
+    return String(a.provider_activity_id) !== String(provider_activity_id);
+  });
+  try { localStorage.setItem('ac_unmatched_fitbit', JSON.stringify({ date: ds(0), activities: unmatchedFitbitActivities })); } catch (e) {}
+  renderUnmatchedFitbit();
+}
+
+function renderUnmatchedFitbit() {
+  var el = document.getElementById('unmatched-fitbit-card');
+  if (!el) return;
+  if (!unmatchedFitbitActivities.length) { el.innerHTML = ''; return; }
   var h = '';
-  for (var i = 0; i < fitbitPendingImports.length; i++) {
-    var a = fitbitPendingImports[i];
-    var aid = String(a.activityId);
+  for (var i = 0; i < unmatchedFitbitActivities.length; i++) {
+    var a = unmatchedFitbitActivities[i];
+    // Fitbit logIds are numeric, but escape single quotes defensively since the
+    // id is interpolated into an inline onclick handler.
+    var pid = String(a.provider_activity_id).replace(/'/g, "\\'");
     var bits = [];
-    if (a.durationMinutes != null) bits.push(a.durationMinutes + ' min');
+    if (a.duration_minutes != null) bits.push(a.duration_minutes + ' min');
+    if (a.avg_hr != null) bits.push(a.avg_hr + ' avg HR');
     if (a.calories != null) bits.push(a.calories + ' cal');
-    if (a.steps != null && a.steps > 0) bits.push(a.steps.toLocaleString() + ' steps');
     var meta = bits.join(' &middot; ');
+    var timeStr = ufFormatTime(a.start_time);
+
     h += '<div class="card" style="background:var(--accent-08);border-color:var(--accent-33);margin-bottom:12px">';
-    h += '<div style="display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap">';
-    h += '<div style="flex:1;min-width:200px">';
-    h += '<p class="mono" style="font-size:10px;color:var(--accent);letter-spacing:2px;margin-bottom:4px">&#127939; FITBIT TRACKED</p>';
-    h += '<div style="font-size:16px;font-weight:600;color:var(--text-bright)">' + escHtml(a.name || 'Activity') + '</div>';
-    h += '<div class="mono" style="font-size:11px;color:var(--text-muted);margin-top:2px">' + meta + '</div>';
-    h += '</div>';
-    h += '<div style="display:flex;gap:6px">';
-    h += '<button onclick="confirmFitbitImport(\'' + aid + '\', this)" style="background:var(--accent);border:1px solid var(--accent);color:#0a0a0a;padding:8px 14px;border-radius:6px;cursor:pointer;font-size:12px;font-weight:600">Import to Log</button>';
-    h += '<button onclick="dismissFitbitImport(\'' + aid + '\', this)" style="background:transparent;border:1px solid var(--border);color:var(--text-muted);padding:8px 14px;border-radius:6px;cursor:pointer;font-size:12px">Dismiss</button>';
-    h += '</div>';
+    h += '<p class="mono" style="font-size:10px;color:var(--accent);letter-spacing:2px;margin-bottom:4px">&#127939; FITBIT ACTIVITY &mdash; ' + escHtml(ufFormatDate(a.date)) + '</p>';
+    h += '<div style="font-size:16px;font-weight:600;color:var(--text-bright)">' + escHtml(a.activity_type || 'Activity') + '</div>';
+    if (meta) h += '<div class="mono" style="font-size:11px;color:var(--text-muted);margin-top:2px">' + meta + '</div>';
+    if (timeStr) h += '<div class="mono" style="font-size:11px;color:var(--text-dim);margin-top:2px">Started at ' + escHtml(timeStr) + '</div>';
+    h += '<div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:10px">';
+
+    var sdw = Array.isArray(a.same_day_workouts) ? a.same_day_workouts : [];
+    if (sdw.length) {
+      for (var j = 0; j < sdw.length && j < 2; j++) {
+        var w = sdw[j];
+        // Only numeric ids cross the onclick boundary; the (potentially unsafe)
+        // type string is escHtml'd for the label and looked up at click time.
+        h += '<button onclick="ufMatch(\'' + pid + '\', ' + w.id + ')" style="background:var(--accent);border:1px solid var(--accent);color:#0a0a0a;padding:8px 14px;border-radius:6px;cursor:pointer;font-size:12px;font-weight:600">Match to ' + escHtml(w.type || 'workout') + '</button>';
+      }
+      h += '<button onclick="ufImport(\'' + pid + '\')" style="background:transparent;border:1px solid var(--accent-33);color:var(--accent);padding:8px 14px;border-radius:6px;cursor:pointer;font-size:12px">Import as New</button>';
+      h += '<button onclick="ufDismiss(\'' + pid + '\')" style="background:transparent;border:1px solid var(--border);color:var(--text-muted);padding:8px 14px;border-radius:6px;cursor:pointer;font-size:12px">Dismiss</button>';
+    } else {
+      h += '<button onclick="ufImport(\'' + pid + '\')" style="background:var(--accent);border:1px solid var(--accent);color:#0a0a0a;padding:8px 14px;border-radius:6px;cursor:pointer;font-size:12px;font-weight:600">Import as Workout</button>';
+      h += '<button onclick="ufDismiss(\'' + pid + '\')" style="background:transparent;border:1px solid var(--border);color:var(--text-muted);padding:8px 14px;border-radius:6px;cursor:pointer;font-size:12px">Dismiss</button>';
+    }
     h += '</div></div>';
   }
   el.innerHTML = h;
 }
 
-function confirmFitbitImport(activityId, btn) {
-  if (!currentProfileId) return;
-  if (btn) { btn.disabled = true; btn.textContent = 'Importing…'; }
-  fetch('/api/profiles/' + currentProfileId + '/fitbit-import', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ activityId: activityId, action: 'import' })
-  }).then(function(r) { return r.json(); }).then(function(data) {
-    if (!data.success) { alert('Import failed: ' + (data.error || 'unknown')); if (btn) btn.disabled = false; return; }
-    fitbitPendingImports = data.pending || [];
-    renderFitbitImportPrompts();
-    // Pull the new workout into the local log so the History tab + Recent
-    // Workouts card show it without a full reload.
-    if (data.workout) {
-      workoutLog.unshift(data.workout);
-      localStorage.setItem('ac_log', JSON.stringify(workoutLog));
-      renderLog();
-      renderLogArea();
-      if (typeof renderRecentAndTemplates === 'function') renderRecentAndTemplates();
-      if (typeof calculateStreak === 'function') calculateStreak();
-      if (typeof renderStreak === 'function') renderStreak();
-    }
-    // Invalidate AI rec cache since the workout history just changed.
-    if (typeof regenerateAIForContextChange === 'function') regenerateAIForContextChange('fitbit_import');
-    else if (readiness && fitData && typeof fetchAI === 'function') fetchAI();
-  }).catch(function(e) {
-    if (btn) btn.disabled = false;
-    alert('Import failed: ' + e.message);
+function ufRefreshWorkoutViews() {
+  if (typeof loadWorkouts !== 'function') return;
+  loadWorkouts().then(function() {
+    if (typeof renderLog === 'function') renderLog();
+    if (typeof renderLogArea === 'function') renderLogArea();
+    if (typeof renderWeek === 'function') renderWeek();
+    if (typeof renderRecentAndTemplates === 'function') renderRecentAndTemplates();
   });
 }
 
-function dismissFitbitImport(activityId, btn) {
-  if (!currentProfileId) return;
-  if (btn) { btn.disabled = true; btn.textContent = 'Dismissing…'; }
-  fetch('/api/profiles/' + currentProfileId + '/fitbit-import', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ activityId: activityId, action: 'dismiss' })
-  }).then(function(r) { return r.json(); }).then(function(data) {
-    if (!data.success) { alert('Dismiss failed: ' + (data.error || 'unknown')); if (btn) btn.disabled = false; return; }
-    fitbitPendingImports = data.pending || [];
-    renderFitbitImportPrompts();
-  }).catch(function(e) {
-    if (btn) btn.disabled = false;
-    alert('Dismiss failed: ' + e.message);
+// Match a Fitbit activity to an existing same-day workout (reuses the wearable
+// merge endpoint — same contract as the auto-import-on-save prompt + sync UI).
+function ufMatch(provider_activity_id, workoutId) {
+  var act = ufFindActivity(provider_activity_id);
+  if (!act) return;
+  var wType = 'workout';
+  (act.same_day_workouts || []).forEach(function(w) {
+    if (String(w.id) === String(workoutId)) wType = w.type || 'workout';
   });
+  ufRemoveActivity(provider_activity_id);
+  fetch('/api/wearables/merge/' + currentProfileId, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      workout_id: workoutId,
+      provider: 'fitbit',
+      wearable_activity_id: 'fitbit:' + provider_activity_id,
+      list_activity: act,
+    }),
+  })
+  .then(function(r) { return r.json(); })
+  .then(function(resp) {
+    if (resp && resp.success) {
+      showToast('Fitbit data linked to ' + wType + ' ✓');
+      ufRefreshWorkoutViews();
+    } else {
+      console.warn('[UnmatchedFitbit] merge failed:', resp && resp.error);
+      showToast('Could not link activity — try again');
+      invalidateUnmatchedFitbit(); // restore the card (server still sees it unmatched)
+    }
+  })
+  .catch(function(e) {
+    console.warn('[UnmatchedFitbit] merge error:', e && e.message);
+    showToast('Could not link activity — try again');
+    invalidateUnmatchedFitbit();
+  });
+}
+
+// Import a Fitbit activity as a brand-new standalone workout.
+function ufImport(provider_activity_id) {
+  var act = ufFindActivity(provider_activity_id);
+  if (!act) return;
+  ufRemoveActivity(provider_activity_id);
+  fetch('/api/wearables/import/' + currentProfileId, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      provider: 'fitbit',
+      wearable_activity_id: 'fitbit:' + provider_activity_id,
+      list_activity: act,
+    }),
+  })
+  .then(function(r) { return r.json(); })
+  .then(function(resp) {
+    if (resp && resp.success) {
+      showToast('Imported as workout ✓');
+      ufRefreshWorkoutViews();
+    } else {
+      console.warn('[UnmatchedFitbit] import failed:', resp && resp.error);
+      showToast('Could not import activity — try again');
+      invalidateUnmatchedFitbit(); // restore the card (server still sees it unmatched)
+    }
+  })
+  .catch(function(e) {
+    console.warn('[UnmatchedFitbit] import error:', e && e.message);
+    showToast('Could not import activity — try again');
+    invalidateUnmatchedFitbit();
+  });
+}
+
+// Dismiss a Fitbit activity forever (global, not tied to a workout). Silent.
+function ufDismiss(provider_activity_id) {
+  ufRemoveActivity(provider_activity_id);
+  if (!currentProfileId) return;
+  fetch('/api/profiles/' + currentProfileId + '/dismiss-fitbit-activity', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ provider_activity_id: provider_activity_id }),
+  }).catch(function(e) { console.warn('[UnmatchedFitbit] dismiss error:', e && e.message); });
 }
 
 function saveWorkoutToSupabase(entry) {
@@ -7524,6 +7661,9 @@ function saveWorkoutToSupabase(entry) {
         var _wMatch = wk.wearable_match;
         setTimeout(function() { showWearableMatchModal(wkId, _wMatch); }, 500);
       }
+      // The new workout is now a same-day match target — refresh the
+      // unmatched-Fitbit card so its "Match to …" buttons reflect it.
+      if (typeof invalidateUnmatchedFitbit === 'function') invalidateUnmatchedFitbit();
       if (entry.notes && entry.notes.trim() && currentProfileId) {
       console.log('[ApexCoach] Auto-extracting exercises from workout notes...');
       fetch('/api/profiles/' + currentProfileId + '/extract-exercises', {
@@ -7621,6 +7761,8 @@ function wmLink() {
           if (typeof renderWeek === 'function') renderWeek();
         });
       }
+      // This activity is now linked — drop it from the unmatched-Fitbit card.
+      if (typeof invalidateUnmatchedFitbit === 'function') invalidateUnmatchedFitbit();
     } else {
       console.warn('[AutoImport] merge failed:', resp && resp.error);
     }
@@ -7646,6 +7788,8 @@ function wmReject() {
       create_standalone: false,
     }),
   }).catch(function(e) { console.warn('[AutoImport] reject error:', e && e.message); });
+  // Rejection is recorded globally (by profile) — drop it from the card too.
+  if (typeof invalidateUnmatchedFitbit === 'function') invalidateUnmatchedFitbit();
 }
 
 function updateWorkoutInSupabase(id, entry) {
@@ -10607,7 +10751,7 @@ function showTab(name, btn) {
   if (name === 'today') {
     if (typeof renderBodyTodayCard === 'function') renderBodyTodayCard();
     if (typeof renderRecentAndTemplates === 'function') renderRecentAndTemplates();
-    if (typeof renderFitbitImportPrompts === 'function') renderFitbitImportPrompts();
+    if (typeof renderUnmatchedFitbit === 'function') renderUnmatchedFitbit();
   }
   if (name === 'profile') {
     if (typeof renderProfileBodyCard === 'function') renderProfileBodyCard();

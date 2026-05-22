@@ -1266,6 +1266,172 @@ app.post("/api/profiles/:id/fitbit-import", async function(req, res) {
   }
 });
 
+// ── UNMATCHED FITBIT ACTIVITIES (Today-tab convenience card) ────────────────
+// Replaces the legacy fitbit_pending_imports queue with a smarter card: surfaces
+// Fitbit activities from the last 7 days that aren't yet linked to a workout and
+// haven't been dismissed, and (when a same-day manual workout exists) offers to
+// match them to it instead of always creating a duplicate. Routes through the
+// provider-agnostic wearable adapter — the merge/import actions reuse
+// /api/wearables/merge|import. Dismissals are stored globally on the profile
+// (profiles.dismissed_fitbit_activities jsonb) because rejected_wearable_matches
+// requires a NOT NULL workout_id and a dismissal here isn't tied to one workout.
+
+// GET /api/profiles/:id/unmatched-fitbit
+// → { activities: [{ provider, provider_activity_id, activity_type,
+//      duration_minutes, avg_hr, calories, start_time, date, same_day_workouts }] }
+// Never 500s on a Fitbit failure: returns { activities: [], error: "fitbit_unavailable" }.
+app.get("/api/profiles/:id/unmatched-fitbit", async function(req, res) {
+  var pid = req.params.id;
+  var provider = "fitbit";
+  try {
+    // 1. Token — skip silently (empty list) if the user has never connected.
+    var token = null;
+    try {
+      token = await getValidWearableToken(pid, provider);
+    } catch (e) {
+      return res.json({ activities: [] });
+    }
+    if (!token) return res.json({ activities: [] });
+
+    // 2. Window: 7 days ago → today (local dates, matching the rest of the app).
+    var pad = function(n) { return String(n).padStart(2, "0"); };
+    var fmt = function(d) { return d.getFullYear() + "-" + pad(d.getMonth() + 1) + "-" + pad(d.getDate()); };
+    var todayDate = new Date();
+    var startDate = new Date();
+    startDate.setDate(startDate.getDate() - 7);
+    var todayStr = fmt(todayDate);
+    var startStr = fmt(startDate);
+
+    // 3. Fitbit activities for the window — non-fatal on failure.
+    var adapter = wearables.getProviderAdapter(provider);
+    var activities;
+    try {
+      activities = await adapter.fetchActivities(token, startStr, todayStr);
+    } catch (e) {
+      console.warn("[UnmatchedFitbit] fetchActivities failed:", e && e.message);
+      return res.json({ activities: [], error: "fitbit_unavailable" });
+    }
+    if (!Array.isArray(activities)) activities = [];
+
+    // 4. This profile's workouts in the window — used both to find already-linked
+    //    activities (wearable_activity_id) and to surface same-day match targets.
+    var wRes = await fetch(
+      SUPABASE_URL + "/rest/v1/workouts?profile_id=eq." + pid
+        + "&date=gte." + startStr + "&date=lte." + todayStr
+        + "&select=id,date,type,done,wearable_activity_id",
+      { headers: sbHeaders() }
+    );
+    var workouts = await wRes.json();
+    if (!Array.isArray(workouts)) workouts = [];
+    var syncedSet = {};
+    workouts.forEach(function(w) {
+      if (w.wearable_activity_id) syncedSet[w.wearable_activity_id] = true;
+    });
+
+    // 5. Rejected pairings — filtered by profile_id ONLY (not workout_id), so a
+    //    session the user split off from any workout stays out of this card too.
+    var rejectedSet = {};
+    try {
+      var rRes = await fetch(
+        SUPABASE_URL + "/rest/v1/rejected_wearable_matches?profile_id=eq." + pid
+          + "&select=wearable_activity_id",
+        { headers: sbHeaders() }
+      );
+      var rejected = await rRes.json();
+      (Array.isArray(rejected) ? rejected : []).forEach(function(r) {
+        if (r.wearable_activity_id) rejectedSet[r.wearable_activity_id] = true;
+      });
+    } catch (e) { /* non-fatal */ }
+
+    // 5b. Dismissed activities — stored as namespaced "fitbit:<id>" strings on
+    //     the profile. Degrades to empty if the column hasn't been migrated yet.
+    var dismissedSet = {};
+    try {
+      var dRes = await fetch(
+        SUPABASE_URL + "/rest/v1/profiles?id=eq." + pid + "&select=dismissed_fitbit_activities",
+        { headers: sbHeaders() }
+      );
+      var dRows = await dRes.json();
+      var dismissedArr = (dRows && dRows[0] && Array.isArray(dRows[0].dismissed_fitbit_activities))
+        ? dRows[0].dismissed_fitbit_activities : [];
+      dismissedArr.forEach(function(id) { dismissedSet[String(id)] = true; });
+    } catch (e) { /* column may not exist yet — treat as none dismissed */ }
+
+    // 6. Build the response. An activity is "unmatched" when it isn't already
+    //    linked, rejected, or dismissed. same_day_workouts = this profile's
+    //    completed manual (not-yet-linked) workouts on the activity's date.
+    var out = [];
+    for (var i = 0; i < activities.length; i++) {
+      var act = activities[i];
+      if (!act || act.provider_activity_id == null || act.provider_activity_id === "") continue;
+      var nsId = wearables.namespacedId(provider, act.provider_activity_id);
+      if (syncedSet[nsId] || rejectedSet[nsId] || dismissedSet[nsId]) continue;
+      var sameDay = workouts.filter(function(w) {
+        return w.date === act.date && w.done && !w.wearable_activity_id;
+      }).map(function(w) {
+        return { id: w.id, type: w.type, date: w.date };
+      });
+      out.push({
+        provider: provider,
+        provider_activity_id: act.provider_activity_id,
+        activity_type: act.activity_type,
+        duration_minutes: act.duration_minutes,
+        avg_hr: act.avg_hr,
+        calories: act.calories,
+        start_time: act.start_time || null,
+        date: act.date,
+        same_day_workouts: sameDay,
+      });
+    }
+    res.json({ activities: out });
+  } catch (e) {
+    console.error("[UnmatchedFitbit] error:", e.message);
+    // Even an unexpected error degrades to an empty card rather than a 500.
+    res.json({ activities: [], error: "fitbit_unavailable" });
+  }
+});
+
+// POST /api/profiles/:id/dismiss-fitbit-activity
+// body: { provider_activity_id }  → { dismissed: true }
+// Appends the namespaced "fitbit:<id>" to profiles.dismissed_fitbit_activities so
+// the activity never reappears in the unmatched-fitbit card (across all workouts).
+app.post("/api/profiles/:id/dismiss-fitbit-activity", async function(req, res) {
+  var pid = req.params.id;
+  var provider = "fitbit";
+  try {
+    var body = req.body || {};
+    var rawId = body.provider_activity_id;
+    if (rawId == null || rawId === "") {
+      return res.status(400).json({ success: false, error: "provider_activity_id required" });
+    }
+    // Accept either a bare id or an already-namespaced "fitbit:<id>"; store
+    // the namespaced form so it matches the keys the GET endpoint filters on.
+    var s = String(rawId);
+    var bare = s.indexOf(provider + ":") === 0 ? s.slice(provider.length + 1) : s;
+    var nsId = wearables.namespacedId(provider, bare);
+
+    var pr = await fetch(
+      SUPABASE_URL + "/rest/v1/profiles?id=eq." + pid + "&select=dismissed_fitbit_activities",
+      { headers: sbHeaders() }
+    );
+    var pRows = await pr.json();
+    var existing = (pRows && pRows[0] && Array.isArray(pRows[0].dismissed_fitbit_activities))
+      ? pRows[0].dismissed_fitbit_activities : [];
+    if (existing.indexOf(nsId) < 0) {
+      existing = existing.concat([nsId]);
+      await fetch(SUPABASE_URL + "/rest/v1/profiles?id=eq." + pid, {
+        method: "PATCH",
+        headers: sbHeaders("return=minimal"),
+        body: JSON.stringify({ dismissed_fitbit_activities: existing }),
+      });
+    }
+    res.json({ dismissed: true });
+  } catch (e) {
+    console.error("[DismissFitbit] error:", e.message);
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
 app.post("/api/profiles/:id/fitbit-backfill", async function(req, res) {
   try {
     var pid = req.params.id;
