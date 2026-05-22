@@ -50,7 +50,8 @@ Core user record. PIN-protected, all child data scoped by `profile_id`.
 | `profile_data` | jsonb | goals, injuries, schedule, equipment, `ai_prompt_context`, `onboarding_complete`, `avatar_image`, `settings.*`. **Long-term goals live here at `profile_data.goals[]` — there is no separate `goals` table.** Each goal carries `id` (uuid, backfilled by `ensureGoalIds()`) and, once a Living Goal Roadmap is built, `intake_questions[]` / `intake_answers[]` / `intake_completed` / `roadmap{}` / `last_adapted_at` (see §3 + `CLAUDE.md`). Sanitized via `cleanProfileData()` on read+write. |
 | `fitbit_access_token`, `fitbit_refresh_token`, `fitbit_expires_at` | text / bigint | Live Fitbit token store (rotating). Mirrored ↔ `wearable_connections`. |
 | `coaching_brief`, `historical_brief`, `historical_brief_updated_at` | text / ts | Three-tier coaching memory |
-| `roadmap`, `roadmap_updated_at` | text / ts | Personal training road map |
+| `roadmap`, `roadmap_updated_at` | text / ts | LEGACY free-text macro road map (still used by current client) |
+| `roadmap_data`, `roadmap_data_updated_at` | jsonb / ts | Structured macro road map (ties all goals; served by `/roadmap-data`) |
 | `daily_recommendations` (jsonb), `daily_recommendations_date` (date), `daily_recommendations_readiness` (int) | | Daily rec cache |
 | `progress_brief` (jsonb), `progress_brief_date` (date) | | Progress brief cache |
 | `height_inches`, `birth_date`, `sex`, `goal_weight_lbs`, `goal_weight_timeline_months` | | Body-composition profile fields |
@@ -160,7 +161,7 @@ Commit hashes attached where known (from `git log`). Areas without a hash predat
 - **Auto-update on workout save** across all mutation paths
 - **`last_computed_at`** timestamp on all goal cards; auto-refresh on workout save (`70dfa46`, `7c50f4d`)
 - **Goal priority** — drag/arrow reorder, weights AI recs (#1 ~40% / #2 ~25% / #3 ~15%)
-- **Living Goal Roadmaps (backend)** — per-goal stable ids + AI intake → phased roadmap (Sonnet) → check-in & weekly auto-adaptation (Haiku), stored on goal objects in `profile_data.goals[]`; UI pending (see §7)
+- **Living Goal Roadmaps + Macro Roadmap (backend)** — per-goal AI intake → phased roadmap (3 near_term + 2 horizon, Sonnet) and a structured `roadmap_data` macro roadmap tying all goals together; both grounded in real exercise context and adapted weekly by the unified `maybeAdaptAllRoadmaps()` (Haiku); UI pending (see §7)
 
 ### Active Challenges (Micro-Goals)
 - **Daily habit card** — started date, X/Y days, completion %, tiered color coding (≥85% green, 65–84% yellow, <65% red) (`e8b7cfe`, `44e7c39`)
@@ -249,7 +250,7 @@ All verified present in `server.js`. `:id`/`:userId` = profile id.
 | POST | `/api/ai` (Anthropic proxy, server-side model selection) |
 | GET/POST | `/api/profiles/:id/brief` · `/generate-brief` |
 | POST | `/api/profiles/:id/search-history` |
-| GET/POST | `/api/profiles/:id/daily-recs` · `/progress-brief` · `/roadmap` |
+| GET/POST | `/api/profiles/:id/daily-recs` · `/progress-brief` · `/roadmap` (legacy text) · `/roadmap-data` (structured macro, Sonnet) |
 | POST | `/api/profiles/:id/goal-progress` · `/generate-goal-description` |
 | GET/POST | `/api/profiles/:id/checkin` |
 
@@ -264,8 +265,10 @@ All verified present in `server.js`. `:id`/`:userId` = profile id.
 |--------|------|
 | GET | `/api/profiles/:id/goals/:goalId` |
 | GET/POST | `/api/profiles/:id/goals/:goalId/intake` |
-| POST | `/api/profiles/:id/goals/:goalId/roadmap` (Sonnet; requires completed intake) |
+| POST | `/api/profiles/:id/goals/:goalId/roadmap` (Sonnet; requires completed intake; injects per-goal + full exercise context) |
 | POST | `/api/profiles/:id/goals/:goalId/checkin` (Haiku adaptation) |
+
+> Weekly auto-adaptation for BOTH per-goal roadmaps and the structured macro roadmap runs via `maybeAdaptAllRoadmaps()` (fire-and-forget on `POST /api/workouts`, >7-day-stale, shared context fetch).
 
 ### Analytics
 | Method | Path |
@@ -319,13 +322,14 @@ All verified present in `server.js`. `:id`/`:userId` = profile id.
 
 ### Near term
 
-**Living Goal Roadmaps** — ✅ **backend built** (no migration); 🔲 UI pending
-- **Storage (resolved):** stored as fields on each goal object inside `profile_data.goals[]` jsonb — **no new tables**. Fields: `id`, `intake_questions[]`, `intake_answers[]`, `intake_completed`, `roadmap{ phases[], estimated_completion, date_confidence, date_note, summary, generated_at, version, adaptation_log[] }`, `last_adapted_at`. Goal ids are backfilled by `ensureGoalIds()` on profile GET/PATCH. See `CLAUDE.md` → "Living Goal Roadmaps (Per-Goal)" and endpoints in §4.
-- **Intake flow:** profile-aware (Haiku generates 4–6 questions targeted to the goal, told not to re-ask profile facts); freeform answers; `intake_completed` gate before roadmap generation.
-- **Generation:** Sonnet one-time initial roadmap (`goal_roadmap_generate`); Haiku adaptation (`goal_roadmap_adapt`).
-- **Structure:** 3–5 progressive phases with 2–3 measurable completion signals each; `estimated_completion` is a best-guess date with `date_confidence` (high/medium/low) + honest `date_note` caveat (low-confidence for skill-dependent goals like belts).
-- **Adaptation:** check-in endpoint (user notes) + weekly auto-adaptation fire-and-forget on workout save (>7-day-stale roadmaps); each adaptation increments `version` and appends to `adaptation_log`.
-- **🔲 UI (pending):** click goal card → expand; inline intake questions; roadmap view with current phase highlighted; check-in button; estimated-completion + confidence/caveat display.
+**Living Goal Roadmaps + Macro Roadmap** — ✅ **backend rebuilt** (migration `2026-05-22_roadmap_data.sql`); 🔲 UI pending
+- **Per-goal storage:** fields on each goal object in `profile_data.goals[]` jsonb — **no new tables**. New roadmap shape: `{ timeline_range, timeline_note, date_confidence, phases[], generated_at, version, adaptation_log[] }`. Phases = 3 `near_term` (duration_weeks, start/end dates, `weekly_targets[]`, `completion_signals[]`, status, progress_pct) + 2 `horizon` (`estimated_range`, `milestone`). Replaces the old `estimated_completion`/`date_note`/`summary` fields. See `CLAUDE.md` → "Living Goal Roadmaps (Per-Goal)".
+- **Macro roadmap (new):** structured `profiles.roadmap_data` jsonb ties ALL goals into one phased plan (`goals_summary[]`, `exercise_gaps[]`, `exercise_highlights[]`, 3 near_term + 2 horizon phases with `goal_connections[]`). `GET/POST /api/profiles/:id/roadmap-data` (Sonnet generate, no intake gate). Legacy free-text `/roadmap` kept for the current client.
+- **Exercise grounding:** `getGoalExerciseContext()` + `getFullExerciseContext()` inject the athlete's real logged training (best sets, trend, inactive exercises, category mix, consistency) into every generation/adaptation prompt.
+- **Intake flow:** profile-aware (Haiku generates 4–6 targeted questions); `intake_completed` gate before per-goal generation.
+- **Progress:** `computePhaseProgress()` estimates a current near-term phase's `progress_pct` from elapsed time (capped 90) + improving-trend bonus; recomputed on read, never stored.
+- **Adaptation:** per-goal check-in (user notes) + **unified** weekly auto-adaptation `maybeAdaptAllRoadmaps()` (fire-and-forget on workout save) that adapts both per-goal roadmaps AND the macro roadmap when >7 days stale, sharing one context fetch. Each adaptation increments `version` and appends to `adaptation_log`.
+- **🔲 UI (pending):** macro roadmap view (timeline range, phase cards, gaps/highlights); per-goal expand → intake → roadmap with current phase + progress bar + check-in.
 
 **Auto-import on workout save** — when a workout is logged, check for a same-day Fitbit activity and prompt the user to match. (Replaces the manual sync-backlog round trip for fresh logs.)
 

@@ -24,7 +24,7 @@ ApexCoach is a personalized AI fitness coaching web app. Users connect their Fit
 
 ## Supabase Tables
 
-- profiles: id, name, pin (sha256 hashed), avatar_color, profile_data (jsonb), fitbit_access_token, fitbit_refresh_token, fitbit_expires_at, coaching_brief (text), historical_brief (text), historical_brief_updated_at (timestamp), roadmap (text), roadmap_updated_at (timestamp), daily_recommendations (jsonb), daily_recommendations_date (date), daily_recommendations_readiness (int), progress_brief (jsonb), progress_brief_date (date), height_inches (numeric), birth_date (date), sex (text), goal_weight_lbs (numeric), goal_weight_timeline_months (int), gym_access (text: yes/no/sometimes), gym_type (text: Commercial gym/Home gym/CrossFit/functional fitness/Multiple), fitbit_pending_imports (jsonb — DEPRECATED, no longer written; see Unmatched Fitbit Activities), dismissed_fitbit_activities (jsonb — array of namespaced "fitbit:<id>" strings the user dismissed from the unmatched-activities card), created_at
+- profiles: id, name, pin (sha256 hashed), avatar_color, profile_data (jsonb), fitbit_access_token, fitbit_refresh_token, fitbit_expires_at, coaching_brief (text), historical_brief (text), historical_brief_updated_at (timestamp), roadmap (text — LEGACY free-text macro roadmap, still read/written by /roadmap), roadmap_updated_at (timestamp), roadmap_data (jsonb — structured macro roadmap, served by /roadmap-data), roadmap_data_updated_at (timestamptz), daily_recommendations (jsonb), daily_recommendations_date (date), daily_recommendations_readiness (int), progress_brief (jsonb), progress_brief_date (date), height_inches (numeric), birth_date (date), sex (text), goal_weight_lbs (numeric), goal_weight_timeline_months (int), gym_access (text: yes/no/sometimes), gym_type (text: Commercial gym/Home gym/CrossFit/functional fitness/Multiple), fitbit_pending_imports (jsonb — DEPRECATED, no longer written; see Unmatched Fitbit Activities), dismissed_fitbit_activities (jsonb — array of namespaced "fitbit:<id>" strings the user dismissed from the unmatched-activities card), created_at
 
 - workout_templates: id (bigint identity pk), profile_id (fk → profiles, on delete cascade), name (text), type (text), notes_template (text), exercises (jsonb), use_count (int default 0), created_at (timestamptz). Saved routines surfaced as ▶ Use buttons on Today and a manager on Profile.
 
@@ -142,9 +142,13 @@ Calculated from workoutLog entries where done=true. Counts backwards from today 
 
 - POST /api/profiles/:id/checkin — upsert daily feeling check-in (syncs across devices)
 
-- GET /api/profiles/:id/roadmap — get saved road map text and timestamp
+- GET /api/profiles/:id/roadmap — get saved road map text and timestamp (LEGACY free-text macro roadmap)
 
-- POST /api/profiles/:id/roadmap — generate AI road map from profile, goals, workouts
+- POST /api/profiles/:id/roadmap — generate AI road map text from profile, goals, workouts (LEGACY; still used by current client)
+
+- GET /api/profiles/:id/roadmap-data — structured macro roadmap (`roadmap_data` jsonb) + timestamp; `{roadmap_data:null}` if never generated. progress_pct recomputed on read.
+
+- POST /api/profiles/:id/roadmap-data — generate a structured macro roadmap (Sonnet) tying ALL goals together; no intake gate. Saves to `roadmap_data` + `roadmap_data_updated_at`.
 
 - POST /api/profiles/:id/generate-goal-description — AI generates motivating goal description from title
 
@@ -547,43 +551,51 @@ ALTER TABLE profiles
   ADD COLUMN IF NOT EXISTS goal_weight_timeline_months int;
 ```
 
-## Personal Road Map
+## Exercise Context Helpers (roadmap grounding)
 
-AI-generated 3/6/12-month training plan shown on Profile tab after Coaching Brief card.
+Two server helpers ground all roadmap prompts in the athlete's actual logged training (aggregation in Node after a PostgREST fetch; numerics via `numOrNull`; YYYY-MM-DD local dates):
 
-- **Endpoints**: `GET /api/profiles/:id/roadmap` returns saved roadmap text + timestamp. `POST /api/profiles/:id/roadmap` generates new roadmap via Claude AI using profile, goals, recent workouts, and coaching brief.
-- **Supabase columns**: `profiles.roadmap` (text), `profiles.roadmap_updated_at` (timestamp)
-- **UI**: "Generate" button on first visit, "Regenerate" (with confirm) after. Rendered via parseMd(). Shows last generated date.
-- **Auto-load**: `loadRoadmap()` called in bootApp() alongside coaching brief fetch.
-- **Sections generated**: Current Status, 30-Day Milestones, 90-Day Milestones, 6-Month Vision, 12-Month Vision, Weekly Blueprint, Biggest Risk.
+- `getGoalExerciseContext(profileId, goalKeywords, days=90)` — filters `exercises` to names partial-matching any keyword (case-insensitive). Returns `{ total_sessions (distinct days), last_session_date, best_set {weight_lbs,reps,duration_minutes}, recent_volume [{date,sets,reps,weight_lbs} ×3], trend: 'improving'|'plateauing'|'declining'|'insufficient_data' (best metric first-half vs second-half of sessions), weeks_since_last }`.
+- `getFullExerciseContext(profileId, days=60)` — overall picture: `{ top_exercises (top 10 by distinct-day count, each {name,last_date,total_sessions,best_set}), inactive_exercises (last done ≥6 weeks ago: {name,weeks_since_last}), category_breakdown ({strength:N,cardio:N,…} = distinct completed-workout days per inferred category via inferWorkoutCategoryServer), consistency (avg completed workouts/week) }`.
+
+`extractGoalKeywords(title)` splits a goal title on spaces, strips `GOAL_STOP_WORDS`, and keeps tokens ≥3 chars — used to drive `getGoalExerciseContext`.
+
+## Macro Roadmap (structured — `profiles.roadmap_data`)
+
+Replaces the legacy free-text `profiles.roadmap` blob with a structured jsonb that ties ALL goals into one phased plan.
+
+- **Legacy text roadmap (`profiles.roadmap`)** — `GET/POST /api/profiles/:id/roadmap` are KEPT and still read/written; the current client renders that markdown (`renderRoadmapContent`). The new system never writes the text column. The client should migrate to `/roadmap-data` when its structured UI is built.
+- **Endpoints**: `GET /api/profiles/:id/roadmap-data` (returns `roadmap_data` + `roadmap_data_updated_at`, or `{roadmap_data:null}`; `progress_pct` recomputed on read). `POST /api/profiles/:id/roadmap-data` generates via Sonnet (`macro_roadmap_generate`) using `getFullExerciseContext(90)` + per-goal contexts + last 30 workouts + coaching brief (600 chars) + `ai_prompt_context` (1000 chars); no intake gate.
+- **Shape**: `{ timeline_range, timeline_note, goals_summary[], phases[], exercise_gaps[], exercise_highlights[], generated_at, version, adaptation_log[] }`. Phases = 3 `near_term` (4–6 wks, with `weekly_targets[]`, `completion_signals[]`, `goal_connections[]`, `start_date`/`end_date`, `status`, `progress_pct`) + 2 `horizon` (`estimated_range`, `milestone`, `status`). `exercise_gaps` call out what's missing ("No lower body strength in 5 weeks"); `exercise_highlights` celebrate what's working.
+- **Columns**: `profiles.roadmap_data` (jsonb), `profiles.roadmap_data_updated_at` (timestamptz). Migration `2026-05-22_roadmap_data.sql`.
 
 ## Living Goal Roadmaps (Per-Goal)
 
-Distinct from the profile-level Personal Road Map above: each **individual goal** in `profile_data.goals[]` can carry its own phased, adaptive roadmap. **No new tables** — everything is stored as fields on the goal object (jsonb).
+Each **individual goal** in `profile_data.goals[]` can carry its own phased, adaptive roadmap. **No new tables** — stored as fields on the goal object (jsonb).
 
-**Goal object fields** (added on demand, not pre-populated):
-- `id` — uuid (backfilled by `ensureGoalIds()`; see below)
-- `intake_questions` — `[{ question, key }]` (AI-generated, Haiku)
-- `intake_answers` — `[{ question, key, answer }]`
-- `intake_completed` — boolean
-- `roadmap` — `{ phases[], estimated_completion, date_confidence, date_note, summary, generated_at, version, adaptation_log[] }`
+**Goal object fields** (added on demand):
+- `id` — uuid (backfilled by `ensureGoalIds()`)
+- `intake_questions` — `[{ question, key }]` (Haiku) / `intake_answers` — `[{ question, key, answer }]` / `intake_completed` — boolean
+- `roadmap` — `{ timeline_range, timeline_note, date_confidence, phases[], generated_at, version, adaptation_log[] }`
 - `last_adapted_at` — ISO timestamp
-- Phase: `{ name, description, duration_weeks, completion_signals[], status: 'upcoming'|'current'|'complete' }`
+- Near-term phase: `{ name, type:'near_term', duration_weeks, start_date, end_date, weekly_targets[], completion_signals[], status:'upcoming'|'current'|'complete', progress_pct }`. Horizon phase: `{ name, type:'horizon', estimated_range, milestone, status }`.
 - Adaptation log entry: `{ date, summary, trigger: 'weekly'|'checkin'|'manual' }`
-- `date_confidence` ∈ `high` (<6mo, clear metric) / `medium` (6–24mo) / `low` (multi-year / skill-dependent like belts); `date_note` is an honest one-sentence caveat.
+- `date_confidence` ∈ `high`/`medium`/`low`; `timeline_note` is the honest 1–2 sentence range caveat (replaces the old `estimated_completion`/`date_note`/`summary` fields).
 
-**Goal IDs**: goals historically had no stable id. `ensureGoalIds(profileData)` assigns `crypto.randomUUID()` to any goal missing one. Called in `GET /api/profiles/:id` (fire-and-forget PATCH if any added) and `PATCH /api/profiles/:id` (before write, so new goals always get an id).
+**Goal IDs**: `ensureGoalIds(profileData)` assigns `crypto.randomUUID()` to any goal missing one. Called in `GET /api/profiles/:id` (fire-and-forget PATCH) and `PATCH /api/profiles/:id` (before write).
 
 **Endpoints**:
-- `GET  /api/profiles/:id/goals/:goalId` — full goal object (roadmap, intake, etc.)
-- `GET  /api/profiles/:id/goals/:goalId/intake` — returns existing intake or generates 4–6 targeted questions (Haiku) on first call
-- `POST /api/profiles/:id/goals/:goalId/intake` — body `{ answers: [{ key, answer }] }`; rebuilds `intake_answers` with question text preserved, sets `intake_completed`
-- `POST /api/profiles/:id/goals/:goalId/roadmap` — requires completed intake; generates phased roadmap (Sonnet) from intake + profile + coaching brief + last 20 workouts
-- `POST /api/profiles/:id/goals/:goalId/checkin` — body `{ notes }`; adapts the roadmap (Haiku), increments `version`, appends an `adaptation_log` entry (trigger `checkin`)
+- `GET  /api/profiles/:id/goals/:goalId` — full goal object; `progress_pct` recomputed on read.
+- `GET  /api/profiles/:id/goals/:goalId/intake` — existing intake or generates 4–6 targeted questions (Haiku) on first call
+- `POST /api/profiles/:id/goals/:goalId/intake` — body `{ answers: [{ key, answer }] }`; sets `intake_completed`
+- `POST /api/profiles/:id/goals/:goalId/roadmap` — requires completed intake; generates the new-shape roadmap (Sonnet) from intake + `getGoalExerciseContext` + `getFullExerciseContext` + last 20 workouts + profile + coaching brief
+- `POST /api/profiles/:id/goals/:goalId/checkin` — body `{ notes }`; adapts the roadmap (Haiku) with the goal's exercise context, increments `version`, appends an `adaptation_log` entry (trigger `checkin`)
 
-**Weekly auto-adaptation**: `maybeAdaptGoalRoadmaps(profileId)` (fire-and-forget on `POST /api/workouts`) re-adapts each goal whose roadmap is >7 days stale (or never adapted), using the last 10 workouts and no user notes (trigger `weekly`). Loads the profile once, adapts in place, writes `profile_data` back once.
+**Phase progress** (`computePhaseProgress(phase, exerciseContext)`): current near-term phases get a time-elapsed estimate (`days since start_date / duration_weeks*7`), capped at 90 so it never auto-completes, +10 when the goal's `trend === 'improving'`. Recomputed on read (`recomputeRoadmapProgress`), never stored. `assignNearTermDates()` backfills missing phase `start_date`/`end_date` sequentially from today so progress is always computable.
 
-**Model routing** (`CALL_TYPE_MODEL`): `goal_intake_questions`→Haiku, `goal_roadmap_generate`→Sonnet, `goal_roadmap_adapt`→Haiku. The endpoints call Anthropic directly via `callAISystem(system, user, maxTokens, model)`; `parseAIJson()` extracts JSON from fenced/prose responses.
+**Unified weekly auto-adaptation**: `maybeAdaptAllRoadmaps(profileId)` (fire-and-forget on `POST /api/workouts`) replaces the old `maybeAdaptGoalRoadmaps`. It loads the profile once, fetches `getFullExerciseContext(60)` + last 10 workouts once, then: (1) adapts each per-goal roadmap that is intake-complete + has a roadmap + is >7 days stale (each with its own `getGoalExerciseContext`, Haiku, trigger `weekly`); (2) adapts `roadmap_data` if it exists and is >7 days stale (Haiku `adaptMacroRoadmap` — updates `exercise_gaps`/`exercise_highlights`/phase statuses). A single profile PATCH writes `profile_data` and/or `roadmap_data` at the end.
+
+**Model routing** (`CALL_TYPE_MODEL`): `goal_intake_questions`→Haiku, `goal_roadmap_generate`→Sonnet, `goal_roadmap_adapt`→Haiku, `macro_roadmap_generate`→Sonnet, `macro_roadmap_adapt`→Haiku. Endpoints call Anthropic directly via `callAISystem(system, user, maxTokens, model)`; `parseAIJson()` extracts JSON from fenced/prose responses.
 
 ## Previous Days Navigation
 
@@ -807,6 +819,15 @@ The whole lookup is **awaited but capped at 4s** via `Promise.race` (timeout →
 ## Migrations
 
 One-time data fixes that should be run in the Supabase SQL editor.
+
+### Structured macro roadmap (2026-05-22)
+Adds the structured macro roadmap columns. The legacy `roadmap` (text) column stays and is still used by the current client. See `migrations/2026-05-22_roadmap_data.sql`.
+
+```sql
+ALTER TABLE profiles
+  ADD COLUMN IF NOT EXISTS roadmap_data jsonb,
+  ADD COLUMN IF NOT EXISTS roadmap_data_updated_at timestamptz;
+```
 
 ### Dismissed Fitbit activities (2026-05-22)
 Backs the Today-tab "Unmatched Fitbit Activities" card's Dismiss action. A dismissal is global (not tied to one workout), but `rejected_wearable_matches.workout_id` is `NOT NULL`, so dismissals are stored as an array of namespaced `fitbit:<activityId>` strings on the profile instead. See `migrations/2026-05-22_dismissed_fitbit_activities.sql`.

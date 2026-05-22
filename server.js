@@ -1763,8 +1763,9 @@ app.post("/api/workouts", async function(req, res) {
     // a workout logged for a past date doesn't change today's biometric or
     // schedule context.
     if (body.profile_id) clearProgressBriefCache(body.profile_id);
-    // Fire-and-forget weekly goal-roadmap maintenance (adapts roadmaps >7 days stale).
-    if (body.profile_id) maybeAdaptGoalRoadmaps(body.profile_id).catch(function(e) { console.error("Goal roadmap adaptation error:", e); });
+    // Fire-and-forget weekly roadmap maintenance — adapts BOTH per-goal roadmaps
+    // and the structured macro roadmap when >7 days stale (shared context fetch).
+    if (body.profile_id) maybeAdaptAllRoadmaps(body.profile_id).catch(function(e) { console.error("Roadmap adaptation error:", e); });
 
     // Auto-import on save: opportunistically look for a same-day Fitbit activity
     // that matches this workout and surface it under `wearable_match` so the
@@ -1966,10 +1967,12 @@ var CALL_TYPE_MODEL = {
   roadmap:           MODEL_SONNET,
   history_search:    MODEL_SONNET,
   goal_roadmap_generate: MODEL_SONNET,
+  macro_roadmap_generate: MODEL_SONNET,
   // Cheap tasks — Haiku
   format_notes:      MODEL_HAIKU,
   goal_intake_questions: MODEL_HAIKU,
   goal_roadmap_adapt:    MODEL_HAIKU,
+  macro_roadmap_adapt:   MODEL_HAIKU,
   workout_title:     MODEL_HAIKU,
   extract_exercises: MODEL_HAIKU,
   progress_brief:    MODEL_HAIKU,
@@ -3002,6 +3005,374 @@ app.post("/api/profiles/:id/roadmap", async function(req, res) {
   }
 });
 
+// ── EXERCISE CONTEXT HELPERS (roadmap generation + adaptation) ───────────────
+// Shared by the per-goal and macro roadmap endpoints to ground AI prompts in
+// the athlete's actual logged training. All aggregation is done in Node after a
+// PostgREST fetch; numeric columns are coerced via numOrNull(). Dates are
+// YYYY-MM-DD local strings (matching the rest of the app).
+
+function ymdNDaysAgo(n) {
+  var d = new Date();
+  d.setDate(d.getDate() - n);
+  return ymdLocal(d); // ymdLocal() is a hoisted function declaration below
+}
+function weeksSinceYmd(dateStr) {
+  if (!dateStr) return null;
+  var t = Date.parse(String(dateStr).slice(0, 10) + "T12:00:00");
+  if (isNaN(t)) return null;
+  return Math.floor((Date.now() - t) / (7 * 86400000));
+}
+
+// Stop words stripped from goal titles before keyword matching against exercise
+// names. Keeps the meaningful nouns ("bench", "muscle", "belt", "hike").
+var GOAL_STOP_WORDS = {
+  the:1, a:1, an:1, and:1, or:1, to:1, of:1, for:1, in:1, on:1, at:1, by:1, with:1,
+  my:1, your:1, his:1, her:1, get:1, getting:1, gain:1, build:1, building:1,
+  improve:1, improving:1, better:1, more:1, less:1, do:1, doing:1, be:1, become:1,
+  reach:1, hit:1, goal:1, goals:1, want:1, wanting:1, able:1, work:1, working:1,
+  into:1, up:1, out:1, per:1, week:1, day:1, daily:1, weekly:1, every:1, some:1,
+};
+function extractGoalKeywords(title) {
+  return String(title || "")
+    .toLowerCase()
+    .split(/\s+/)
+    .map(function(w) { return w.replace(/[^a-z0-9]/g, ""); })
+    .filter(function(w) { return w.length >= 3 && !GOAL_STOP_WORDS[w]; });
+}
+
+// Per-goal exercise summary over the last N days, filtered to exercises whose
+// name partial-matches any goalKeyword (case-insensitive). Returns a compact
+// object fed straight into roadmap prompts.
+async function getGoalExerciseContext(profileId, goalKeywords, days) {
+  days = days || 90;
+  var since = ymdNDaysAgo(days);
+  var r = await fetch(SUPABASE_URL + "/rest/v1/exercises?profile_id=eq." + profileId +
+    "&date=gte." + since +
+    "&select=name,date,sets,reps,weight_lbs,duration_minutes,distance_miles&order=date.asc&limit=5000",
+    { headers: sbHeaders() });
+  var rows = await r.json();
+  if (!Array.isArray(rows)) rows = [];
+  var kws = (goalKeywords || []).map(function(k) { return String(k).toLowerCase(); }).filter(Boolean);
+  var matched = kws.length ? rows.filter(function(ex) {
+    var n = String(ex.name || "").toLowerCase();
+    return kws.some(function(k) { return n.indexOf(k) >= 0; });
+  }) : [];
+  if (!matched.length) {
+    return { total_sessions: 0, last_session_date: null, best_set: null, recent_volume: [], trend: "insufficient_data", weeks_since_last: null };
+  }
+
+  // Per-day rollup (matched is asc by date). Tracks max metric values per day.
+  var dayMap = {};
+  var order = [];
+  matched.forEach(function(ex) {
+    var d = ex.date;
+    if (!d) return;
+    if (!dayMap[d]) { dayMap[d] = { date: d, sets: 0, reps: null, weight_lbs: null, duration_minutes: null }; order.push(d); }
+    var slot = dayMap[d];
+    slot.sets += (numOrNull(ex.sets) || 0);
+    var rp = numOrNull(ex.reps); if (rp != null && (slot.reps == null || rp > slot.reps)) slot.reps = rp;
+    var w = numOrNull(ex.weight_lbs); if (w != null && (slot.weight_lbs == null || w > slot.weight_lbs)) slot.weight_lbs = w;
+    var dm = numOrNull(ex.duration_minutes); if (dm != null && (slot.duration_minutes == null || dm > slot.duration_minutes)) slot.duration_minutes = dm;
+  });
+  var distinctDays = order;
+  var lastDate = distinctDays[distinctDays.length - 1];
+
+  // Personal best across all matched rows.
+  var best_set = { weight_lbs: null, reps: null, duration_minutes: null };
+  matched.forEach(function(ex) {
+    var w = numOrNull(ex.weight_lbs), rp = numOrNull(ex.reps), dm = numOrNull(ex.duration_minutes);
+    if (w != null && (best_set.weight_lbs == null || w > best_set.weight_lbs)) best_set.weight_lbs = w;
+    if (rp != null && (best_set.reps == null || rp > best_set.reps)) best_set.reps = rp;
+    if (dm != null && (best_set.duration_minutes == null || dm > best_set.duration_minutes)) best_set.duration_minutes = dm;
+  });
+
+  // recent_volume — last 3 sessions: { date, sets, reps, weight_lbs }.
+  var recent_volume = distinctDays.slice(-3).map(function(d) {
+    var s = dayMap[d];
+    return { date: s.date, sets: s.sets, reps: s.reps, weight_lbs: s.weight_lbs };
+  });
+
+  // Trend — has max weight (or reps, or duration) increased over the period?
+  // Compare the best metric in the first half of sessions vs the second half.
+  var trend = "insufficient_data";
+  if (distinctDays.length >= 2) {
+    var metricType = best_set.weight_lbs != null ? "weight_lbs"
+                   : best_set.reps != null ? "reps" : "duration_minutes";
+    var bestIn = function(daysArr) {
+      var hi = null;
+      daysArr.forEach(function(d) { var v = dayMap[d][metricType]; if (v != null && (hi == null || v > hi)) hi = v; });
+      return hi;
+    };
+    var mid = Math.ceil(distinctDays.length / 2);
+    var early = bestIn(distinctDays.slice(0, mid));
+    var late = bestIn(distinctDays.slice(mid));
+    if (early == null || late == null) trend = "plateauing";
+    else if (late > early) trend = "improving";
+    else if (late < early) trend = "declining";
+    else trend = "plateauing";
+  }
+
+  return {
+    total_sessions: distinctDays.length,
+    last_session_date: lastDate,
+    best_set: best_set,
+    recent_volume: recent_volume,
+    trend: trend,
+    weeks_since_last: weeksSinceYmd(lastDate),
+  };
+}
+
+// Overall training picture over the last N days: top exercises, ones that have
+// gone stale, category mix, and consistency. Used to give roadmaps a holistic
+// view of what the athlete is (and isn't) actually doing.
+async function getFullExerciseContext(profileId, days) {
+  days = days || 60;
+  var since = ymdNDaysAgo(days);
+  var er = await fetch(SUPABASE_URL + "/rest/v1/exercises?profile_id=eq." + profileId +
+    "&date=gte." + since +
+    "&select=name,date,sets,reps,weight_lbs,duration_minutes,main_category,category&order=date.desc&limit=5000",
+    { headers: sbHeaders() });
+  var ex = await er.json();
+  if (!Array.isArray(ex)) ex = [];
+  var wr = await fetch(SUPABASE_URL + "/rest/v1/workouts?profile_id=eq." + profileId +
+    "&date=gte." + since + "&select=date,type,done&order=date.desc&limit=2000",
+    { headers: sbHeaders() });
+  var wk = await wr.json();
+  if (!Array.isArray(wk)) wk = [];
+
+  // Per-exercise aggregation.
+  var byName = {};
+  ex.forEach(function(e) {
+    var nm = e.name;
+    if (!nm) return;
+    if (!byName[nm]) byName[nm] = { name: nm, days: {}, last_date: null, best_set: { weight_lbs: null, reps: null, duration_minutes: null } };
+    var g = byName[nm];
+    if (e.date) { g.days[e.date] = true; if (!g.last_date || e.date > g.last_date) g.last_date = e.date; }
+    var w = numOrNull(e.weight_lbs), rp = numOrNull(e.reps), dm = numOrNull(e.duration_minutes);
+    if (w != null && (g.best_set.weight_lbs == null || w > g.best_set.weight_lbs)) g.best_set.weight_lbs = w;
+    if (rp != null && (g.best_set.reps == null || rp > g.best_set.reps)) g.best_set.reps = rp;
+    if (dm != null && (g.best_set.duration_minutes == null || dm > g.best_set.duration_minutes)) g.best_set.duration_minutes = dm;
+  });
+  var list = Object.keys(byName).map(function(nm) {
+    var g = byName[nm];
+    return { name: nm, total_sessions: Object.keys(g.days).length, last_date: g.last_date, best_set: g.best_set, weeks_since_last: weeksSinceYmd(g.last_date) };
+  });
+
+  var top_exercises = list.slice().sort(function(a, b) { return b.total_sessions - a.total_sessions; }).slice(0, 10)
+    .map(function(g) { return { name: g.name, last_date: g.last_date, total_sessions: g.total_sessions, best_set: g.best_set }; });
+  var inactive_exercises = list.filter(function(g) { return g.weeks_since_last != null && g.weeks_since_last >= 6; })
+    .map(function(g) { return { name: g.name, weeks_since_last: g.weeks_since_last }; });
+
+  // Category breakdown — distinct completed-workout days per inferred category
+  // (captures cardio / martial-arts sessions that never produce exercise rows).
+  var catDates = {};
+  wk.forEach(function(w) {
+    if (!w.done || !w.date) return;
+    var c = inferWorkoutCategoryServer(w.type);
+    if (!catDates[c]) catDates[c] = {};
+    catDates[c][w.date] = true;
+  });
+  var category_breakdown = {};
+  Object.keys(catDates).forEach(function(c) { category_breakdown[c] = Object.keys(catDates[c]).length; });
+
+  // Consistency — distinct completed-workout days per week over the window.
+  var doneDates = {};
+  wk.forEach(function(w) { if (w.done && w.date) doneDates[w.date] = true; });
+  var weeks = Math.max(1, days / 7);
+  var consistency = Math.round((Object.keys(doneDates).length / weeks) * 10) / 10;
+
+  return {
+    top_exercises: top_exercises,
+    inactive_exercises: inactive_exercises,
+    category_breakdown: category_breakdown,
+    consistency: consistency,
+  };
+}
+
+// ── ROADMAP PHASE HELPERS ────────────────────────────────────────────────────
+
+// Assign sequential start/end dates to near-term phases (in order) when the AI
+// didn't supply them, so time-based progress can be computed. Horizon phases are
+// left dateless. Mutates the phases array in place.
+function assignNearTermDates(phases, todayStr) {
+  if (!Array.isArray(phases)) return;
+  var cursor = Date.parse((todayStr || new Date().toISOString().slice(0, 10)) + "T00:00:00");
+  if (isNaN(cursor)) cursor = Date.now();
+  phases.forEach(function(p) {
+    if (!p || p.type === "horizon") return;
+    var weeks = Number(p.duration_weeks) || 0;
+    if (!p.start_date) p.start_date = ymdLocal(new Date(cursor));
+    var startMs = Date.parse(String(p.start_date).slice(0, 10) + "T00:00:00");
+    if (isNaN(startMs)) { startMs = cursor; p.start_date = ymdLocal(new Date(cursor)); }
+    var endMs = startMs + weeks * 7 * 86400000;
+    if (!p.end_date && weeks > 0) p.end_date = ymdLocal(new Date(endMs - 86400000)); // inclusive last day
+    cursor = endMs;
+  });
+}
+
+// Estimate a current near-term phase's progress_pct (0-100). We can't verify
+// free-text completion_signals programmatically, so we base it on time elapsed
+// (capped at 90 so it never auto-completes) plus a small bonus when the goal's
+// exercise trend is improving. Returns null for horizon phases.
+function computePhaseProgress(phase, exerciseContext) {
+  if (!phase || phase.type === "horizon") return null;
+  var pct = 0;
+  if (phase.start_date && phase.duration_weeks) {
+    var startMs = Date.parse(String(phase.start_date).slice(0, 10) + "T00:00:00");
+    var totalMs = Number(phase.duration_weeks) * 7 * 86400000;
+    if (!isNaN(startMs) && totalMs > 0) pct = Math.round(((Date.now() - startMs) / totalMs) * 100);
+  }
+  if (pct < 0) pct = 0;
+  if (pct > 90) pct = 90;
+  if (exerciseContext && exerciseContext.trend === "improving") pct = Math.min(90, pct + 10);
+  return pct;
+}
+
+// Recompute progress_pct on read (don't store). Current near-term phases get a
+// fresh time-based estimate; complete phases show 100; upcoming stay 0. Mutates
+// the roadmap's phases in place and returns it.
+function recomputeRoadmapProgress(roadmap, exerciseContext) {
+  if (!roadmap || !Array.isArray(roadmap.phases)) return roadmap;
+  roadmap.phases.forEach(function(p) {
+    if (!p || p.type === "horizon") return;
+    if (p.status === "current") p.progress_pct = computePhaseProgress(p, exerciseContext);
+    else if (p.status === "complete") p.progress_pct = 100;
+    else p.progress_pct = (typeof p.progress_pct === "number") ? p.progress_pct : 0;
+  });
+  return roadmap;
+}
+
+// ── MACRO ROADMAP (structured, profiles.roadmap_data) ────────────────────────
+// Replaces the legacy free-text profiles.roadmap blob with a structured jsonb
+// that ties ALL goals into one phased plan. The legacy GET/POST /roadmap (text)
+// endpoints are kept for the current client; nothing writes profiles.roadmap
+// from the new system. Client migrates to /roadmap-data when its UI is built.
+
+var MACRO_ROADMAP_SYS = "You are an elite fitness coach building a comprehensive macro training roadmap that ties together all of an athlete's goals. Return ONLY valid JSON with this shape: { timeline_range, timeline_note, goals_summary, phases, exercise_gaps, exercise_highlights, generated_at, version, adaptation_log }. Use 3 near-term phases (4-6 weeks, type: near_term) and 2 horizon phases (milestone-based, type: horizon). Each near-term phase should have weekly_targets (2-4 items spanning ALL goals), completion_signals, and goal_connections (which goals this phase advances). exercise_gaps are specific things missing from the training (be direct: 'No lower body strength in 5 weeks'). exercise_highlights celebrate what's working. Use evidence-based timelines. Be concise — this should be scannable, not an essay. Each phase max 3 sentences total.";
+
+// GET the structured macro roadmap. progress_pct recomputed on read.
+app.get("/api/profiles/:id/roadmap-data", async function(req, res) {
+  try {
+    var pid = req.params.id;
+    var r = await fetch(SUPABASE_URL + "/rest/v1/profiles?id=eq." + pid + "&select=roadmap_data,roadmap_data_updated_at", { headers: sbHeaders() });
+    var rows = await r.json();
+    if (!rows || !rows.length) return res.status(404).json({ success: false, error: "Profile not found" });
+    var rd = rows[0].roadmap_data;
+    if (!rd) return res.json({ success: true, roadmap_data: null });
+    try {
+      var ctx = await getFullExerciseContext(pid, 90);
+      recomputeRoadmapProgress(rd, ctx);
+    } catch (e) { recomputeRoadmapProgress(rd, null); }
+    res.json({ success: true, roadmap_data: rd, roadmap_data_updated_at: rows[0].roadmap_data_updated_at });
+  } catch (e) {
+    console.error("[MacroRoadmap] GET error:", e.message);
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+// POST — generate a fresh structured macro roadmap (Sonnet). No intake gate;
+// can be generated anytime.
+app.post("/api/profiles/:id/roadmap-data", async function(req, res) {
+  try {
+    var pid = req.params.id;
+    var pRes = await fetch(SUPABASE_URL + "/rest/v1/profiles?id=eq." + pid + "&select=profile_data,coaching_brief", { headers: sbHeaders() });
+    var profiles = await pRes.json();
+    if (!profiles || !profiles.length) return res.status(404).json({ success: false, error: "Profile not found" });
+    var pd = profiles[0].profile_data || {};
+    var goals = Array.isArray(pd.goals) ? pd.goals : [];
+    var brief = (profiles[0].coaching_brief || "").substring(0, 600);
+    var ctxStr = (pd.ai_prompt_context || "").substring(0, 1000);
+    var today = new Date().toISOString().slice(0, 10);
+
+    var fullEx = await getFullExerciseContext(pid, 90);
+
+    var wRes = await fetch(SUPABASE_URL + "/rest/v1/workouts?profile_id=eq." + pid + "&order=date.desc&limit=30&select=date,type", { headers: sbHeaders() });
+    var workouts = await wRes.json();
+    if (!Array.isArray(workouts)) workouts = [];
+    var workoutsStr = workouts.map(function(w) { return w.date + ": " + (w.type || "Workout"); }).join("\n");
+
+    var goalsStr = goals.map(function(g, i) {
+      return (i + 1) + ". " + (g.title || "Untitled") + " (" + (g.type || "general") + ")" + (g.description ? " — " + g.description : "");
+    }).join("\n");
+
+    // Per-goal exercise context (keyed off each goal's title keywords).
+    var perGoalCtx = "";
+    for (var gi = 0; gi < goals.length; gi++) {
+      var gx = await getGoalExerciseContext(pid, extractGoalKeywords(goals[gi].title), 90);
+      perGoalCtx += (goals[gi].title || "Untitled") + ": " + JSON.stringify(gx) + "\n";
+    }
+
+    var userMsg = "GOALS:\n" + (goalsStr || "none") + "\n\n" +
+      "FULL EXERCISE CONTEXT:\n" + JSON.stringify(fullEx) + "\n\n" +
+      "PER-GOAL EXERCISE CONTEXT:\n" + (perGoalCtx || "none") + "\n\n" +
+      "COACHING BRIEF:\n" + (brief || "none") + "\n\n" +
+      "RECENT 30 WORKOUTS:\n" + (workoutsStr || "none") + "\n\n" +
+      "PROFILE:\n" + (ctxStr || "none") + "\n\n" +
+      "Today: " + today + "\n\nBuild a macro roadmap that ties all goals together into a cohesive training plan.";
+
+    var text = await callAISystem(MACRO_ROADMAP_SYS, userMsg, 2500, MODEL_SONNET);
+    var parsed = parseAIJson(text);
+    if (!parsed || !Array.isArray(parsed.phases)) throw new Error("AI returned an invalid macro roadmap");
+    assignNearTermDates(parsed.phases, today);
+
+    var now = new Date().toISOString();
+    var roadmapData = {
+      timeline_range: parsed.timeline_range || null,
+      timeline_note: parsed.timeline_note || null,
+      goals_summary: Array.isArray(parsed.goals_summary) ? parsed.goals_summary : [],
+      phases: parsed.phases,
+      exercise_gaps: Array.isArray(parsed.exercise_gaps) ? parsed.exercise_gaps : [],
+      exercise_highlights: Array.isArray(parsed.exercise_highlights) ? parsed.exercise_highlights : [],
+      generated_at: now,
+      version: 1,
+      adaptation_log: [],
+    };
+    await fetch(SUPABASE_URL + "/rest/v1/profiles?id=eq." + pid, {
+      method: "PATCH", headers: sbHeaders("return=minimal"),
+      body: JSON.stringify({ roadmap_data: roadmapData, roadmap_data_updated_at: now }),
+    });
+    recomputeRoadmapProgress(roadmapData, fullEx);
+    console.log("[MacroRoadmap] generated for profile " + pid);
+    res.json({ success: true, roadmap_data: roadmapData, roadmap_data_updated_at: now });
+  } catch (e) {
+    console.error("[MacroRoadmap] generate error:", e.message);
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+// Adapt the structured macro roadmap via Haiku (used by the unified weekly
+// trigger). Updates exercise_gaps / exercise_highlights and phase statuses;
+// preserves the 3 near_term + 2 horizon structure. progress_pct is recomputed on
+// read, not trusted from the AI. Returns the new roadmap_data object.
+async function adaptMacroRoadmap(roadmapData, fullExCtx, workouts, trigger) {
+  var today = new Date().toISOString().slice(0, 10);
+  var workoutsStr = (workouts || []).map(function(w) { return w.date + ": " + (w.type || "Workout"); }).join("\n");
+  var sys = "You are an elite fitness coach adapting an athlete's macro training roadmap based on their recent training. Return ONLY valid JSON with the same shape as the existing macro roadmap: { timeline_range, timeline_note, goals_summary, phases, exercise_gaps, exercise_highlights }. Update exercise_gaps and exercise_highlights to reflect the latest training. Advance phase status (upcoming -> current -> complete) when completion_signals are met, and keep the 3 near_term + 2 horizon structure. Only change what the recent training justifies. Be concise.";
+  var userMsg = "CURRENT MACRO ROADMAP:\n" + JSON.stringify(roadmapData) + "\n\n" +
+    "FULL EXERCISE CONTEXT:\n" + JSON.stringify(fullExCtx) + "\n\n" +
+    "RECENT WORKOUTS (last 10):\n" + (workoutsStr || "none") + "\n\n" +
+    "Today: " + today + "\n\nAdapt the macro roadmap based on recent training.";
+  var text = await callAISystem(sys, userMsg, 2500, MODEL_HAIKU);
+  var parsed = parseAIJson(text);
+  if (!parsed || !Array.isArray(parsed.phases)) throw new Error("AI returned an invalid adapted macro roadmap");
+  assignNearTermDates(parsed.phases, today);
+  var prev = roadmapData || {};
+  var now = new Date().toISOString();
+  var log = Array.isArray(prev.adaptation_log) ? prev.adaptation_log.slice() : [];
+  log.push({ date: now, summary: parsed.timeline_note || "Macro roadmap adapted", trigger: trigger });
+  return {
+    timeline_range: parsed.timeline_range || prev.timeline_range || null,
+    timeline_note: parsed.timeline_note || prev.timeline_note || null,
+    goals_summary: Array.isArray(parsed.goals_summary) ? parsed.goals_summary : (prev.goals_summary || []),
+    phases: parsed.phases,
+    exercise_gaps: Array.isArray(parsed.exercise_gaps) ? parsed.exercise_gaps : (prev.exercise_gaps || []),
+    exercise_highlights: Array.isArray(parsed.exercise_highlights) ? parsed.exercise_highlights : (prev.exercise_highlights || []),
+    generated_at: prev.generated_at || now,
+    version: (typeof prev.version === "number" ? prev.version : 1) + 1,
+    adaptation_log: log,
+  };
+}
+
 // ── LIVING GOAL ROADMAPS ────────────────────────────────────────────────────
 // Per-goal roadmaps stored as fields on each goal object inside
 // profile_data.goals[] (jsonb on profiles) — no new tables. Each goal can carry:
@@ -3099,80 +3470,107 @@ function parseAIJson(text) {
 // Adapt an existing goal.roadmap via Haiku. `notes` is the athlete's check-in
 // (empty for weekly auto-adaptation). Returns the new roadmap object — version
 // incremented, generated_at preserved, adaptation_log appended.
-async function adaptGoalRoadmap(goal, notes, workouts, trigger) {
+async function adaptGoalRoadmap(goal, notes, workouts, trigger, goalExCtx) {
   var today = new Date().toISOString().slice(0, 10);
   var workoutsStr = (workouts || []).map(function(w) { return w.date + ": " + (w.type || "Workout"); }).join("\n");
-  var sys = "You are a fitness coach adapting a training roadmap based on a check-in from the athlete. Return ONLY valid JSON with the same shape as the existing roadmap: { phases: [...], estimated_completion: 'YYYY-MM-DD', date_confidence: 'high'|'medium'|'low', date_note: string, summary: string }. Update phase statuses if appropriate (upcoming/current/complete). Adjust estimated_completion if trajectory has changed. Keep phases that are still valid — only modify what the check-in justifies.";
+  var sys = "You are a fitness coach adapting an athlete's training roadmap for a specific goal based on their recent training and (optionally) a check-in. Return ONLY valid JSON with the same shape as the existing roadmap: { timeline_range: string, timeline_note: string, date_confidence: 'high'|'medium'|'low', phases: [...] }. Preserve the structure: 3 near_term phases (type: 'near_term', each with weekly_targets and completion_signals) followed by 2 horizon phases (type: 'horizon', milestone-based). Advance phase status (upcoming -> current -> complete) when completion_signals are met. Keep phases that are still valid — only change what the recent training or check-in justifies. Be concise.";
   var userMsg = "GOAL: " + (goal.title || "Untitled") + "\n\n" +
     "CURRENT ROADMAP:\n" + JSON.stringify(goal.roadmap) + "\n\n" +
+    "EXERCISE CONTEXT FOR THIS GOAL:\n" + (goalExCtx ? JSON.stringify(goalExCtx) : "none") + "\n\n" +
     "ATHLETE CHECK-IN:\n" + (notes || "(no notes — automatic weekly review based on recent training)") + "\n\n" +
     "RECENT WORKOUTS (last 10):\n" + (workoutsStr || "none") + "\n\n" +
-    "Today: " + today + "\n\nAdapt the roadmap based on this check-in.";
+    "Today: " + today + "\n\nAdapt the roadmap based on this evidence.";
   var text = await callAISystem(sys, userMsg, 2000, MODEL_HAIKU);
   var parsed = parseAIJson(text);
   if (!parsed || !Array.isArray(parsed.phases)) throw new Error("AI returned an invalid adapted roadmap");
+  assignNearTermDates(parsed.phases, today); // fills only missing dates; preserves existing
 
   var prev = goal.roadmap || {};
   var now = new Date().toISOString();
   var log = Array.isArray(prev.adaptation_log) ? prev.adaptation_log.slice() : [];
-  log.push({ date: now, summary: parsed.summary || "Roadmap adapted", trigger: trigger });
+  log.push({ date: now, summary: parsed.timeline_note || "Roadmap adapted", trigger: trigger });
   return {
-    phases: parsed.phases,
-    estimated_completion: parsed.estimated_completion || prev.estimated_completion || null,
+    timeline_range: parsed.timeline_range || prev.timeline_range || null,
+    timeline_note: parsed.timeline_note || prev.timeline_note || null,
     date_confidence: parsed.date_confidence || prev.date_confidence || null,
-    date_note: parsed.date_note || prev.date_note || null,
-    summary: parsed.summary || prev.summary || "",
+    phases: parsed.phases,
     generated_at: prev.generated_at || now,           // preserve original generation time
     version: (typeof prev.version === "number" ? prev.version : 1) + 1,
     adaptation_log: log,
   };
 }
 
-// Fire-and-forget weekly maintenance, called after a workout save. Re-adapts
-// each goal whose roadmap is >7 days stale (or never adapted). Loads the profile
-// once, adapts in place, writes profile_data back once.
-async function maybeAdaptGoalRoadmaps(profileId) {
+// Fire-and-forget weekly maintenance, called after a workout save. Adapts BOTH
+// the per-goal roadmaps AND the structured macro roadmap when each is >7 days
+// stale, sharing a single profile load, one full-exercise-context fetch, and one
+// workouts fetch. A single profile PATCH writes everything at the end.
+async function maybeAdaptAllRoadmaps(profileId) {
   if (!profileId) return;
-  var r = await fetch(SUPABASE_URL + "/rest/v1/profiles?id=eq." + profileId + "&select=id,profile_data,coaching_brief", { headers: sbHeaders() });
+  var r = await fetch(SUPABASE_URL + "/rest/v1/profiles?id=eq." + profileId + "&select=id,profile_data,coaching_brief,roadmap_data,roadmap_data_updated_at", { headers: sbHeaders() });
   var rows = await r.json();
   if (!rows || !rows.length) return;
   var profileData = rows[0].profile_data || {};
-  if (!Array.isArray(profileData.goals) || !profileData.goals.length) return;
+  var roadmapData = rows[0].roadmap_data || null;
+  var rdUpdatedAt = rows[0].roadmap_data_updated_at || null;
+  var goals = Array.isArray(profileData.goals) ? profileData.goals : [];
 
   var WEEK_MS = 7 * 24 * 60 * 60 * 1000;
   var nowMs = Date.now();
-  var due = profileData.goals.filter(function(g) {
-    if (!g || !g.intake_completed || !g.roadmap) return false;
-    if (!g.last_adapted_at) return true;
-    var t = Date.parse(g.last_adapted_at);
+  var isStale = function(ts) {
+    if (!ts) return true;
+    var t = Date.parse(ts);
     return isNaN(t) || (nowMs - t) > WEEK_MS;
-  });
-  if (!due.length) return;
+  };
 
-  // One workouts fetch reused for every due goal.
+  var dueGoals = goals.filter(function(g) {
+    return g && g.intake_completed && g.roadmap && isStale(g.last_adapted_at);
+  });
+  var macroDue = !!(roadmapData && isStale(rdUpdatedAt));
+  if (!dueGoals.length && !macroDue) return;
+
+  // Shared context — fetched once for every adaptation below.
+  var fullEx = null;
+  try { fullEx = await getFullExerciseContext(profileId, 60); } catch (e) { /* non-fatal */ }
   var wRes = await fetch(SUPABASE_URL + "/rest/v1/workouts?profile_id=eq." + profileId + "&order=date.desc&limit=10&select=date,type", { headers: sbHeaders() });
   var workouts = await wRes.json();
   if (!Array.isArray(workouts)) workouts = [];
 
-  var changed = false;
-  for (var i = 0; i < due.length; i++) {
-    var g = due[i];   // same object reference as in profileData.goals
+  var goalsChanged = false;
+  for (var i = 0; i < dueGoals.length; i++) {
+    var g = dueGoals[i]; // same object reference as in profileData.goals
     try {
-      g.roadmap = await adaptGoalRoadmap(g, "", workouts, "weekly");
+      var gx = null;
+      try { gx = await getGoalExerciseContext(profileId, extractGoalKeywords(g.title), 90); } catch (e) { /* non-fatal */ }
+      g.roadmap = await adaptGoalRoadmap(g, "", workouts, "weekly", gx);
       g.last_adapted_at = new Date().toISOString();
-      changed = true;
+      goalsChanged = true;
     } catch (e) {
-      console.error("[GoalRoadmap] weekly adapt failed for goal " + (g.id || "?") + ": " + e.message);
+      console.error("[Roadmap] weekly goal adapt failed for goal " + (g.id || "?") + ": " + e.message);
     }
   }
-  if (!changed) return;
 
+  var macroChanged = false;
+  var newMacro = roadmapData;
+  if (macroDue) {
+    try {
+      newMacro = await adaptMacroRoadmap(roadmapData, fullEx || {}, workouts, "weekly");
+      macroChanged = true;
+    } catch (e) {
+      console.error("[Roadmap] weekly macro adapt failed for profile " + profileId + ": " + e.message);
+    }
+  }
+
+  if (!goalsChanged && !macroChanged) return;
+
+  var patch = {};
+  if (goalsChanged) patch.profile_data = cleanProfileData(profileData);
+  if (macroChanged) { patch.roadmap_data = newMacro; patch.roadmap_data_updated_at = new Date().toISOString(); }
   await fetch(SUPABASE_URL + "/rest/v1/profiles?id=eq." + profileId, {
     method: "PATCH",
     headers: sbHeaders("return=minimal"),
-    body: JSON.stringify({ profile_data: cleanProfileData(profileData) }),
+    body: JSON.stringify(patch),
   });
-  console.log("[GoalRoadmap] weekly adapted " + due.length + " goal(s) for profile " + profileId);
+  console.log("[Roadmap] weekly adapted " + dueGoals.length + " goal(s)" + (macroChanged ? " + macro" : "") + " for profile " + profileId);
 }
 
 // GET intake questions for a goal — generates them (Haiku) on first call.
@@ -3258,32 +3656,40 @@ app.post("/api/profiles/:id/goals/:goalId/roadmap", async function(req, res) {
     var answersStr = (goal.intake_answers || []).map(function(a) { return a.question + ": " + a.answer; }).join("\n");
     var workoutsStr = workouts.map(function(w) { return w.date + ": " + (w.type || "Workout"); }).join("\n");
 
-    var sys = "You are an elite fitness coach building a personalized training roadmap for a specific goal. Return ONLY valid JSON with this exact shape: { phases: [{ name: string, description: string, duration_weeks: number, completion_signals: string[], status: string }], estimated_completion: 'YYYY-MM-DD', date_confidence: 'high'|'medium'|'low', date_note: string, summary: string }. Phases should be 3-5 phases that build progressively. The first phase status is 'current', rest are 'upcoming'. completion_signals are 2-3 specific, measurable things the athlete will be able to do/achieve to know they're ready to move to the next phase. estimated_completion should be a realistic best-guess date from today. date_confidence: 'high' for goals achievable in under 6 months with clear metrics (e.g. 20 pushups); 'medium' for 6-24 month goals; 'low' for multi-year or skill-dependent goals like martial arts belts where the timeline genuinely depends on too many variables to predict. date_note: an honest one-sentence caveat about the estimate — for low-confidence goals, acknowledge that the timeline could vary significantly based on training consistency, natural progression, and factors outside anyone's control.";
+    // Ground the roadmap in actual logged training: this goal's exercise history
+    // + the overall training picture.
+    var goalExCtx = await getGoalExerciseContext(req.params.id, extractGoalKeywords(goal.title), 90);
+    var fullEx = await getFullExerciseContext(req.params.id, 60);
+
+    var sys = "You are an elite fitness coach building a personalized training roadmap. Return ONLY valid JSON matching this exact shape: { timeline_range: string (e.g. '3-6 months' or '8-15 years'), timeline_note: string (1-2 sentences: realistic range for this goal type based on evidence, narrowed by their specific starting point and training frequency), date_confidence: 'high'|'medium'|'low', phases: [...] }. Use 3 near-term phases (type: 'near_term', 4-6 weeks each) and 2 horizon phases (type: 'horizon', milestone-based). Near-term phases must include weekly_targets (2-3 specific actionable items) and completion_signals (2-3 measurable achievements). Use evidence-based timelines — strength research, weight loss rates, skill acquisition data. Widen the range rather than narrow it when uncertain. Be concise — each phase description maximum 2 sentences. The first near_term phase status is 'current', rest are 'upcoming'.";
     var userMsg = "GOAL: " + (goal.title || "Untitled") + " (" + (goal.type || "general") + ")\n" +
       "DESCRIPTION: " + (goal.description || "none") + "\n\n" +
       "INTAKE ANSWERS:\n" + (answersStr || "none") + "\n\n" +
+      "EXERCISE CONTEXT FOR THIS GOAL:\n" + JSON.stringify(goalExCtx) + "\n\n" +
+      "OVERALL TRAINING PICTURE:\n" + JSON.stringify(fullEx) + "\n\n" +
+      "RECENT WORKOUTS (last 20):\n" + (workoutsStr || "none") + "\n\n" +
       "ATHLETE PROFILE:\n" + (ctx || "none") + "\n\n" +
       "COACHING BRIEF:\n" + (brief || "none") + "\n\n" +
-      "RECENT WORKOUTS (last 20):\n" + (workoutsStr || "none") + "\n\n" +
       "Today's date: " + today + "\n\nBuild a realistic, phased roadmap for this specific goal.";
 
-    var text = await callAISystem(sys, userMsg, 2000, MODEL_SONNET);
+    var text = await callAISystem(sys, userMsg, 2500, MODEL_SONNET);
     var parsed = parseAIJson(text);
     if (!parsed || !Array.isArray(parsed.phases)) throw new Error("AI returned an invalid roadmap");
+    assignNearTermDates(parsed.phases, today);
 
     var now = new Date().toISOString();
     goal.roadmap = {
-      phases: parsed.phases,
-      estimated_completion: parsed.estimated_completion || null,
+      timeline_range: parsed.timeline_range || null,
+      timeline_note: parsed.timeline_note || null,
       date_confidence: parsed.date_confidence || null,
-      date_note: parsed.date_note || null,
-      summary: parsed.summary || "",
+      phases: parsed.phases,
       generated_at: now,
       version: 1,
       adaptation_log: [],
     };
     goal.last_adapted_at = now;
     await saveGoalToProfile(req.params.id, loaded.profileData, found.index, goal);
+    recomputeRoadmapProgress(goal.roadmap, goalExCtx);
     res.json({ success: true, goal: goal });
   } catch (e) {
     console.error("[GoalRoadmap] generate error:", e.message);
@@ -3304,9 +3710,12 @@ app.post("/api/profiles/:id/goals/:goalId/checkin", async function(req, res) {
     var workouts = await wRes.json();
     if (!Array.isArray(workouts)) workouts = [];
 
-    goal.roadmap = await adaptGoalRoadmap(goal, notes, workouts, "checkin");
+    var goalExCtx = null;
+    try { goalExCtx = await getGoalExerciseContext(req.params.id, extractGoalKeywords(goal.title), 90); } catch (e) { /* non-fatal */ }
+    goal.roadmap = await adaptGoalRoadmap(goal, notes, workouts, "checkin", goalExCtx);
     goal.last_adapted_at = new Date().toISOString();
     await saveGoalToProfile(req.params.id, loaded.profileData, found.index, goal);
+    recomputeRoadmapProgress(goal.roadmap, goalExCtx);
     res.json({ success: true, goal: goal });
   } catch (e) {
     console.error("[GoalRoadmap] checkin error:", e.message);
@@ -3314,12 +3723,20 @@ app.post("/api/profiles/:id/goals/:goalId/checkin", async function(req, res) {
   }
 });
 
-// GET a single goal (with roadmap, intake, etc.) without fetching the full profile.
+// GET a single goal (with roadmap, intake, etc.) without fetching the full
+// profile. progress_pct is recomputed on read (not stored).
 app.get("/api/profiles/:id/goals/:goalId", async function(req, res) {
   try {
     var loaded = await loadProfileWithGoals(req.params.id);
     var found = findGoalById(loaded.profileData, req.params.goalId);
-    res.json({ success: true, goal: found.goal });
+    var goal = found.goal;
+    if (goal && goal.roadmap) {
+      try {
+        var gx = await getGoalExerciseContext(req.params.id, extractGoalKeywords(goal.title), 90);
+        recomputeRoadmapProgress(goal.roadmap, gx);
+      } catch (e) { recomputeRoadmapProgress(goal.roadmap, null); }
+    }
+    res.json({ success: true, goal: goal });
   } catch (e) {
     res.status(e.status || 500).json({ success: false, error: e.message });
   }
