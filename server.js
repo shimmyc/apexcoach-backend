@@ -823,15 +823,12 @@ app.get("/api/profiles/:id/daily", async function(req, res) {
         console.error("[Body] fitbit upsert failed:", e.message);
       });
     }
-    // Diff today's Fitbit-tracked activities against existing workouts and
-    // queue any that aren't already logged into profiles.fitbit_pending_imports.
-    // Fire-and-forget so the daily response isn't held up.
-    var todaysActs = result.data && result.data.todaysActivities;
-    if (Array.isArray(todaysActs) && todaysActs.length) {
-      diffAndQueueFitbitImports(req.params.id, result.date, todaysActs).catch(function(e) {
-        console.error("[FitbitImport] queue failed:", e.message);
-      });
-    }
+    // NOTE: the legacy fitbit_pending_imports queue is deprecated and no longer
+    // written. The Today-tab "Unmatched Fitbit Activities" card
+    // (GET /api/profiles/:id/unmatched-fitbit) replaces it — it computes
+    // unmatched activities on demand over the last 7 days, so there's nothing to
+    // queue here. diffAndQueueFitbitImports() / the fitbit-pending-imports /
+    // fitbit-import endpoints remain defined but unused (kept for back-compat).
     res.json({ success: true, date: result.date, data: result.data });
   } catch (err) {
     console.error("Error:", err.message);
