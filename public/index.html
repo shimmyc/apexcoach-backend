@@ -106,6 +106,25 @@ body.compact main{padding:20px 24px 60px}
 .surface-2{background:var(--bg-surface-2);border-radius:12px}
 .border-subtle{border:1px solid var(--border-subtle)}
 .border-ai{border:1px solid var(--border-ai)}
+/* ── TODAY TAB REDESIGN (Agent 2/5) ───────────────────────────────────────
+   Scoped to Today card IDs ONLY — the global .card class (shared with History/
+   Library/Profile) is intentionally left untouched. ID specificity (1,0,0)
+   overrides the .card class rules + responsive overrides. */
+#readiness-card,#body-metrics-card,#progress-card,#ai-card,#feeling-checkin-card,#recent-workouts-card{
+  background:var(--bg-surface-1);border:1px solid var(--border-subtle);
+  border-radius:20px;margin-bottom:12px}
+#readiness-card{padding:20px}
+#body-metrics-card,#progress-card,#feeling-checkin-card{padding:16px 20px}
+#ai-card,#recent-workouts-card{padding:20px}
+/* The Cornerman (progress brief) card gets the AI purple border. */
+#progress-card{border:1px solid var(--border-ai)}
+/* Feeling check-in pills (Today-only class). Energy = ember when selected;
+   soreness/severity = surface-2 when selected. */
+#feeling-checkin-card .fc-pill{background:var(--bg-base);border:1px solid var(--border-subtle);color:var(--text-muted)}
+#feeling-checkin-card .fc-pill:hover{border-color:var(--accent-ember)}
+#fc-energy .fc-pill.active{background:var(--accent-ember);border-color:var(--accent-ember);color:#fff}
+#fc-soreness .fc-pill.active,#fc-severity .fc-pill.active{background:var(--bg-surface-2);border-color:var(--border-subtle);color:var(--text-primary)}
+#fc-submit-btn{background:var(--accent-ember);color:#fff}
 @keyframes pulse{0%,100%{opacity:.2}50%{opacity:1}}
 @keyframes fadeUp{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:translateY(0)}}
 @keyframes toastIn{from{opacity:0;transform:translateY(20px)}to{opacity:1;transform:translateY(0)}}
@@ -480,7 +499,7 @@ input[type=range]{width:100%;accent-color:var(--accent)}
     <div id="body-metrics-card" class="card" style="display:none"></div>
     <!-- Unmatched Fitbit activities (last 7 days). One card per activity. -->
     <div id="unmatched-fitbit-card"></div>
-    <div id="feeling-checkin-card" class="card" style="display:none;background:#0d1018;border-color:#22c97a22">
+    <div id="feeling-checkin-card" class="card" style="display:none">
       <div id="feeling-checkin-full">
         <p class="clabel">how are you feeling today?</p>
         <div style="margin-bottom:14px">
@@ -523,7 +542,7 @@ input[type=range]{width:100%;accent-color:var(--accent)}
           </div>
           <div id="checkin-voice-status" class="mono" style="font-size:10px;color:var(--text-dim);margin-top:4px;min-height:14px"></div>
         </div>
-        <button id="fc-submit-btn" onclick="submitFeelingCheckin()" class="btnPri" style="width:100%;padding:14px;font-size:15px;border-radius:8px;opacity:0.4;pointer-events:none" disabled>Tell My Coach &rarr;</button>
+        <button id="fc-submit-btn" onclick="submitFeelingCheckin()" class="btnPri" style="width:100%;padding:14px;font-size:15px;border-radius:14px;opacity:0.4;pointer-events:none" disabled>Tell My Coach &rarr;</button>
       </div>
       <div id="feeling-checkin-summary" style="display:none;padding:12px 16px">
         <div id="fc-summary-text" style="font-size:14px;color:var(--text-sec);line-height:1.6;word-wrap:break-word;overflow-wrap:break-word;margin-bottom:6px"></div>
@@ -531,7 +550,7 @@ input[type=range]{width:100%;accent-color:var(--accent)}
       </div>
     </div>
     <div id="progress-card" class="card" style="display:none">
-      <p class="clabel">progress brief</p>
+      <p style="font-size:10px;text-transform:uppercase;letter-spacing:0.08em;color:var(--accent-cornerman);font-weight:600;margin-bottom:8px">THE CORNERMAN</p>
       <div id="progress-content"></div>
     </div>
     <!-- Recent Workouts + My Templates (Agent 2 + Agent 3). Sits just above
@@ -2434,7 +2453,7 @@ function submitCheckin() {
   // Fetch AI and progress
   document.getElementById('ai-card').style.display = 'block';
   document.getElementById('progress-card').style.display = 'block';
-  document.getElementById('progress-content').innerHTML = '<p class="mono" style="font-size:11px;color:#22c97a;letter-spacing:3px;animation:pulse 1.6s infinite">ANALYZING PROGRESS...</p>';
+  document.getElementById('progress-content').innerHTML = '<p class="font-mono" style="font-size:11px;color:var(--accent-cornerman);letter-spacing:2px;animation:pulse 1.6s infinite">ANALYZING PROGRESS...</p>';
   fetchProgress();
   // User just submitted a fresh manual check-in — context has changed,
   // always regenerate recs rather than using any stale cache.
@@ -3098,7 +3117,7 @@ function renderReadiness() {
   var t = TIERS[readiness.tier];
   var card = document.getElementById('readiness-card');
   card.style.display = 'block';
-  card.style.borderColor = hexA(t.color, '44');
+  // Border handled by scoped CSS (border-subtle) — no inline tier border.
 
   var r7 = fitData.rolling7 || {};
   var hrvVal = fitData.hrv ? Math.round(fitData.hrv * 10) / 10 : 0;
@@ -3188,18 +3207,86 @@ function renderReadiness() {
     statCard("Steps", fitData.steps ? fitData.steps.toLocaleString() : "-", "yesterday") +
     '</div>';
 
+  // ── Readiness hero (Agent 2/5): SVG 270° ring + status + score bar + 2×2
+  //    biometric grid. Ring color by the spec's thresholds (>=70 / 40-69 / <40).
+  //    All values come from data already computed above — no new data/logic. ──
+  var score = readiness.score;
+  var ringColor = score >= 70 ? 'var(--color-positive)' : score >= 40 ? 'var(--color-caution)' : 'var(--color-danger)';
+  var RING_C = 251.3;                       // circumference = 2π·40
+  var trackLen = (0.75 * RING_C).toFixed(1); // 270° track
+  var trackGap = (RING_C - 0.75 * RING_C).toFixed(1);
+  var fillLen = (Math.max(0, Math.min(100, score)) / 100 * 0.75 * RING_C).toFixed(1);
+  var TIER_DESC = { hard:'Primed — train hard today.', moderate:'Solid — train with intent.', light:'Ease in — keep it lighter.', recovery:'Prioritize recovery today.' };
+  var desc = TIER_DESC[readiness.tier] || '';
+
+  function bioCell(label, value, unit, trendTxt, trendColor) {
+    return '<div style="background:var(--bg-base);border-radius:12px;padding:10px 12px">' +
+      '<div style="display:flex;align-items:baseline;gap:4px">' +
+        '<span class="font-hero" style="font-size:24px;font-weight:700;line-height:1;color:var(--text-primary)">' + value + '</span>' +
+        (unit ? '<span class="font-mono" style="font-size:12px;color:var(--text-muted)">' + unit + '</span>' : '') +
+      '</div>' +
+      '<div style="font-size:11px;color:var(--text-muted);text-transform:uppercase;letter-spacing:0.06em;margin-top:4px">' + label + '</div>' +
+      (trendTxt ? '<div style="font-size:10px;font-weight:600;color:' + (trendColor || 'var(--text-muted)') + ';margin-top:2px">' + trendTxt + '</div>' : '') +
+    '</div>';
+  }
+
+  // HRV cell + trend vs 7-day avg.
+  var hrvNow = fitData.hrv ? Math.round(fitData.hrv * 10) / 10 : null;
+  var hrvAvg7 = (fitData.rolling7 && fitData.rolling7.hrv) || null;
+  var hrvTrendTxt = '', hrvTrendColor = 'var(--text-muted)';
+  if (hrvNow != null && hrvAvg7) {
+    var hd = Math.round((hrvNow - hrvAvg7) * 10) / 10;
+    hrvTrendTxt = (hd >= 0 ? '▲ ' : '▼ ') + Math.abs(hd) + ' vs avg';
+    hrvTrendColor = hd >= 0 ? 'var(--color-positive)' : 'var(--color-danger)';
+  }
+  // Resting HR cell + deviation vs baseline.
+  var rhrDev2 = readiness.breakdown.rhrDeviation;
+  var rhrTrendTxt = fitData.rhr ? ((rhrDev2 >= 0 ? '+' : '') + rhrDev2 + ' vs base') : '';
+  var rhrTrendColor = rhrDev2 >= 0 ? 'var(--color-positive)' : 'var(--color-danger)';
+  // Sleep cell.
+  var sleepH = (fitData.sleep && typeof fitData.sleep.hours === 'number') ? fitData.sleep.hours : null;
+  var sleepVal = sleepH != null ? sleepH.toFixed(1) : '—';
+  var sleepUnit = sleepH != null ? 'h' : '';
+  var sleepEff = (fitData.sleep && fitData.sleep.efficiency) ? fitData.sleep.efficiency + '% eff' : '';
+  // Steps cell.
+  var stepsVal = fitData.steps ? fitData.steps.toLocaleString() : '—';
+
+  var heroHTML =
+    '<div style="display:flex;align-items:center;gap:18px;margin-bottom:14px">' +
+      '<div style="position:relative;width:88px;height:88px;flex-shrink:0">' +
+        '<svg width="88" height="88" viewBox="0 0 88 88">' +
+          '<circle cx="44" cy="44" r="40" fill="none" stroke="rgba(61,220,151,0.12)" stroke-width="8" stroke-linecap="round" stroke-dasharray="' + trackLen + ' ' + trackGap + '" transform="rotate(135 44 44)"></circle>' +
+          '<circle cx="44" cy="44" r="40" fill="none" stroke="' + ringColor + '" stroke-width="8" stroke-linecap="round" stroke-dasharray="' + fillLen + ' ' + RING_C.toFixed(1) + '" transform="rotate(135 44 44)"></circle>' +
+        '</svg>' +
+        '<div style="position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center">' +
+          '<span class="font-hero" style="font-size:28px;font-weight:700;line-height:1;color:' + ringColor + '">' + score + '</span>' +
+          '<span style="font-size:9px;color:var(--text-muted);margin-top:1px">/100</span>' +
+        '</div>' +
+      '</div>' +
+      '<div style="flex:1;min-width:0">' +
+        '<div style="font-size:17px;font-weight:600;color:var(--text-primary)">' + t.label + '</div>' +
+        '<div style="font-size:13px;color:var(--text-muted);margin-top:3px;line-height:1.4">' + desc + '</div>' +
+      '</div>' +
+    '</div>' +
+    '<div style="height:5px;width:100%;background:var(--bg-base);border-radius:3px;overflow:hidden;margin-bottom:16px"><div style="height:100%;width:' + Math.max(0, Math.min(100, score)) + '%;background:' + ringColor + ';border-radius:3px;transition:width .9s cubic-bezier(.4,0,.2,1)"></div></div>';
+
+  var bioGrid =
+    '<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:4px">' +
+      bioCell('HRV', hrvNow != null ? hrvNow : '—', hrvNow != null ? 'ms' : '', hrvTrendTxt, hrvTrendColor) +
+      bioCell('Resting HR', fitData.rhr || '—', fitData.rhr ? 'bpm' : '', rhrTrendTxt, rhrTrendColor) +
+      bioCell('Sleep', sleepVal, sleepUnit, sleepEff, 'var(--text-muted)') +
+      bioCell('Steps', stepsVal, '', 'yesterday', 'var(--text-muted)') +
+    '</div>';
+
   card.innerHTML =
     '<p class="clabel">readiness score</p>' +
-    '<div style="display:flex;align-items:baseline;gap:8px;margin-bottom:10px">' +
-    '<span class="oswald" style="font-size:96px;font-weight:700;line-height:1;color:' + t.color + '">' + readiness.score + '</span>' +
-    '<span style="color:var(--text-dim);font-size:28px">/100</span></div>' +
-    '<div style="display:inline-block;border:1px solid ' + hexA(t.color,'44') + ';background:' + hexA(t.color,'15') + ';color:' + t.color + ';padding:4px 14px;border-radius:4px;font-family:IBM Plex Mono,monospace;font-size:11px;letter-spacing:3px;margin-bottom:18px">' + t.label + ' ' + t.range + '</div>' +
-    barsHTML + vitalsHTML + sleepStagesHTML + zonesHTML + hrvHTML;
+    heroHTML + bioGrid +
+    barsHTML + sleepStagesHTML + zonesHTML + hrvHTML;
 
   showFeelingCheckinCard();
   document.getElementById('ai-card').style.display = 'block';
   document.getElementById('progress-card').style.display = 'block';
-  document.getElementById('progress-content').innerHTML = '<p class="mono" style="font-size:11px;color:#22c97a;letter-spacing:3px;animation:pulse 1.6s infinite">ANALYZING PROGRESS...</p>';
+  document.getElementById('progress-content').innerHTML = '<p class="font-mono" style="font-size:11px;color:var(--accent-cornerman);letter-spacing:2px;animation:pulse 1.6s infinite">ANALYZING PROGRESS...</p>';
   renderLogArea();
 }
 
@@ -3830,22 +3917,42 @@ function renderAI() {
     var isExpanded = expandedOption === i;
     var badge = i === 0 ? 'BEST FIT' : i === 1 ? 'ALTERNATIVE' : 'QUICK';
 
-    html += '<div onclick="toggleOption(' + i + ')" style="background:var(--bg-input);border:1px solid ' + (isExpanded ? hexA(c,'44') : 'var(--border)') + ';border-radius:10px;padding:16px;margin-bottom:10px;cursor:pointer;transition:border-color .2s">';
+    // Agent 2/5: option 1 = ember "primary" card; options 2-3 = surface cards.
+    var primary = (i === 0);
+    if (primary) {
+      html += '<div onclick="toggleOption(' + i + ')" style="background:var(--accent-ember);border-radius:20px;padding:20px;margin-bottom:12px;cursor:pointer">';
+    } else {
+      html += '<div onclick="toggleOption(' + i + ')" style="background:var(--bg-surface-1);border:1px solid var(--border-subtle);border-radius:20px;padding:20px;margin-bottom:12px;cursor:pointer;transition:border-color .2s">';
+    }
     html += '<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">';
-    html += '<span style="font-family:IBM Plex Mono,monospace;font-size:10px;color:' + c + ';letter-spacing:2px;background:' + hexA(c,'15') + ';padding:2px 10px;border-radius:4px;border:1px solid ' + hexA(c,'33') + '">' + badge + '</span>';
-    html += '<span class="mono" style="font-size:12px;color:var(--text-muted)">' + o.duration + 'min - ' + o.intensity + '</span>';
+    if (primary) {
+      html += '<span style="font-size:9px;text-transform:uppercase;letter-spacing:1px;font-weight:600;color:#fff;background:rgba(255,255,255,0.18);padding:3px 8px;border-radius:9999px">' + badge + '</span>';
+      html += '<span style="font-size:12px;color:rgba(255,255,255,0.85)">' + o.duration + 'min - ' + o.intensity + '</span>';
+    } else {
+      html += '<span style="font-size:9px;text-transform:uppercase;letter-spacing:1px;font-weight:600;color:var(--text-muted);background:var(--bg-surface-2);padding:3px 8px;border-radius:9999px">' + badge + '</span>';
+      html += '<span class="font-mono" style="font-size:12px;color:var(--text-muted)">' + o.duration + 'min - ' + o.intensity + '</span>';
+    }
     html += '</div>';
-    html += '<div class="oswald" style="font-size:20px;font-weight:600;color:var(--text-bright);margin-bottom:4px">' + o.headline + '</div>';
-    html += '<div class="mono" style="font-size:12px;color:var(--text-muted);margin-bottom:' + ((o.goal_tags && o.goal_tags.length) ? '8' : (isExpanded ? '12' : '0')) + 'px">' + o.type + '</div>';
+    if (primary) {
+      html += '<div style="font-size:17px;font-weight:700;color:#fff;margin-bottom:4px">' + o.headline + '</div>';
+    } else {
+      html += '<div style="font-size:16px;font-weight:600;color:var(--text-primary);margin-bottom:4px">' + o.headline + '</div>';
+    }
+    var typeMb = (o.goal_tags && o.goal_tags.length) ? '8' : (isExpanded ? '12' : '0');
+    html += '<div style="font-size:14px;color:' + (primary ? 'rgba(255,255,255,0.85)' : 'var(--text-muted)') + ';margin-bottom:' + typeMb + 'px">' + o.type + '</div>';
     // Goal tags (regular goals + micro-goals — micro-goals get a 🎯 Supports prefix)
     if (o.goal_tags && o.goal_tags.length) {
       html += '<div style="display:flex;flex-wrap:wrap;gap:5px;margin-bottom:' + (isExpanded ? '10' : '0') + 'px">';
       for (var gt = 0; gt < o.goal_tags.length; gt++) {
         var tag = o.goal_tags[gt];
-        if (isMicroGoalTag(tag)) {
-          html += '<span style="font-size:11px;color:var(--accent);background:var(--accent-10);border:1px solid var(--accent-33);padding:2px 8px;border-radius:10px;font-family:IBM Plex Mono,monospace">&#x1F3AF; Supports: ' + tag + '</span>';
+        var micro = isMicroGoalTag(tag);
+        var tagPfx = micro ? '&#x1F3AF; Supports: ' : '&rarr; ';
+        if (primary) {
+          html += '<span style="font-size:9px;font-weight:600;color:#fff;background:rgba(255,255,255,0.18);padding:3px 8px;border-radius:9999px">' + tagPfx + tag + '</span>';
+        } else if (micro) {
+          html += '<span style="font-size:9px;font-weight:600;color:var(--accent-cornerman);background:rgba(139,92,246,0.15);padding:3px 8px;border-radius:9999px">&#x1F3AF; Supports: ' + tag + '</span>';
         } else {
-          html += '<span style="font-size:11px;color:#f5a623;background:#f5a62312;border:1px solid #f5a62322;padding:2px 8px;border-radius:10px;font-family:IBM Plex Mono,monospace">&rarr; ' + tag + '</span>';
+          html += '<span style="font-size:9px;font-weight:600;color:var(--color-positive);background:rgba(61,220,151,0.12);padding:3px 8px;border-radius:9999px">&rarr; ' + tag + '</span>';
         }
       }
       html += '</div>';
@@ -3853,27 +3960,31 @@ function renderAI() {
 
     if (isExpanded) {
       if (o.goal_reasoning) {
-        html += '<p style="font-size:13px;color:#c8a060;font-style:italic;line-height:1.6;margin-bottom:10px">' + o.goal_reasoning + '</p>';
+        html += '<p style="font-size:13px;color:' + (primary ? 'rgba(255,255,255,0.9)' : 'var(--accent-cornerman)') + ';font-style:italic;line-height:1.6;margin-bottom:10px">' + o.goal_reasoning + '</p>';
       }
-      html += '<p style="font-size:14px;color:var(--text-sec);line-height:1.75;margin-bottom:12px">' + o.reasoning + '</p>';
+      html += '<p style="font-size:14px;color:' + (primary ? 'rgba(255,255,255,0.9)' : 'var(--text-muted)') + ';line-height:1.75;margin-bottom:12px">' + o.reasoning + '</p>';
       var exes = o.exercises || [];
+      var exBorder = primary ? 'rgba(255,255,255,0.18)' : 'var(--border-subtle)';
+      var exNumColor = primary ? 'rgba(255,255,255,0.6)' : 'var(--text-muted)';
+      var exTxtColor = primary ? '#fff' : 'var(--text-primary)';
       html += '<div style="margin-bottom:10px">';
       for (var j = 0; j < exes.length; j++) {
         var num = j < 9 ? '0' + (j+1) : '' + (j+1);
-        html += '<div style="display:flex;gap:12px;padding:8px 0;border-bottom:1px solid var(--border);font-size:14px;align-items:flex-start"><span class="mono" style="font-size:10px;color:var(--text-dim);width:20px;flex-shrink:0;padding-top:2px">' + num + '</span><span style="color:var(--text-sec);line-height:1.5">' + exes[j] + '</span></div>';
+        html += '<div style="display:flex;gap:12px;padding:8px 0;border-bottom:1px solid ' + exBorder + ';font-size:14px;align-items:flex-start"><span class="font-mono" style="font-size:10px;color:' + exNumColor + ';width:20px;flex-shrink:0;padding-top:2px">' + num + '</span><span style="color:' + exTxtColor + ';line-height:1.5">' + exes[j] + '</span></div>';
       }
       html += '</div>';
       if (o.mobility) {
-        html += '<p style="font-size:14px;color:#4488bb;font-style:italic;margin-bottom:12px">Mobility: ' + o.mobility + '</p>';
+        html += '<p style="font-size:14px;color:' + (primary ? 'rgba(255,255,255,0.9)' : 'var(--accent-cornerman)') + ';font-style:italic;margin-bottom:12px">Mobility: ' + o.mobility + '</p>';
       }
-      html += '<button type="button" onclick="event.stopPropagation();logAIWorkout(this)" data-type="' + attrEsc(o.type) + '" data-headline="' + attrEsc(o.headline) + '" data-exes="' + attrEsc(JSON.stringify(exes)) + '" data-mob="' + attrEsc(o.mobility || '') + '" style="width:100%;background:var(--accent);color:#040605;border:none;padding:12px 20px;font-size:14px;font-weight:700;cursor:pointer;border-radius:8px;font-family:DM Sans,sans-serif;margin-top:8px">Log This Workout</button>';
+      var logBtnStyle = primary ? 'background:#fff;color:var(--accent-ember)' : 'background:var(--accent-ember);color:#fff';
+      html += '<button type="button" onclick="event.stopPropagation();logAIWorkout(this)" data-type="' + attrEsc(o.type) + '" data-headline="' + attrEsc(o.headline) + '" data-exes="' + attrEsc(JSON.stringify(exes)) + '" data-mob="' + attrEsc(o.mobility || '') + '" style="width:100%;' + logBtnStyle + ';border:none;padding:12px 20px;font-size:14px;font-weight:700;cursor:pointer;border-radius:14px;font-family:Inter,sans-serif;margin-top:8px">Log This Workout</button>';
     }
     html += '</div>';
   }
 
   if (activeRec.minimum_viable) {
-    html += '<div style="background:#f5a62310;border:1px solid #f5a62322;padding:12px 16px;border-radius:6px;margin-top:4px"><p class="mono" style="font-size:10px;color:#f5a623;letter-spacing:2px;margin-bottom:6px">MINIMUM VIABLE</p><p style="font-size:14px;color:#c8a060;line-height:1.65;margin-bottom:12px">' + attrEsc(activeRec.minimum_viable) + '</p>' +
-      '<button type="button" onclick="logAIWorkout(this)" data-type="Active Recovery" data-headline="Minimum Viable Workout" data-exes="' + attrEsc(JSON.stringify([activeRec.minimum_viable])) + '" data-mob="" style="width:100%;background:#f5a623;color:#040605;border:none;padding:10px 16px;font-size:13px;font-weight:700;cursor:pointer;border-radius:8px;font-family:DM Sans,sans-serif">Log Minimum Viable</button></div>';
+    html += '<div style="background:var(--bg-surface-2);border-radius:14px;padding:12px 16px;margin-top:8px"><p style="font-size:10px;text-transform:uppercase;letter-spacing:0.08em;font-weight:600;color:var(--text-muted);margin-bottom:6px">MINIMUM VIABLE</p><p style="font-size:14px;color:var(--text-muted);line-height:1.65;margin-bottom:12px">' + attrEsc(activeRec.minimum_viable) + '</p>' +
+      '<button type="button" onclick="logAIWorkout(this)" data-type="Active Recovery" data-headline="Minimum Viable Workout" data-exes="' + attrEsc(JSON.stringify([activeRec.minimum_viable])) + '" data-mob="" style="width:100%;background:var(--bg-base);color:var(--text-primary);border:1px solid var(--border-subtle);padding:10px 16px;font-size:13px;font-weight:700;cursor:pointer;border-radius:12px;font-family:Inter,sans-serif">Log Minimum Viable</button></div>';
   }
 
   // ── CYCLING UI ─────────────────────────────────────────────────────────
@@ -6986,7 +7097,7 @@ function getScheduleText() {
 // workout save/edit/delete because those endpoints wipe the cache.
 function fetchProgress() {
   document.getElementById('progress-card').style.display = 'block';
-  document.getElementById('progress-content').innerHTML = '<p class="mono" style="font-size:11px;color:#22c97a;letter-spacing:3px;animation:pulse 1.6s infinite">ANALYZING PROGRESS...</p>';
+  document.getElementById('progress-content').innerHTML = '<p class="font-mono" style="font-size:11px;color:var(--accent-cornerman);letter-spacing:2px;animation:pulse 1.6s infinite">ANALYZING PROGRESS...</p>';
 
   var slice = workoutLog.slice(0, 14);
   if (!slice.length) {
@@ -7073,22 +7184,22 @@ function generateProgressBrief(slice, today) {
 
 function renderProgress() {
   if (!progressRec) return;
-  var trendColors = { improving: '#22c97a', steady: '#f5a623', needs_attention: '#e84545' };
+  var trendColors = { improving: 'var(--color-positive)', steady: 'var(--color-caution)', needs_attention: 'var(--color-danger)' };
   var trendLabels = { improving: 'IMPROVING', steady: 'STEADY', needs_attention: 'NEEDS ATTENTION' };
-  var color = trendColors[progressRec.trend] || '#f5a623';
+  var color = trendColors[progressRec.trend] || 'var(--color-caution)';
   var label = trendLabels[progressRec.trend] || (progressRec.trend || 'STEADY').toUpperCase().replace('_', ' ');
   var hasAlert = !!(progressRec.pattern_alert || progressRec.injury_flag);
   var html =
-    '<div style="display:flex;align-items:center;gap:10px;margin-bottom:12px">' +
-    '<div style="width:8px;height:8px;border-radius:50%;background:' + color + ';flex-shrink:0"></div>' +
-    '<span class="mono" style="font-size:11px;color:' + color + ';letter-spacing:2px">' + label + '</span>' +
+    '<div style="display:flex;align-items:center;gap:8px;margin-bottom:10px">' +
+    '<div style="width:7px;height:7px;border-radius:50%;background:' + color + ';flex-shrink:0"></div>' +
+    '<span class="font-mono" style="font-size:11px;color:' + color + ';letter-spacing:0.06em">' + label + '</span>' +
     '</div>' +
-    '<p style="font-size:14px;color:var(--text-sec);line-height:1.75' + (hasAlert ? ';margin-bottom:12px' : '') + '">' + (progressRec.brief || '') + '</p>';
+    '<p style="font-size:15px;font-weight:500;color:var(--text-primary);line-height:1.6' + (hasAlert ? ';margin-bottom:12px' : '') + '">' + (progressRec.brief || '') + '</p>';
   if (progressRec.pattern_alert) {
-    html += '<div style="background:#f5a62310;border:1px solid #f5a62322;color:#c8a060;padding:8px 12px;border-radius:6px;font-size:13px' + (progressRec.injury_flag ? ';margin-bottom:8px' : '') + '">Pattern: ' + progressRec.pattern_alert + '</div>';
+    html += '<div style="background:rgba(245,200,66,0.10);border:1px solid rgba(245,200,66,0.22);color:var(--color-caution);padding:8px 12px;border-radius:10px;font-size:13px;margin-top:10px' + (progressRec.injury_flag ? ';margin-bottom:8px' : '') + '">Pattern: ' + progressRec.pattern_alert + '</div>';
   }
   if (progressRec.injury_flag) {
-    html += '<div style="background:#e8454510;border:1px solid #e8454522;color:#e87;padding:8px 12px;border-radius:6px;font-size:13px">Flag: ' + progressRec.injury_flag + '</div>';
+    html += '<div style="background:rgba(239,68,68,0.10);border:1px solid rgba(239,68,68,0.22);color:var(--color-danger);padding:8px 12px;border-radius:10px;font-size:13px;margin-top:10px">Flag: ' + progressRec.injury_flag + '</div>';
   }
   document.getElementById('progress-content').innerHTML = html;
 }
@@ -7274,12 +7385,12 @@ function renderRecentAndTemplates() {
       var r = recent[i];
       var rid = r.id || '';
       var exCount = (typeof exerciseCountByWorkoutId === 'object' && r.id != null && exerciseCountByWorkoutId[r.id]) ? exerciseCountByWorkoutId[r.id] : null;
-      h += '<div style="display:flex;align-items:center;justify-content:space-between;background:var(--bg-input);border:1px solid var(--border);border-radius:6px;padding:10px 12px">';
+      h += '<div style="display:flex;align-items:center;justify-content:space-between;background:var(--bg-base);border:1px solid var(--border-subtle);border-radius:12px;padding:10px 12px">';
       h += '<div style="flex:1;min-width:0">';
       h += '<div style="font-size:14px;color:var(--text-bright);font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">' + (r.type || 'Workout') + '</div>';
       h += '<div class="mono" style="font-size:10px;color:var(--text-dim);margin-top:2px">' + r.date + (exCount != null ? ' &middot; ' + exCount + ' exercise' + (exCount === 1 ? '' : 's') : '') + '</div>';
       h += '</div>';
-      if (rid) h += '<button onclick="reLogWorkout(\'' + rid + '\')" style="background:var(--accent-10);border:1px solid var(--accent-33);color:var(--accent);padding:6px 12px;border-radius:6px;cursor:pointer;font-size:12px;font-weight:600;margin-left:8px;white-space:nowrap">&#128260; Re-log</button>';
+      if (rid) h += '<button onclick="reLogWorkout(\'' + rid + '\')" style="background:transparent;border:1px solid var(--border-subtle);color:var(--accent-ember);padding:6px 12px;border-radius:10px;cursor:pointer;font-size:12px;font-weight:600;margin-left:8px;white-space:nowrap">&#128260; Re-log</button>';
       h += '</div>';
     }
     h += '</div>';
@@ -7294,7 +7405,7 @@ function renderRecentAndTemplates() {
       h += '<div style="display:flex;flex-direction:column;gap:8px">';
       for (var t = 0; t < workoutTemplates.length; t++) {
         var tpl = workoutTemplates[t];
-        h += '<div style="display:flex;align-items:center;justify-content:space-between;background:var(--bg-input);border:1px solid var(--border);border-radius:6px;padding:10px 12px">';
+        h += '<div style="display:flex;align-items:center;justify-content:space-between;background:var(--bg-base);border:1px solid var(--border-subtle);border-radius:12px;padding:10px 12px">';
         h += '<div style="flex:1;min-width:0">';
         h += '<div style="font-size:14px;color:var(--text-bright);font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">' + escHtml(tpl.name || 'Template') + '</div>';
         var subBits = [];
@@ -7302,7 +7413,7 @@ function renderRecentAndTemplates() {
         if (tpl.use_count != null) subBits.push('used ' + tpl.use_count + 'x');
         h += '<div class="mono" style="font-size:10px;color:var(--text-dim);margin-top:2px">' + subBits.join(' &middot; ') + '</div>';
         h += '</div>';
-        h += '<button onclick="useTemplate(\'' + tpl.id + '\')" style="background:var(--accent-10);border:1px solid var(--accent-33);color:var(--accent);padding:6px 12px;border-radius:6px;cursor:pointer;font-size:12px;font-weight:600;margin-left:8px;white-space:nowrap">&#9654; Use</button>';
+        h += '<button onclick="useTemplate(\'' + tpl.id + '\')" style="background:transparent;border:1px solid var(--border-subtle);color:var(--accent-ember);padding:6px 12px;border-radius:10px;cursor:pointer;font-size:12px;font-weight:600;margin-left:8px;white-space:nowrap">&#9654; Use</button>';
         h += '</div>';
       }
       h += '</div>';
@@ -7587,12 +7698,12 @@ function renderUnmatchedFitbit() {
     var meta = bits.join(' &middot; ');
     var timeStr = ufFormatTime(a.start_time);
 
-    h += '<div class="card" style="background:var(--accent-08);border-color:var(--accent-33);margin-bottom:12px">';
-    h += '<p class="mono" style="font-size:10px;color:var(--accent);letter-spacing:2px;margin-bottom:4px">&#127939; FITBIT ACTIVITY &mdash; ' + escHtml(ufFormatDate(a.date)) + '</p>';
-    h += '<div style="font-size:16px;font-weight:600;color:var(--text-bright)">' + escHtml(a.activity_type || 'Activity') + '</div>';
-    if (meta) h += '<div class="mono" style="font-size:11px;color:var(--text-muted);margin-top:2px">' + meta + '</div>';
-    if (timeStr) h += '<div class="mono" style="font-size:11px;color:var(--text-dim);margin-top:2px">Started at ' + escHtml(timeStr) + '</div>';
-    h += '<div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:10px">';
+    h += '<div class="card" style="background:var(--bg-surface-1);border:1px solid var(--border-subtle);border-radius:20px;padding:16px 20px;margin-bottom:12px">';
+    h += '<p style="font-size:10px;color:var(--text-muted);letter-spacing:0.08em;text-transform:uppercase;margin-bottom:4px">&#127939; FITBIT ACTIVITY &mdash; ' + escHtml(ufFormatDate(a.date)) + '</p>';
+    h += '<div style="font-size:15px;font-weight:600;color:var(--text-primary)">' + escHtml(a.activity_type || 'Activity') + '</div>';
+    if (meta) h += '<div class="font-mono" style="font-size:12px;color:var(--text-muted);margin-top:2px">' + meta + '</div>';
+    if (timeStr) h += '<div class="font-mono" style="font-size:12px;color:var(--text-muted);margin-top:2px">Started at ' + escHtml(timeStr) + '</div>';
+    h += '<div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:12px;align-items:center">';
 
     var sdw = Array.isArray(a.same_day_workouts) ? a.same_day_workouts : [];
     if (sdw.length) {
@@ -7600,13 +7711,13 @@ function renderUnmatchedFitbit() {
         var w = sdw[j];
         // Only numeric ids cross the onclick boundary; the (potentially unsafe)
         // type string is escHtml'd for the label and looked up at click time.
-        h += '<button onclick="ufMatch(\'' + pid + '\', ' + w.id + ')" style="background:var(--accent);border:1px solid var(--accent);color:#0a0a0a;padding:8px 14px;border-radius:6px;cursor:pointer;font-size:12px;font-weight:600">Match to ' + escHtml(w.type || 'workout') + '</button>';
+        h += '<button onclick="ufMatch(\'' + pid + '\', ' + w.id + ')" style="background:var(--accent-ember);border:1px solid var(--accent-ember);color:#fff;padding:8px 14px;border-radius:10px;cursor:pointer;font-size:12px;font-weight:600">Match to ' + escHtml(w.type || 'workout') + '</button>';
       }
-      h += '<button onclick="ufImport(\'' + pid + '\')" style="background:transparent;border:1px solid var(--accent-33);color:var(--accent);padding:8px 14px;border-radius:6px;cursor:pointer;font-size:12px">Import as New</button>';
-      h += '<button onclick="ufDismiss(\'' + pid + '\')" style="background:transparent;border:1px solid var(--border);color:var(--text-muted);padding:8px 14px;border-radius:6px;cursor:pointer;font-size:12px">Dismiss</button>';
+      h += '<button onclick="ufImport(\'' + pid + '\')" style="background:transparent;border:1px solid var(--border-subtle);color:var(--accent-ember);padding:8px 14px;border-radius:10px;cursor:pointer;font-size:12px;font-weight:600">Import as New</button>';
+      h += '<button onclick="ufDismiss(\'' + pid + '\')" style="background:transparent;border:none;color:var(--text-muted);padding:8px 6px;cursor:pointer;font-size:12px">Dismiss</button>';
     } else {
-      h += '<button onclick="ufImport(\'' + pid + '\')" style="background:var(--accent);border:1px solid var(--accent);color:#0a0a0a;padding:8px 14px;border-radius:6px;cursor:pointer;font-size:12px;font-weight:600">Import as Workout</button>';
-      h += '<button onclick="ufDismiss(\'' + pid + '\')" style="background:transparent;border:1px solid var(--border);color:var(--text-muted);padding:8px 14px;border-radius:6px;cursor:pointer;font-size:12px">Dismiss</button>';
+      h += '<button onclick="ufImport(\'' + pid + '\')" style="background:var(--accent-ember);border:1px solid var(--accent-ember);color:#fff;padding:8px 14px;border-radius:10px;cursor:pointer;font-size:12px;font-weight:600">Import as Workout</button>';
+      h += '<button onclick="ufDismiss(\'' + pid + '\')" style="background:transparent;border:none;color:var(--text-muted);padding:8px 6px;cursor:pointer;font-size:12px">Dismiss</button>';
     }
     h += '</div></div>';
   }
@@ -8317,25 +8428,26 @@ function renderBodyTodayCard() {
   var h = '';
   h += '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">';
   h += '<p class="clabel" style="margin-bottom:0">body metrics</p>';
-  h += '<button onclick="openLogWeight()" style="background:var(--accent-10);border:1px solid var(--accent-33);color:var(--accent);padding:5px 12px;border-radius:6px;cursor:pointer;font-size:12px;font-weight:600">+ Log Weight</button>';
+  h += '<button onclick="openLogWeight()" style="background:transparent;border:none;color:var(--accent-ember);padding:0;cursor:pointer;font-size:13px;font-weight:600">+ Log Weight</button>';
   h += '</div>';
 
   var cells = [];
   if (hasWeight) {
-    cells.push({ label: 'WEIGHT',  val: wt.toFixed(1), unit: 'lbs', color: 'var(--text-bright)' });
+    cells.push({ label: 'WEIGHT',  val: wt.toFixed(1), unit: 'lbs', color: 'var(--text-primary)' });
   }
   if (bmi != null) {
-    cells.push({ label: 'BMI', val: bmi.toFixed(1), unit: tier ? tier.label : '', color: tier ? tier.color : 'var(--text-bright)' });
+    cells.push({ label: 'BMI', val: bmi.toFixed(1), unit: tier ? tier.label : '', color: tier ? tier.color : 'var(--text-primary)' });
   }
   if (bf != null) {
-    cells.push({ label: 'BODY FAT', val: bf.toFixed(1) + '%', unit: '', color: 'var(--text-bright)' });
+    cells.push({ label: 'BODY FAT', val: bf.toFixed(1) + '%', unit: '', color: 'var(--text-primary)' });
   }
   if (cells.length) {
     h += '<div style="display:grid;grid-template-columns:repeat(' + cells.length + ',1fr);gap:10px;margin-bottom:' + (goalDelta != null ? '14px' : '0') + '">';
     cells.forEach(function(c) {
-      h += '<div style="text-align:center"><div class="mono" style="font-size:10px;color:var(--text-dim);letter-spacing:2px;margin-bottom:4px">' + c.label + '</div>';
-      h += '<div style="font-size:22px;font-weight:600;color:' + c.color + ';line-height:1">' + c.val + '</div>';
-      if (c.unit) h += '<div style="font-size:11px;color:var(--text-muted);margin-top:3px">' + c.unit + '</div>';
+      var valSize = c.label === 'WEIGHT' ? 28 : 24;
+      h += '<div style="text-align:center"><div style="font-size:11px;color:var(--text-muted);letter-spacing:0.06em;text-transform:uppercase;margin-bottom:4px">' + c.label + '</div>';
+      h += '<div class="font-hero" style="font-size:' + valSize + 'px;font-weight:700;color:' + c.color + ';line-height:1">' + c.val + '</div>';
+      if (c.unit) h += '<div class="font-mono" style="font-size:12px;color:var(--text-muted);margin-top:3px">' + c.unit + '</div>';
       h += '</div>';
     });
     h += '</div>';
@@ -8352,10 +8464,10 @@ function renderBodyTodayCard() {
     var label = direction === 'at' ? 'Goal reached!' : absDelta.toFixed(1) + ' lbs to ' + direction + ' (goal: ' + pb.goal_weight_lbs + ' lbs)';
     h += '<div>';
     h += '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">';
-    h += '<span class="mono" style="font-size:11px;color:var(--text-muted);letter-spacing:1px">PROGRESS TO GOAL</span>';
-    h += '<span style="font-size:13px;color:var(--text-sec)">' + label + '</span>';
+    h += '<span style="font-size:11px;color:var(--text-muted);letter-spacing:0.06em;text-transform:uppercase">PROGRESS TO GOAL</span>';
+    h += '<span style="font-size:13px;color:var(--text-muted)">' + label + '</span>';
     h += '</div>';
-    h += '<div style="background:var(--bg-input);border-radius:4px;height:8px;overflow:hidden"><div style="height:100%;width:' + pct + '%;background:linear-gradient(90deg,var(--accent),#22c97a);transition:width .6s ease"></div></div>';
+    h += '<div style="background:var(--bg-base);border-radius:3px;height:5px;overflow:hidden"><div style="height:100%;width:' + pct + '%;background:var(--color-positive);transition:width .6s ease;border-radius:3px"></div></div>';
     h += '</div>';
   }
 
