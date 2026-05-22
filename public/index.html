@@ -225,6 +225,16 @@ input[type=range]{width:100%;accent-color:var(--accent)}
 #wm-modal .modal{max-width:360px;border:1px solid var(--border-subtle);border-radius:20px;background:var(--bg-surface-1);animation:wmPop .2s ease}
 #wm-modal .btnPri{background:var(--accent-ember);color:#fff}
 #wm-modal .btnSec{background:var(--bg-surface-2);color:var(--text-muted);border:none}
+/* ── AGENT 4/5: HISTORY + LIBRARY TABS ────────────────────────────────────
+   Scoped to #tab-history / #tab-library. ID-prefixed selectors override the
+   global .card/.navBtn (which stay untouched for the other tabs + header). */
+#tab-history .card,#tab-library .card{background:var(--bg-surface-1);border:1px solid var(--border-subtle);border-radius:20px}
+/* In-tab nav pills: Week/Month + Dashboard/Exercises/Records */
+#tab-history .navBtn,#tab-library .navBtn{background:var(--bg-surface-2);border:none;color:var(--text-muted);border-radius:9999px;padding:6px 16px;font-size:13px;font-weight:600;font-family:'Inter',sans-serif;transition:background .15s ease,color .15s ease}
+#tab-history .navBtn.active,#tab-library .navBtn.active{background:var(--accent-ember);color:#fff}
+/* "Ask Your History" is an AI feature → cornerman focus; Library search → ember */
+#tab-history #history-query:focus{border-color:var(--accent-cornerman);outline:none}
+#tab-library input[type=text]:focus,#tab-library select:focus{border-color:var(--accent-ember);outline:none}
 .settings-header{display:flex;align-items:center;justify-content:space-between;padding:14px 24px;border-bottom:1px solid var(--border);flex-shrink:0}
 .settings-body{display:flex;flex:1;overflow:hidden}
 .settings-nav{width:200px;border-right:1px solid var(--border);padding:16px 0;overflow-y:auto;flex-shrink:0}
@@ -595,23 +605,23 @@ input[type=range]{width:100%;accent-color:var(--accent)}
         <button id="cal-mode-month" class="navBtn" onclick="setCalMode('month')" style="flex:1;text-align:center">Month</button>
       </div>
       <div class="statsGrid" id="week-stats"></div>
-      <div id="double-skip-warn" style="display:none;background:#f5a62310;border:1px solid #f5a62325;color:#f5a623;padding:12px 16px;border-radius:6px;font-size:15px">
+      <div id="double-skip-warn" style="display:none;background:var(--bg-surface-2);border:1px solid var(--border-subtle);color:var(--color-caution);padding:12px 16px;border-radius:12px;font-size:15px">
         Two misses in a row - today is non-negotiable. Even 15 min counts.
       </div>
       <div class="card">
         <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px">
-          <button onclick="calNav(-1)" style="background:transparent;border:1px solid var(--border-accent);color:var(--text-muted);padding:6px 14px;border-radius:6px;cursor:pointer;font-size:15px">&larr;</button>
-          <span id="cal-title" class="oswald" style="font-size:22px;font-weight:600;color:var(--text-bright)"></span>
-          <button onclick="calNav(1)" style="background:transparent;border:1px solid var(--border-accent);color:var(--text-muted);padding:6px 14px;border-radius:6px;cursor:pointer;font-size:15px">&rarr;</button>
+          <button onclick="calNav(-1)" style="background:var(--bg-surface-2);border:1px solid var(--border-subtle);color:var(--text-muted);padding:6px 14px;border-radius:9999px;cursor:pointer;font-size:15px">&larr;</button>
+          <span id="cal-title" class="oswald" style="font-size:22px;font-weight:600;color:var(--text-primary)"></span>
+          <button onclick="calNav(1)" style="background:var(--bg-surface-2);border:1px solid var(--border-subtle);color:var(--text-muted);padding:6px 14px;border-radius:9999px;cursor:pointer;font-size:15px">&rarr;</button>
         </div>
         <div style="display:grid;grid-template-columns:repeat(7,1fr);gap:4px;margin-bottom:8px">
-          <div class="mono" style="font-size:11px;color:var(--text-dim);text-align:center;padding:4px">M</div>
-          <div class="mono" style="font-size:11px;color:var(--text-dim);text-align:center;padding:4px">T</div>
-          <div class="mono" style="font-size:11px;color:var(--text-dim);text-align:center;padding:4px">W</div>
-          <div class="mono" style="font-size:11px;color:var(--text-dim);text-align:center;padding:4px">T</div>
-          <div class="mono" style="font-size:11px;color:var(--text-dim);text-align:center;padding:4px">F</div>
-          <div class="mono" style="font-size:11px;color:var(--text-dim);text-align:center;padding:4px">S</div>
-          <div class="mono" style="font-size:11px;color:var(--text-dim);text-align:center;padding:4px">S</div>
+          <div style="font-size:11px;color:var(--text-muted);text-align:center;padding:4px;text-transform:uppercase;letter-spacing:0.06em">M</div>
+          <div style="font-size:11px;color:var(--text-muted);text-align:center;padding:4px;text-transform:uppercase;letter-spacing:0.06em">T</div>
+          <div style="font-size:11px;color:var(--text-muted);text-align:center;padding:4px;text-transform:uppercase;letter-spacing:0.06em">W</div>
+          <div style="font-size:11px;color:var(--text-muted);text-align:center;padding:4px;text-transform:uppercase;letter-spacing:0.06em">T</div>
+          <div style="font-size:11px;color:var(--text-muted);text-align:center;padding:4px;text-transform:uppercase;letter-spacing:0.06em">F</div>
+          <div style="font-size:11px;color:var(--text-muted);text-align:center;padding:4px;text-transform:uppercase;letter-spacing:0.06em">S</div>
+          <div style="font-size:11px;color:var(--text-muted);text-align:center;padding:4px;text-transform:uppercase;letter-spacing:0.06em">S</div>
         </div>
         <div id="cal-grid" style="display:grid;grid-template-columns:repeat(7,1fr);gap:4px"></div>
         <div id="cal-detail" style="display:none;margin-top:10px"></div>
@@ -621,33 +631,33 @@ input[type=range]{width:100%;accent-color:var(--accent)}
 
     <!-- Sessions section (always visible below calendar) -->
     <div id="history-list-section">
-      <div style="border-top:1px solid var(--border);padding-top:16px;margin-top:4px">
-        <p class="mono" style="font-size:10px;color:var(--text-dim);letter-spacing:3px;margin-bottom:12px">SESSIONS</p>
+      <div style="border-top:1px solid var(--border-subtle);padding-top:16px;margin-top:4px">
+        <p style="font-size:10px;color:var(--text-muted);letter-spacing:0.06em;text-transform:uppercase;margin-bottom:12px">Sessions</p>
       </div>
-      <div class="card" style="border-color:var(--accent-22)">
+      <div class="card" style="border-color:var(--border-ai)">
         <p class="clabel">ask your history</p>
         <div style="display:flex;gap:8px">
-          <input type="text" id="history-query" placeholder="When did I last do glute bridges?" style="flex:1;background:var(--bg-input);border:1px solid var(--border);color:var(--text);padding:10px 14px;border-radius:6px;font-size:14px;outline:none;font-family:'DM Sans',sans-serif" onkeyup="if(event.key==='Enter')searchHistory()">
-          <button onclick="searchHistory()" class="btnPri" style="padding:10px 16px;font-size:13px;white-space:nowrap">Search</button>
+          <input type="text" id="history-query" placeholder="When did I last do glute bridges?" style="flex:1;background:var(--bg-surface-2);border:1px solid var(--border-subtle);color:var(--text-primary);padding:10px 14px;border-radius:12px;font-size:14px;outline:none;font-family:'Inter',sans-serif" onkeyup="if(event.key==='Enter')searchHistory()">
+          <button onclick="searchHistory()" class="btnPri" style="padding:10px 18px;font-size:13px;font-weight:600;white-space:nowrap;background:var(--accent-cornerman);color:#fff;border-radius:9999px">Search</button>
         </div>
-        <div class="mono" style="font-size:10px;color:var(--text-dim);margin-top:6px">Try: "How many MMA sessions this month?" · "When did my groin last flare up?"</div>
-        <div id="history-answer" style="display:none;margin-top:12px;padding:14px;background:var(--bg-input);border-radius:8px;border:1px solid var(--accent-22)"></div>
+        <div style="font-size:10px;color:var(--text-muted);margin-top:6px">Try: "How many MMA sessions this month?" · "When did my groin last flare up?"</div>
+        <div id="history-answer" style="display:none;margin-top:12px;padding:14px;background:var(--bg-surface-2);border-radius:12px;border-left:3px solid var(--accent-cornerman)"></div>
       </div>
-      <div id="log-date-filter" style="display:none;background:var(--accent-10);border:1px solid var(--accent-22);border-radius:6px;padding:10px 14px;align-items:center;justify-content:space-between;margin-bottom:4px">
-        <span id="log-date-filter-text" class="mono" style="font-size:12px;color:var(--accent)"></span>
-        <button onclick="clearLogDateFilter()" style="background:transparent;border:none;color:var(--accent);cursor:pointer;font-size:16px;padding:0 4px">&times;</button>
+      <div id="log-date-filter" style="display:none;background:var(--bg-surface-2);border:1px solid var(--border-subtle);border-radius:9999px;padding:10px 14px;align-items:center;justify-content:space-between;margin-bottom:4px">
+        <span id="log-date-filter-text" style="font-size:12px;color:var(--accent-ember)"></span>
+        <button onclick="clearLogDateFilter()" style="background:transparent;border:none;color:var(--accent-ember);cursor:pointer;font-size:16px;padding:0 4px">&times;</button>
       </div>
       <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:8px">
-        <select id="log-sort" onchange="renderLog()" style="background:var(--bg-input);border:1px solid var(--border);color:var(--text-sec);padding:6px 10px;border-radius:4px;font-size:12px;font-family:IBM Plex Mono,monospace;margin-bottom:0;width:auto">
+        <select id="log-sort" onchange="renderLog()" style="background:var(--bg-surface-2);border:1px solid var(--border-subtle);color:var(--text-primary);padding:6px 12px;border-radius:9999px;font-size:12px;font-family:'Inter',sans-serif;margin-bottom:0;width:auto">
           <option value="newest">Newest First</option>
           <option value="oldest">Oldest First</option>
           <option value="type">By Type</option>
         </select>
-        <div style="display:flex;gap:4px;flex-wrap:wrap">
-          <button onclick="setLogFilter('all')" class="log-filter-btn active" data-filter="all" style="font-size:11px;padding:4px 10px;border-radius:4px;border:1px solid var(--border-accent);background:var(--accent-10);color:var(--accent);cursor:pointer;font-family:IBM Plex Mono,monospace">All</button>
-          <button onclick="setLogFilter('week')" class="log-filter-btn" data-filter="week" style="font-size:11px;padding:4px 10px;border-radius:4px;border:1px solid var(--border-accent);background:transparent;color:var(--text-muted);cursor:pointer;font-family:IBM Plex Mono,monospace">Week</button>
-          <button onclick="setLogFilter('month')" class="log-filter-btn" data-filter="month" style="font-size:11px;padding:4px 10px;border-radius:4px;border:1px solid var(--border-accent);background:transparent;color:var(--text-muted);cursor:pointer;font-family:IBM Plex Mono,monospace">Month</button>
-          <button onclick="setLogFilter('year')" class="log-filter-btn" data-filter="year" style="font-size:11px;padding:4px 10px;border-radius:4px;border:1px solid var(--border-accent);background:transparent;color:var(--text-muted);cursor:pointer;font-family:IBM Plex Mono,monospace">Year</button>
+        <div style="display:flex;gap:6px;flex-wrap:wrap">
+          <button onclick="setLogFilter('all')" class="log-filter-btn active" data-filter="all" style="font-size:11px;font-weight:600;padding:5px 12px;border-radius:9999px;border:1px solid var(--accent-ember);background:var(--bg-surface-2);color:var(--accent-ember);cursor:pointer;font-family:'Inter',sans-serif">All</button>
+          <button onclick="setLogFilter('week')" class="log-filter-btn" data-filter="week" style="font-size:11px;font-weight:600;padding:5px 12px;border-radius:9999px;border:1px solid transparent;background:var(--bg-surface-2);color:var(--text-muted);cursor:pointer;font-family:'Inter',sans-serif">Week</button>
+          <button onclick="setLogFilter('month')" class="log-filter-btn" data-filter="month" style="font-size:11px;font-weight:600;padding:5px 12px;border-radius:9999px;border:1px solid transparent;background:var(--bg-surface-2);color:var(--text-muted);cursor:pointer;font-family:'Inter',sans-serif">Month</button>
+          <button onclick="setLogFilter('year')" class="log-filter-btn" data-filter="year" style="font-size:11px;font-weight:600;padding:5px 12px;border-radius:9999px;border:1px solid transparent;background:var(--bg-surface-2);color:var(--text-muted);cursor:pointer;font-family:'Inter',sans-serif">Year</button>
         </div>
       </div>
       <p class="mono" id="log-count" style="font-size:9px;color:#333;letter-spacing:3px">HISTORY - 0 SESSIONS</p>
@@ -8826,16 +8836,23 @@ function importExerciseHistory() {
 function renderLibDashboard() {
   var el = document.getElementById('lib-dashboard');
   if (!el) return;
-  if (!libStats) { el.innerHTML = '<p class="mono" style="font-size:11px;color:#22c97a;letter-spacing:3px;animation:pulse 1.6s infinite">LOADING...</p>'; loadLibrary(); return; }
+  if (!libStats) { el.innerHTML = '<p class="font-mono" style="font-size:11px;color:var(--text-muted);letter-spacing:2px;animation:pulse 1.6s infinite">LOADING...</p>'; loadLibrary(); return; }
 
   var html = '';
 
-  // Quick stats row
+  // Quick stats row (Library-local cell — statCard() is shared with the Today tab, so left untouched)
+  var libStat = function(label, val, sub) {
+    return '<div style="background:var(--bg-surface-2);border-radius:12px;padding:10px;text-align:center">' +
+      '<div class="font-hero" style="font-size:20px;font-weight:700;color:var(--text-primary);line-height:1.1">' + val + '</div>' +
+      '<div style="font-size:11px;color:var(--text-muted);margin-top:3px">' + label + '</div>' +
+      (sub ? '<div style="font-size:9px;color:var(--text-muted);opacity:.7;margin-top:1px">' + sub + '</div>' : '') +
+    '</div>';
+  };
   html += '<div style="display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-bottom:16px">';
-  html += statCard('Workouts', libStats.total_workouts || 0, 'completed');
-  html += statCard('Exercises', libStats.unique_exercises || 0, 'unique');
-  html += statCard('Streak', currentStreak || 0, 'days');
-  html += statCard('Best Day', libStats.most_active_day || '-', 'most active');
+  html += libStat('Workouts', libStats.total_workouts || 0, 'completed');
+  html += libStat('Exercises', libStats.unique_exercises || 0, 'unique');
+  html += libStat('Streak', currentStreak || 0, 'days');
+  html += libStat('Best Day', libStats.most_active_day || '-', 'most active');
   html += '</div>';
 
   // Donut chart
@@ -8862,9 +8879,9 @@ function renderLibDashboard() {
       var cColor = CAT_COLORS[ck] || '#888';
       var cLabel = catLabels[ck] || ck.replace('_', ' ');
       html += '<div onclick="setLibMainFilter(\'' + ck + '\');showLibView(\'exercises\')" style="display:flex;align-items:center;gap:10px;margin-bottom:8px;cursor:pointer">';
-      html += '<div style="width:90px;font-size:13px;color:var(--text-sec)">' + cLabel + '</div>';
-      html += '<div style="flex:1;background:var(--bg);border-radius:4px;height:20px;overflow:hidden"><div style="height:100%;width:' + cPct + '%;background:' + cColor + '44;border-radius:4px;min-width:2px"></div></div>';
-      html += '<span class="mono" style="font-size:11px;color:var(--text-muted);width:60px;text-align:right">' + cCount + ' (' + cPct + '%)</span>';
+      html += '<div style="width:90px;font-size:13px;color:var(--text-primary)">' + cLabel + '</div>';
+      html += '<div style="flex:1;background:var(--bg-surface-2);border-radius:9999px;height:18px;overflow:hidden"><div style="height:100%;width:' + cPct + '%;background:' + cColor + '44;border-radius:9999px;min-width:2px"></div></div>';
+      html += '<span class="font-mono" style="font-size:11px;color:var(--text-muted);width:60px;text-align:right">' + cCount + ' (' + cPct + '%)</span>';
       html += '</div>';
     }
     html += '</div>';
@@ -8878,18 +8895,18 @@ function renderLibDashboard() {
       var ex = topEx[i];
       var mc = ex.main_category || ex.category || 'other';
       var cc = CAT_COLORS[mc] || '#888';
-      html += '<div onclick="showExerciseDetail(\'' + escAttr(ex.name) + '\')" style="background:var(--bg-input);border:1px solid var(--border);border-radius:8px;padding:12px;cursor:pointer">' +
-        '<div style="font-size:15px;color:var(--text);font-weight:500;margin-bottom:4px">' + escHtml(ex.name) + '</div>' +
-        '<span class="mono" style="font-size:9px;color:' + cc + ';letter-spacing:1px;text-transform:uppercase;background:' + cc + '18;padding:2px 6px;border-radius:3px">' + mc.replace('_', ' ') + '</span>' +
-        '<div class="mono" style="font-size:11px;color:var(--text-muted);margin-top:6px">' + ex.count + 'x logged</div></div>';
+      html += '<div onclick="showExerciseDetail(\'' + escAttr(ex.name) + '\')" style="background:var(--bg-surface-2);border-radius:12px;padding:12px;cursor:pointer">' +
+        '<div style="font-size:13px;color:var(--text-primary);font-weight:600;margin-bottom:4px">' + escHtml(ex.name) + '</div>' +
+        '<div class="font-hero" style="font-size:20px;font-weight:700;color:var(--accent-ember);line-height:1">' + ex.count + '</div>' +
+        '<div style="font-size:11px;color:var(--text-muted);margin-top:4px;text-transform:capitalize">' + mc.replace('_', ' ') + ' &middot; ' + ex.count + 'x</div></div>';
     }
     html += '</div></div>';
   }
 
   // Maintenance buttons
   html += '<div style="margin-top:16px;display:flex;gap:10px;justify-content:center;flex-wrap:wrap">';
-  html += '<button onclick="reformatAllTitles()" id="reformat-titles-btn" style="background:transparent;border:1px solid var(--accent-33);color:var(--accent);padding:10px 20px;border-radius:6px;cursor:pointer;font-size:13px;font-family:DM Sans,sans-serif">&#10024; Reformat Titles</button>';
-  html += '<button onclick="dedupeWorkouts()" id="dedupe-btn" style="background:transparent;border:1px solid #f5a62333;color:#f5a623;padding:10px 20px;border-radius:6px;cursor:pointer;font-size:13px;font-family:DM Sans,sans-serif">Remove Duplicates</button>';
+  html += '<button onclick="reformatAllTitles()" id="reformat-titles-btn" style="background:transparent;border:1px solid var(--accent-ember);color:var(--accent-ember);padding:10px 20px;border-radius:9999px;cursor:pointer;font-size:13px;font-weight:600;font-family:Inter,sans-serif">&#10024; Reformat Titles</button>';
+  html += '<button onclick="dedupeWorkouts()" id="dedupe-btn" style="background:transparent;border:1px solid var(--border-subtle);color:var(--color-caution);padding:10px 20px;border-radius:9999px;cursor:pointer;font-size:13px;font-weight:600;font-family:Inter,sans-serif">Remove Duplicates</button>';
   html += '</div>';
 
   el.innerHTML = html;
@@ -8933,9 +8950,9 @@ function renderStepsSectionHTML() {
   }
   h += '<canvas id="lib-steps" style="max-height:200px"></canvas>';
   h += '<div style="display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-top:14px">';
-  h += '<div style="text-align:center"><div class="mono" style="font-size:10px;color:var(--text-dim);letter-spacing:1px">7-DAY AVG</div><div style="font-size:17px;color:var(--text-bright);font-weight:600;margin-top:2px">' + avg7.toLocaleString() + '</div></div>';
-  h += '<div style="text-align:center"><div class="mono" style="font-size:10px;color:var(--text-dim);letter-spacing:1px">BEST DAY</div><div style="font-size:17px;color:var(--text-bright);font-weight:600;margin-top:2px">' + (best.steps ? best.steps.toLocaleString() : '—') + '</div><div class="mono" style="font-size:10px;color:var(--text-muted);margin-top:2px">' + (best.date ? best.date.slice(5) : '') + '</div></div>';
-  h += '<div style="text-align:center"><div class="mono" style="font-size:10px;color:var(--text-dim);letter-spacing:1px">GOAL HIT RATE</div><div style="font-size:17px;color:var(--text-bright);font-weight:600;margin-top:2px">' + hit7 + ' / ' + last7WithData.length + '</div><div class="mono" style="font-size:10px;color:var(--text-muted);margin-top:2px">last 7 days</div></div>';
+  h += '<div style="text-align:center"><div style="font-size:10px;color:var(--text-muted);letter-spacing:0.06em;text-transform:uppercase">7-DAY AVG</div><div class="font-hero" style="font-size:20px;color:var(--text-primary);font-weight:700;margin-top:2px">' + avg7.toLocaleString() + '</div></div>';
+  h += '<div style="text-align:center"><div style="font-size:10px;color:var(--text-muted);letter-spacing:0.06em;text-transform:uppercase">BEST DAY</div><div class="font-hero" style="font-size:20px;color:var(--text-primary);font-weight:700;margin-top:2px">' + (best.steps ? best.steps.toLocaleString() : '—') + '</div><div class="font-mono" style="font-size:10px;color:var(--text-muted);margin-top:2px">' + (best.date ? best.date.slice(5) : '') + '</div></div>';
+  h += '<div style="text-align:center"><div style="font-size:10px;color:var(--text-muted);letter-spacing:0.06em;text-transform:uppercase">GOAL HIT RATE</div><div class="font-hero" style="font-size:20px;color:var(--text-primary);font-weight:700;margin-top:2px">' + hit7 + ' / ' + last7WithData.length + '</div><div class="font-mono" style="font-size:10px;color:var(--text-muted);margin-top:2px">last 7 days</div></div>';
   h += '</div>';
   h += '<p class="mono" style="font-size:11px;color:var(--text-muted);margin-top:12px;text-align:center">Goal: ' + goal.toLocaleString() + ' steps/day — change in Settings &rarr; Goals &amp; Tracking</p>';
   h += '</div>';
@@ -9161,31 +9178,30 @@ function renderLibExercises() {
 
   var mainCats = ['all','strength','cardio','martial_arts','sports','mind_body','rehab','other'];
   var mainLabels = { all:'All', strength:'Strength', cardio:'Cardio', martial_arts:'Martial Arts', sports:'Sports', mind_body:'Mind & Body', rehab:'Rehab', other:'Other' };
-  var html = '<div style="margin-bottom:12px"><input type="text" id="lib-search" placeholder="Search exercises..." oninput="filterLibExercises()" style="width:100%;background:var(--bg-input);border:1px solid var(--border);color:var(--text);padding:10px 14px;border-radius:6px;font-size:14px;outline:none;font-family:DM Sans,sans-serif;margin-bottom:8px">';
+  var html = '<div style="margin-bottom:12px"><input type="text" id="lib-search" placeholder="Search exercises..." oninput="filterLibExercises()" style="width:100%;background:var(--bg-surface-2);border:1px solid var(--border-subtle);color:var(--text-primary);padding:10px 14px;border-radius:12px;font-size:14px;outline:none;font-family:Inter,sans-serif;margin-bottom:8px">';
   // Main category pills
   html += '<div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:6px">';
   for (var i = 0; i < mainCats.length; i++) {
     var c = mainCats[i];
-    var cc = c === 'all' ? 'var(--accent)' : (CAT_COLORS[c] || '#888');
-    html += '<button onclick="setLibMainFilter(\'' + c + '\')" class="lib-cat-btn' + (libMainFilter === c ? ' active' : '') + '" style="font-size:11px;padding:5px 12px;border-radius:4px;border:1px solid ' + cc + '33;background:' + (libMainFilter === c ? cc + '22' : 'transparent') + ';color:' + cc + ';cursor:pointer;font-family:IBM Plex Mono,monospace;letter-spacing:1px">' + mainLabels[c] + '</button>';
+    var mActive = libMainFilter === c;
+    html += '<button onclick="setLibMainFilter(\'' + c + '\')" class="lib-cat-btn' + (mActive ? ' active' : '') + '" style="font-size:11px;font-weight:600;padding:5px 12px;border-radius:9999px;border:1px solid ' + (mActive ? 'var(--accent-ember)' : 'transparent') + ';background:var(--bg-surface-2);color:' + (mActive ? 'var(--accent-ember)' : 'var(--text-muted)') + ';cursor:pointer;font-family:Inter,sans-serif">' + mainLabels[c] + '</button>';
   }
   html += '</div>';
   // Subcategory pills (appear when a main category is selected)
   if (libMainFilter !== 'all' && SUBCATEGORY_PILLS[libMainFilter]) {
     var subs = SUBCATEGORY_PILLS[libMainFilter];
-    var mainColor = CAT_COLORS[libMainFilter] || '#888';
     html += '<div style="display:flex;gap:5px;flex-wrap:wrap;padding-left:8px;margin-bottom:6px">';
     for (var j = 0; j < subs.length; j++) {
       var s = subs[j];
       var isActive = libSubFilter === s;
       var label = s === 'all' ? 'All ' + mainLabels[libMainFilter] : s.charAt(0).toUpperCase() + s.slice(1);
-      html += '<button onclick="setLibSubFilter(\'' + s + '\')" style="font-size:10px;padding:4px 10px;border-radius:4px;border:1px solid ' + mainColor + '22;background:' + (isActive ? mainColor + '18' : 'transparent') + ';color:' + (isActive ? mainColor : 'var(--text-dim)') + ';cursor:pointer;font-family:IBM Plex Mono,monospace">' + label + '</button>';
+      html += '<button onclick="setLibSubFilter(\'' + s + '\')" style="font-size:10px;font-weight:600;padding:4px 10px;border-radius:9999px;border:1px solid ' + (isActive ? 'var(--accent-ember)' : 'transparent') + ';background:var(--bg-surface-2);color:' + (isActive ? 'var(--accent-ember)' : 'var(--text-muted)') + ';cursor:pointer;font-family:Inter,sans-serif">' + label + '</button>';
     }
     html += '</div>';
   }
   html += '</div>';
   var sortOpts = LIB_SORTS.map(function(k) { return '<option value="' + k + '"' + (libSort === k ? ' selected' : '') + '>' + LIB_SORT_LABEL[k] + '</option>'; }).join('');
-  html += '<div style="display:flex;justify-content:flex-end;align-items:center;gap:6px;margin-bottom:8px"><span class="mono" style="font-size:10px;color:var(--text-dim)">SORT</span><select onchange="setLibSort(this.value)" style="background:var(--bg-input);border:1px solid var(--border-accent);color:var(--text);padding:5px 10px;border-radius:6px;cursor:pointer;font-size:12px;font-family:IBM Plex Mono,monospace">' + sortOpts + '</select></div>';
+  html += '<div style="display:flex;justify-content:flex-end;align-items:center;gap:6px;margin-bottom:8px"><span style="font-size:10px;color:var(--text-muted);letter-spacing:0.06em">SORT</span><select onchange="setLibSort(this.value)" style="background:var(--bg-surface-2);border:1px solid var(--border-subtle);color:var(--text-primary);padding:5px 12px;border-radius:9999px;cursor:pointer;font-size:12px;font-family:Inter,sans-serif">' + sortOpts + '</select></div>';
   html += '<div id="lib-exercise-list"></div>';
   el.innerHTML = html;
   filterLibExercises();
@@ -9229,13 +9245,13 @@ function filterLibExercises() {
     if (ex.best_weight) bestStr = ex.best_weight + ' lbs';
     else if (ex.best_reps) bestStr = ex.best_reps + ' reps';
     else if (ex.best_duration_seconds) bestStr = fmtMMSS(ex.best_duration_seconds);
-    html += '<div onclick="showExerciseDetail(\'' + escAttr(ex.name) + '\')" style="display:flex;align-items:center;justify-content:space-between;padding:12px;background:var(--bg-input);border:1px solid var(--border);border-radius:8px;margin-bottom:6px;cursor:pointer">' +
-      '<div><div style="font-size:15px;color:var(--text);font-weight:500">' + escHtml(ex.name) + '</div>' +
-      '<div style="display:flex;gap:6px;align-items:center;margin-top:4px"><span class="mono" style="font-size:9px;color:' + cc + ';letter-spacing:1px;text-transform:uppercase;background:' + cc + '18;padding:1px 6px;border-radius:3px">' + mc.replace('_', ' ') + '</span>' +
-      (sc && sc !== 'general' ? '<span class="mono" style="font-size:9px;color:var(--text-dim);background:var(--bg);padding:1px 6px;border-radius:3px">' + sc + '</span>' : '') +
-      '<span class="mono" style="font-size:10px;color:var(--text-dim)">' + ex.count + 'x</span>' +
-      (ex.last_date ? '<span class="mono" style="font-size:10px;color:var(--text-dim)">last ' + ex.last_date + '</span>' : '') + '</div></div>' +
-      (bestStr ? '<div class="mono" style="font-size:12px;color:var(--text-muted)">' + bestStr + '</div>' : '') + '</div>';
+    html += '<div onclick="showExerciseDetail(\'' + escAttr(ex.name) + '\')" style="display:flex;align-items:center;justify-content:space-between;padding:14px 16px;background:var(--bg-surface-1);border:1px solid var(--border-subtle);border-radius:16px;margin-bottom:8px;cursor:pointer">' +
+      '<div style="min-width:0"><div style="font-size:15px;color:var(--text-primary);font-weight:600">' + escHtml(ex.name) + '</div>' +
+      '<div style="display:flex;gap:6px;align-items:center;margin-top:4px;flex-wrap:wrap"><span style="font-size:9px;color:' + cc + ';letter-spacing:1px;text-transform:uppercase;background:' + cc + '18;padding:1px 6px;border-radius:9999px">' + mc.replace('_', ' ') + '</span>' +
+      (sc && sc !== 'general' ? '<span style="font-size:9px;color:var(--text-muted);background:var(--bg-surface-2);padding:1px 6px;border-radius:9999px">' + sc + '</span>' : '') +
+      '<span style="font-size:11px;color:var(--text-muted)">' + ex.count + 'x</span>' +
+      (ex.last_date ? '<span class="font-mono" style="font-size:10px;color:var(--text-muted)">last ' + ex.last_date + '</span>' : '') + '</div></div>' +
+      (bestStr ? '<div style="font-size:14px;font-weight:600;color:var(--text-primary);white-space:nowrap;margin-left:8px">' + bestStr + '</div>' : '') + '</div>';
   }
   list.innerHTML = html;
 }
@@ -9251,22 +9267,22 @@ function showExerciseDetail(name) {
   var det = document.getElementById('lib-detail');
   if (!det) return;
   det.style.display = 'block';
-  det.innerHTML = '<p class="mono" style="font-size:11px;color:#22c97a;letter-spacing:3px;animation:pulse 1.6s infinite">LOADING...</p>';
+  det.innerHTML = '<p class="font-mono" style="font-size:11px;color:var(--text-muted);letter-spacing:2px;animation:pulse 1.6s infinite">LOADING...</p>';
 
   fetch('/api/profiles/' + currentProfileId + '/exercises/' + encodeURIComponent(name))
     .then(function(r) { return r.json(); })
     .then(function(data) {
-      if (!data.success) { det.innerHTML = '<p style="color:#e84545">Error loading exercise.</p>'; return; }
+      if (!data.success) { det.innerHTML = '<p style="color:var(--color-danger)">Error loading exercise.</p>'; return; }
       var hist = data.history || [];
       var pr = data.pr || {};
       var cat = hist.length ? hist[0].category : 'other';
       var cc = CAT_COLORS[cat] || '#888';
       var backLabel = libDetailFrom === 'dashboard' ? 'Dashboard' : libDetailFrom === 'records' ? 'Records' : 'All Exercises';
 
-      var html = '<button onclick="backToLibList()" style="background:transparent;border:none;color:var(--accent);cursor:pointer;font-size:13px;padding:0;margin-bottom:12px;font-family:DM Sans,sans-serif">&larr; ' + backLabel + '</button>';
-      html += '<div class="card" style="border-color:' + cc + '33">';
-      html += '<div class="oswald" style="font-size:28px;font-weight:700;color:var(--text-bright);margin-bottom:4px">' + escHtml(name) + '</div>';
-      html += '<span class="mono" style="font-size:10px;color:' + cc + ';letter-spacing:1px;text-transform:uppercase;background:' + cc + '18;padding:2px 8px;border-radius:3px">' + cat + '</span>';
+      var html = '<button onclick="backToLibList()" style="background:transparent;border:none;color:var(--accent-ember);cursor:pointer;font-size:14px;font-weight:600;padding:0;margin-bottom:12px;font-family:Inter,sans-serif">&larr; ' + backLabel + '</button>';
+      html += '<div class="card" style="border-color:var(--border-subtle)">';
+      html += '<div style="font-size:22px;font-weight:700;color:var(--text-primary);margin-bottom:6px">' + escHtml(name) + '</div>';
+      html += '<span style="font-size:10px;color:' + cc + ';letter-spacing:1px;text-transform:uppercase;background:' + cc + '18;padding:2px 8px;border-radius:9999px">' + cat + '</span>';
 
       // Stats row
       html += '<div style="display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-top:16px">';
@@ -9288,7 +9304,7 @@ function showExerciseDetail(name) {
       html += '<div id="lib-ex-analytics" style="margin-top:16px;border-top:1px solid var(--border);padding-top:12px"></div>';
 
       // Session history with PR highlighting
-      html += '<div style="margin-top:16px;border-top:1px solid var(--border);padding-top:12px"><p class="clabel">session history</p>';
+      html += '<div style="margin-top:16px;border-top:1px solid var(--border-subtle);padding-top:12px"><p class="clabel">session history</p>';
       var recent = hist.slice(-10).reverse();
       for (var i = 0; i < recent.length; i++) {
         var s = recent[i];
@@ -9298,11 +9314,11 @@ function showExerciseDetail(name) {
         if (s.weight_lbs) detail.push(s.weight_lbs + ' lbs');
         if (s.distance_miles) detail.push(s.distance_miles + ' mi');
         var isPR = (s.weight_lbs && s.weight_lbs === pr.max_weight) || (!pr.max_weight && s.reps && s.reps === pr.max_reps) || (!pr.max_weight && !pr.max_reps && s.distance_miles && s.distance_miles === pr.max_distance);
-        var rowBorder = isPR ? '1px solid #f5c51833' : '1px solid var(--border)';
-        var rowBg = isPR ? '#f5c51808' : 'transparent';
-        html += '<div style="display:flex;justify-content:space-between;align-items:center;padding:8px;border-bottom:' + rowBorder + ';background:' + rowBg + ';border-radius:' + (isPR ? '4px' : '0') + ';font-size:13px;margin-bottom:' + (isPR ? '2px' : '0') + '">' +
-          '<span style="color:var(--text-muted)">' + s.date + '</span>' +
-          '<span style="color:' + (isPR ? '#f5c518' : 'var(--text-sec)') + '">' + (detail.join(' · ') || '-') + (isPR ? ' &#x1F3C6;' : '') + '</span></div>';
+        var rowBorder = isPR ? '1px solid rgba(245,200,66,0.33)' : '1px solid var(--border-subtle)';
+        var rowBg = isPR ? 'rgba(245,200,66,0.08)' : 'transparent';
+        html += '<div style="display:flex;justify-content:space-between;align-items:center;padding:8px;border-bottom:' + rowBorder + ';background:' + rowBg + ';border-radius:' + (isPR ? '8px' : '0') + ';font-size:13px;margin-bottom:' + (isPR ? '2px' : '0') + '">' +
+          '<span class="font-mono" style="color:var(--text-muted)">' + s.date + '</span>' +
+          '<span style="color:' + (isPR ? 'var(--color-caution)' : 'var(--text-primary)') + '">' + (detail.join(' · ') || '-') + (isPR ? ' &#x1F3C6;' : '') + '</span></div>';
       }
       html += '</div>';
 
@@ -9322,7 +9338,7 @@ function showExerciseDetail(name) {
       // Fetch AI insight
       fetchExInsight(name, hist);
     })
-    .catch(function() { det.innerHTML = '<p style="color:#e84545">Error loading exercise.</p>'; });
+    .catch(function() { det.innerHTML = '<p style="color:var(--color-danger)">Error loading exercise.</p>'; });
 }
 
 // Client mirror of the server parseDurationToSeconds — extracts the best single
@@ -9441,10 +9457,10 @@ function renderLibRecords() {
 
   html += '<div class="card"><p class="clabel">&#x1F3C6; personal records</p>';
   html += '<div style="display:grid;grid-template-columns:1fr;gap:10px">';
-  if (heaviest) html += prCard('Heaviest Lift', heaviest.name, heaviest.max_weight + ' lbs', '#f5c518');
-  if (mostReps) html += prCard('Most Reps', mostReps.name, mostReps.max_reps + ' reps', '#22c97a');
-  if (longestDist) html += prCard('Longest Distance', longestDist.name, longestDist.max_distance + ' mi', '#4488bb');
-  if (!heaviest && !mostReps && !longestDist) html += '<p style="font-size:14px;color:var(--text-dim)">No records yet. Log workouts with details to track PRs.</p>';
+  if (heaviest) html += prCard('Heaviest Lift', heaviest.name, heaviest.max_weight + ' lbs', 'var(--color-caution)');
+  if (mostReps) html += prCard('Most Reps', mostReps.name, mostReps.max_reps + ' reps', 'var(--color-positive)');
+  if (longestDist) html += prCard('Longest Distance', longestDist.name, longestDist.max_distance + ' mi', 'var(--color-info)');
+  if (!heaviest && !mostReps && !longestDist) html += '<p style="font-size:14px;color:var(--text-muted)">No records yet. Log workouts with details to track PRs.</p>';
   html += '</div></div>';
 
   // All time stats
@@ -9466,9 +9482,9 @@ function renderLibRecords() {
       if (p.max_weight) vals.push(p.max_weight + ' lbs');
       if (p.max_reps) vals.push(p.max_reps + ' reps');
       if (p.max_distance) vals.push(p.max_distance + ' mi');
-      html += '<div style="display:flex;justify-content:space-between;padding:8px 0;border-bottom:1px solid var(--border);font-size:14px;cursor:pointer" onclick="showExerciseDetail(\'' + escAttr(p.name) + '\')">' +
-        '<span style="color:var(--text)">' + escHtml(p.name) + '</span>' +
-        '<span class="mono" style="color:var(--text-muted);font-size:12px">' + vals.join(' · ') + '</span></div>';
+      html += '<div style="display:flex;justify-content:space-between;padding:8px 0;border-bottom:1px solid var(--border-subtle);font-size:14px;cursor:pointer" onclick="showExerciseDetail(\'' + escAttr(p.name) + '\')">' +
+        '<span style="color:var(--text-primary)">' + escHtml(p.name) + '</span>' +
+        '<span class="font-mono" style="color:var(--text-muted);font-size:12px">' + vals.join(' · ') + '</span></div>';
     }
     html += '</div>';
   }
@@ -9477,10 +9493,10 @@ function renderLibRecords() {
 }
 
 function prCard(title, exercise, value, color) {
-  return '<div style="background:var(--bg-input);border:1px solid ' + color + '33;border-radius:8px;padding:14px;display:flex;justify-content:space-between;align-items:center">' +
-    '<div><div class="mono" style="font-size:10px;color:' + color + ';letter-spacing:2px;margin-bottom:4px">' + title.toUpperCase() + '</div>' +
-    '<div style="font-size:15px;color:var(--text)">' + escHtml(exercise) + '</div></div>' +
-    '<div class="oswald" style="font-size:24px;font-weight:700;color:' + color + '">' + value + '</div></div>';
+  return '<div style="background:var(--bg-surface-2);border-left:3px solid ' + color + ';border-radius:12px;padding:14px;display:flex;justify-content:space-between;align-items:center">' +
+    '<div><div style="font-size:10px;color:' + color + ';letter-spacing:0.08em;text-transform:uppercase;margin-bottom:4px">' + title.toUpperCase() + '</div>' +
+    '<div style="font-size:15px;font-weight:600;color:var(--text-primary)">' + escHtml(exercise) + '</div></div>' +
+    '<div class="font-hero" style="font-size:28px;font-weight:700;color:var(--text-primary)">' + value + '</div></div>';
 }
 
 function escAttr(s) {
@@ -9555,21 +9571,22 @@ function findEntry(dateStr) {
 }
 
 function buildDayCell(dateStr, dayNum, isToday, entry) {
-  var bg = isToday ? 'var(--border)' : 'var(--bg)';
-  var border = entry && entry.done ? 'var(--accent-33)' : isToday ? 'var(--accent-22)' : 'var(--border)';
   var sel = calDetailDate === dateStr;
-  if (sel) border = 'var(--accent-66)';
+  var bg = sel ? 'var(--accent-ember)' : 'var(--bg-surface-1)';
+  var border = (sel || isToday) ? 'var(--accent-ember)' : 'var(--border-subtle)';
   var click = entry ? ' onclick="setLogDateFilter(\'' + dateStr + '\')" style="cursor:pointer;' : ' style="';
-  var h = '<div' + click + 'background:' + bg + ';border:1px solid ' + border + ';border-radius:8px;padding:6px 2px;text-align:center;min-height:56px">';
-  h += '<div class="oswald" style="font-size:16px;color:' + (isToday ? 'var(--text-bright)' : 'var(--text-muted)') + ';margin-bottom:2px">' + dayNum + '</div>';
+  var numColor = sel ? '#fff' : (isToday ? 'var(--text-primary)' : 'var(--text-muted)');
+  var h = '<div' + click + 'background:' + bg + ';border:1px solid ' + border + ';border-radius:12px;padding:6px 2px;text-align:center;min-height:56px">';
+  h += '<div class="oswald" style="font-size:16px;color:' + numColor + ';margin-bottom:2px">' + dayNum + '</div>';
   if (entry) {
-    var cc = catColor(entry.type);
+    var dotColor = sel ? '#fff' : 'var(--accent-ember)';
+    var abbrevColor = sel ? '#fff' : 'var(--text-muted)';
     h += '<div style="display:flex;align-items:center;justify-content:center;gap:3px">';
-    h += '<div style="width:6px;height:6px;border-radius:50%;background:' + cc + ';flex-shrink:0"></div>';
-    h += '<span style="font-size:9px;color:' + cc + ';font-family:IBM Plex Mono,monospace">' + catAbbrev(entry.type) + '</span>';
+    h += '<div style="width:6px;height:6px;border-radius:50%;background:' + dotColor + ';flex-shrink:0"></div>';
+    h += '<span style="font-size:9px;color:' + abbrevColor + ';font-family:IBM Plex Mono,monospace">' + catAbbrev(entry.type) + '</span>';
     h += '</div>';
-    if (entry.done) h += '<div style="font-size:10px;color:#22c97a;margin-top:1px">&#10003;</div>';
-    else h += '<div style="font-size:10px;color:#e84545;margin-top:1px">&#10007;</div>';
+    if (entry.done) h += '<div style="font-size:10px;color:' + (sel ? '#fff' : 'var(--color-positive)') + ';margin-top:1px">&#10003;</div>';
+    else h += '<div style="font-size:10px;color:' + (sel ? '#fff' : 'var(--color-danger)') + ';margin-top:1px">&#10007;</div>';
   }
   h += '</div>';
   return h;
@@ -9581,18 +9598,18 @@ function renderCalDetail() {
   var entry = findEntry(calDetailDate);
   if (!entry) { el.style.display = 'none'; calDetailDate = null; return; }
   var cc = catColor(entry.type);
-  var h = '<div style="background:var(--bg-input);border:1px solid ' + hexA(cc,'33') + ';border-radius:8px;padding:14px;animation:fadeUp .2s ease">';
+  var h = '<div style="background:var(--bg-surface-2);border:1px solid var(--border-subtle);border-radius:12px;padding:14px;animation:fadeUp .2s ease">';
   h += '<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">';
   h += '<div style="display:flex;align-items:center;gap:8px"><div style="width:8px;height:8px;border-radius:50%;background:' + cc + '"></div>';
-  h += '<span style="font-size:16px;font-weight:600;color:var(--text-bright)">' + entry.type + '</span></div>';
-  h += '<span class="mono" style="font-size:12px;color:var(--text-muted)">' + calDetailDate + '</span></div>';
+  h += '<span style="font-size:16px;font-weight:600;color:var(--text-primary)">' + entry.type + '</span></div>';
+  h += '<span class="font-mono" style="font-size:12px;color:var(--text-muted)">' + calDetailDate + '</span></div>';
   h += '<div style="display:flex;gap:6px;margin-bottom:' + (entry.notes ? '10' : '0') + 'px">';
-  h += entry.done ? '<span style="font-family:IBM Plex Mono,monospace;font-size:11px;color:#22c97a;background:#22c97a12;padding:3px 10px;border-radius:4px">Done</span>' : '<span style="font-family:IBM Plex Mono,monospace;font-size:11px;color:#e84545;background:#e8454512;padding:3px 10px;border-radius:4px">Skipped</span>';
-  if (entry.mobility) h += '<span style="font-family:IBM Plex Mono,monospace;font-size:11px;color:#4488bb;background:#4488bb12;padding:3px 10px;border-radius:4px">Mobility</span>';
-  if (entry.med) h += '<span style="font-family:IBM Plex Mono,monospace;font-size:11px;color:#9966cc;background:#9966cc12;padding:3px 10px;border-radius:4px">Meditated</span>';
+  h += entry.done ? '<span style="font-size:11px;color:var(--color-positive);background:rgba(61,220,151,0.12);padding:3px 10px;border-radius:9999px">Done</span>' : '<span style="font-size:11px;color:var(--color-danger);background:rgba(239,68,68,0.12);padding:3px 10px;border-radius:9999px">Skipped</span>';
+  if (entry.mobility) h += '<span style="font-size:11px;color:var(--color-info);background:rgba(59,130,246,0.12);padding:3px 10px;border-radius:9999px">Mobility</span>';
+  if (entry.med) h += '<span style="font-size:11px;color:var(--accent-cornerman);background:rgba(139,92,246,0.12);padding:3px 10px;border-radius:9999px">Meditated</span>';
   h += '</div>';
   if (entry.notes) h += '<p style="font-size:14px;color:var(--text-muted);line-height:1.7;font-style:italic">' + entry.notes + '</p>';
-  h += '<div style="margin-top:8px;text-align:right"><button onclick="setLogDateFilter(\'' + calDetailDate + '\')" style="background:transparent;border:1px solid var(--accent-33);color:var(--accent);padding:4px 12px;border-radius:4px;cursor:pointer;font-size:11px;font-family:IBM Plex Mono,monospace">View in Log</button></div>';
+  h += '<div style="margin-top:8px;text-align:right"><button onclick="setLogDateFilter(\'' + calDetailDate + '\')" style="background:transparent;border:1px solid var(--accent-ember);color:var(--accent-ember);padding:5px 14px;border-radius:9999px;cursor:pointer;font-size:11px;font-weight:600;font-family:Inter,sans-serif">View in Log</button></div>';
   h += '</div>';
   el.innerHTML = h;
   el.style.display = 'block';
@@ -9716,11 +9733,11 @@ function renderCalendar() {
 
 function renderCalStats(done, mob, med, totalDays) {
   var pct = Math.round((done / totalDays) * 100);
-  var color = pct >= 40 ? '#22c97a' : pct >= 25 ? '#f5a623' : '#e84545';
+  var color = pct >= 40 ? 'var(--color-positive)' : pct >= 25 ? 'var(--color-caution)' : 'var(--color-danger)';
   var statsHTML = '';
   var stats = [[done, 'workouts'], [mob, 'mobility'], [med, 'meditations']];
   for (var i = 0; i < stats.length; i++) {
-    statsHTML += '<div class="card" style="text-align:center;padding:14px"><div class="oswald" style="font-size:34px;font-weight:700;color:' + color + '">' + stats[i][0] + '</div><div class="mono" style="font-size:11px;color:var(--text-dim);letter-spacing:2px;margin-top:4px">' + stats[i][1].toUpperCase() + '</div></div>';
+    statsHTML += '<div class="card" style="text-align:center;padding:14px"><div class="font-hero" style="font-size:30px;font-weight:700;color:' + color + '">' + stats[i][0] + '</div><div style="font-size:11px;color:var(--text-muted);letter-spacing:0.06em;text-transform:uppercase;margin-top:4px">' + stats[i][1].toUpperCase() + '</div></div>';
   }
   document.getElementById('week-stats').innerHTML = statsHTML;
 }
@@ -9730,10 +9747,10 @@ function renderCalBreakdown(types, label) {
   var bdHTML = '<p class="clabel">' + label + '</p>';
   if (entries.length) {
     for (var i = 0; i < entries.length; i++) {
-      bdHTML += '<div style="display:flex;justify-content:space-between;padding:6px 0;border-bottom:1px solid var(--border);font-size:15px;color:var(--text-sec)"><span>' + entries[i] + '</span><span class="mono" style="font-size:13px;color:var(--accent)">' + types[entries[i]] + 'x</span></div>';
+      bdHTML += '<div style="display:flex;justify-content:space-between;padding:6px 0;border-bottom:1px solid var(--border-subtle);font-size:15px;color:var(--text-primary)"><span>' + entries[i] + '</span><span class="font-mono" style="font-size:13px;color:var(--accent-ember)">' + types[entries[i]] + 'x</span></div>';
     }
   } else {
-    bdHTML += '<p style="color:#2a2c30;font-size:15px;font-style:italic">No sessions logged.</p>';
+    bdHTML += '<p style="color:var(--text-muted);font-size:15px;font-style:italic">No sessions logged.</p>';
   }
   document.getElementById('week-breakdown').innerHTML = bdHTML;
 }
@@ -9839,8 +9856,9 @@ function setLogFilter(f) {
   document.getElementById('log-date-filter').style.display = 'none';
   document.querySelectorAll('.log-filter-btn').forEach(function(b) {
     var active = b.getAttribute('data-filter') === f;
-    b.style.background = active ? 'var(--accent-10)' : 'transparent';
-    b.style.color = active ? 'var(--accent)' : 'var(--text-muted)';
+    b.style.background = 'var(--bg-surface-2)';
+    b.style.color = active ? 'var(--accent-ember)' : 'var(--text-muted)';
+    b.style.borderColor = active ? 'var(--accent-ember)' : 'transparent';
     b.classList.toggle('active', active);
   });
   renderLog();
@@ -9947,7 +9965,7 @@ function renderLog() {
       var lines = w.notes.split(/\n/).filter(function(l) { return l.trim(); });
       if (lines.length > 1) {
         notesHTML = '<ul style="margin-top:8px;padding-left:18px;list-style:disc">' +
-          lines.map(function(l) { return '<li style="font-size:13px;color:var(--text-sec);line-height:1.8;padding:1px 0">' + l.trim() + '</li>'; }).join('') + '</ul>';
+          lines.map(function(l) { return '<li style="font-size:13px;color:var(--text-primary);line-height:1.8;padding:1px 0">' + l.trim() + '</li>'; }).join('') + '</ul>';
       } else {
         notesHTML = '<p style="font-size:13px;color:var(--text-muted);margin-top:6px;font-style:italic;line-height:1.65">' + w.notes + '</p>';
       }
@@ -9955,12 +9973,12 @@ function renderLog() {
 
     var editId = w.id || '';
 
-    html += '<div class="card" style="padding:14px 16px;margin-bottom:8px;cursor:pointer' + (highlight ? ';border-color:var(--accent-44)' : '') + '" onclick="toggleLogCard(\'' + cardId + '\')">';
+    html += '<div class="card" style="padding:16px 20px;margin-bottom:12px;cursor:pointer' + (highlight ? ';border-color:var(--accent-ember)' : '') + '" onclick="toggleLogCard(\'' + cardId + '\')">';
     // Collapsed header row
     html += '<div style="display:flex;align-items:center;justify-content:space-between">';
     html += '<div style="flex:1;min-width:0">';
-    html += '<div class="mono" style="font-size:11px;color:var(--text-dim);margin-bottom:2px">' + w.date + '</div>';
-    html += '<div style="font-weight:600;font-size:16px;color:var(--text-bright)">' + w.type + '</div>';
+    html += '<div class="font-mono" style="font-size:12px;color:var(--text-muted);margin-bottom:2px">' + w.date + '</div>';
+    html += '<div style="font-weight:600;font-size:15px;color:var(--text-primary)">' + w.type + '</div>';
     html += '</div>';
     html += '<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;justify-content:flex-end">';
     var stepsPill = renderStepsPill(w.date);
@@ -9975,19 +9993,19 @@ function renderLog() {
                     : w.wearable_data.provider === 'samsung_health' ? 'Samsung Health'
                     : w.wearable_data.provider === 'garmin' ? 'Garmin'
                     : 'Wearable';
-      html += '<span class="mono" title="Synced from ' + provLabel + '" style="font-size:10px;color:#4488bb;background:#4488bb12;padding:2px 8px;border-radius:3px">&#x231A; ' + provLabel + '</span>';
+      html += '<span title="Synced from ' + provLabel + '" style="font-size:10px;color:var(--color-info);background:rgba(59,130,246,0.12);padding:2px 8px;border-radius:9999px">&#x231A; ' + provLabel + '</span>';
     }
-    html += w.done ? '<span class="mono" style="font-size:10px;color:#22c97a;background:#22c97a12;padding:2px 8px;border-radius:3px">Done</span>' : '<span class="mono" style="font-size:10px;color:#e84545;background:#e8454512;padding:2px 8px;border-radius:3px">Skip</span>';
-    html += '<span id="lc-chev-' + cardId + '" class="log-card-chevron' + (isOpen ? ' open' : '') + '" style="color:var(--text-dim);font-size:12px">&#9660;</span>';
+    html += w.done ? '<span style="font-size:10px;color:var(--color-positive);background:rgba(61,220,151,0.12);padding:2px 8px;border-radius:9999px">Done</span>' : '<span style="font-size:10px;color:var(--color-danger);background:rgba(239,68,68,0.12);padding:2px 8px;border-radius:9999px">Skip</span>';
+    html += '<span id="lc-chev-' + cardId + '" class="log-card-chevron' + (isOpen ? ' open' : '') + '" style="color:var(--text-muted);font-size:12px">&#9660;</span>';
     html += '</div></div>';
 
     // Expandable detail section
     html += '<div id="lc-detail-' + cardId + '" class="log-card-detail' + (isOpen ? ' open' : '') + '">';
-    html += '<div style="margin-top:10px;padding-top:10px;border-top:1px solid var(--border)">';
+    html += '<div style="margin-top:10px;padding-top:10px;border-top:1px solid var(--border-subtle)">';
     // Pills
     html += '<div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:8px">';
-    if (w.mobility) html += '<span class="mono" style="font-size:10px;color:#4488bb;background:#4488bb12;padding:2px 8px;border-radius:3px">Mobility</span>';
-    if (w.med) html += '<span class="mono" style="font-size:10px;color:#9966cc;background:#9966cc12;padding:2px 8px;border-radius:3px">Meditated</span>';
+    if (w.mobility) html += '<span style="font-size:10px;color:var(--color-info);background:rgba(59,130,246,0.12);padding:2px 8px;border-radius:9999px">Mobility</span>';
+    if (w.med) html += '<span style="font-size:10px;color:var(--accent-cornerman);background:rgba(139,92,246,0.12);padding:2px 8px;border-radius:9999px">Meditated</span>';
     html += '</div>';
     // Wearable stats grid — only when this workout has merged biometrics.
     if (w.wearable_data && typeof w.wearable_data === 'object') {
@@ -9997,8 +10015,8 @@ function renderLog() {
     if (w.notes) html += notesHTML;
     // Edit + Re-log actions
     html += '<div style="margin-top:10px;display:flex;gap:8px;flex-wrap:wrap">';
-    html += '<button onclick="event.stopPropagation();editWorkoutById(\'' + editId + '\')" style="background:transparent;border:1px solid var(--border-accent);color:var(--text-muted);padding:10px 20px;border-radius:4px;cursor:pointer;font-size:13px;font-family:DM Sans,sans-serif;min-height:44px">Edit</button>';
-    if (editId) html += '<button onclick="event.stopPropagation();reLogWorkout(\'' + editId + '\')" title="Re-log this workout into today" style="background:transparent;border:1px solid var(--accent-33);color:var(--accent);padding:10px 16px;border-radius:4px;cursor:pointer;font-size:13px;font-family:DM Sans,sans-serif;min-height:44px">&#128260; Re-log</button>';
+    html += '<button onclick="event.stopPropagation();editWorkoutById(\'' + editId + '\')" style="background:transparent;border:none;color:var(--accent-ember);padding:10px 14px;border-radius:8px;cursor:pointer;font-size:12px;font-weight:600;font-family:Inter,sans-serif;min-height:44px">Edit</button>';
+    if (editId) html += '<button onclick="event.stopPropagation();reLogWorkout(\'' + editId + '\')" title="Re-log this workout into today" style="background:transparent;border:none;color:var(--text-muted);padding:10px 14px;border-radius:8px;cursor:pointer;font-size:12px;font-weight:600;font-family:Inter,sans-serif;min-height:44px">&#128260; Re-log</button>';
     html += '</div>';
     html += '</div></div>';
     html += '</div>';
