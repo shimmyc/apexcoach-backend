@@ -383,7 +383,16 @@ Full-screen settings overlay accessible via gear icon or profile avatar click. S
 
 ## Theme System
 
-10 themes using CSS custom properties: apex (default), midnight, carbon, forest, crimson, arctic (light), sunset, monochrome, purple, gold. All colors use var() references. JS TC object mirrors CSS vars for dynamic HTML generation.
+10 themes using CSS custom properties: apex (default), midnight, carbon, forest, crimson, arctic (light), sunset, monochrome, purple, gold. All colors use var() references. JS TC object mirrors CSS vars for dynamic HTML generation. Stored in `ac_settings.theme` (NOT `ac_theme`); applied via `applyTheme(name)` which swaps a `.theme-<name>` class on `<body>`.
+
+## Design Token System (UI overhaul — in progress)
+
+A 5-agent UI overhaul is underway. **Agent 1/5 (token foundation) is implemented.** The work so far is purely additive — the legacy `--bg`/`--accent`/`--text` vars and the 10-theme system above still drive existing components and are untouched. Agents 2–5 migrate components onto the new tokens.
+
+- **Fonts** — added alongside the legacy stack: **Fraunces** (400/700, hero numerals only), **Inter** (400–700, all UI text), **JetBrains Mono** (400, telemetry numbers). `body` now uses Inter 16px / line-height 1.5.
+- **Tokens** — new design tokens defined in `:root` (dark, default) with a `[data-theme="light"]` override on `<html>`: `--bg-base`, `--bg-surface-1`, `--bg-surface-2`, `--text-primary`, `--text-muted`, `--accent-ember`, `--accent-cornerman`, `--color-positive/caution/danger/info`, `--border-subtle`, `--border-ai`. Accent + semantic colors are shared across modes. ⚠ `--text-muted` is also a legacy var name; the 10-theme classes set it on `<body>`, so themed views keep their value (the new value applies in the default/unthemed state).
+- **Utilities** — additive helper classes (not yet applied to existing markup): `.font-hero`, `.font-mono`, `.text-12/14/16/18/22`, `.text-muted/positive/caution/danger/ember/ai`, `.gap-4…32`, `.surface-1/2`, `.border-subtle/ai`.
+- **Dark/Light color mode** — a NEW axis separate from the 10-theme selector. An isolated `<head>` script applies `data-theme="light"` from `localStorage.ac_theme` before render (no flash) and exposes `window.setColorMode('light'|'dark')`. The actual toggle button is **deferred to a later agent** (mechanism only for now). `body` background/text now read `--bg-base`/`--text-primary`, so the page canvas follows this color mode.
 
 ## Profile Data Fields
 
@@ -395,7 +404,7 @@ Full-screen settings overlay accessible via gear icon or profile avatar click. S
 
 ## localStorage Keys
 
-- ac_theme — current theme name
+- ac_theme — dark/light color mode ('light' | 'dark') for the new design-token system (see Design Token System). NOTE: the legacy 10-theme name is stored in `ac_settings.theme`, not here.
 - ac_compact — "true"/"false" for compact mode
 - ac_settings — JSON with all settings:
   - fontSize, accentOverride — appearance

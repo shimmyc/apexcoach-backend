@@ -5,6 +5,31 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
 <title>ApexCoach</title>
 <link href="https://fonts.googleapis.com/css2?family=Oswald:wght@400;600;700&family=IBM+Plex+Mono:wght@400;500&family=DM+Sans:ital,wght@0,400;0,500;0,600;1,400&display=swap" rel="stylesheet">
+<!-- UI overhaul (Agent 1/5) font stack: Fraunces = hero numerals, Inter = UI text, JetBrains Mono = telemetry -->
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:wght@400;700&family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400&display=swap" rel="stylesheet">
+<script>
+// ── COLOR MODE (dark/light) — design-token foundation (Agent 1/5) ───────────
+// Owns the NEW data-theme dark/light axis (separate from the legacy 10-theme
+// selector, which still lives in Settings). Applied here in <head>, before
+// render, to prevent a flash. The toggle button is intentionally deferred to a
+// later agent — call window.setColorMode('light'|'dark') to switch. Persists in
+// localStorage 'ac_theme' ('light' | 'dark').
+(function () {
+  try {
+    if (localStorage.getItem('ac_theme') === 'light') {
+      document.documentElement.setAttribute('data-theme', 'light');
+    } else {
+      document.documentElement.removeAttribute('data-theme');
+    }
+  } catch (e) {}
+  window.setColorMode = function (mode) {
+    var light = mode === 'light';
+    if (light) document.documentElement.setAttribute('data-theme', 'light');
+    else document.documentElement.removeAttribute('data-theme');
+    try { localStorage.setItem('ac_theme', light ? 'light' : 'dark'); } catch (e) {}
+  };
+})();
+</script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
 <style>
 :root{
@@ -14,6 +39,24 @@
 --accent-18:#22c97a18;--accent-20:#22c97a20;--accent-22:#22c97a22;--accent-33:#22c97a33;
 --accent-40:#22c97a40;--accent-44:#22c97a44;--accent-66:#22c97a66;
 --info:#4488bb;--warning:#f5a623;--danger:#e84545;--purple:#9966cc;--orange:#f07020;
+}
+/* ── DESIGN TOKENS (UI overhaul — Agent 1/5) ───────────────────────────────
+   New token system, added ALONGSIDE the legacy --bg/--accent/--text vars above
+   (existing components still reference those). Components migrate to these
+   tokens over agents 2–5. Dark is the default; [data-theme="light"] on <html>
+   flips the surfaces/text. Accent + semantic colors are shared across modes.
+   NOTE: --text-muted is also a legacy var name — the legacy 10-theme classes
+   set it on <body>, so themed views keep their value; this is the default. */
+:root{
+--bg-base:#08090A;--bg-surface-1:#121417;--bg-surface-2:#1E2126;
+--text-primary:#F2F4F7;--text-muted:#8A8F98;
+--accent-ember:#FF4A1C;--accent-cornerman:#8B5CF6;
+--color-positive:#3DDC97;--color-caution:#F5C842;--color-danger:#EF4444;--color-info:#3B82F6;
+--border-subtle:rgba(242,244,247,0.07);--border-ai:rgba(139,92,246,0.4);
+}
+[data-theme="light"]{
+--bg-base:#F7F5F1;--bg-surface-1:#FFFFFF;--bg-surface-2:#EAECEF;
+--text-primary:#111827;--text-muted:#6B7280;
 }
 .theme-apex{--bg:#080a0f;--bg-card:#0d0f16;--bg-input:#060810;--border:#0e1016;--border-accent:#1a1c22;--accent:#22c97a;--text:#e0e0e0;--text-sec:#888;--text-muted:#555;--text-dim:#333;--text-bright:#fff;--accent-08:#22c97a08;--accent-10:#22c97a10;--accent-12:#22c97a12;--accent-15:#22c97a15;--accent-18:#22c97a18;--accent-20:#22c97a20;--accent-22:#22c97a22;--accent-33:#22c97a33;--accent-40:#22c97a40;--accent-44:#22c97a44;--accent-66:#22c97a66}
 .theme-midnight{--bg:#080d1a;--bg-card:#0d1224;--bg-input:#060a18;--border:#0e1228;--border-accent:#1a2244;--accent:#00d4ff;--text:#e0f0ff;--text-sec:#8899bb;--text-muted:#556688;--text-dim:#334466;--text-bright:#fff;--accent-08:#00d4ff08;--accent-10:#00d4ff10;--accent-12:#00d4ff12;--accent-15:#00d4ff15;--accent-18:#00d4ff18;--accent-20:#00d4ff20;--accent-22:#00d4ff22;--accent-33:#00d4ff33;--accent-40:#00d4ff40;--accent-44:#00d4ff44;--accent-66:#00d4ff66}
@@ -26,7 +69,7 @@
 .theme-purple{--bg:#0d0814;--bg-card:#180d24;--bg-input:#0a0610;--border:#1a1028;--border-accent:#2c1a44;--accent:#b44fff;--text:#f0e0ff;--text-sec:#9988bb;--text-muted:#665588;--text-dim:#443366;--text-bright:#fff;--accent-08:#b44fff08;--accent-10:#b44fff10;--accent-12:#b44fff12;--accent-15:#b44fff15;--accent-18:#b44fff18;--accent-20:#b44fff20;--accent-22:#b44fff22;--accent-33:#b44fff33;--accent-40:#b44fff40;--accent-44:#b44fff44;--accent-66:#b44fff66}
 .theme-gold{--bg:#0a0902;--bg-card:#1a1602;--bg-input:#080704;--border:#1a1808;--border-accent:#2c2810;--accent:#f5c842;--text:#f0e6cc;--text-sec:#aa9966;--text-muted:#776633;--text-dim:#443300;--text-bright:#fff;--accent-08:#f5c84208;--accent-10:#f5c84210;--accent-12:#f5c84212;--accent-15:#f5c84215;--accent-18:#f5c84218;--accent-20:#f5c84220;--accent-22:#f5c84222;--accent-33:#f5c84233;--accent-40:#f5c84240;--accent-44:#f5c84244;--accent-66:#f5c84266}
 *{box-sizing:border-box;margin:0;padding:0}
-body{background:var(--bg);color:var(--text);font-family:'DM Sans',sans-serif;min-height:100vh;font-size:17px;line-height:1.7}
+body{background:var(--bg-base);color:var(--text-primary);font-family:'Inter',sans-serif;min-height:100vh;font-size:16px;line-height:1.5}
 body.font-large{font-size:19px}
 body.font-xl{font-size:21px}
 body.compact .card{padding:12px}
@@ -36,6 +79,33 @@ body.compact .clabel{font-size:11px;margin-bottom:10px}
 body.compact .statsGrid,.compact .goalsGrid{gap:8px}
 body.compact main{padding:20px 24px 60px}
 @media(max-width:700px){body.compact main{padding:14px 10px 50px}}
+/* ── DESIGN-TOKEN UTILITIES (UI overhaul — Agent 1/5) ──────────────────────
+   Additive helpers built on the new tokens. Not yet applied to existing
+   markup — agents 2–5 wire them onto components. */
+.font-hero{font-family:'Fraunces',serif}
+.font-mono{font-family:'JetBrains Mono',monospace}
+.text-12{font-size:12px}
+.text-14{font-size:14px}
+.text-16{font-size:16px}
+.text-18{font-size:18px}
+.text-22{font-size:22px}
+.text-muted{color:var(--text-muted)}
+.text-positive{color:var(--color-positive)}
+.text-caution{color:var(--color-caution)}
+.text-danger{color:var(--color-danger)}
+.text-ember{color:var(--accent-ember)}
+.text-ai{color:var(--accent-cornerman)}
+.gap-4{gap:4px}
+.gap-8{gap:8px}
+.gap-12{gap:12px}
+.gap-16{gap:16px}
+.gap-20{gap:20px}
+.gap-24{gap:24px}
+.gap-32{gap:32px}
+.surface-1{background:var(--bg-surface-1);border-radius:20px}
+.surface-2{background:var(--bg-surface-2);border-radius:12px}
+.border-subtle{border:1px solid var(--border-subtle)}
+.border-ai{border:1px solid var(--border-ai)}
 @keyframes pulse{0%,100%{opacity:.2}50%{opacity:1}}
 @keyframes fadeUp{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:translateY(0)}}
 @keyframes toastIn{from{opacity:0;transform:translateY(20px)}to{opacity:1;transform:translateY(0)}}
