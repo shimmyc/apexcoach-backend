@@ -57,6 +57,7 @@
 [data-theme="light"]{
 --bg-base:#F7F5F1;--bg-surface-1:#FFFFFF;--bg-surface-2:#EAECEF;
 --text-primary:#111827;--text-muted:#6B7280;
+--border-subtle:rgba(0,0,0,0.08);
 }
 .theme-apex{--bg:#080a0f;--bg-card:#0d0f16;--bg-input:#060810;--border:#0e1016;--border-accent:#1a1c22;--accent:#22c97a;--text:#e0e0e0;--text-sec:#888;--text-muted:#555;--text-dim:#333;--text-bright:#fff;--accent-08:#22c97a08;--accent-10:#22c97a10;--accent-12:#22c97a12;--accent-15:#22c97a15;--accent-18:#22c97a18;--accent-20:#22c97a20;--accent-22:#22c97a22;--accent-33:#22c97a33;--accent-40:#22c97a40;--accent-44:#22c97a44;--accent-66:#22c97a66}
 .theme-midnight{--bg:#080d1a;--bg-card:#0d1224;--bg-input:#060a18;--border:#0e1228;--border-accent:#1a2244;--accent:#00d4ff;--text:#e0f0ff;--text-sec:#8899bb;--text-muted:#556688;--text-dim:#334466;--text-bright:#fff;--accent-08:#00d4ff08;--accent-10:#00d4ff10;--accent-12:#00d4ff12;--accent-15:#00d4ff15;--accent-18:#00d4ff18;--accent-20:#00d4ff20;--accent-22:#00d4ff22;--accent-33:#00d4ff33;--accent-40:#00d4ff40;--accent-44:#00d4ff44;--accent-66:#00d4ff66}
@@ -201,8 +202,29 @@ input[type=range]{width:100%;accent-color:var(--accent)}
 .fc-pill:hover{border-color:var(--accent-44)}
 .fc-pill.active{border-color:var(--accent);background:var(--accent-10);color:var(--accent)}
 .toast{position:fixed;bottom:30px;left:50%;transform:translateX(-50%);background:var(--bg-card);color:var(--accent);border:1px solid var(--accent-33);padding:10px 24px;border-radius:8px;font-family:'IBM Plex Mono',monospace;font-size:13px;letter-spacing:1px;z-index:200;pointer-events:none;animation:toastIn .25s ease,toastOut .25s ease 1.2s forwards}
-.settings-overlay{position:fixed;inset:0;background:var(--bg);z-index:50;display:none;flex-direction:column;overflow:hidden}
-.settings-overlay.open{display:flex}
+.settings-overlay{position:fixed;inset:0;background:var(--bg-base);z-index:50;display:none;flex-direction:column;overflow:hidden}
+.settings-overlay.open{display:flex;animation:settingsSlideIn .28s cubic-bezier(.32,.72,0,1)}
+/* ── AGENT 3/5: NAV + MODAL OVERLAYS ──────────────────────────────────────
+   Scoped to specific overlay IDs so the shared global .overlay/.modal/.btnPri/
+   .btnSec classes (used by other modals/tabs) stay untouched. Entrances use
+   @keyframes (play on display/class change) so no JS open/close handler is modified. */
+@keyframes settingsSlideIn{from{transform:translateX(100%)}to{transform:translateX(0)}}
+@keyframes sheetUp{from{transform:translateY(100%)}to{transform:translateY(0)}}
+@keyframes wmPop{from{transform:scale(.95);opacity:0}to{transform:scale(1);opacity:1}}
+/* Log Workout modal = bottom sheet */
+#log-modal{align-items:flex-end;justify-content:center;background:rgba(0,0,0,0.7)}
+#log-modal .modal{width:100%;max-width:600px;max-height:90vh;border:none;border-top:1px solid var(--border-subtle);border-radius:20px 20px 0 0;background:var(--bg-surface-1);animation:sheetUp .28s cubic-bezier(.32,.72,0,1)}
+#log-modal textarea{background:var(--bg-surface-2);border:1px solid var(--border-subtle);color:var(--text-primary);border-radius:12px;font-family:'Inter',sans-serif;font-size:15px;padding:12px}
+#log-modal input[type=date],#log-modal input[type=text]{background:var(--bg-surface-2);border:1px solid var(--border-subtle);color:var(--text-primary);border-radius:12px}
+#log-modal textarea:focus,#log-modal input[type=date]:focus,#log-modal input[type=text]:focus{border-color:var(--accent-ember);outline:none}
+#log-modal textarea::placeholder{color:var(--text-muted)}
+#log-modal input[type=checkbox]{accent-color:var(--accent-ember)}
+#log-modal .btnPri{background:var(--accent-ember);color:#fff}
+/* Wearable match modal = centered scale-in */
+#wm-modal{background:rgba(0,0,0,0.7)}
+#wm-modal .modal{max-width:360px;border:1px solid var(--border-subtle);border-radius:20px;background:var(--bg-surface-1);animation:wmPop .2s ease}
+#wm-modal .btnPri{background:var(--accent-ember);color:#fff}
+#wm-modal .btnSec{background:var(--bg-surface-2);color:var(--text-muted);border:none}
 .settings-header{display:flex;align-items:center;justify-content:space-between;padding:14px 24px;border-bottom:1px solid var(--border);flex-shrink:0}
 .settings-body{display:flex;flex:1;overflow:hidden}
 .settings-nav{width:200px;border-right:1px solid var(--border);padding:16px 0;overflow-y:auto;flex-shrink:0}
@@ -296,13 +318,13 @@ input[type=range]{width:100%;accent-color:var(--accent)}
 /* ── BOTTOM NAV (mobile) ──────────────────────────────────────────── */
 @media(max-width:768px){
   .desktop-nav{display:none}
-  #bottom-nav{display:flex;position:fixed;bottom:0;left:0;right:0;z-index:40;background:#0d0f16;border-top:1px solid #141618;height:64px;align-items:center;justify-content:space-around;padding-bottom:env(safe-area-inset-bottom,8px)}
-  .bnav-item{background:none;border:none;color:#444;display:flex;flex-direction:column;align-items:center;gap:2px;cursor:pointer;padding:6px 12px;font-family:'DM Sans',sans-serif;min-width:48px}
-  .bnav-item.active{color:var(--accent)}
-  .bnav-icon{font-size:20px;line-height:1}
-  .bnav-label{font-size:10px;letter-spacing:0.5px}
-  .bnav-fab{width:56px;height:56px;border-radius:50%;background:var(--accent);color:#040605;border:none;cursor:pointer;display:flex;align-items:center;justify-content:center;margin-top:-20px;box-shadow:0 4px 12px rgba(34,201,122,0.4);flex-shrink:0}
-  main{padding-bottom:100px!important}
+  #bottom-nav{display:flex;position:fixed;bottom:0;left:0;right:0;z-index:40;background:var(--bg-surface-1);border-top:1px solid var(--border-subtle);height:calc(64px + env(safe-area-inset-bottom,12px));align-items:center;justify-content:space-around;padding:0 6px;padding-bottom:env(safe-area-inset-bottom,12px)}
+  .bnav-item{background:none;border:none;color:var(--text-muted);display:flex;flex-direction:column;align-items:center;gap:3px;cursor:pointer;padding:4px 12px;border-radius:9999px;font-family:'Inter',sans-serif;transition:color .15s ease,background .15s ease}
+  .bnav-item.active{color:var(--accent-ember);background:rgba(255,74,28,0.1)}
+  .bnav-icon{display:flex;align-items:center;justify-content:center;line-height:1}
+  .bnav-label{font-size:9px;font-weight:600;letter-spacing:0.04em;text-transform:uppercase;line-height:1}
+  .bnav-fab{width:52px;height:52px;border-radius:26px;background:var(--accent-ember);color:#fff;border:none;cursor:pointer;display:flex;align-items:center;justify-content:center;margin-top:-20px;box-shadow:0 4px 16px rgba(255,74,28,0.4);flex-shrink:0}
+  main{padding-bottom:104px!important}
 }
 @media(min-width:769px){
   #bottom-nav{display:none!important}
@@ -419,19 +441,19 @@ input[type=range]{width:100%;accent-color:var(--accent)}
 <!-- BOTTOM NAV (mobile only) -->
 <div id="bottom-nav">
   <button class="bnav-item active" onclick="showTab('today')" data-tab="today">
-    <span class="bnav-icon">&#9889;</span><span class="bnav-label">Today</span>
+    <span class="bnav-icon"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12l-2 0l9 -9l9 9l-2 0"></path><path d="M5 12v7a2 2 0 0 0 2 2h10a2 2 0 0 0 2 -2v-7"></path><path d="M9 21v-6a2 2 0 0 1 2 -2h2a2 2 0 0 1 2 2v6"></path></svg></span><span class="bnav-label">Today</span>
   </button>
   <button class="bnav-item" onclick="showTab('history')" data-tab="history">
-    <span class="bnav-icon">&#128197;</span><span class="bnav-label">History</span>
+    <span class="bnav-icon"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7a2 2 0 0 1 2 -2h12a2 2 0 0 1 2 2v12a2 2 0 0 1 -2 2h-12a2 2 0 0 1 -2 -2z"></path><path d="M16 3v4"></path><path d="M8 3v4"></path><path d="M4 11h16"></path><path d="M11 15h1v3"></path></svg></span><span class="bnav-label">History</span>
   </button>
-  <button class="bnav-fab" onclick="openModal()">
-    <span style="font-size:28px;line-height:1">+</span>
+  <button class="bnav-fab" onclick="openModal()" aria-label="Log workout">
+    <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14"></path><path d="M5 12h14"></path></svg>
   </button>
   <button class="bnav-item" onclick="showTab('library')" data-tab="library">
-    <span class="bnav-icon">&#128202;</span><span class="bnav-label">Library</span>
+    <span class="bnav-icon"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 6a2 2 0 0 1 2 -2h2a2 2 0 0 1 2 2v14a2 2 0 0 0 -2 -2h-2a2 2 0 0 1 -2 -2z"></path><path d="M14 4h2a2 2 0 0 1 2 2v12a2 2 0 0 1 -2 2h-2a2 2 0 0 1 -2 -2v-12a2 2 0 0 1 2 -2z"></path></svg></span><span class="bnav-label">Library</span>
   </button>
   <button class="bnav-item" onclick="showTab('profile')" data-tab="profile">
-    <span class="bnav-icon">&#128100;</span><span class="bnav-label">Profile</span>
+    <span class="bnav-icon"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8 7a4 4 0 1 0 8 0a4 4 0 0 0 -8 0"></path><path d="M6 21v-2a4 4 0 0 1 4 -4h4a4 4 0 0 1 4 4v2"></path></svg></span><span class="bnav-label">Profile</span>
   </button>
 </div>
 
@@ -840,7 +862,7 @@ input[type=range]{width:100%;accent-color:var(--accent)}
 <!-- SETTINGS PANEL -->
 <div id="settings-overlay" class="settings-overlay">
   <div class="settings-header">
-    <span class="oswald" style="font-size:20px;font-weight:600;color:var(--text-bright)">Settings</span>
+    <span style="font-size:22px;font-weight:700;color:var(--text-primary)">Settings</span>
     <button onclick="closeSettings()" style="background:transparent;border:none;color:var(--text-muted);font-size:24px;cursor:pointer;padding:4px 8px">&times;</button>
   </div>
   <div class="settings-tabs-mobile" id="settings-tabs-mobile"></div>
@@ -868,28 +890,31 @@ input[type=range]{width:100%;accent-color:var(--accent)}
 <!-- LOG MODAL -->
 <div class="overlay" id="log-modal" style="display:none" onclick="closeModal()">
   <div class="modal" onclick="event.stopPropagation()">
-    <p class="mono" style="font-size:10px;color:#555;letter-spacing:3px;margin-bottom:14px">LOG TODAY'S WORKOUT</p>
-    <div id="wlog-banner" style="display:none;margin-bottom:12px;padding:10px 12px;border-radius:6px;background:var(--accent-10);border:1px solid var(--accent-33);font-size:13px;color:var(--accent)"></div>
+    <div style="width:36px;height:4px;border-radius:9999px;background:var(--bg-surface-2);margin:0 auto 14px"></div>
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px">
+      <p class="mono" style="font-family:'Inter',sans-serif;font-size:18px;font-weight:700;color:var(--text-primary);letter-spacing:0;text-transform:none;margin:0">Log Workout</p>
+      <button onclick="closeModal()" aria-label="Close" style="background:transparent;border:none;color:var(--text-muted);font-size:24px;line-height:1;cursor:pointer;padding:0 4px">&times;</button>
+    </div>
+    <div id="wlog-banner" style="display:none;margin-bottom:12px;padding:10px 12px;border-radius:8px;background:var(--bg-surface-2);border:1px solid var(--border-subtle);font-size:13px;color:var(--accent-ember)"></div>
     <div id="wdate-picker">
-      <p class="mono" style="font-size:10px;color:#555;letter-spacing:2px;margin-bottom:6px">LOG FOR</p>
-      <input type="date" id="wdate" onchange="onLogDateChanged()" style="margin-bottom:8px;width:100%;background:var(--bg-input);border:1px solid var(--border);color:var(--text);padding:11px 14px;border-radius:6px;font-size:14px;outline:none;font-family:'DM Sans',sans-serif">
-      <div id="wdate-past-banner" style="display:none;margin-bottom:14px;padding:8px 12px;border-radius:6px;background:#f5a62312;border:1px solid #f5a62333;font-size:12px;color:#f5a623;line-height:1.4"></div>
+      <p style="font-size:12px;color:var(--text-muted);letter-spacing:0.04em;margin-bottom:6px">Logging for:</p>
+      <input type="date" id="wdate" onchange="onLogDateChanged()" style="margin-bottom:8px;width:100%;padding:11px 14px;font-size:14px;outline:none;font-family:'Inter',sans-serif">
+      <div id="wdate-past-banner" style="display:none;margin-bottom:14px;padding:8px 12px;border-radius:8px;background:var(--bg-surface-2);border:1px solid var(--border-subtle);font-size:12px;color:var(--color-caution);line-height:1.4"></div>
     </div>
     <div id="wdate-readonly" style="display:none;margin-bottom:14px">
       <p class="mono" style="font-size:10px;color:#555;letter-spacing:2px;margin-bottom:6px">DATE</p>
       <div id="wdate-display" class="mono" style="font-size:14px;color:var(--text-sec);background:var(--bg-input);border:1px solid var(--border);padding:11px 14px;border-radius:6px"></div>
     </div>
     <input type="hidden" id="wtype" value="">
-    <p class="mono" style="font-size:10px;color:var(--text-dim);letter-spacing:2px;margin-bottom:6px">WHAT DID YOU DO TODAY?</p>
+    <p style="font-size:12px;color:var(--text-muted);letter-spacing:0.04em;margin-bottom:6px">What did you do today?</p>
     <div style="position:relative">
-      <textarea id="wnotes" rows="6" placeholder="Describe your workout... e.g. 'Started with cat-cow and glute bridges, then 20 min elliptical, finished with dumbbell curls 3x12 at 22.5lbs'" style="padding-right:44px;min-height:160px"></textarea>
-      <button onclick="startVoice()" id="mic-btn" title="Voice input" style="position:absolute;right:10px;top:10px;background:var(--accent-18);border:1px solid var(--accent-33);color:var(--accent);border-radius:6px;padding:6px 10px;cursor:pointer;font-size:14px">🎙</button>
+      <textarea id="wnotes" rows="6" placeholder="Describe your workout... e.g. 'Started with cat-cow and glute bridges, then 20 min elliptical, finished with dumbbell curls 3x12 at 22.5lbs'" style="padding-right:48px;min-height:120px"></textarea>
+      <button onclick="startVoice()" id="mic-btn" title="Voice input" style="position:absolute;right:8px;top:8px;background:var(--bg-surface-2);border:none;color:var(--text-muted);border-radius:50%;width:36px;height:36px;padding:0;cursor:pointer;font-size:15px">🎙</button>
     </div>
-    <div style="display:flex;gap:6px;align-items:center;margin-bottom:8px;flex-wrap:wrap">
-      <span class="mono" style="font-size:10px;color:var(--text-dim)">Quick log:</span>
-      <button onclick="document.getElementById('wnotes').value='MMA training session';document.getElementById('wnotes').focus()" style="background:var(--bg-input);border:1px solid var(--border);color:var(--text-sec);padding:4px 10px;border-radius:4px;cursor:pointer;font-size:12px">🥋 MMA</button>
-      <button onclick="document.getElementById('wnotes').value='Walking';document.getElementById('wnotes').focus()" style="background:var(--bg-input);border:1px solid var(--border);color:var(--text-sec);padding:4px 10px;border-radius:4px;cursor:pointer;font-size:12px">🚶 Walk</button>
-      <button onclick="document.getElementById('wnotes').value='Rest day';document.getElementById('wnotes').focus()" style="background:var(--bg-input);border:1px solid var(--border);color:var(--text-sec);padding:4px 10px;border-radius:4px;cursor:pointer;font-size:12px">😴 Rest Day</button>
+    <div style="display:flex;gap:8px;align-items:center;margin:10px 0 8px;flex-wrap:wrap">
+      <button onclick="document.getElementById('wnotes').value='MMA training session';document.getElementById('wnotes').focus()" style="background:var(--bg-surface-2);border:none;color:var(--text-primary);padding:6px 14px;border-radius:9999px;cursor:pointer;font-size:13px;font-weight:600">🥋 MMA</button>
+      <button onclick="document.getElementById('wnotes').value='Walking';document.getElementById('wnotes').focus()" style="background:var(--bg-surface-2);border:none;color:var(--text-primary);padding:6px 14px;border-radius:9999px;cursor:pointer;font-size:13px;font-weight:600">🚶 Walk</button>
+      <button onclick="document.getElementById('wnotes').value='Rest day';document.getElementById('wnotes').focus()" style="background:var(--bg-surface-2);border:none;color:var(--text-primary);padding:6px 14px;border-radius:9999px;cursor:pointer;font-size:13px;font-weight:600">😴 Rest Day</button>
     </div>
     <div id="voice-status" style="font-size:11px;color:#555;font-family:'IBM Plex Mono',monospace;margin-bottom:8px;min-height:16px"></div>
     <div style="display:flex;gap:6px;align-items:center;margin-bottom:10px;flex-wrap:wrap">
@@ -915,14 +940,11 @@ input[type=range]{width:100%;accent-color:var(--accent)}
         <span style="margin-left:6px;font-size:13px;color:var(--text-sec)">Meditated</span>
       </label>
     </div>
-    <div id="goal-checkin-section" style="display:none;margin-bottom:16px;padding:12px 14px;border-radius:8px;background:var(--accent-10);border:1px solid var(--accent-33)">
-      <p class="mono" style="font-size:10px;color:var(--accent);letter-spacing:2px;margin:0 0 10px 0">GOAL CHECK-IN</p>
+    <div id="goal-checkin-section" style="display:none;margin-bottom:16px;padding:12px 14px;border-radius:12px;background:var(--bg-surface-2);border:1px solid var(--border-subtle)">
+      <p style="font-size:12px;color:var(--text-muted);letter-spacing:0.06em;text-transform:uppercase;margin:0 0 10px 0">Active Challenges</p>
       <div id="goal-checkin-list"></div>
     </div>
-    <div style="display:flex;gap:8px;justify-content:flex-end">
-      <button class="btnSec" onclick="closeModal()">Cancel</button>
-      <button class="btnPri" onclick="saveWorkout()">Save</button>
-    </div>
+    <button class="btnPri" onclick="saveWorkout()" style="width:100%;height:48px;border-radius:14px;font-size:16px;font-weight:600">Save Workout</button>
     <div id="save-template-section" style="margin-top:14px;padding-top:14px;border-top:1px solid var(--border)">
       <div id="save-template-prompt">
         <button onclick="showSaveTemplate()" style="background:transparent;border:1px dashed var(--border-accent);color:var(--text-muted);padding:8px 14px;border-radius:6px;cursor:pointer;font-size:12px;font-family:DM Sans,sans-serif;width:100%">&#128193; Save as Template</button>
@@ -1040,12 +1062,13 @@ input[type=range]{width:100%;accent-color:var(--accent)}
 
 <!-- WEARABLE MATCH MODAL (auto-import on save) -->
 <div class="overlay" id="wm-modal" style="display:none" onclick="closeWearableMatchModal()">
-  <div class="modal" onclick="event.stopPropagation()" style="max-width:400px">
-    <p class="oswald" style="font-size:20px;color:var(--accent);margin-bottom:10px">Fitbit Activity Found</p>
-    <p id="wm-body" style="font-size:15px;color:var(--text-sec);line-height:1.6;margin-bottom:18px"></p>
-    <div style="display:flex;gap:8px;justify-content:flex-end">
-      <button class="btnSec" onclick="wmReject()">No, Keep Separate</button>
-      <button class="btnPri" onclick="wmLink()">Yes, Link It</button>
+  <div class="modal" onclick="event.stopPropagation()" style="text-align:center">
+    <div style="display:flex;justify-content:center;margin-bottom:10px"><svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="var(--accent-ember)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12h4l3 8l4 -16l3 8h4"></path></svg></div>
+    <p style="font-size:17px;font-weight:700;color:var(--text-primary);margin-bottom:8px">Fitbit Activity Found</p>
+    <p id="wm-body" style="font-size:14px;color:var(--text-muted);line-height:1.6;margin-bottom:18px"></p>
+    <div style="display:flex;flex-direction:column;gap:8px">
+      <button class="btnPri" onclick="wmLink()" style="width:100%;height:48px;border-radius:14px;font-size:15px;font-weight:600">Yes, Link It</button>
+      <button class="btnSec" onclick="wmReject()" style="width:100%;height:48px;border-radius:14px;font-size:15px">No, Keep Separate</button>
     </div>
   </div>
 </div>
