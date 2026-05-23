@@ -256,6 +256,16 @@ input[type=range]{width:100%;accent-color:var(--accent)}
 #settings-overlay input[type=text],#settings-overlay input[type=password],#settings-overlay select,#settings-overlay textarea{background:var(--bg-surface-2);border:1px solid var(--border-subtle);color:var(--text-primary);border-radius:8px}
 #settings-overlay input[type=checkbox]{accent-color:var(--accent-ember);width:16px;height:16px}
 #settings-overlay .theme-swatch.active{border-color:var(--accent-ember)!important;box-shadow:0 0 0 2px var(--accent-ember)}
+/* ── LIVING GOAL ROADMAP DRILL-DOWN (scoped to #goal-roadmap-view) ───────── */
+#goal-roadmap-view{position:fixed;inset:0;z-index:46;background:var(--bg-base);flex-direction:column;overflow:hidden}
+#goal-roadmap-view.grv-open{animation:grvSlideIn .26s ease}
+#goal-roadmap-view.grv-closing{animation:grvSlideOut .26s ease}
+@keyframes grvSlideIn{from{transform:translateX(100%)}to{transform:translateX(0)}}
+@keyframes grvSlideOut{from{transform:translateX(0)}to{transform:translateX(100%)}}
+#goal-roadmap-view .grv-header{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:14px 16px;border-bottom:1px solid var(--border-subtle);flex-shrink:0}
+#goal-roadmap-view .grv-back{background:transparent;border:none;color:var(--accent-ember);font-size:14px;font-weight:600;cursor:pointer;padding:4px 0;font-family:'Inter',sans-serif;flex-shrink:0}
+#goal-roadmap-view .grv-title{font-size:17px;font-weight:700;color:var(--text-primary);text-align:center;flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+#goal-roadmap-view .grv-content{flex:1;overflow-y:auto;padding:16px 16px 40px;-webkit-overflow-scrolling:touch}
 .settings-header{display:flex;align-items:center;justify-content:space-between;padding:14px 24px;border-bottom:1px solid var(--border);flex-shrink:0}
 .settings-body{display:flex;flex:1;overflow:hidden}
 .settings-nav{width:200px;border-right:1px solid var(--border);padding:16px 0;overflow-y:auto;flex-shrink:0}
@@ -883,6 +893,16 @@ input[type=range]{width:100%;accent-color:var(--accent)}
         <label style="display:flex;align-items:start;gap:8px;font-size:14px;color:#ccc"><input type="checkbox" disabled style="margin-top:4px"> Exercise content creator partnership &mdash; license exclusive video content for Pro subscribers, revenue share model</label>
 
       </div>
+    </div>
+
+    <!-- LIVING GOAL ROADMAP DRILL-DOWN (Profile sub-view) -->
+    <div id="goal-roadmap-view" style="display:none">
+      <div class="grv-header">
+        <button onclick="closeGoalRoadmap()" class="grv-back">&larr; Goals</button>
+        <span id="grv-title" class="grv-title"></span>
+        <span style="width:64px;flex-shrink:0"></span>
+      </div>
+      <div id="grv-content" class="grv-content"></div>
     </div>
 
   </div>
@@ -4456,6 +4476,10 @@ function renderProfileGoals() {
     if (prog && prog.last_computed_at) {
       html += '<div class="mono" style="font-size:9px;color:var(--text-dim);letter-spacing:1px;margin-top:6px;text-align:right" title="' + attrEsc(prog.last_computed_at) + '">Updated ' + escHtml(formatRelativeTimeAgo(prog.last_computed_at)) + '</div>';
     }
+    // Living Goal Roadmap drill-down entry point.
+    if (g.id) {
+      html += '<div onclick="openGoalRoadmap(\'' + attrEsc(g.id) + '\')" style="margin-top:12px;color:var(--accent-ember);font-size:12px;font-weight:600;cursor:pointer">View Roadmap &rarr;</div>';
+    }
     html += '</div>';
   }
   document.getElementById('goals-display').innerHTML = html;
@@ -4463,6 +4487,354 @@ function renderProfileGoals() {
 
   // Fetch progress if not cached
   if (!cached && currentProfileId && pGoals.length) fetchGoalProgress();
+}
+
+// ── LIVING GOAL ROADMAP DRILL-DOWN ─────────────────────────────────────────
+// Full-screen sub-view inside #tab-profile. Wired to the live backend:
+// GET .../intake (questions) → POST .../intake {answers} → POST .../roadmap.
+// The free-text statement from step 1 is carried into the first answer so it
+// still informs the generated roadmap. No server.js changes.
+var grvGoalId = null;          // id of the goal currently open in the drill-down
+var grvUserStatement = '';     // free-text statement from step 1
+var grvIntakeQuestions = [];   // questions returned by GET .../intake
+var grvRetryFn = null;         // retry handler for error states
+var grvCloseTimer = null;
+
+function grvEsc(s) { var d = document.createElement('div'); d.textContent = (s == null ? '' : s); return d.innerHTML; }
+function grvContentEl() { return document.getElementById('grv-content'); }
+function grvPersonalizeEl() { return document.getElementById('grv-personalize'); }
+function grvFindGoal(goalId) {
+  var goals = (currentProfileData && currentProfileData.goals) || [];
+  for (var i = 0; i < goals.length; i++) { if (goals[i] && String(goals[i].id) === String(goalId)) return goals[i]; }
+  return null;
+}
+function grvUpdateCachedGoal(goal) {
+  if (!currentProfileData || !Array.isArray(currentProfileData.goals) || !goal || !goal.id) return;
+  for (var i = 0; i < currentProfileData.goals.length; i++) {
+    if (String(currentProfileData.goals[i].id) === String(goal.id)) { currentProfileData.goals[i] = goal; break; }
+  }
+  try { localStorage.setItem('ac_profile_data', JSON.stringify(currentProfileData)); } catch (e) {}
+}
+
+function openGoalRoadmap(goalId) {
+  var goal = grvFindGoal(goalId);
+  if (!goal) return;
+  grvGoalId = goalId;
+  grvUserStatement = '';
+  grvIntakeQuestions = [];
+  if (grvCloseTimer) { clearTimeout(grvCloseTimer); grvCloseTimer = null; }
+  document.getElementById('grv-title').textContent = goal.title || 'Goal';
+  var el = document.getElementById('goal-roadmap-view');
+  el.style.display = 'flex';
+  el.classList.remove('grv-closing');
+  el.classList.add('grv-open');
+  var cc = grvContentEl(); if (cc) cc.scrollTop = 0;
+  loadGoalRoadmap(goalId);
+}
+
+function closeGoalRoadmap() {
+  var el = document.getElementById('goal-roadmap-view');
+  if (!el) return;
+  el.classList.remove('grv-open');
+  el.classList.add('grv-closing');
+  grvGoalId = null;
+  grvCloseTimer = setTimeout(function() { el.style.display = 'none'; el.classList.remove('grv-closing'); grvCloseTimer = null; }, 260);
+}
+
+function loadGoalRoadmap(goalId) {
+  // Instant render from the local cache, then refresh from the server (which
+  // recomputes phase progress_pct on read).
+  var cached = grvFindGoal(goalId);
+  if (cached && cached.roadmap) renderGoalRoadmap(cached);
+  else if (cached) renderTemplateRoadmap(cached);
+  else { var c0 = grvContentEl(); if (c0) c0.innerHTML = '<p style="color:var(--text-muted);text-align:center;padding:40px 20px">Goal not found.</p>'; }
+  if (!currentProfileId) return;
+  fetch('/api/profiles/' + currentProfileId + '/goals/' + encodeURIComponent(goalId))
+    .then(function(r) { return r.json(); })
+    .then(function(data) {
+      if (!data || !data.success || !data.goal) return;
+      grvUpdateCachedGoal(data.goal);
+      if (grvGoalId !== goalId) return; // user navigated away while loading
+      if (data.goal.roadmap) renderGoalRoadmap(data.goal);
+      else renderTemplateRoadmap(data.goal);
+    })
+    .catch(function() { /* keep the cached render */ });
+}
+
+function renderTemplateRoadmap(goal) {
+  var c = grvContentEl(); if (!c) return;
+  var h = '';
+  h += '<div style="background:var(--bg-surface-2);color:var(--color-caution);border-radius:12px;padding:12px 16px;margin-bottom:16px;font-size:13px;line-height:1.5">&#128203; Template Roadmap — Chat with your coach to personalize this for you</div>';
+  var names = ['Phase 1: Build Foundation', 'Phase 2: Progress', 'Phase 3: Momentum'];
+  for (var i = 0; i < 3; i++) {
+    h += '<div style="background:var(--bg-surface-2);border-radius:12px;padding:14px 16px;margin-bottom:8px">';
+    h += '<div style="font-size:14px;font-weight:600;color:var(--text-primary);margin-bottom:8px">' + names[i] + '</div>';
+    h += '<div style="height:5px;background:var(--bg-surface-1);border-radius:3px;overflow:hidden;margin-bottom:8px"><div style="height:100%;width:0%;background:var(--color-positive)"></div></div>';
+    h += '<div style="font-size:13px;color:var(--text-muted);font-style:italic;line-height:1.8">Answer the questions below to fill this in<br>Answer the questions below to fill this in</div>';
+    h += '</div>';
+  }
+  for (var j = 0; j < 2; j++) {
+    h += '<div style="background:var(--bg-surface-2);border-left:3px solid var(--accent-cornerman);border-radius:12px;padding:14px 16px;margin-bottom:8px">';
+    h += '<div style="font-size:9px;text-transform:uppercase;letter-spacing:0.08em;font-weight:600;color:var(--accent-cornerman);margin-bottom:4px">Horizon</div>';
+    h += '<div style="font-size:14px;color:var(--text-muted);font-style:italic">Your long-term destination</div>';
+    h += '</div>';
+  }
+  h += '<div id="grv-personalize"></div>';
+  c.innerHTML = h;
+  grvRenderStep1();
+}
+
+function grvRenderStep1() {
+  var p = grvPersonalizeEl(); if (!p) return;
+  var h = '<div style="margin-top:20px;background:var(--bg-surface-1);border:1px solid var(--border-subtle);border-radius:16px;padding:16px">';
+  h += '<div style="font-size:14px;font-weight:600;color:var(--text-primary)">Tell your coach about this goal</div>';
+  h += '<div style="font-size:12px;color:var(--text-muted);margin:4px 0 12px">A sentence or a paragraph — whatever feels right.</div>';
+  h += '<textarea id="grv-statement" oninput="grvValidateStep1()" placeholder="What does achieving this goal mean to you? Where are you starting from?" style="width:100%;background:var(--bg-surface-2);border:1px solid var(--border-subtle);color:var(--text-primary);border-radius:12px;padding:12px;min-height:100px;font-size:14px;font-family:Inter,sans-serif;outline:none;resize:vertical;box-sizing:border-box"></textarea>';
+  h += '<button id="grv-continue-btn" onclick="grvContinue()" disabled style="width:100%;height:44px;margin-top:12px;background:var(--accent-ember);color:#fff;border:none;border-radius:14px;font-size:14px;font-weight:600;cursor:pointer;opacity:0.4;pointer-events:none">Continue &rarr;</button>';
+  h += '</div>';
+  p.innerHTML = h;
+}
+function grvValidateStep1() {
+  var ta = document.getElementById('grv-statement');
+  var btn = document.getElementById('grv-continue-btn');
+  if (!ta || !btn) return;
+  var ok = ta.value.trim().length > 10;
+  btn.disabled = !ok;
+  btn.style.opacity = ok ? '1' : '0.4';
+  btn.style.pointerEvents = ok ? 'auto' : 'none';
+}
+function grvContinue() {
+  var ta = document.getElementById('grv-statement');
+  if (!ta || ta.value.trim().length <= 10) return;
+  grvUserStatement = ta.value.trim();
+  generateIntakeQuestions(grvGoalId, grvUserStatement);
+}
+
+function generateIntakeQuestions(goalId, userText) {
+  var p = grvPersonalizeEl();
+  if (p) p.innerHTML = '<div style="text-align:center;padding:30px 20px"><p style="font-size:13px;color:var(--text-muted);animation:pulse 1.4s ease-in-out infinite">Your coach is reading this...</p></div>';
+  // Live backend: GET generates the questions from the goal + profile.
+  fetch('/api/profiles/' + currentProfileId + '/goals/' + encodeURIComponent(goalId) + '/intake')
+    .then(function(r) { return r.json(); })
+    .then(function(data) {
+      if (grvGoalId !== goalId) return;
+      var qs = data && data.intake_questions;
+      if (!data || !data.success || !Array.isArray(qs) || !qs.length) {
+        grvShowPersonalizeError('Something went wrong — try again', function() { generateIntakeQuestions(goalId, userText); });
+        return;
+      }
+      grvRenderStep2(qs);
+    })
+    .catch(function() {
+      if (grvGoalId !== goalId) return;
+      grvShowPersonalizeError('Something went wrong — try again', function() { generateIntakeQuestions(goalId, userText); });
+    });
+}
+
+function grvRenderStep2(questions) {
+  grvIntakeQuestions = questions;
+  var p = grvPersonalizeEl(); if (!p) return;
+  var h = '<div style="margin-top:20px">';
+  if (grvUserStatement) {
+    h += '<div style="background:var(--bg-surface-2);border-radius:12px;padding:12px;font-style:italic;font-size:13px;color:var(--text-muted);line-height:1.6;margin-bottom:14px">&ldquo;' + grvEsc(grvUserStatement) + '&rdquo;</div>';
+  }
+  for (var i = 0; i < questions.length; i++) {
+    var q = questions[i];
+    h += '<div style="background:var(--bg-surface-1);border:1px solid var(--border-subtle);border-radius:16px;padding:14px 16px;margin-bottom:10px">';
+    h += '<div style="font-size:14px;font-weight:600;color:var(--text-primary);margin-bottom:8px">' + grvEsc(q.question) + '</div>';
+    h += '<textarea class="grv-answer" data-key="' + grvEsc(q.key) + '" oninput="grvValidateStep2()" style="width:100%;background:var(--bg-surface-2);border:1px solid var(--border-subtle);color:var(--text-primary);border-radius:12px;padding:10px;min-height:60px;font-size:14px;font-family:Inter,sans-serif;outline:none;resize:vertical;box-sizing:border-box"></textarea>';
+    h += '</div>';
+  }
+  h += '<button id="grv-build-btn" onclick="grvBuildRoadmap()" disabled style="width:100%;height:44px;background:var(--accent-ember);color:#fff;border:none;border-radius:14px;font-size:14px;font-weight:600;cursor:pointer;opacity:0.4;pointer-events:none">Build My Roadmap</button>';
+  h += '</div>';
+  p.innerHTML = h;
+}
+function grvValidateStep2() {
+  var tas = document.querySelectorAll('#grv-personalize .grv-answer');
+  var allOk = tas.length > 0;
+  for (var i = 0; i < tas.length; i++) { if (tas[i].value.trim().length <= 3) { allOk = false; break; } }
+  var btn = document.getElementById('grv-build-btn');
+  if (!btn) return;
+  btn.disabled = !allOk;
+  btn.style.opacity = allOk ? '1' : '0.4';
+  btn.style.pointerEvents = allOk ? 'auto' : 'none';
+}
+function grvBuildRoadmap() {
+  var answers = [];
+  for (var i = 0; i < grvIntakeQuestions.length; i++) {
+    var q = grvIntakeQuestions[i];
+    var ta = document.querySelector('#grv-personalize .grv-answer[data-key="' + q.key + '"]');
+    answers.push({ key: q.key, question: q.question, answer: ta ? ta.value.trim() : '' });
+  }
+  // Carry the free-text statement into the first answer so it reaches the
+  // roadmap-generation prompt (which reads the stored intake answers).
+  if (grvUserStatement && answers.length) {
+    answers[0].answer = 'In my own words: ' + grvUserStatement + '\n\n' + answers[0].answer;
+  }
+  generatePersonalizedRoadmap(grvGoalId, answers);
+}
+
+function generatePersonalizedRoadmap(goalId, answers) {
+  var c = grvContentEl();
+  if (c) c.innerHTML = '<div style="display:flex;flex-direction:column;align-items:center;justify-content:center;padding:80px 20px;text-align:center">' +
+    '<div style="width:14px;height:14px;border-radius:50%;background:var(--accent-ember);animation:pulse 1.2s ease-in-out infinite;margin-bottom:16px"></div>' +
+    '<p style="font-size:13px;color:var(--text-muted)">Building your personalized roadmap...</p></div>';
+  var base = '/api/profiles/' + currentProfileId + '/goals/' + encodeURIComponent(goalId);
+  // 1) store answers (sets intake_completed) → 2) generate roadmap from them.
+  fetch(base + '/intake', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ answers: answers }) })
+    .then(function(r) { return r.json(); })
+    .then(function(d) {
+      if (!d || !d.success) throw new Error((d && d.error) || 'intake failed');
+      return fetch(base + '/roadmap', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ intake_answers: answers }) });
+    })
+    .then(function(r) { return r.json(); })
+    .then(function(data) {
+      if (grvGoalId !== goalId) return;
+      if (!data || !data.success || !data.goal) throw new Error((data && data.error) || 'roadmap failed');
+      grvUpdateCachedGoal(data.goal);
+      renderGoalRoadmap(data.goal);
+      if (typeof renderProfileGoals === 'function') renderProfileGoals(); // refresh cards behind the view
+    })
+    .catch(function() {
+      if (grvGoalId !== goalId) return;
+      grvShowFullError('Could not build your roadmap — try again', function() { generatePersonalizedRoadmap(goalId, answers); });
+    });
+}
+
+function grvShowPersonalizeError(msg, retryFn) {
+  grvRetryFn = retryFn || null;
+  var p = grvPersonalizeEl(); if (!p) return;
+  p.innerHTML = '<div style="text-align:center;padding:24px 20px"><p style="font-size:14px;color:var(--color-danger);margin-bottom:12px">' + grvEsc(msg) + '</p>' +
+    '<button onclick="grvRetry()" style="background:var(--bg-surface-2);border:none;color:var(--text-primary);padding:8px 18px;border-radius:12px;cursor:pointer;font-size:13px">Try again</button></div>';
+}
+function grvShowFullError(msg, retryFn) {
+  grvRetryFn = retryFn || null;
+  var c = grvContentEl(); if (!c) return;
+  c.innerHTML = '<div style="text-align:center;padding:60px 20px"><p style="font-size:14px;color:var(--color-danger);margin-bottom:14px">' + grvEsc(msg) + '</p>' +
+    '<button onclick="grvRetry()" style="background:var(--accent-ember);border:none;color:#fff;padding:10px 22px;border-radius:12px;cursor:pointer;font-size:13px;font-weight:600">Retry</button></div>';
+}
+function grvRetry() { if (grvRetryFn) grvRetryFn(); }
+
+function grvPhaseDateRange(p) {
+  if (!p || !p.start_date) return '';
+  function fmt(d) { var dt = new Date(String(d).slice(0, 10) + 'T12:00:00'); if (isNaN(dt.getTime())) return ''; return dt.toLocaleDateString('en-US', { month: 'short', day: 'numeric' }); }
+  var s = fmt(p.start_date); var e = p.end_date ? fmt(p.end_date) : '';
+  if (!s) return '';
+  return e ? (s + ' – ' + e) : s;
+}
+
+function renderGoalRoadmap(goal) {
+  var c = grvContentEl(); if (!c) return;
+  var rm = (goal && goal.roadmap) || {};
+  var phases = Array.isArray(rm.phases) ? rm.phases : [];
+  var h = '';
+  // Header block: timeline range + confidence badge + note.
+  var conf = String(rm.date_confidence || '').toLowerCase();
+  var confColor = conf === 'high' ? 'var(--color-positive)' : conf === 'medium' ? 'var(--color-caution)' : conf === 'low' ? 'var(--color-danger)' : 'var(--text-muted)';
+  var confLabel = conf === 'high' ? 'HIGH CONFIDENCE' : conf === 'medium' ? 'MEDIUM' : conf === 'low' ? 'LOW' : '';
+  h += '<div style="margin-bottom:20px">';
+  h += '<div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:6px">';
+  if (rm.timeline_range) h += '<span class="font-hero" style="font-size:22px;font-weight:700;color:var(--text-primary)">' + grvEsc(rm.timeline_range) + '</span>';
+  if (confLabel) h += '<span style="font-size:9px;text-transform:uppercase;letter-spacing:0.08em;font-weight:600;color:' + confColor + ';background:var(--bg-surface-2);padding:3px 8px;border-radius:9999px">' + confLabel + '</span>';
+  h += '</div>';
+  if (rm.timeline_note) h += '<p style="font-size:13px;color:var(--text-muted);font-style:italic;line-height:1.6">' + grvEsc(rm.timeline_note) + '</p>';
+  h += '</div>';
+  // Near-term phases.
+  for (var i = 0; i < phases.length; i++) {
+    var p = phases[i];
+    if (!p || p.type === 'horizon') continue;
+    var st = String(p.status || '').toLowerCase();
+    var stColor = st === 'current' ? 'var(--accent-ember)' : st === 'complete' ? 'var(--color-positive)' : 'var(--text-muted)';
+    var stLabel = st === 'current' ? 'CURRENT' : st === 'complete' ? 'COMPLETE' : 'UPCOMING';
+    var pct = (typeof p.progress_pct === 'number') ? Math.max(0, Math.min(100, p.progress_pct)) : 0;
+    h += '<div style="background:var(--bg-surface-1);border:1px solid var(--border-subtle);border-radius:16px;padding:16px;margin-bottom:10px">';
+    h += '<div style="display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:8px">';
+    h += '<span style="font-size:15px;font-weight:700;color:var(--text-primary)">' + grvEsc(p.name || 'Phase') + '</span>';
+    h += '<span style="font-size:9px;text-transform:uppercase;letter-spacing:0.08em;font-weight:600;color:' + stColor + ';background:var(--bg-surface-2);padding:3px 8px;border-radius:9999px;flex-shrink:0">' + stLabel + '</span>';
+    h += '</div>';
+    h += '<div style="height:5px;background:var(--bg-surface-2);border-radius:3px;overflow:hidden;margin-bottom:6px"><div style="height:100%;width:' + pct + '%;background:var(--color-positive);border-radius:3px"></div></div>';
+    var dr = grvPhaseDateRange(p);
+    if (dr) h += '<div style="font-size:11px;color:var(--text-muted);margin-bottom:8px">' + grvEsc(dr) + '</div>';
+    var wt = Array.isArray(p.weekly_targets) ? p.weekly_targets : [];
+    for (var t = 0; t < wt.length; t++) { h += '<div style="font-size:13px;color:var(--text-muted);line-height:1.7">&rarr; ' + grvEsc(wt[t]) + '</div>'; }
+    var cs = Array.isArray(p.completion_signals) ? p.completion_signals : [];
+    if (cs.length) h += '<div style="margin-top:6px">';
+    for (var s = 0; s < cs.length; s++) { h += '<div style="font-size:12px;color:var(--color-positive);line-height:1.7">&#10003; ' + grvEsc(cs[s]) + '</div>'; }
+    if (cs.length) h += '</div>';
+    h += '</div>';
+  }
+  // Horizon phases.
+  for (var k = 0; k < phases.length; k++) {
+    var hp = phases[k];
+    if (!hp || hp.type !== 'horizon') continue;
+    h += '<div style="background:var(--bg-surface-2);border-left:3px solid var(--accent-cornerman);border-radius:16px;padding:14px 16px;margin-bottom:10px">';
+    h += '<div style="font-size:9px;text-transform:uppercase;letter-spacing:0.08em;font-weight:600;color:var(--accent-cornerman);margin-bottom:4px">Horizon</div>';
+    h += '<div style="font-size:14px;font-weight:600;color:var(--text-primary)">' + grvEsc(hp.milestone || hp.name || '') + '</div>';
+    if (hp.estimated_range) h += '<div style="font-size:12px;color:var(--text-muted);margin-top:2px">' + grvEsc(hp.estimated_range) + '</div>';
+    h += '</div>';
+  }
+  // Adaptation log (collapsed).
+  var log = Array.isArray(rm.adaptation_log) ? rm.adaptation_log : [];
+  if (log.length) {
+    h += '<div style="margin-top:8px">';
+    h += '<div onclick="grvToggleLog()" id="grv-log-toggle" style="font-size:12px;color:var(--text-muted);cursor:pointer;padding:6px 0">Show adaptation history (' + log.length + ')</div>';
+    h += '<div id="grv-log" style="display:none">';
+    for (var l = log.length - 1; l >= 0; l--) {
+      var e = log[l];
+      var dstr = e && e.date ? new Date(e.date).toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) : '';
+      h += '<div style="font-size:12px;color:var(--text-muted);line-height:1.6;padding:5px 0;border-bottom:1px solid var(--border-subtle)"><strong style="color:var(--text-primary)">' + grvEsc(dstr) + '</strong> — ' + grvEsc((e && e.summary) || '') + '</div>';
+    }
+    h += '</div></div>';
+  }
+  // Check-in + regenerate.
+  h += '<div id="grv-checkin-area" style="margin-top:20px">';
+  h += '<button onclick="grvOpenCheckin()" style="width:100%;height:44px;background:var(--bg-surface-2);border:none;color:var(--text-primary);border-radius:14px;font-size:14px;font-weight:600;cursor:pointer">Update My Coach</button>';
+  h += '<div onclick="grvRegenerate()" style="text-align:center;color:var(--text-muted);font-size:12px;margin-top:12px;cursor:pointer">Regenerate roadmap</div>';
+  h += '</div>';
+  c.innerHTML = h;
+}
+
+function grvToggleLog() {
+  var el = document.getElementById('grv-log');
+  var tg = document.getElementById('grv-log-toggle');
+  if (!el) return;
+  if (el.style.display === 'none') { el.style.display = 'block'; if (tg) tg.textContent = 'Hide adaptation history'; }
+  else { el.style.display = 'none'; if (tg) tg.textContent = 'Show adaptation history'; }
+}
+
+function grvOpenCheckin() {
+  var a = document.getElementById('grv-checkin-area'); if (!a) return;
+  a.innerHTML = '<div style="background:var(--bg-surface-1);border:1px solid var(--border-subtle);border-radius:16px;padding:16px">' +
+    '<div style="font-size:14px;font-weight:600;color:var(--text-primary);margin-bottom:10px">How\'s it going? Any changes to report?</div>' +
+    '<textarea id="grv-checkin-text" style="width:100%;background:var(--bg-surface-2);border:1px solid var(--border-subtle);color:var(--text-primary);border-radius:12px;padding:10px;min-height:70px;font-size:14px;font-family:Inter,sans-serif;outline:none;resize:vertical;box-sizing:border-box"></textarea>' +
+    '<div style="display:flex;gap:8px;margin-top:12px">' +
+    '<button onclick="grvCancelCheckin()" style="flex:1;height:42px;background:transparent;border:1px solid var(--border-subtle);color:var(--text-muted);border-radius:12px;cursor:pointer;font-size:13px">Cancel</button>' +
+    '<button onclick="grvSubmitCheckin()" style="flex:1;height:42px;background:var(--accent-ember);border:none;color:#fff;border-radius:12px;cursor:pointer;font-size:13px;font-weight:600">Send</button>' +
+    '</div></div>';
+}
+function grvCancelCheckin() { var g = grvFindGoal(grvGoalId); if (g) renderGoalRoadmap(g); }
+function grvSubmitCheckin() {
+  var ta = document.getElementById('grv-checkin-text');
+  var notes = ta ? ta.value.trim() : '';
+  if (!notes) return;
+  var goalId = grvGoalId;
+  var a = document.getElementById('grv-checkin-area');
+  if (a) a.innerHTML = '<div style="text-align:center;padding:16px"><p style="font-size:13px;color:var(--text-muted);animation:pulse 1.4s ease-in-out infinite">Updating your roadmap...</p></div>';
+  fetch('/api/profiles/' + currentProfileId + '/goals/' + encodeURIComponent(goalId) + '/checkin', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ notes: notes }) })
+    .then(function(r) { return r.json(); })
+    .then(function(data) {
+      if (grvGoalId !== goalId) return;
+      if (data && data.success && data.goal) { grvUpdateCachedGoal(data.goal); renderGoalRoadmap(data.goal); }
+      else { var g = grvFindGoal(goalId); if (g) renderGoalRoadmap(g); if (typeof showToast === 'function') showToast('Check-in failed'); }
+    })
+    .catch(function() { var g = grvFindGoal(goalId); if (g) renderGoalRoadmap(g); if (typeof showToast === 'function') showToast('Check-in failed'); });
+}
+
+function grvRegenerate() {
+  var g = grvFindGoal(grvGoalId);
+  var answers = (g && Array.isArray(g.intake_answers)) ? g.intake_answers : [];
+  if (!answers.length) { grvUserStatement = ''; if (g) renderTemplateRoadmap(g); return; }
+  generatePersonalizedRoadmap(grvGoalId, answers);
 }
 
 // ─── ANALYTICS (shared date-range helpers) ─────────────────────────────

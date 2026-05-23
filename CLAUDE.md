@@ -608,6 +608,8 @@ Replaces the legacy free-text `profiles.roadmap` blob with a structured jsonb th
 
 Each **individual goal** in `profile_data.goals[]` can carry its own phased, adaptive roadmap. **No new tables** — stored as fields on the goal object (jsonb).
 
+**Frontend drill-down UI** (`public/index.html`, all functions prefixed `grv`/`openGoalRoadmap`/etc., CSS scoped to `#goal-roadmap-view`): each Goals & Milestones card has a "View Roadmap →" link (`openGoalRoadmap(goalId)`) that slides in a full-screen sub-view inside `#tab-profile`. If `goal.roadmap` exists → `renderGoalRoadmap` (timeline range + confidence badge, near-term phase cards with progress bars / weekly targets / completion signals, horizon cards, collapsible adaptation log, "Update My Coach" check-in + "Regenerate"). If not → `renderTemplateRoadmap` (placeholder phases) + a 2-step "Personalize" conversation. **API wiring note:** the UI talks to the *live* endpoints (the spec it was built from described a different contract): tapping Continue calls **GET** `/goals/:goalId/intake` to fetch AI-generated questions; "Build My Roadmap" does **POST** `/intake {answers:[{key,answer}]}` then **POST** `/roadmap`. The free-text statement from step 1 is prepended into the first answer so it still informs generation (the live `GET /intake` generates questions from the goal+profile, not from the statement). Cache (`currentProfileData.goals[]` + `ac_profile_data`) is updated in place on generate/check-in — no reload.
+
 **Goal object fields** (added on demand):
 - `id` — uuid (backfilled by `ensureGoalIds()`)
 - `intake_questions` — `[{ question, key }]` (Haiku) / `intake_answers` — `[{ question, key, answer }]` / `intake_completed` — boolean
