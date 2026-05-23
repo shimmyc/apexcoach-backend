@@ -662,9 +662,11 @@ Three-phase plan for exercise demonstrations and AI form coaching:
 - **Phase 3 — Real-Time Form Coaching**: Google MediaPipe or TensorFlow.js detects 33 body landmarks in-browser. Pose landmark data (not raw video) sent to Claude for interpretation. Camera analyzes every 3-5 seconds with on-screen feedback and audio cues. Privacy-preserving — no video leaves the device.
 - **Content partnerships**: License exclusive video content for Pro subscribers with revenue share model.
 
-## Voice Input (Planned Upgrade)
+## Voice Input
 
-Currently uses Web Speech API (browser built-in dictation). Planned upgrade to OpenAI Whisper API for significantly better accuracy, especially for fitness/medical terminology. Cost: ~$0.006/minute (essentially free for personal use). Implementation: record audio as blob, POST to Whisper API endpoint, return transcript. Will replace `startVoice()` / `startCheckinVoice()` browser speech recognition.
+Web Speech API (browser built-in dictation). `startVoice(targetEl, btnEl)` is the **generic** dictation function — called with no args it defaults to the log-modal `#wnotes`/`#mic-btn`/`#voice-status` (the original behavior); called with a textarea + button it dictates into that field and toggles that button (one shared `recognition` instance; `#voice-status` is updated only when present). `startCheckinVoice()` (feeling check-in) and the onboarding/profile-builder `obStartVoice()`/`pbStartVoice()` are separate self-contained dictation functions for their flows. The `voiceMicBtn()` helper returns the standard surface-2 circular 🎙 button — drop it immediately after a textarea inside a `position:relative` wrapper and it dictates into its previous sibling via `startVoice(this.previousElementSibling, this)`. Mic buttons are now on every textarea: log modal, feeling check-in, onboarding (main + device follow-up), profile builder (main + review), and all Living Goal Roadmap textareas (statement, per-question answers, check-in).
+
+**Planned upgrade:** OpenAI Whisper API for better accuracy on fitness/medical terminology (~$0.006/min). Record audio as blob → POST to a Whisper endpoint → return transcript, replacing the Web Speech recognition.
 
 ## Auto-Format Notes
 

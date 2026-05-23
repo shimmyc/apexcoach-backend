@@ -1548,7 +1548,7 @@ function obBuildInput(qi, idx) {
     if (qi.followUp) {
       var dvVal = onboardingAnswers[qi.followUp.key] || '';
       h += '<div class="ob-device-input" id="ob-device-wrap-' + idx + '" style="display:none">';
-      h += '<div class="ob-textarea-wrap" style="margin-top:12px"><textarea class="ob-textarea" id="ob-device-ta-' + idx + '" placeholder="' + qi.followUp.placeholder + '" style="min-height:52px" oninput="obAutoExpand(this);obCheckContinue()">' + dvVal + '</textarea></div>';
+      h += '<div class="ob-textarea-wrap" style="margin-top:12px"><textarea class="ob-textarea" id="ob-device-ta-' + idx + '" placeholder="' + qi.followUp.placeholder + '" style="min-height:52px" oninput="obAutoExpand(this);obCheckContinue()">' + dvVal + '</textarea>' + voiceMicBtn() + '</div>';
       h += '</div>';
     }
     return h;
@@ -1572,7 +1572,7 @@ function obBuildInput(qi, idx) {
     if (qi.followUp) {
       var dvVal = onboardingAnswers[qi.followUp.key] || '';
       h += '<div class="ob-device-input" id="ob-device-wrap-' + idx + '" style="display:none">';
-      h += '<div class="ob-textarea-wrap" style="margin-top:12px"><textarea class="ob-textarea" id="ob-device-ta-' + idx + '" placeholder="' + qi.followUp.placeholder + '" style="min-height:52px" oninput="obAutoExpand(this);obCheckContinue()">' + dvVal + '</textarea></div>';
+      h += '<div class="ob-textarea-wrap" style="margin-top:12px"><textarea class="ob-textarea" id="ob-device-ta-' + idx + '" placeholder="' + qi.followUp.placeholder + '" style="min-height:52px" oninput="obAutoExpand(this);obCheckContinue()">' + dvVal + '</textarea>' + voiceMicBtn() + '</div>';
       h += '</div>';
     }
     return h;
@@ -4589,7 +4589,7 @@ function grvRenderStep1() {
   var h = '<div style="margin-top:20px;background:var(--bg-surface-1);border:1px solid var(--border-subtle);border-radius:16px;padding:16px">';
   h += '<div style="font-size:14px;font-weight:600;color:var(--text-primary)">Tell your coach about this goal</div>';
   h += '<div style="font-size:12px;color:var(--text-muted);margin:4px 0 12px">A sentence or a paragraph — whatever feels right.</div>';
-  h += '<textarea id="grv-statement" oninput="grvValidateStep1()" placeholder="What does achieving this goal mean to you? Where are you starting from?" style="width:100%;background:var(--bg-surface-2);border:1px solid var(--border-subtle);color:var(--text-primary);border-radius:12px;padding:12px;min-height:100px;font-size:14px;font-family:Inter,sans-serif;outline:none;resize:vertical;box-sizing:border-box"></textarea>';
+  h += '<div style="position:relative"><textarea id="grv-statement" oninput="grvValidateStep1()" placeholder="What does achieving this goal mean to you? Where are you starting from?" style="width:100%;background:var(--bg-surface-2);border:1px solid var(--border-subtle);color:var(--text-primary);border-radius:12px;padding:12px;min-height:100px;font-size:14px;font-family:Inter,sans-serif;outline:none;resize:vertical;box-sizing:border-box"></textarea>' + voiceMicBtn() + '</div>';
   h += '<button id="grv-continue-btn" onclick="grvContinue()" disabled style="width:100%;height:44px;margin-top:12px;background:var(--accent-ember);color:#fff;border:none;border-radius:14px;font-size:14px;font-weight:600;cursor:pointer;opacity:0.4;pointer-events:none">Continue &rarr;</button>';
   h += '</div>';
   p.innerHTML = h;
@@ -4642,7 +4642,7 @@ function grvRenderStep2(questions) {
     var q = questions[i];
     h += '<div style="background:var(--bg-surface-1);border:1px solid var(--border-subtle);border-radius:16px;padding:14px 16px;margin-bottom:10px">';
     h += '<div style="font-size:14px;font-weight:600;color:var(--text-primary);margin-bottom:8px">' + grvEsc(q.question) + '</div>';
-    h += '<textarea class="grv-answer" data-key="' + grvEsc(q.key) + '" oninput="grvValidateStep2()" style="width:100%;background:var(--bg-surface-2);border:1px solid var(--border-subtle);color:var(--text-primary);border-radius:12px;padding:10px;min-height:60px;font-size:14px;font-family:Inter,sans-serif;outline:none;resize:vertical;box-sizing:border-box"></textarea>';
+    h += '<div style="position:relative"><textarea class="grv-answer" data-key="' + grvEsc(q.key) + '" oninput="grvValidateStep2()" style="width:100%;background:var(--bg-surface-2);border:1px solid var(--border-subtle);color:var(--text-primary);border-radius:12px;padding:10px;min-height:60px;font-size:14px;font-family:Inter,sans-serif;outline:none;resize:vertical;box-sizing:border-box"></textarea>' + voiceMicBtn() + '</div>';
     h += '</div>';
   }
   h += '<button id="grv-build-btn" onclick="grvBuildRoadmap()" disabled style="width:100%;height:44px;background:var(--accent-ember);color:#fff;border:none;border-radius:14px;font-size:14px;font-weight:600;cursor:pointer;opacity:0.4;pointer-events:none">Build My Roadmap</button>';
@@ -4806,7 +4806,7 @@ function grvOpenCheckin() {
   var a = document.getElementById('grv-checkin-area'); if (!a) return;
   a.innerHTML = '<div style="background:var(--bg-surface-1);border:1px solid var(--border-subtle);border-radius:16px;padding:16px">' +
     '<div style="font-size:14px;font-weight:600;color:var(--text-primary);margin-bottom:10px">How\'s it going? Any changes to report?</div>' +
-    '<textarea id="grv-checkin-text" style="width:100%;background:var(--bg-surface-2);border:1px solid var(--border-subtle);color:var(--text-primary);border-radius:12px;padding:10px;min-height:70px;font-size:14px;font-family:Inter,sans-serif;outline:none;resize:vertical;box-sizing:border-box"></textarea>' +
+    '<div style="position:relative"><textarea id="grv-checkin-text" style="width:100%;background:var(--bg-surface-2);border:1px solid var(--border-subtle);color:var(--text-primary);border-radius:12px;padding:10px;min-height:70px;font-size:14px;font-family:Inter,sans-serif;outline:none;resize:vertical;box-sizing:border-box"></textarea>' + voiceMicBtn() + '</div>' +
     '<div style="display:flex;gap:8px;margin-top:12px">' +
     '<button onclick="grvCancelCheckin()" style="flex:1;height:42px;background:transparent;border:1px solid var(--border-subtle);color:var(--text-muted);border-radius:12px;cursor:pointer;font-size:13px">Cancel</button>' +
     '<button onclick="grvSubmitCheckin()" style="flex:1;height:42px;background:var(--accent-ember);border:none;color:#fff;border-radius:12px;cursor:pointer;font-size:13px;font-weight:600">Send</button>' +
@@ -10153,20 +10153,29 @@ function renderWeek() { renderCalendar(); }
 
 // ── VOICE INPUT ───────────────────────────────────────────────────────────
 var recognition = null;
-function startVoice() {
+// Dictation. Called with no args from the log-modal mic (#mic-btn → #wnotes,
+// with the #voice-status readout). Other mic buttons pass their own textarea +
+// button so dictation lands in the right field; #voice-status is optional and
+// only updated when present (log modal only). One shared `recognition` instance
+// — tapping any mic while listening stops the current session.
+function startVoice(targetEl, btnEl) {
+  var ta = targetEl || document.getElementById('wnotes');
+  var btn = btnEl || document.getElementById('mic-btn');
+  if (!ta) return;
+  var statusEl = document.getElementById('voice-status'); // present only in the log modal
   var SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
   if (!SpeechRecognition) {
-    document.getElementById('voice-status').textContent = 'Voice not supported in this browser. Use Chrome.';
+    if (statusEl) statusEl.textContent = 'Voice not supported in this browser. Use Chrome.';
     return;
   }
-  if (recognition) { recognition.stop(); recognition = null; document.getElementById('mic-btn').textContent = '🎙'; return; }
+  if (recognition) { recognition.stop(); recognition = null; if (btn) btn.textContent = '🎙'; return; }
   recognition = new SpeechRecognition();
   recognition.continuous = true;
   recognition.interimResults = true;
   recognition.lang = 'en-US';
-  var existing = document.getElementById('wnotes').value;
-  document.getElementById('mic-btn').textContent = '⏹';
-  document.getElementById('voice-status').textContent = 'Listening...';
+  var existing = ta.value;
+  if (btn) btn.textContent = '⏹';
+  if (statusEl) statusEl.textContent = 'Listening...';
   recognition.onresult = function(e) {
     var interim = '';
     var final = '';
@@ -10174,20 +10183,31 @@ function startVoice() {
       if (e.results[i].isFinal) final += e.results[i][0].transcript;
       else interim += e.results[i][0].transcript;
     }
-    document.getElementById('wnotes').value = existing + (existing ? ' ' : '') + final;
-    document.getElementById('voice-status').textContent = interim ? 'Hearing: ' + interim : 'Listening...';
+    ta.value = existing + (existing ? ' ' : '') + final;
+    if (statusEl) statusEl.textContent = interim ? 'Hearing: ' + interim : 'Listening...';
+    // Fire the target's input handler so validation-gated buttons (Continue /
+    // Build My Roadmap / onboarding Continue) re-enable after dictation.
+    try { ta.dispatchEvent(new Event('input', { bubbles: true })); } catch (e2) {}
   };
   recognition.onerror = function(e) {
-    document.getElementById('voice-status').textContent = 'Error: ' + e.error;
-    document.getElementById('mic-btn').textContent = '🎙';
+    if (statusEl) statusEl.textContent = 'Error: ' + e.error;
+    if (btn) btn.textContent = '🎙';
     recognition = null;
   };
   recognition.onend = function() {
-    document.getElementById('mic-btn').textContent = '🎙';
-    document.getElementById('voice-status').textContent = 'Done. Click AI Format to clean it up.';
+    if (btn) btn.textContent = '🎙';
+    if (statusEl) statusEl.textContent = 'Done. Click AI Format to clean it up.';
     recognition = null;
   };
   recognition.start();
+}
+
+// Shared mic button for any textarea: drop it immediately AFTER a textarea
+// inside a position:relative wrapper. It targets its previous sibling (the
+// textarea) and toggles its own icon via startVoice(). Matches the existing
+// surface-2 circular mic style.
+function voiceMicBtn() {
+  return '<button type="button" onclick="startVoice(this.previousElementSibling, this)" title="Voice input" style="position:absolute;right:8px;bottom:8px;background:var(--bg-surface-2);border:none;color:var(--text-muted);width:32px;height:32px;border-radius:9999px;padding:0;cursor:pointer;font-size:14px">🎙</button>';
 }
 
 function toggleAutoFormat(on) {
@@ -10824,7 +10844,7 @@ function pbRenderReviewSectionForm(section) {
       h += '<input type="hidden" id="' + inputId + '" value="' + String(saved).replace(/"/g,'&quot;') + '">';
     } else {
       var safeVal = String(saved).replace(/</g,'&lt;').replace(/>/g,'&gt;');
-      h += '<textarea id="' + inputId + '" placeholder="Type your answer..." style="width:100%;background:var(--bg-input);border:1px solid var(--border);color:var(--text);padding:10px 12px;border-radius:6px;font-size:14px;line-height:1.5;outline:none;font-family:DM Sans,sans-serif;min-height:88px;resize:vertical">' + safeVal + '</textarea>';
+      h += '<div style="position:relative"><textarea id="' + inputId + '" placeholder="Type your answer..." style="width:100%;background:var(--bg-input);border:1px solid var(--border);color:var(--text);padding:10px 12px;border-radius:6px;font-size:14px;line-height:1.5;outline:none;font-family:DM Sans,sans-serif;min-height:88px;resize:vertical">' + safeVal + '</textarea>' + voiceMicBtn() + '</div>';
     }
     h += '</div>';
   }
