@@ -235,6 +235,27 @@ input[type=range]{width:100%;accent-color:var(--accent)}
 /* "Ask Your History" is an AI feature → cornerman focus; Library search → ember */
 #tab-history #history-query:focus{border-color:var(--accent-cornerman);outline:none}
 #tab-library input[type=text]:focus,#tab-library select:focus{border-color:var(--accent-ember);outline:none}
+/* ── AGENT 5/5: PROFILE TAB + SETTINGS CONTENT ────────────────────────────
+   Scoped to #tab-profile / #settings-overlay. Global .card/.clabel/.mg-*/
+   .navBtn/.theme-swatch and the THEMES object + applyTheme() are untouched. */
+#tab-profile .card{background:var(--bg-surface-1);border:1px solid var(--border-subtle);border-radius:20px}
+#tab-profile .clabel{color:var(--text-muted);font-size:12px;letter-spacing:0.06em}
+#tab-profile .mg-card{background:var(--bg-surface-1);border:1px solid var(--border-subtle);border-radius:16px}
+#tab-profile .mg-card.done{border-color:var(--border-subtle);background:var(--bg-surface-1);opacity:.6}
+#tab-profile .mg-type-badge{background:var(--bg-surface-2);color:var(--text-muted);border:none;border-radius:9999px}
+#tab-profile .mg-pill,#tab-profile .mg-period-pill{background:var(--bg-surface-2);border:1px solid transparent;color:var(--text-muted);border-radius:9999px}
+#tab-profile .mg-pill.active,#tab-profile .mg-period-pill.active{background:var(--bg-surface-2);border-color:var(--accent-ember);color:var(--accent-ember)}
+#tab-profile .navBtn{background:var(--bg-surface-2);border:none;color:var(--text-muted);border-radius:9999px;padding:6px 14px;font-size:12px;font-weight:600;font-family:'Inter',sans-serif}
+#tab-profile .navBtn.active{background:var(--accent-ember);color:#fff}
+#tab-profile input[type=text],#tab-profile input[type=password],#tab-profile select,#tab-profile textarea{background:var(--bg-surface-2);border:1px solid var(--border-subtle);color:var(--text-primary);border-radius:10px}
+#tab-profile input[type=checkbox]{accent-color:var(--accent-ember)}
+/* Settings panel interior (shell + slide-in done by Agent 3) */
+#settings-overlay .settings-nav button.active{color:var(--accent-ember);background:rgba(255,74,28,0.1)}
+#settings-overlay .settings-section h3{color:var(--text-primary)}
+#settings-overlay .s-label{color:var(--text-muted);letter-spacing:0.06em;text-transform:uppercase}
+#settings-overlay input[type=text],#settings-overlay input[type=password],#settings-overlay select,#settings-overlay textarea{background:var(--bg-surface-2);border:1px solid var(--border-subtle);color:var(--text-primary);border-radius:8px}
+#settings-overlay input[type=checkbox]{accent-color:var(--accent-ember);width:16px;height:16px}
+#settings-overlay .theme-swatch.active{border-color:var(--accent-ember)!important;box-shadow:0 0 0 2px var(--accent-ember)}
 .settings-header{display:flex;align-items:center;justify-content:space-between;padding:14px 24px;border-bottom:1px solid var(--border);flex-shrink:0}
 .settings-body{display:flex;flex:1;overflow:hidden}
 .settings-nav{width:200px;border-right:1px solid var(--border);padding:16px 0;overflow-y:auto;flex-shrink:0}
@@ -707,8 +728,8 @@ input[type=range]{width:100%;accent-color:var(--accent)}
       <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">
         <p class="clabel" style="margin-bottom:0">&#x1F3AF; active challenges</p>
         <div style="display:flex;gap:6px;align-items:center">
-          <button onclick="refreshActiveChallenges(this)" id="mg-refresh-btn" style="background:transparent;border:1px solid var(--border-accent);color:var(--text-dim);padding:5px 10px;border-radius:6px;cursor:pointer;font-size:13px" title="Refresh challenge progress">&#8635;</button>
-          <button onclick="openMicroGoalModal()" id="mg-add-btn" style="background:var(--accent-10);border:1px solid var(--accent-33);color:var(--accent);padding:5px 12px;border-radius:6px;cursor:pointer;font-size:13px;font-weight:600" title="Add challenge">+ Add</button>
+          <button onclick="refreshActiveChallenges(this)" id="mg-refresh-btn" style="background:var(--bg-surface-2);border:none;color:var(--text-muted);padding:5px 10px;border-radius:9999px;cursor:pointer;font-size:13px" title="Refresh challenge progress">&#8635;</button>
+          <button onclick="openMicroGoalModal()" id="mg-add-btn" style="background:var(--accent-ember);border:none;color:#fff;padding:5px 12px;border-radius:9999px;cursor:pointer;font-size:13px;font-weight:600" title="Add challenge">+ Add</button>
         </div>
       </div>
       <div id="challenges-display"></div>
@@ -720,7 +741,7 @@ input[type=range]{width:100%;accent-color:var(--accent)}
         <p class="clabel" style="margin-bottom:4px">&#x231A; sync wearables</p>
         <p style="font-size:13px;color:var(--text-muted);line-height:1.5;margin:0">Match recent Fitbit activities to your logged workouts, import anything missing.</p>
       </div>
-      <button onclick="openWearableSync()" id="sync-wearables-btn" style="background:var(--accent-10);border:1px solid var(--accent-33);color:var(--accent);padding:10px 16px;border-radius:6px;cursor:pointer;font-size:13px;font-weight:600;white-space:nowrap">Sync Wearables</button>
+      <button onclick="openWearableSync()" id="sync-wearables-btn" style="background:var(--accent-ember);border:none;color:#fff;padding:10px 16px;border-radius:12px;cursor:pointer;font-size:13px;font-weight:600;white-space:nowrap">Sync Wearables</button>
     </div>
 
     <!-- 4. Goals -->
@@ -728,9 +749,9 @@ input[type=range]{width:100%;accent-color:var(--accent)}
       <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">
         <p class="clabel" style="margin-bottom:0">goals &amp; milestones</p>
         <div style="display:flex;gap:6px">
-          <button onclick="refreshGoalProgress()" style="background:transparent;border:1px solid var(--border-accent);color:var(--text-dim);padding:5px 10px;border-radius:6px;cursor:pointer;font-size:12px" title="Refresh progress">&#8635;</button>
-          <button onclick="enterGoalPriorityMode()" id="goal-priority-btn" style="background:transparent;border:1px solid var(--border-accent);color:var(--text-muted);padding:5px 12px;border-radius:6px;cursor:pointer;font-size:13px">Prioritize</button>
-          <button onclick="toggleGoalEdit()" id="goal-edit-btn" style="background:transparent;border:1px solid var(--border-accent);color:var(--text-muted);padding:5px 12px;border-radius:6px;cursor:pointer;font-size:13px">Edit</button>
+          <button onclick="refreshGoalProgress()" style="background:var(--bg-surface-2);border:none;color:var(--text-muted);padding:5px 10px;border-radius:9999px;cursor:pointer;font-size:12px" title="Refresh progress">&#8635;</button>
+          <button onclick="enterGoalPriorityMode()" id="goal-priority-btn" style="background:var(--bg-surface-2);border:none;color:var(--text-muted);padding:5px 12px;border-radius:9999px;cursor:pointer;font-size:13px">Prioritize</button>
+          <button onclick="toggleGoalEdit()" id="goal-edit-btn" style="background:var(--bg-surface-2);border:none;color:var(--text-muted);padding:5px 12px;border-radius:9999px;cursor:pointer;font-size:13px">Edit</button>
         </div>
       </div>
       <div id="goals-display" class="goalsGrid"></div>
@@ -745,8 +766,8 @@ input[type=range]{width:100%;accent-color:var(--accent)}
         <div id="goals-edit-list" style="display:flex;flex-direction:column;gap:8px;margin-bottom:14px"></div>
         <div style="border-top:1px solid var(--border);padding-top:14px">
           <p class="mono" style="font-size:10px;color:var(--text-muted);letter-spacing:2px;margin-bottom:8px">ADD NEW GOAL</p>
-          <input id="new-goal-title" type="text" placeholder="Goal title (e.g. Run a 5k)" style="width:100%;background:var(--bg-input);border:1px solid var(--border);color:var(--text);padding:10px 14px;border-radius:6px;font-size:14px;outline:none;font-family:'DM Sans',sans-serif;margin-bottom:8px">
-          <input id="new-goal-desc" type="text" placeholder="Brief description (optional)" style="width:100%;background:var(--bg-input);border:1px solid var(--border);color:var(--text);padding:10px 14px;border-radius:6px;font-size:14px;outline:none;font-family:'DM Sans',sans-serif;margin-bottom:8px">
+          <input id="new-goal-title" type="text" placeholder="Goal title (e.g. Run a 5k)" style="width:100%;background:var(--bg-surface-2);border:1px solid var(--border-subtle);color:var(--text-primary);padding:10px 14px;border-radius:10px;font-size:14px;outline:none;font-family:'Inter',sans-serif;margin-bottom:8px">
+          <input id="new-goal-desc" type="text" placeholder="Brief description (optional)" style="width:100%;background:var(--bg-surface-2);border:1px solid var(--border-subtle);color:var(--text-primary);padding:10px 14px;border-radius:10px;font-size:14px;outline:none;font-family:'Inter',sans-serif;margin-bottom:8px">
           <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:10px">
             <select id="new-goal-status" style="flex:1;min-width:140px;font-size:13px;padding:8px 10px;margin-bottom:0">
               <option value="IN PROGRESS">In Progress</option>
@@ -771,7 +792,7 @@ input[type=range]{width:100%;accent-color:var(--accent)}
     <div id="roadmap-card" class="card" style="display:none">
       <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">
         <p class="clabel" style="margin-bottom:0">&#128506; my road map</p>
-        <button id="roadmap-gen-btn" onclick="generateRoadmap()" style="background:transparent;border:1px solid var(--border-accent);color:var(--text-muted);padding:5px 12px;border-radius:6px;cursor:pointer;font-size:13px">Generate</button>
+        <button id="roadmap-gen-btn" onclick="generateRoadmap()" style="background:var(--accent-ember);border:none;color:#fff;padding:8px 16px;border-radius:14px;cursor:pointer;font-size:13px;font-weight:600">Generate</button>
       </div>
       <div id="roadmap-content"></div>
       <div id="roadmap-updated" class="mono" style="font-size:10px;color:var(--text-dim);margin-top:10px;display:none"></div>
@@ -779,7 +800,7 @@ input[type=range]{width:100%;accent-color:var(--accent)}
 
     <!-- ACCOUNT (moved to Settings) -->
     <div class="card" style="text-align:center">
-      <button onclick="openSettings()" style="background:transparent;border:1px solid var(--border-accent);color:var(--text-sec);padding:10px 24px;border-radius:6px;cursor:pointer;font-size:14px">&#9881; Open Settings</button>
+      <button onclick="openSettings()" style="background:var(--bg-surface-2);border:none;color:var(--text-primary);padding:10px 24px;border-radius:12px;cursor:pointer;font-size:14px">&#9881; Open Settings</button>
     </div>
 
     <!-- DEV ROADMAP (hidden, long-press logo to reveal) -->
@@ -4059,14 +4080,14 @@ function renderProfileTab() {
   var initial = name.charAt(0).toUpperCase();
 
   // ── ATHLETE HEADER (photo + name only) ──
-  var h = '<div class="card" style="border-color:var(--accent-33)">';
+  var h = '<div class="card" style="border-color:var(--border-subtle)">';
   h += '<div style="display:flex;align-items:center;gap:16px">';
   if (pd.avatar_image) {
-    h += '<div style="width:64px;height:64px;border-radius:50%;overflow:hidden;border:1px solid var(--accent-33);flex-shrink:0"><img src="' + pd.avatar_image + '" style="width:100%;height:100%;object-fit:cover"></div>';
+    h += '<div style="width:64px;height:64px;border-radius:50%;overflow:hidden;border:2px solid var(--accent-ember);flex-shrink:0"><img src="' + pd.avatar_image + '" style="width:100%;height:100%;object-fit:cover"></div>';
   } else {
-    h += '<div style="width:64px;height:64px;border-radius:50%;background:var(--accent-18);border:1px solid var(--accent-33);display:flex;align-items:center;justify-content:center;font-family:Oswald,sans-serif;font-size:24px;font-weight:700;color:var(--accent)">' + initial + '</div>';
+    h += '<div style="width:64px;height:64px;border-radius:50%;background:rgba(255,74,28,0.15);border:2px solid var(--accent-ember);display:flex;align-items:center;justify-content:center;font-family:Fraunces,serif;font-size:26px;font-weight:700;color:var(--accent-ember)">' + initial + '</div>';
   }
-  h += '<div><div style="font-family:Oswald,sans-serif;font-size:24px;font-weight:600;color:var(--text-bright)">' + name + '</div></div>';
+  h += '<div><div style="font-size:22px;font-weight:700;color:var(--text-primary)">' + name + '</div></div>';
   h += '</div></div>';
   var injuries = pd.injuries || [];
 
@@ -4153,15 +4174,15 @@ function renderCoachingBrief() {
   var el = document.getElementById('coaching-brief-card');
   if (!el) return;
   if (!coachingBrief && !historicalBrief) {
-    el.innerHTML = '<div class="card" style="border-color:var(--accent-22)"><p class="clabel">&#x1F9E0; coaching brief</p>' +
-      '<p style="font-size:14px;color:var(--text-dim);margin-bottom:12px">No coaching brief generated yet.</p>' +
-      '<button onclick="generateBrief()" class="btnPri" style="font-size:13px;padding:10px 18px">Generate Brief</button></div>';
+    el.innerHTML = '<div class="card" style="border-color:var(--border-ai)"><p class="clabel" style="color:var(--accent-cornerman)">&#x1F9E0; coaching brief</p>' +
+      '<p style="font-size:14px;color:var(--text-muted);margin-bottom:12px">No coaching brief generated yet.</p>' +
+      '<button onclick="generateBrief()" class="btnPri" style="font-size:13px;padding:10px 18px;background:var(--accent-ember);color:#fff;border-radius:12px">Generate Brief</button></div>';
     return;
   }
   var updatedStr = briefUpdatedAt ? new Date(briefUpdatedAt).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }) : '';
-  var html = '<div class="card" style="border-color:var(--accent-22)">';
-  html += '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px"><p class="clabel" style="margin-bottom:0">&#x1F9E0; coaching brief</p>';
-  html += '<button onclick="generateBrief()" id="brief-regen-btn" style="background:transparent;border:1px solid var(--border-accent);color:var(--text-muted);padding:5px 12px;border-radius:6px;cursor:pointer;font-size:12px">Regenerate</button></div>';
+  var html = '<div class="card" style="border-color:var(--border-ai)">';
+  html += '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px"><p class="clabel" style="margin-bottom:0;color:var(--accent-cornerman)">&#x1F9E0; coaching brief</p>';
+  html += '<button onclick="generateBrief()" id="brief-regen-btn" style="background:transparent;border:none;color:var(--text-muted);padding:5px 8px;cursor:pointer;font-size:12px;font-weight:600">Regenerate</button></div>';
   if (coachingBrief) {
     var cbTitle = extractMdTitle(coachingBrief);
     if (cbTitle) html += '<div class="oswald" style="font-size:18px;font-weight:600;color:var(--text-bright);margin-bottom:12px">' + escHtml(cbTitle) + '</div>';
@@ -4371,10 +4392,10 @@ function renderProfileGoals() {
   var pd = currentProfileData || {};
   var pGoals = pd.goals || [];
   if (!pGoals.length) {
-    document.getElementById('goals-display').innerHTML = '<p style="color:#444;font-size:14px;font-style:italic">Tap "Build Profile" to add your goals</p>';
+    document.getElementById('goals-display').innerHTML = '<p style="color:var(--text-muted);font-size:14px;font-style:italic">Tap "Build Profile" to add your goals</p>';
     return;
   }
-  var statusColors = { 'IN PROGRESS': '#f5a623', 'LONG GAME': '#4488bb', 'DONE': '#22c97a', 'HABIT': '#9966cc', 'PAUSED': '#555' };
+  var statusColors = { 'IN PROGRESS': 'var(--color-caution)', 'LONG GAME': 'var(--color-info)', 'DONE': 'var(--color-positive)', 'HABIT': 'var(--accent-cornerman)', 'PAUSED': 'var(--text-muted)' };
 
   // Check cache
   var cached = null;
@@ -4393,18 +4414,18 @@ function renderProfileGoals() {
     var isMed = g.type === 'habit' && g.title && g.title.toLowerCase().indexOf('meditat') >= 0;
     var prog = cached && cached[i] ? cached[i] : null;
 
-    html += '<div style="background:var(--bg-input);border:1px solid var(--border);border-radius:8px;padding:16px;position:relative">';
+    html += '<div style="background:var(--bg-surface-1);border:1px solid var(--border-subtle);border-radius:20px;padding:16px 20px;position:relative">';
     // Priority indicator (only if >1 goal)
     if (pGoals.length > 1) {
       var prioNum = g.priority || (i + 1);
-      var prioColors = ['#22c97a', '#f5a623', '#4488bb'];
-      var prioC = prioColors[prioNum - 1] || 'var(--text-dim)';
-      html += '<div style="position:absolute;top:10px;left:10px;width:22px;height:22px;border-radius:50%;background:' + hexA(prioC,'18') + ';border:1px solid ' + hexA(prioC,'44') + ';display:flex;align-items:center;justify-content:center;font-family:Oswald,sans-serif;font-size:11px;font-weight:700;color:' + prioC + '">' + prioNum + '</div>';
+      var prioColors = ['var(--color-positive)', 'var(--color-caution)', 'var(--color-info)'];
+      var prioC = prioColors[prioNum - 1] || 'var(--text-muted)';
+      html += '<div style="position:absolute;top:12px;left:12px;width:20px;height:20px;border-radius:50%;background:var(--bg-surface-2);display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:600;color:' + prioC + '">' + prioNum + '</div>';
     }
     // Edit button
-    html += '<button onclick="openGoalUpdate(' + i + ')" style="position:absolute;top:10px;right:10px;background:transparent;border:none;color:var(--text-dim);cursor:pointer;font-size:14px;padding:2px" title="Update progress">&#9998;</button>';
+    html += '<button onclick="openGoalUpdate(' + i + ')" style="position:absolute;top:12px;right:12px;background:transparent;border:none;color:var(--text-muted);cursor:pointer;font-size:14px;padding:2px" title="Update progress">&#9998;</button>';
     html += '<div style="font-size:22px;margin-bottom:8px">' + (g.emoji || '\uD83C\uDFAF') + '</div>';
-    html += '<div style="font-size:15px;font-weight:600;color:var(--text-bright);margin-bottom:5px">' + (g.title || '') + '</div>';
+    html += '<div style="font-size:15px;font-weight:600;color:var(--text-primary);margin-bottom:5px">' + (g.title || '') + '</div>';
     if (g.description) html += '<div style="font-size:13px;color:var(--text-muted);line-height:1.6;margin-bottom:10px">' + g.description + '</div>';
 
     // Progress bar
@@ -4417,7 +4438,7 @@ function renderProfileGoals() {
     } else if (g.tracker && g.target_value && g.current_value != null) {
       var pct = Math.min(100, Math.round((g.current_value / g.target_value) * 100));
       html += '<div style="margin-bottom:8px"><div class="bar-track" style="height:6px"><div class="bar-fill" style="width:' + pct + '%;background:' + sc + '"></div></div>';
-      html += '<div class="mono" style="font-size:10px;color:#555;margin-top:3px">' + g.current_value + ' / ' + g.target_value + (g.unit ? ' ' + g.unit : '') + ' (' + pct + '%)</div></div>';
+      html += '<div class="mono" style="font-size:10px;color:var(--text-muted);margin-top:3px">' + g.current_value + ' / ' + g.target_value + (g.unit ? ' ' + g.unit : '') + ' (' + pct + '%)</div></div>';
     } else {
       // Skeleton loading placeholder
       html += '<div id="goal-prog-' + i + '" style="margin-bottom:8px"><div class="bar-track" style="height:6px"><div class="bar-fill" style="width:0%;background:var(--border);animation:pulse 1.6s infinite"></div></div><div class="mono" style="font-size:10px;color:var(--text-dim);margin-top:3px;animation:pulse 1.6s infinite">Calculating...</div></div>';
@@ -7557,7 +7578,7 @@ function renderProfileTemplates() {
   if (!el) return;
   if (!workoutTemplates.length) {
     el.innerHTML = '<div class="card"><p class="clabel">my templates</p>' +
-      '<p style="font-size:13px;color:var(--text-dim);font-style:italic;margin:0">No templates yet — save a routine from the Log Workout modal to see it here.</p></div>';
+      '<p style="font-size:13px;color:var(--text-muted);font-style:italic;margin:0">No templates yet — save a routine from the Log Workout modal to see it here.</p></div>';
     return;
   }
   var h = '<div class="card"><p class="clabel">my templates</p>';
@@ -7565,17 +7586,17 @@ function renderProfileTemplates() {
   for (var i = 0; i < workoutTemplates.length; i++) {
     var tpl = workoutTemplates[i];
     var tid = tpl.id;
-    h += '<div style="background:var(--bg-input);border:1px solid var(--border);border-radius:8px;padding:12px">';
+    h += '<div style="background:var(--bg-surface-2);border:1px solid var(--border-subtle);border-radius:12px;padding:14px 16px">';
     h += '<div style="display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:6px">';
-    h += '<div style="flex:1;min-width:0"><div style="font-size:15px;color:var(--text-bright);font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">' + escHtml(tpl.name || 'Template') + '</div>';
+    h += '<div style="flex:1;min-width:0"><div style="font-size:14px;color:var(--text-primary);font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">' + escHtml(tpl.name || 'Template') + '</div>';
     var meta = [];
     if (tpl.type) meta.push(tpl.type);
     meta.push('Used ' + (tpl.use_count || 0) + (tpl.use_count === 1 ? ' time' : ' times'));
-    h += '<div class="mono" style="font-size:10px;color:var(--text-dim);margin-top:2px">' + meta.join(' &middot; ') + '</div></div>';
-    h += '<div style="display:flex;gap:6px">';
-    h += '<button onclick="useTemplate(\'' + tid + '\')" style="background:var(--accent-10);border:1px solid var(--accent-33);color:var(--accent);padding:5px 10px;border-radius:4px;cursor:pointer;font-size:11px;font-weight:600">&#9654; Use</button>';
-    h += '<button onclick="renameTemplate(\'' + tid + '\')" style="background:transparent;border:1px solid var(--border-accent);color:var(--text-muted);padding:5px 10px;border-radius:4px;cursor:pointer;font-size:11px">Rename</button>';
-    h += '<button onclick="deleteTemplate(\'' + tid + '\')" style="background:transparent;border:1px solid #e8454533;color:#e84545;padding:5px 10px;border-radius:4px;cursor:pointer;font-size:11px">Delete</button>';
+    h += '<div style="font-size:12px;color:var(--text-muted);margin-top:2px">' + meta.join(' &middot; ') + '</div></div>';
+    h += '<div style="display:flex;gap:10px;align-items:center">';
+    h += '<button onclick="useTemplate(\'' + tid + '\')" style="background:transparent;border:none;color:var(--accent-ember);padding:5px 4px;cursor:pointer;font-size:13px;font-weight:600">&#9654; Use</button>';
+    h += '<button onclick="renameTemplate(\'' + tid + '\')" style="background:transparent;border:none;color:var(--text-muted);padding:5px 4px;cursor:pointer;font-size:12px">Rename</button>';
+    h += '<button onclick="deleteTemplate(\'' + tid + '\')" style="background:transparent;border:none;color:var(--color-danger);padding:5px 4px;cursor:pointer;font-size:12px">Delete</button>';
     h += '</div></div>';
     if (tpl.notes_template) {
       var preview = String(tpl.notes_template).slice(0, 200) + (tpl.notes_template.length > 200 ? '…' : '');
