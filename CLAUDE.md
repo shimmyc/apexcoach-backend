@@ -202,33 +202,27 @@ Calculated from workoutLog entries where done=true. Counts backwards from today 
 
 **Workout-category inference** uses `inferWorkoutCategory(workoutType)` — regex-based parse of the stored workout title string into `strength | cardio | martial_arts | sports | mind_body | rehab | rest | other`. Used by weekly volume and variety analysis.
 
-## Weekly Schedule (Array-per-Day Format)
+## Weekly Schedule (v2 — anchors / weekly targets / add-ons)
 
-Schedule supports multiple activities per day, each with an optional duration. Data shape on `profile_data.schedule`:
+`profile_data.schedule` is a structured object (replaced the old day-keyed flat object):
 
 ```json
 {
-  "tue": [
-    {"activity": "MMA Class", "duration": 60},
-    {"activity": "BJJ Class", "duration": 60}
-  ],
-  "thu": [{"activity": "MMA Class", "duration": 60}]
+  "anchors": { "tue": [{"activity": "MMA Class", "duration": 60}], "thu": [{"activity": "MMA Class", "duration": 60}] },
+  "frequency_targets": [{ "id": "ft1", "activity": "Upper Body Strength", "times_per_week": 1, "suggested_day": "wed", "duration": 45 }],
+  "addons": [{ "id": "ao1", "activity": "Posture/PT work", "duration": 10, "days_per_week": 5 }]
 }
 ```
 
-Day keys are Mon-first 3-letter: `mon, tue, wed, thu, fri, sat, sun`. Empty array = no scheduled activity (flexible/rest). Duration is a number in minutes or `null`.
+- **anchors** — fixed days, keyed by Mon-first 3-letter day (`mon`…`sun`), value = array of `{activity, duration}` (duration minutes or null). The UI edits one anchor per day; migrated multi-activity days display all in the view popover.
+- **frequency_targets** — "do this N×/week" goals (ids `ft1`, `ft2`…). `suggested_day` is a day key or null (Any).
+- **addons** — daily extras like Posture/PT (ids `ao1`, `ao2`…), with `duration` + `days_per_week`.
 
-**Backward compat:** `normalizeScheduleDay(v)` upgrades legacy strings on read — `'Flexible'` → `[]`, any other string → `[{activity: str, duration: null}]`. Runs on both `loadSchedule()` and profile-data arrival so old saved profiles still work.
+**Migration (`loadSchedule`)** — on load, reads `currentProfileData.schedule`. If it's the legacy day-keyed shape (any `mon`…`sun` key present) it auto-migrates via `schedMigrateOld()` (days with activities → anchors; targets/addons empty), logs `"Schedule migrated to v2 format"`, and PATCHes the v2 format immediately. Null/missing → `{anchors:{}, frequency_targets:[], addons:[]}`. `normalizeScheduleDay()` is kept but only used during migration.
 
-**UI:** collapsible accordion in the Profile tab `#schedule-grid`. Each day is a card with summary row (tap to expand). Expanded view shows per-activity rows: text input for activity name, duration `<select>` (No duration / 15 / 30 / 45 / 60 / 75 / 90 / Custom…), and a 🗑️ remove button, plus a `+ Add activity` button. `saveSchedule()` writes to localStorage and PATCHes `profile_data.schedule` on the server for cross-device sync.
+**UI** — `schedRender*`/`sched*` functions render a 3-section card in `#schedule-card` (Profile tab): **Fixed Days** (7-day pill row → tap shows read-only popover; in edit mode opens an inline anchor editor), **Weekly Targets**, **Daily Add-ons**. A `✏️ Edit` / `✓ Done` toggle (`schedToggleEdit`) switches modes. Edits save **live** on blur/change via `schedPersist()` which PATCHes `{ profile_data: {...existing, schedule: currentSchedule} }` (full profile_data); `✓ Done` does a final PATCH + a green "Saved ✓" toast. Module state: `currentSchedule`, `schedEditMode`, `schedOpenDay`. All CSS scoped to `#schedule-card`.
 
-**AI prompt injection** — `buildScheduleInstruction()` formats multi-activity days as:
-```
-TODAY IS TUESDAY. SCHEDULED ACTIVITIES TODAY:
-1. MMA Class (60 min)
-2. BJJ Class (60 min)
-```
-plus rules that option 1 must match the first scheduled activity exactly, must mention all scheduled activities and suggest how to structure the day, and must match the first activity's duration if specified. `buildVarietyAndSkipAnalysis` and `buildWeeklyVolumeSummary` also read the array format — missed-workout detection uses the first activity's name as the "missed type".
+**⚠ AI prompt is a pending follow-up.** `buildScheduleInstruction()` / `buildVarietyAndSkipAnalysis` / `buildWeeklyVolumeSummary` STILL read the legacy day-keyed `schedule` var (NOT the v2 shape) — they were intentionally left for a follow-up prompt. To avoid a daily-rec regression in the interim, `schedSyncLegacy()` keeps the legacy `schedule` var (+ `localStorage.ac_schedule`) populated **from `anchors`** on every load/save. So anchor days still reach the AI prompt; `frequency_targets`/`addons` do NOT reach the AI until the follow-up updates `buildScheduleInstruction()` to read v2.
 
 ## Alternative Recommendations (Cycling UI)
 
