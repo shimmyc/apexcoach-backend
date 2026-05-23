@@ -1979,6 +1979,7 @@ var CALL_TYPE_MODEL = {
   exercise_insight:  MODEL_HAIKU,
   goal_description:  MODEL_HAIKU,
   goal_estimate:     MODEL_HAIKU,
+  schedule_builder:  MODEL_HAIKU,
 };
 
 function modelForCallType(callType) {

@@ -1258,6 +1258,11 @@ var DURATION_OPTIONS = [15, 30, 45, 60, 75, 90];
 var currentSchedule = { anchors: {}, frequency_targets: [], addons: [] };
 var schedEditMode = false;   // view (default) vs edit
 var schedOpenDay = null;     // day whose anchor popover/editor is open
+// "Build with AI" inline flow state (replaces the empty-state card while active)
+var schedAIActive = false;   // flow open?
+var schedAIStep = 1;         // 1..4
+var schedAIData = null;      // { days, fixedDays:{day:text}, prefs:[], includes }
+var schedAIBuilding = false; // loading state while POSTing
 
 var DAYS = ['mon','tue','wed','thu','fri','sat','sun'];
 var DAY_LABELS = ['Mon','Tue','Wed','Thu','Fri','Sat','Sun'];
@@ -6576,39 +6581,169 @@ var CATEGORY_PRETTY = {
   other: 'Other'
 };
 
+// ── Schedule v2 prompt helpers (anchors / weekly targets / add-ons) ──────────
+// The active schedule for prompt building: prefer the in-memory currentSchedule,
+// fall back to profile_data.schedule if currentSchedule hasn't been populated.
+function schedActiveSchedule() {
+  var s = currentSchedule || {};
+  var hasAny = (s.anchors && Object.keys(s.anchors).length) ||
+    (Array.isArray(s.frequency_targets) && s.frequency_targets.length) ||
+    (Array.isArray(s.addons) && s.addons.length);
+  if (hasAny) {
+    return {
+      anchors: s.anchors || {},
+      frequency_targets: Array.isArray(s.frequency_targets) ? s.frequency_targets : [],
+      addons: Array.isArray(s.addons) ? s.addons : []
+    };
+  }
+  var raw = currentProfileData && currentProfileData.schedule;
+  if (raw && typeof raw === 'object' && !Array.isArray(raw) &&
+      ('anchors' in raw || 'frequency_targets' in raw || 'addons' in raw)) {
+    return {
+      anchors: (raw.anchors && typeof raw.anchors === 'object') ? raw.anchors : {},
+      frequency_targets: Array.isArray(raw.frequency_targets) ? raw.frequency_targets : [],
+      addons: Array.isArray(raw.addons) ? raw.addons : []
+    };
+  }
+  return { anchors: {}, frequency_targets: [], addons: [] };
+}
+// Local YYYY-MM-DD for a Date.
+function schedDateStr(d) {
+  return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
+}
+// Done workouts logged Mon→today this week.
+function schedWeekDoneWorkouts() {
+  var monStr = getMondayLocalStr();
+  var todayStr = ds(0);
+  var out = [];
+  for (var w = 0; w < workoutLog.length; w++) {
+    var lw = workoutLog[w];
+    if (!lw || !lw.done) continue;
+    if (lw.date < monStr || lw.date > todayStr) continue;
+    out.push(lw);
+  }
+  return out;
+}
+// Count this week's done workouts whose inferred category matches a target's.
+function schedTargetDoneCount(target, weekDone) {
+  if (!target || !target.activity) return 0;
+  var cat = inferWorkoutCategory(target.activity);
+  var n = 0;
+  for (var i = 0; i < weekDone.length; i++) {
+    if (inferWorkoutCategory(weekDone[i].type) === cat) n++;
+  }
+  return n;
+}
+// Anchor completion status Mon→today, grouped by activity:
+// [{activity, scheduled, done}] where done = an anchor day that had a done workout.
+function schedAnchorStatus(anchors, todayIdx) {
+  var byAct = {};
+  var today = new Date(); today.setHours(0, 0, 0, 0);
+  for (var i = 0; i <= todayIdx; i++) {
+    var acts = normalizeScheduleDay(anchors[DAYS[i]]);
+    if (!acts.length) continue;
+    var d = new Date(today); d.setDate(d.getDate() - (todayIdx - i));
+    var dateStr = schedDateStr(d);
+    var done = workoutLog.find(function(w) { return w.date === dateStr && w.done; });
+    for (var a = 0; a < acts.length; a++) {
+      var key = acts[a].activity;
+      if (!byAct[key]) byAct[key] = { activity: key, scheduled: 0, done: 0 };
+      byAct[key].scheduled++;
+      if (done) byAct[key].done++;
+    }
+  }
+  var out = [];
+  for (var k in byAct) { if (byAct.hasOwnProperty(k)) out.push(byAct[k]); }
+  return out;
+}
+
 // Build the TOP-of-message schedule instruction the coach must obey.
-// When opts.categoryOverride is set (user manually picked a category pill)
-// the schedule rule is suppressed — see prompt construction in fetchAI.
+// Reads the v2 schedule (anchors / frequency_targets / add-ons) via
+// schedActiveSchedule(). When opts.categoryOverride is set (user manually picked
+// a category pill) the schedule rule is suppressed — see fetchAI.
 function buildScheduleInstruction(opts) {
   opts = opts || {};
   var idx = todayDayIdx();
   var weekday = ['Monday','Tuesday','Wednesday','Thursday','Friday','Saturday','Sunday'][idx];
+  var todayKey = DAYS[idx];
 
   if (opts.categoryOverride) {
     return 'TODAY IS ' + weekday.toUpperCase() + '. NOTE: The athlete has manually chosen a ' + opts.categoryOverride + ' workout today instead of their scheduled activity. The normal schedule-matching rule does NOT apply to this call — follow the CATEGORY OVERRIDE block above.\n\n';
   }
 
-  var acts = normalizeScheduleDay(schedule[DAYS[idx]]);
-  if (!acts.length) {
-    return 'TODAY IS ' + weekday.toUpperCase() + '. SCHEDULED WORKOUT TODAY: No scheduled activity — bonus or rest day.\n\n' +
-      'INSTRUCTION: Option 1 can be any category that fits readiness and micro-goals — but make it the clear best choice for TODAY.\n\n';
+  var sched = schedActiveSchedule();
+  var anchors = sched.anchors;
+  var targets = sched.frequency_targets;
+  var addons = sched.addons;
+  var weekDone = schedWeekDoneWorkouts();
+
+  var out = 'TODAY IS ' + weekday.toUpperCase() + '.\n';
+  var hasPlanned = false;
+
+  // ── Step 1: today's primary recommendation ──────────────────────────────
+  var todayAnchor = normalizeScheduleDay(anchors[todayKey]);
+  if (todayAnchor.length) {
+    hasPlanned = true;
+    var a0 = todayAnchor[0];
+    var aLabel = a0.activity + (a0.duration ? ' — ' + a0.duration + ' min' : '');
+    out += 'FIXED COMMITMENT TODAY: ' + aLabel + '.\n';
+    out += 'INSTRUCTION: This is a fixed commitment — Option 1 must be "' + aLabel + '" and nothing more. Do not break it down into drills or movements. ';
+    if (todayAnchor.length > 1) {
+      var extra = todayAnchor.slice(1).map(function(x) { return x.activity + (x.duration ? ' — ' + x.duration + ' min' : ''); });
+      out += 'Also fixed today: ' + extra.join(', ') + ' — acknowledge in Option 1\'s reasoning. ';
+    }
+    out += 'Options 2 and 3 can be flexible (mobility, recovery, or a shorter backup) but must respect the fixed commitment.\n\n';
+  } else {
+    // No anchor — pick the most underserved frequency target (boost if today is
+    // its suggested day).
+    var best = null;
+    for (var t = 0; t < targets.length; t++) {
+      var tg = targets[t];
+      if (!tg || !tg.activity) continue;
+      var done = schedTargetDoneCount(tg, weekDone);
+      var needed = tg.times_per_week || 1;
+      var deficit = needed - done;
+      if (deficit <= 0) continue;
+      var score = deficit + ((tg.suggested_day && tg.suggested_day === todayKey) ? 0.5 : 0);
+      if (!best || score > best.score) best = { target: tg, done: done, needed: needed, score: score };
+    }
+    if (best) {
+      hasPlanned = true;
+      var tLabel = best.target.activity + (best.target.duration ? ' — ' + best.target.duration + ' min' : '');
+      out += 'NO FIXED COMMITMENT TODAY. SUGGESTED FOCUS: ' + tLabel + '.\n';
+      out += 'INSTRUCTION: "' + best.target.activity + '" is your most underserved weekly target (' + best.done + ' of ' + best.needed + ' done so far this week';
+      if (best.target.suggested_day === todayKey) out += '; today is its suggested day';
+      out += '). Make Option 1 a "' + best.target.activity + '" session — you may break it into specific exercises. Options 2 and 3 can offer alternatives.\n\n';
+    } else {
+      out += 'NO FIXED COMMITMENT OR OUTSTANDING WEEKLY TARGET TODAY — bonus or recovery day.\n';
+      out += 'INSTRUCTION: Option 1 can be any category that best fits readiness and micro-goals — make it the clear best choice for today.\n\n';
+    }
   }
 
-  var lines = acts.map(function(a, i) {
-    return (i + 1) + '. ' + a.activity + (a.duration ? ' (' + a.duration + ' min)' : '');
-  });
-  var out = 'TODAY IS ' + weekday.toUpperCase() + '. SCHEDULED ACTIVITIES TODAY:\n' + lines.join('\n') + '\n\n';
-  out += 'INSTRUCTION: The primary recommendation (option 1) MUST match the first scheduled activity exactly. ';
-  out += 'Its headline should be "' + acts[0].activity + '" (optionally suffixed with a micro-goal habit, e.g. "' + acts[0].activity + ' + Dead Hang"). ';
-  if (acts.length > 1) {
-    var names = acts.map(function(a) { return a.activity; });
-    out += 'There are multiple scheduled activities today (' + names.join(', ') + '). Mention ALL of them in option 1\'s reasoning and suggest how to structure the day — e.g. "' + names[0] + ' first, then ' + names[1] + ' — here\'s what to focus on in each". ';
+  // ── Step 2: add-ons (only when today already has a planned workout) ──────
+  if (addons.length && hasPlanned) {
+    var addLabels = addons.map(function(x) { return x.activity + (x.duration ? ' (' + x.duration + 'min)' : ''); });
+    out += 'ADD-ONS: Try to include the following short supplemental work in at least one option today: ' + addLabels.join(', ') + '. Weave these in naturally — do not list them as separate sessions.\n\n';
   }
-  if (acts[0].duration) {
-    out += 'Option 1\'s duration MUST match the scheduled duration (' + acts[0].duration + ' min) — do not suggest a shorter session when a ' + acts[0].duration + '-min block is on the calendar. ';
+
+  // ── Step 3: weekly target status (always) ───────────────────────────────
+  out += 'WEEKLY TARGET STATUS (Mon–today):\n';
+  var statusLines = [];
+  var anchorStatus = schedAnchorStatus(anchors, idx);
+  for (var as = 0; as < anchorStatus.length; as++) {
+    var s = anchorStatus[as];
+    statusLines.push('- ' + s.activity + ': ' + s.done + '/' + s.scheduled + ' anchored' + (s.done >= s.scheduled ? ' ✓' : ''));
   }
-  out += 'Secondary options may complement the scheduled activity (mobility add-on, PT block, shorter backup) but must acknowledge the scheduled activities. ';
-  out += 'Do not suggest a different category than the scheduled activity\'s category unless readiness is below 50.\n\n';
+  for (var ti = 0; ti < targets.length; ti++) {
+    var tg2 = targets[ti];
+    if (!tg2 || !tg2.activity) continue;
+    var d2 = schedTargetDoneCount(tg2, weekDone);
+    var n2 = tg2.times_per_week || 1;
+    statusLines.push('- ' + tg2.activity + ': ' + d2 + '/' + n2 + ' done' + (d2 >= n2 ? ' ✓' : ' [NEEDED]'));
+  }
+  if (!statusLines.length) statusLines.push('- No anchors or weekly targets set.');
+  out += statusLines.join('\n') + '\n\n';
+
   return out;
 }
 
@@ -6654,7 +6789,7 @@ function buildVarietyAndSkipAnalysis() {
     var info = daysBack[m2];
     var dow = info.date.getDay(); // 0=Sun..6=Sat
     var dowIdx = dow === 0 ? 6 : dow - 1; // Mon=0..Sun=6
-    var schedActs = normalizeScheduleDay(schedule[DAYS[dowIdx]]);
+    var schedActs = normalizeScheduleDay(currentSchedule.anchors[DAYS[dowIdx]]);
     if (!schedActs.length) continue;
     var done = workoutLog.find(function(w) { return w.date === info.dateStr && w.done; });
     if (!done) {
@@ -6669,9 +6804,26 @@ function buildVarietyAndSkipAnalysis() {
     }).join(', ');
   }
   var todayIdx = todayDayIdx();
-  var todayActs = normalizeScheduleDay(schedule[DAYS[todayIdx]]);
+  var todayActs = normalizeScheduleDay(currentSchedule.anchors[DAYS[todayIdx]]);
   var todayScheduled = todayActs.length ? todayActs.map(function(a) { return a.activity; }).join(' + ') : 'Flexible';
   var todayHasSchedule = todayActs.length > 0;
+  // Overdue weekly targets: past their suggested day and still short of count.
+  var weekDoneVar = schedWeekDoneWorkouts();
+  var overdueTargets = [];
+  var ftList = (currentSchedule.frequency_targets) || [];
+  for (var ot = 0; ot < ftList.length; ot++) {
+    var ftg = ftList[ot];
+    if (!ftg || !ftg.activity || !ftg.suggested_day) continue;
+    var sugIdx = DAYS.indexOf(ftg.suggested_day);
+    if (sugIdx < 0 || todayIdx <= sugIdx) continue; // not yet past its suggested day
+    var ftDone = schedTargetDoneCount(ftg, weekDoneVar);
+    if (ftDone < (ftg.times_per_week || 1)) {
+      overdueTargets.push(ftg.activity + ' (suggested ' + schedDayLabel(ftg.suggested_day) + ', ' + ftDone + '/' + (ftg.times_per_week || 1) + ' done)');
+    }
+  }
+  var overdueLine = overdueTargets.length
+    ? '- OVERDUE WEEKLY TARGETS: ' + overdueTargets.join('; ') + '. These are past their suggested day and still short — prioritize them today if readiness allows and today has no fixed commitment.\n'
+    : '';
   // Identify a recent miss (≤3 days) to carry forward
   var carryForward = null;
   for (var c = 0; c < missed.length; c++) {
@@ -6690,6 +6842,7 @@ function buildVarietyAndSkipAnalysis() {
     '- VARIETY RULE: Do NOT suggest the same category two days in a row unless it is the scheduled activity for today.\n' +
     '- SKIP RULE: If a scheduled workout type was missed in the last 3 days, carry it forward as the primary suggestion today unless today has a different scheduled activity. Call it out explicitly in the reasoning.\n' +
     '- If 3+ sessions of the same category have been logged in a row, avoid that category today unless it is scheduled.\n' +
+    overdueLine +
     carryLine +
     '\n';
 }
@@ -6701,19 +6854,36 @@ function buildWeeklyVolumeSummary() {
   var todayIdx = todayDayIdx(); // 0=Mon..6=Sun
   var scheduledCount = 0;
   for (var i = 0; i <= todayIdx; i++) {
-    var schedActs = normalizeScheduleDay(schedule[DAYS[i]]);
+    var schedActs = normalizeScheduleDay(currentSchedule.anchors[DAYS[i]]);
     if (schedActs.length) scheduledCount++;
   }
   var sessionsDone = 0;
   var catBreakdown = {};
+  var weekDoneList = [];
   for (var w = 0; w < workoutLog.length; w++) {
     var lw = workoutLog[w];
     if (!lw || !lw.done) continue;
     if (lw.date < monStr || lw.date > todayStr) continue;
     sessionsDone++;
+    weekDoneList.push(lw);
     var cat = inferWorkoutCategory(lw.type);
     catBreakdown[cat] = (catBreakdown[cat] || 0) + 1;
   }
+  // Weekly frequency-target progress (flag any past their suggested day + short).
+  var ftList = (currentSchedule.frequency_targets) || [];
+  var ftProgressParts = [];
+  for (var f = 0; f < ftList.length; f++) {
+    var ftg = ftList[f];
+    if (!ftg || !ftg.activity) continue;
+    var ftDone = schedTargetDoneCount(ftg, weekDoneList);
+    var ftNeed = ftg.times_per_week || 1;
+    var sugIdx = ftg.suggested_day ? DAYS.indexOf(ftg.suggested_day) : -1;
+    var overdue = (sugIdx >= 0 && todayIdx > sugIdx && ftDone < ftNeed);
+    ftProgressParts.push(ftg.activity + ' ' + ftDone + '/' + ftNeed + (overdue ? ' (OVERDUE)' : (ftDone >= ftNeed ? ' ✓' : '')));
+  }
+  var ftProgressLine = ftProgressParts.length
+    ? '- Weekly targets: ' + ftProgressParts.join(', ') + '\n'
+    : '';
   var bdOrder = ['strength','cardio','martial_arts','sports','mind_body','rehab','rest','other'];
   var bdParts = [];
   for (var b = 0; b < bdOrder.length; b++) {
@@ -6735,6 +6905,7 @@ function buildWeeklyVolumeSummary() {
   return 'THIS WEEK SO FAR (Mon–' + weekdayToday + '):\n' +
     '- Sessions completed: ' + sessionsDone + ' (of ' + scheduledCount + ' scheduled through today)\n' +
     '- Breakdown: ' + bdStr + '\n' +
+    ftProgressLine +
     zoneLine +
     complianceLine +
     'Use this to assess weekly load and avoid overtraining or undertraining.\n\n';
@@ -7511,6 +7682,13 @@ function renderSchedule() {
   var el = document.getElementById('schedule-grid');
   if (!el) return;
   el.style.cssText = '';
+  // The AI build flow takes over the whole card while active.
+  if (schedAIActive) { el.innerHTML = schedAIBuildFlow(); return; }
+  // Empty schedule (and not editing) → "Build with AI" onboarding card.
+  var isEmpty = !(currentSchedule.anchors && Object.keys(currentSchedule.anchors).length) &&
+    !(currentSchedule.frequency_targets && currentSchedule.frequency_targets.length) &&
+    !(currentSchedule.addons && currentSchedule.addons.length);
+  if (isEmpty && !schedEditMode) { el.innerHTML = schedRenderEmptyState(); return; }
   var h = '';
   h += '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px">';
   h += '<span style="font-size:12px;text-transform:uppercase;letter-spacing:0.06em;color:var(--text-muted)">Schedule</span>';
@@ -7739,6 +7917,239 @@ function schedNextId(arr, prefix) {
   var max = 0, re = new RegExp('^' + prefix + '(\\d+)$');
   for (var i = 0; i < arr.length; i++) { var m = re.exec(String((arr[i] && arr[i].id) || '')); if (m) { var n = parseInt(m[1], 10); if (n > max) max = n; } }
   return prefix + (max + 1);
+}
+
+// ── "Build with AI" empty state + inline build flow ─────────────────────────
+function schedRenderEmptyState() {
+  var h = '<div style="text-align:center;padding:10px 4px 4px">';
+  h += '<div style="font-size:17px;font-weight:700;color:var(--text-primary);margin-bottom:6px">Build Your Schedule</div>';
+  h += '<div style="font-size:13px;color:var(--text-muted);line-height:1.5;margin-bottom:18px">Let AI create a personalized training schedule based on your goals, or set it up yourself.</div>';
+  h += '<button onclick="schedStartAIBuild()" style="display:block;width:100%;height:48px;background:var(--accent-ember);border:none;color:#fff;border-radius:14px;font-size:14px;font-weight:600;cursor:pointer;margin-bottom:8px;font-family:Inter,sans-serif">✨ Build with AI</button>';
+  h += '<button onclick="schedToggleEdit()" style="display:block;width:100%;height:48px;background:var(--bg-surface-2);border:none;color:var(--text-primary);border-radius:14px;font-size:14px;font-weight:600;cursor:pointer;font-family:Inter,sans-serif">Set it myself</button>';
+  h += '</div>';
+  return h;
+}
+
+var SCHED_AI_PREFS = ['Prefer weekdays', 'Prefer weekends', 'Avoid Mondays', 'Morning sessions', 'Evening sessions', 'Include recovery days'];
+
+function schedStartAIBuild() {
+  schedAIData = { days: 3, fixedDays: {}, prefs: [], includes: '' };
+  schedAIStep = 1;
+  schedAIBuilding = false;
+  schedAIActive = true;
+  renderSchedule();
+}
+function schedAICancel() {
+  schedAIActive = false; schedAIBuilding = false; schedAIData = null; schedAIStep = 1;
+  renderSchedule();
+}
+function schedAIGo(step) {
+  if (schedAIStep === 2) schedAICaptureFixed();
+  if (schedAIStep === 4) schedAICaptureIncludes();
+  schedAIStep = step;
+  renderSchedule();
+}
+
+function schedAIBuildFlow() {
+  if (schedAIBuilding) {
+    return '<div style="text-align:center;padding:44px 10px"><div style="font-size:14px;color:var(--accent-cornerman);font-family:\'JetBrains Mono\',monospace;letter-spacing:1px;animation:pulse 1.6s infinite">Building your schedule...</div></div>';
+  }
+  if (schedAIStep === 1) return schedAIStep1();
+  if (schedAIStep === 2) return schedAIStep2();
+  if (schedAIStep === 3) return schedAIStep3();
+  return schedAIStep4();
+}
+
+function schedAIHeader(label) {
+  return '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">' +
+    '<span style="font-size:11px;text-transform:uppercase;letter-spacing:0.06em;color:var(--text-muted)">' + label + '</span>' +
+    '<button onclick="schedAICancel()" style="background:transparent;border:none;color:var(--text-muted);font-size:12px;cursor:pointer">Cancel</button></div>';
+}
+function schedAIPrimaryBtn(onclick, label) {
+  return '<button onclick="' + onclick + '" style="flex:1;height:48px;background:var(--accent-ember);border:none;color:#fff;border-radius:14px;font-size:14px;font-weight:600;cursor:pointer;font-family:Inter,sans-serif">' + label + '</button>';
+}
+function schedAIBackNext(backOnclick, nextOnclick, nextLabel) {
+  var h = '<div style="display:flex;align-items:center;gap:14px;margin-top:8px">';
+  if (backOnclick) h += '<button onclick="' + backOnclick + '" style="background:transparent;border:none;color:var(--text-muted);font-size:13px;cursor:pointer">← Back</button>';
+  h += schedAIPrimaryBtn(nextOnclick, nextLabel);
+  h += '</div>';
+  return h;
+}
+
+// Step 1 — days per week
+function schedAIStep1() {
+  var h = schedAIHeader('Step 1 of 4');
+  h += '<div style="font-size:16px;font-weight:600;color:var(--text-primary);margin-bottom:20px">How many days per week can you train?</div>';
+  h += '<div style="display:flex;align-items:center;justify-content:center;gap:20px;margin-bottom:26px">';
+  h += '<button class="sched-step" onclick="schedAIDays(-1)" style="width:42px;height:42px;font-size:22px">−</button>';
+  h += '<span style="font-size:40px;font-weight:700;color:var(--text-primary);font-family:Fraunces,serif;min-width:48px;text-align:center">' + schedAIData.days + '</span>';
+  h += '<button class="sched-step" onclick="schedAIDays(1)" style="width:42px;height:42px;font-size:22px">+</button>';
+  h += '</div>';
+  h += '<div style="display:flex">' + schedAIPrimaryBtn('schedAIGo(2)', 'Next →') + '</div>';
+  return h;
+}
+function schedAIDays(delta) {
+  var v = schedAIData.days + delta; if (v < 1) v = 1; if (v > 7) v = 7;
+  schedAIData.days = v; renderSchedule();
+}
+
+// Step 2 — fixed days + per-day activity
+function schedAIStep2() {
+  var h = schedAIHeader('Step 2 of 4');
+  h += '<div style="font-size:16px;font-weight:600;color:var(--text-primary);margin-bottom:4px">Any fixed days?</div>';
+  h += '<div style="font-size:13px;color:var(--text-muted);margin-bottom:14px">Tap the days you\'re definitely training.</div>';
+  h += '<div style="display:flex;gap:6px;margin-bottom:14px">';
+  for (var i = 0; i < DAYS.length; i++) {
+    var day = DAYS[i];
+    var on = schedAIData.fixedDays.hasOwnProperty(day);
+    h += '<button class="sched-day" onclick="schedAIToggleDay(\'' + day + '\')" style="background:' + (on ? 'var(--accent-ember)' : 'var(--bg-surface-2)') + ';color:' + (on ? '#fff' : 'var(--text-muted)') + ';font-weight:' + (on ? '600' : '400') + '">' + DAY_LABELS[i] + '</button>';
+  }
+  h += '</div>';
+  for (var j = 0; j < DAYS.length; j++) {
+    var d = DAYS[j];
+    if (!schedAIData.fixedDays.hasOwnProperty(d)) continue;
+    h += '<div style="margin-bottom:10px">';
+    h += '<div style="font-size:12px;color:var(--text-muted);margin-bottom:4px">What do you do on ' + DAY_LABELS[j] + '?</div>';
+    h += '<input type="text" data-aifixed="' + d + '" value="' + attrEsc(schedAIData.fixedDays[d] || '') + '" placeholder="MMA Class, Gym, Run…" style="width:100%">';
+    h += '</div>';
+  }
+  h += schedAIBackNext('schedAIGo(1)', 'schedAIGo(3)', 'Next →');
+  return h;
+}
+function schedAIToggleDay(day) {
+  schedAICaptureFixed();
+  if (schedAIData.fixedDays.hasOwnProperty(day)) delete schedAIData.fixedDays[day];
+  else schedAIData.fixedDays[day] = '';
+  renderSchedule();
+}
+function schedAICaptureFixed() {
+  var inputs = document.querySelectorAll('[data-aifixed]');
+  for (var i = 0; i < inputs.length; i++) {
+    schedAIData.fixedDays[inputs[i].getAttribute('data-aifixed')] = inputs[i].value;
+  }
+}
+
+// Step 3 — preferences
+function schedAIStep3() {
+  var h = schedAIHeader('Step 3 of 4');
+  h += '<div style="font-size:16px;font-weight:600;color:var(--text-primary);margin-bottom:14px">Any preferences?</div>';
+  h += '<div style="display:flex;flex-wrap:wrap;gap:8px">';
+  for (var i = 0; i < SCHED_AI_PREFS.length; i++) {
+    var p = SCHED_AI_PREFS[i];
+    var on = schedAIData.prefs.indexOf(p) >= 0;
+    h += '<button onclick="schedAITogglePref(' + i + ')" style="background:' + (on ? 'var(--accent-ember)' : 'var(--bg-surface-2)') + ';color:' + (on ? '#fff' : 'var(--text-primary)') + ';border:none;border-radius:9999px;padding:9px 14px;font-size:13px;font-weight:500;cursor:pointer;font-family:Inter,sans-serif">' + p + '</button>';
+  }
+  h += '</div>';
+  h += schedAIBackNext('schedAIGo(2)', 'schedAIGo(4)', 'Next →');
+  return h;
+}
+function schedAITogglePref(i) {
+  var p = SCHED_AI_PREFS[i];
+  var k = schedAIData.prefs.indexOf(p);
+  if (k >= 0) schedAIData.prefs.splice(k, 1); else schedAIData.prefs.push(p);
+  renderSchedule();
+}
+
+// Step 4 — must-include free text + voice
+function schedAIStep4() {
+  var h = schedAIHeader('Step 4 of 4');
+  h += '<div style="font-size:16px;font-weight:600;color:var(--text-primary);margin-bottom:10px">Anything you want to make sure gets included each week?</div>';
+  h += '<div style="position:relative;margin-bottom:6px">';
+  h += '<textarea id="sched-ai-includes" placeholder="e.g. upper body strength, posture work, cardio…" style="width:100%;min-height:96px;background:var(--bg-surface-1);border:1px solid var(--border-subtle);color:var(--text-primary);border-radius:12px;padding:12px;padding-top:36px;font-size:13px;font-family:Inter,sans-serif;box-sizing:border-box;resize:vertical;outline:none">' + escHtml(schedAIData.includes || '') + '</textarea>';
+  h += voiceMicBtn();
+  h += '</div>';
+  h += schedAIBackNext('schedAIGo(3)', 'schedAISubmit()', 'Build My Schedule →');
+  return h;
+}
+function schedAICaptureIncludes() {
+  var t = document.getElementById('sched-ai-includes');
+  if (t) schedAIData.includes = t.value;
+}
+
+function schedAIErrToast(msg) {
+  var t = document.createElement('div');
+  t.textContent = msg;
+  t.style.cssText = 'position:fixed;bottom:90px;left:50%;transform:translateX(-50%);background:var(--bg-surface-1);color:var(--color-danger);border:1px solid var(--border-subtle);padding:10px 20px;border-radius:9999px;font-size:13px;font-weight:600;z-index:200;box-shadow:0 4px 16px rgba(0,0,0,0.35)';
+  document.body.appendChild(t);
+  setTimeout(function() { if (t.parentNode) t.remove(); }, 2600);
+}
+
+function schedAISubmit() {
+  schedAICaptureIncludes();
+  schedAIBuilding = true;
+  renderSchedule();
+
+  var d = schedAIData;
+  var goals = (currentProfileData && currentProfileData.goals) || [];
+  var injuries = (currentProfileData && currentProfileData.injuries) || [];
+  var goalStr = goals.length
+    ? goals.map(function(g, i) { return (i + 1) + '. ' + (g.title || g.name || '') + (g.target_value ? ' (target ' + g.target_value + ' ' + (g.unit || '') + ')' : ''); }).join('\n')
+    : 'None specified';
+  var injStr = injuries.length
+    ? injuries.map(function(x) { return (typeof x === 'string') ? x : (x.name || x.area || x.description || ''); }).filter(Boolean).join(', ')
+    : 'None';
+  var fixedKeys = Object.keys(d.fixedDays);
+  var fixedStr = fixedKeys.length
+    ? fixedKeys.map(function(k) { return schedDayLabel(k) + ': ' + (d.fixedDays[k] || '(unspecified)'); }).join('\n')
+    : 'None';
+
+  var prompt = 'Build a weekly training schedule for this athlete.\n\n' +
+    'Days per week available: ' + d.days + '\n' +
+    'Fixed training days (these are firm commitments → put in "anchors"):\n' + fixedStr + '\n\n' +
+    'Preferences: ' + (d.prefs.length ? d.prefs.join(', ') : 'None') + '\n\n' +
+    'Must be included each week: ' + (d.includes || 'None specified') + '\n\n' +
+    'Athlete goals (priority order):\n' + goalStr + '\n\n' +
+    'Injuries / limitations: ' + injStr + '\n\n' +
+    'Return ONLY valid JSON matching this exact schema (no markdown, no commentary):\n' +
+    '{\n' +
+    '  "anchors": { "tue": [{"activity": "MMA Class", "duration": 60}] },\n' +
+    '  "frequency_targets": [{"id": "ft1", "activity": "Upper Body Strength", "times_per_week": 1, "suggested_day": "wed", "duration": 45}],\n' +
+    '  "addons": [{"id": "ao1", "activity": "Posture/PT work", "duration": 10, "days_per_week": 5}]\n' +
+    '}\n' +
+    'Rules: day keys are 3-letter lowercase (mon,tue,wed,thu,fri,sat,sun). Place each fixed day in "anchors" with the activity the athlete named and a realistic duration. Use "frequency_targets" for things that should happen N times/week on flexible days (suggested_day may be null). Use "addons" for short daily supplemental work (mobility, posture, PT). Total training days (anchors + typical target days) should not exceed ' + d.days + '. Honor injuries and goal priorities. Durations are integer minutes.';
+
+  fetch('/api/ai', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      callType: 'schedule_builder',
+      max_tokens: 1200,
+      system: 'You are a fitness scheduling assistant. Return only valid JSON matching the exact schema provided. No markdown, no explanation, no preamble.',
+      messages: [{ role: 'user', content: prompt }]
+    })
+  })
+    .then(function(r) {
+      if (!r.ok) throw new Error('Server returned ' + r.status);
+      return r.json();
+    })
+    .then(function(data) {
+      if (data.error) throw new Error(data.error.message || data.error || 'AI error');
+      var raw = (data.content && data.content[0]) ? data.content[0].text : '';
+      var cleaned = (raw.indexOf('{') >= 0) ? raw.substring(raw.indexOf('{'), raw.lastIndexOf('}') + 1) : '';
+      var parsed = JSON.parse(cleaned);
+      currentSchedule = {
+        anchors: (parsed.anchors && typeof parsed.anchors === 'object' && !Array.isArray(parsed.anchors)) ? parsed.anchors : {},
+        frequency_targets: Array.isArray(parsed.frequency_targets) ? parsed.frequency_targets : [],
+        addons: Array.isArray(parsed.addons) ? parsed.addons : []
+      };
+      // Guarantee stable ids for targets/addons (the editor relies on them).
+      for (var ti = 0; ti < currentSchedule.frequency_targets.length; ti++) {
+        if (!currentSchedule.frequency_targets[ti].id) currentSchedule.frequency_targets[ti].id = schedNextId(currentSchedule.frequency_targets, 'ft');
+      }
+      for (var ai = 0; ai < currentSchedule.addons.length; ai++) {
+        if (!currentSchedule.addons[ai].id) currentSchedule.addons[ai].id = schedNextId(currentSchedule.addons, 'ao');
+      }
+      schedAIBuilding = false; schedAIActive = false; schedAIData = null; schedAIStep = 1; schedEditMode = false;
+      schedPersist();
+      renderSchedule();
+      schedToast('Schedule built! ✓');
+    })
+    .catch(function(e) {
+      console.warn('[Schedule] AI build failed:', e && e.message);
+      schedAIBuilding = false; schedAIActive = false; schedAIData = null; schedAIStep = 1;
+      renderSchedule();
+      schedAIErrToast('Something went wrong — try again');
+    });
 }
 
 function getScheduleText() {
