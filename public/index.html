@@ -4,6 +4,9 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
 <title>ApexCoach</title>
+<link rel="icon" type="image/png" href="/logo.png">
+<link rel="apple-touch-icon" href="/logo.png">
+<link rel="manifest" href="/manifest.json">
 <link href="https://fonts.googleapis.com/css2?family=Oswald:wght@400;600;700&family=IBM+Plex+Mono:wght@400;500&family=DM+Sans:ital,wght@0,400;0,500;0,600;1,400&display=swap" rel="stylesheet">
 <!-- UI overhaul (Agent 1/5) font stack: Fraunces = hero numerals, Inter = UI text, JetBrains Mono = telemetry -->
 <link href="https://fonts.googleapis.com/css2?family=Fraunces:wght@400;700&family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400&display=swap" rel="stylesheet">
@@ -133,6 +136,10 @@ body.compact main{padding:20px 24px 60px}
 header{display:flex;align-items:center;justify-content:space-between;padding:14px 40px;border-bottom:1px solid var(--border);background:var(--bg);position:sticky;top:0;z-index:10;max-width:100%}
 .logo{font-family:'Oswald',sans-serif;font-size:26px;font-weight:700;color:var(--accent);letter-spacing:2px}
 .logosub{font-family:'IBM Plex Mono',monospace;font-size:11px;color:var(--border-accent);letter-spacing:3px;margin-left:4px}
+/* ── ApexCoach splash: logo fades in, holds, fades out (~1.5s) then auto-hides. Pure CSS, no JS. */
+#apex-splash{position:fixed;inset:0;z-index:9999;display:flex;align-items:center;justify-content:center;background:#08090A;animation:apexSplashFade 2s ease forwards}
+#apex-splash img{width:160px;height:auto}
+@keyframes apexSplashFade{0%{opacity:0;visibility:visible}20%{opacity:1}75%{opacity:1}100%{opacity:0;visibility:hidden}}
 nav{display:flex;gap:4px}
 .navBtn{background:transparent;border:none;color:var(--text-muted);padding:10px 20px;font-size:15px;cursor:pointer;font-family:'DM Sans',sans-serif;font-weight:500;border-radius:4px;transition:all .15s}
 .navBtn.active{color:var(--accent);background:var(--accent-10)}
@@ -437,9 +444,13 @@ input[type=range]{width:100%;accent-color:var(--accent)}
 </head>
 <body>
 
+<!-- SPLASH (logo, CSS fade in/out on load, then auto-hides — no JS) -->
+<div id="apex-splash"><img src="/logo.png" alt="ApexCoach"></div>
+
 <!-- PROFILE SELECTOR -->
 <div id="profile-screen" style="display:none;min-height:100vh;flex-direction:column;align-items:center;justify-content:center;padding:40px 20px">
   <div style="text-align:center;margin-bottom:40px">
+    <img src="/logo.png" alt="ApexCoach" style="width:80px;height:auto;display:block;margin:0 auto 16px">
     <span class="logo" style="font-size:36px">APEX</span><span class="logosub" style="font-size:13px;color:var(--accent-44)">COACH</span>
     <p class="mono" style="font-size:12px;color:var(--text-dim);letter-spacing:2px;margin-top:10px">SELECT PROFILE</p>
   </div>
@@ -464,8 +475,9 @@ input[type=range]{width:100%;accent-color:var(--accent)}
 <div id="app-shell" style="display:none">
 
 <header>
-  <div style="display:flex;align-items:baseline" id="logo-area">
-    <span class="logo">APEX</span><span class="logosub">COACH</span>
+  <div style="display:flex;align-items:center;gap:8px" id="logo-area">
+    <img src="/logo.png" alt="ApexCoach" style="height:32px;width:auto;display:block">
+    <span style="display:flex;align-items:baseline"><span class="logo">APEX</span><span class="logosub">COACH</span></span>
   </div>
   <nav class="desktop-nav">
     <button class="navBtn active" onclick="showTab('today',this)">Today</button>
