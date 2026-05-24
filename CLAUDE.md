@@ -164,6 +164,8 @@ Calculated from workoutLog entries where done=true. Counts backwards from today 
 
 - POST /api/profiles/:id/daily-recs — upserts daily_recommendations, daily_recommendations_date, daily_recommendations_readiness on profiles
 
+- GET /api/profiles/:id/life-os-summary — read-only aggregated daily summary for the external **Life OS** app. Auth: `X-Life-OS-Key: $LIFE_OS_API_KEY` (or admin secret). Returns `{date, readiness, readiness_fresh, sleep:{hours,score}, hrv, rhr, workout_done, workout_type, planned_workouts:[{headline,category,duration}]}`. Readiness + planned_workouts come from the cached `daily_recommendations*` columns and are nulled/`[]` when stale (`daily_recommendations_date != today`, → `readiness_fresh:false`); workout_done/type from today's `workouts`; sleep/hrv/rhr from one best-effort Fitbit call (7s timeout → those fields null, response still 200). Optional `?date=YYYY-MM-DD` overrides "today".
+
 - GET /api/profiles/:id/progress-brief — returns cached progress brief + date
 
 - POST /api/profiles/:id/progress-brief — upserts progress_brief (jsonb) + progress_brief_date on profiles
@@ -442,7 +444,9 @@ The 5-agent UI overhaul is **complete**: **Agent 1 (token foundation)**, **Agent
 
 ## Environment Variables (on Render)
 
-FITBIT_CLIENT_ID, FITBIT_CLIENT_SECRET, SUPABASE_URL, SUPABASE_KEY, ANTHROPIC_KEY, ADMIN_SECRET
+FITBIT_CLIENT_ID, FITBIT_CLIENT_SECRET, SUPABASE_URL, SUPABASE_KEY, ANTHROPIC_KEY, ADMIN_SECRET, LIFE_OS_API_KEY
+
+`LIFE_OS_API_KEY` — shared secret for the read-only Life OS integration endpoint (`GET /api/profiles/:id/life-os-summary`). The caller passes it as the `X-Life-OS-Key` header. The endpoint fails closed: if neither `LIFE_OS_API_KEY` nor `ADMIN_SECRET` is set it returns 503; `ADMIN_SECRET` (via `X-Admin-Secret` or `?secret=`) is also accepted for server-to-server calls.
 
 ## Goal Progress System
 

@@ -2811,6 +2811,145 @@ app.post("/api/profiles/:id/daily-recs", async function(req, res) {
   }
 });
 
+// ── LIFE OS INTEGRATION (read-only daily summary) ─────────────────────────
+// Single aggregated read for the separate Life OS app. The DB-backed fields
+// are fast (one PostgREST read of the profile row + one of today's workouts);
+// the Fitbit block is best-effort behind a hard timeout, so a slow or failing
+// wearable call degrades to null sleep/hrv/rhr instead of failing the whole
+// response.
+//
+// Auth (fails closed): requires either X-Life-OS-Key == LIFE_OS_API_KEY, or
+// the existing admin secret (X-Admin-Secret header or ?secret= == ADMIN_SECRET)
+// for server-to-server calls. If NEITHER env var is configured the endpoint
+// refuses to serve data (503) rather than exposing it unauthenticated.
+//
+// Optional ?date=YYYY-MM-DD overrides "today" (caller's local date) for the
+// freshness check + Fitbit fetch; defaults to the server's local date, matching
+// how /daily-recs stamps daily_recommendations_date.
+app.get("/api/profiles/:id/life-os-summary", async function(req, res) {
+  // ── auth gate ──
+  var lifeKey = process.env.LIFE_OS_API_KEY;
+  var adminKey = process.env.ADMIN_SECRET;
+  if (!lifeKey && !adminKey) {
+    return res.status(503).json({ error: "integration not configured" });
+  }
+  var gotLife = req.headers["x-life-os-key"];
+  var gotAdmin = req.headers["x-admin-secret"] || req.query.secret;
+  var authorized = (lifeKey && gotLife === lifeKey) || (adminKey && gotAdmin === adminKey);
+  if (!authorized) return res.status(401).json({ error: "unauthorized" });
+
+  try {
+    var pid = req.params.id;
+    var pad = function(n) { return String(n).padStart(2, "0"); };
+    var now = new Date();
+    var dateParam = req.query.date || null;
+    var today = dateParam || (now.getFullYear() + "-" + pad(now.getMonth() + 1) + "-" + pad(now.getDate()));
+
+    // ── DB read 1: cached readiness + planned workouts off the profile row ──
+    var readiness = null;
+    var readinessFresh = false;
+    var planned = [];
+    try {
+      var pr = await fetch(
+        SUPABASE_URL + "/rest/v1/profiles?id=eq." + encodeURIComponent(pid) +
+          "&select=daily_recommendations,daily_recommendations_date,daily_recommendations_readiness",
+        { headers: sbHeaders() }
+      );
+      var prows = await pr.json();
+      if (!prows || !prows.length) return res.status(404).json({ error: "Profile not found" });
+      var prow = prows[0];
+      // Stale (date != today) → readiness/plan are nulled, readiness_fresh=false.
+      readinessFresh = prow.daily_recommendations_date === today;
+      if (readinessFresh) {
+        readiness = (typeof prow.daily_recommendations_readiness === "number")
+          ? prow.daily_recommendations_readiness : null;
+        var opts = (prow.daily_recommendations && Array.isArray(prow.daily_recommendations.options))
+          ? prow.daily_recommendations.options : [];
+        planned = opts.map(function(o) {
+          // Stored option shape: { type:<category>, headline, duration, ... }.
+          // Map to Life OS's {headline, category, duration}; tolerate a literal
+          // `category`/`duration_minutes` field if the rec schema ever changes.
+          return {
+            headline: o.headline || null,
+            category: o.category || o.type || null,
+            duration: (typeof o.duration === "number") ? o.duration
+              : (typeof o.duration_minutes === "number" ? o.duration_minutes : null),
+          };
+        });
+      }
+    } catch (e) {
+      console.error("[LifeOS] profile read failed:", e.message);
+      // DB hiccup shouldn't 500 the integration — leave readiness null / plan [].
+    }
+
+    // ── DB read 2: today's workouts → done flag + type ──
+    var workoutDone = false;
+    var workoutType = null;
+    try {
+      var wr = await fetch(
+        SUPABASE_URL + "/rest/v1/workouts?profile_id=eq." + encodeURIComponent(pid) +
+          "&date=eq." + encodeURIComponent(today) + "&select=type,done,ts&order=ts.desc",
+        { headers: sbHeaders() }
+      );
+      var wrows = await wr.json();
+      if (Array.isArray(wrows) && wrows.length) {
+        // Prefer a completed workout's type; else fall back to the latest logged.
+        var doneRow = wrows.find(function(w) { return w.done === true; });
+        workoutDone = !!doneRow;
+        workoutType = (doneRow || wrows[0]).type || null;
+      }
+    } catch (e) {
+      console.error("[LifeOS] workouts read failed:", e.message);
+    }
+
+    // ── Fitbit read (best-effort, hard 7s timeout) → sleep / hrv / rhr ──
+    var sleep = { hours: null, score: null };
+    var hrv = null;
+    var rhr = null;
+    var timer = null;
+    try {
+      var token = await getValidProfileToken(pid);
+      var dailyPromise = buildDailyData(token, dateParam);
+      dailyPromise.catch(function() {}); // swallow a late rejection if we time out first
+      var fit = await Promise.race([
+        dailyPromise,
+        new Promise(function(_, reject) {
+          timer = setTimeout(function() { reject(new Error("fitbit timeout")); }, 7000);
+        }),
+      ]);
+      clearTimeout(timer);
+      if (fit && fit.data) {
+        var d = fit.data;
+        sleep = {
+          hours: (d.sleep && typeof d.sleep.hours === "number") ? d.sleep.hours : null,
+          score: (d.sleep && typeof d.sleep.fitbit_score === "number") ? d.sleep.fitbit_score : null,
+        };
+        hrv = (typeof d.hrv === "number") ? d.hrv : null;
+        rhr = (typeof d.rhr === "number") ? d.rhr : null;
+      }
+    } catch (e) {
+      clearTimeout(timer);
+      console.error("[LifeOS] fitbit fetch failed/timeout:", e.message);
+      // sleep/hrv/rhr stay null — don't fail the response on a wearable problem.
+    }
+
+    res.json({
+      date: today,
+      readiness: readiness,
+      readiness_fresh: readinessFresh,
+      sleep: sleep,
+      hrv: hrv,
+      rhr: rhr,
+      workout_done: workoutDone,
+      workout_type: workoutType,
+      planned_workouts: planned,
+    });
+  } catch (e) {
+    console.error("[LifeOS] summary failed:", e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
 // ── PROGRESS BRIEF CACHE ─────────────────────────────────────────────────
 // Mirrors the daily-recs cache pattern. Stored on profiles:
 //   progress_brief jsonb, progress_brief_date date.
