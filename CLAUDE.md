@@ -40,6 +40,8 @@ ApexCoach is a personalized AI fitness coaching web app. Users connect their Fit
 
 - body_metrics: id (bigint identity pk), profile_id (fk → profiles, on delete cascade), date (date), weight_lbs (numeric), body_fat_pct (numeric), bmi (numeric), source (text default 'manual', also 'fitbit'), created_at (timestamptz default now()). UNIQUE(profile_id, date). Stores weight / BF% / BMI history. Upserted from `/1/user/-/body/log/{weight,fat}/date/today.json` via Fitbit sync, or manually via the Today-tab "Log Weight" modal. BMI is computed server-side as `(weight_lbs / height_inches²) × 703` when `profiles.height_inches` is set.
 
+- daily_sleep: id (bigint identity pk), profile_id (fk → profiles, on delete cascade), date (date), hours (numeric(4,2)), score (int — the COMPUTED personal sleep score, NOT Fitbit's), deep_minutes / rem_minutes / light_minutes / wake_minutes (int), hrv (numeric(6,2)), rhr (int), source (text default 'fitbit'), created_at (timestamptz default now()). UNIQUE(profile_id, date). Upserted nightly from the Fitbit sync (`GET /api/profiles/:id/daily`) and on the `life-os-summary` fallback path. Powers the Life OS fast path: `life-os-summary` reads this first and returns sleep/HRV/RHR instantly with no live Fitbit call once the day's row exists. See migration `2026-05-24_daily_sleep.sql`.
+
 ## Onboarding Flow (Full-Page Paginated)
 
 New users go through a 7-question full-screen paginated onboarding flow:
@@ -164,7 +166,7 @@ Calculated from workoutLog entries where done=true. Counts backwards from today 
 
 - POST /api/profiles/:id/daily-recs — upserts daily_recommendations, daily_recommendations_date, daily_recommendations_readiness on profiles
 
-- GET /api/profiles/:id/life-os-summary — read-only aggregated daily summary for the external **Life OS** app. Auth: `X-Life-OS-Key: $LIFE_OS_API_KEY` (or admin secret). Returns `{date, readiness, readiness_fresh, sleep:{hours,score}, hrv, rhr, workout_done, workout_type, planned_workouts:[{headline,category,duration}]}`. Readiness + planned_workouts come from the cached `daily_recommendations*` columns and are nulled/`[]` when stale (`daily_recommendations_date != today`, → `readiness_fresh:false`); workout_done/type from today's `workouts`; sleep/hrv/rhr from one best-effort Fitbit call (7s timeout → those fields null, response still 200). Optional `?date=YYYY-MM-DD` overrides "today".
+- GET /api/profiles/:id/life-os-summary — read-only aggregated daily summary for the external **Life OS** app. Auth: `X-Life-OS-Key: $LIFE_OS_API_KEY` (or admin secret). Returns `{date, readiness, readiness_fresh, sleep:{hours,score}, hrv, rhr, workout_done, workout_type, planned_workouts:[{headline,category,duration}]}`. Readiness + planned_workouts come from the cached `daily_recommendations*` columns and are nulled/`[]` when stale (`daily_recommendations_date != today`, → `readiness_fresh:false`); workout_done/type from today's `workouts`. **sleep/hrv/rhr are DB-first**: it reads `daily_sleep WHERE profile_id AND date=today` and returns those instantly with NO Fitbit call (fast path); only on a miss does it fall back to one best-effort live Fitbit call (7s timeout → those fields null, response still 200) and then upsert the result into `daily_sleep` for the rest of the day. `sleep.score` is the COMPUTED personal score (`estimateSleepScore`, server mirror of the index.html fn), NOT Fitbit's `fitbit_score`. Optional `?date=YYYY-MM-DD` overrides "today".
 
 - GET /api/profiles/:id/progress-brief — returns cached progress brief + date
 
@@ -586,6 +588,16 @@ ALTER TABLE profiles
   ADD COLUMN IF NOT EXISTS goal_weight_timeline_months int;
 ```
 
+## Daily Sleep Tracking (Life OS fast-path)
+
+Last night's sleep is persisted per profile per day so Life OS gets instant, Fitbit-independent sleep/HRV/RHR after the first successful sync each day (no more nulls from Render cold starts or Vercel timeouts).
+
+- **Table**: `daily_sleep` (see Supabase Tables). `profile_id + date` unique; rows upserted on conflict.
+- **Computed score**: `estimateSleepScore(deep, rem, light, awake)` in `server.js` is a server mirror of the `public/index.html` function (personal regression model — see FORMULAS.md; keep the two in sync). `buildDailyData` computes it from `sleepRecord.levels.summary` and exposes it as `data.sleep.score`. Fitbit's own score stays at `data.sleep.fitbit_score` (still read by the app UI).
+- **Source**: `buildDailyData` returns a `sleepSummary` `{date=today, hours, score, deep/rem/light/wake_minutes, hrv, rhr}`. `GET /api/profiles/:id/daily` upserts it fire-and-forget (source='fitbit'); the `life-os-summary` Fitbit fallback path upserts it too. Keyed under `today` so the Life OS `date=today` lookup hits even when Fitbit files the sleep record under yesterday's start date.
+- **Life OS read path**: `life-os-summary` reads `daily_sleep` first (fast path, no Fitbit). On a miss it does the live 7s Fitbit call, returns the computed score, and upserts for next time. HRV/RHR are stored alongside sleep so the fast path returns all three without a Fitbit call.
+- **Migration**: `migrations/2026-05-24_daily_sleep.sql`.
+
 ## Exercise Context Helpers (roadmap grounding)
 
 Two server helpers ground all roadmap prompts in the athlete's actual logged training (aggregation in Node after a PostgREST fetch; numerics via `numOrNull`; YYYY-MM-DD local dates):
@@ -858,6 +870,29 @@ The whole lookup is **awaited but capped at 4s** via `Promise.race` (timeout →
 ## Migrations
 
 One-time data fixes that should be run in the Supabase SQL editor.
+
+### Daily sleep (2026-05-24)
+Adds the `daily_sleep` table backing the Life OS sleep fast-path. Stores hours, the computed personal sleep score, the stage-minute breakdown, and the morning HRV/RHR snapshot per profile per day. See `migrations/2026-05-24_daily_sleep.sql`.
+
+```sql
+CREATE TABLE IF NOT EXISTS daily_sleep (
+  id bigint generated always as identity primary key,
+  profile_id bigint references profiles(id) on delete cascade,
+  date date not null,
+  hours numeric(4,2),
+  score int,
+  deep_minutes int,
+  rem_minutes int,
+  light_minutes int,
+  wake_minutes int,
+  hrv numeric(6,2),
+  rhr int,
+  source text default 'fitbit',
+  created_at timestamptz default now(),
+  UNIQUE(profile_id, date)
+);
+CREATE INDEX IF NOT EXISTS idx_daily_sleep_profile_date ON daily_sleep(profile_id, date DESC);
+```
 
 ### Structured macro roadmap (2026-05-22)
 Adds the structured macro roadmap columns. The legacy `roadmap` (text) column stays and is still used by the current client. See `migrations/2026-05-22_roadmap_data.sql`.

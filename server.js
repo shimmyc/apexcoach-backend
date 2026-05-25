@@ -244,6 +244,22 @@ function dateStr(offsetDays) {
   return d.toISOString().split("T")[0];
 }
 
+// Server-side mirror of estimateSleepScore() in public/index.html — the
+// personal regression sleep-score model (R²=0.883, MAE=2.45; see FORMULAS.md).
+// Keep the two in sync. Returns null when there's no stage data to score.
+function estimateSleepScore(deepMinutes, remMinutes, lightMinutes, awakeMinutes) {
+  if (!deepMinutes && !remMinutes && !lightMinutes) return null;
+  var asleepMinutes = (deepMinutes||0) + (remMinutes||0) + (lightMinutes||0);
+  var durationPenalty = Math.max(0, (300 - asleepMinutes) * 0.3);
+  var raw = 0.1558 * (deepMinutes||0)
+          + 0.0935 * (remMinutes||0)
+          + 0.0607 * (lightMinutes||0)
+          - 0.1143 * (awakeMinutes||0)
+          - durationPenalty
+          + 49.77;
+  return Math.max(1, Math.min(100, Math.round(raw)));
+}
+
 async function buildDailyData(token, overrideDate) {
   const today     = overrideDate || dateStr(0);
   const yesterday = overrideDate ? (() => { const d = new Date(overrideDate + 'T12:00:00'); d.setDate(d.getDate() - 1); return d.toISOString().slice(0,10); })() : dateStr(-1);
@@ -320,6 +336,19 @@ async function buildDailyData(token, overrideDate) {
     fitbitSleepScore = sleep.summary.totalScore;
   }
 
+  // Computed personal sleep score — the value ApexCoach's UI shows and Life OS
+  // consumes (NOT Fitbit's own score). Derived from the stage breakdown via the
+  // same model as estimateSleepScore() in public/index.html.
+  var sleepLevelsSummary = sleepRecord && sleepRecord.levels ? sleepRecord.levels.summary : null;
+  var computedSleepScore = sleepLevelsSummary
+    ? estimateSleepScore(
+        sleepLevelsSummary.deep  ? sleepLevelsSummary.deep.minutes  : 0,
+        sleepLevelsSummary.rem   ? sleepLevelsSummary.rem.minutes   : 0,
+        sleepLevelsSummary.light ? sleepLevelsSummary.light.minutes : 0,
+        sleepLevelsSummary.wake  ? sleepLevelsSummary.wake.minutes  : 0
+      )
+    : null;
+
   const heartYestArr = heartYest && heartYest["activities-heart"] ? heartYest["activities-heart"] : [];
   const zones = heartYestArr[0] && heartYestArr[0].value ? heartYestArr[0].value.heartRateZones || [] : [];
   const heartTodayArr = heartToday && heartToday["activities-heart"] ? heartToday["activities-heart"] : [];
@@ -383,6 +412,7 @@ async function buildDailyData(token, overrideDate) {
         minutesAwake: sleepRecord ? sleepRecord.minutesAwake : null,
         stages:       sleepRecord && sleepRecord.levels ? sleepRecord.levels.summary : null,
         fitbit_score: fitbitSleepScore,
+        score:        computedSleepScore,
       },
       rhr: rhr,
       hrv: hrv,
@@ -461,6 +491,25 @@ async function buildDailyData(token, overrideDate) {
           date: today,
           weight_lbs: weightLbs,
           body_fat_pct: f && typeof f.fat === "number" ? +f.fat.toFixed(2) : null,
+        };
+      })(),
+      // Persisted nightly to daily_sleep (see upsertDailySleep). Keyed under
+      // `today` so Life OS's `date = today` fast-path lookup hits. Carries the
+      // computed score (not Fitbit's) plus the morning HRV/RHR snapshot so the
+      // cached path can return all three without a live Fitbit call.
+      sleepSummary: (function() {
+        if (!sleepRecord && hrv === null && rhr === null) return null;
+        var sum = sleepLevelsSummary;
+        return {
+          date: today,
+          hours: sleepRecord ? +(sleepRecord.minutesAsleep / 60).toFixed(2) : null,
+          score: computedSleepScore,
+          deep_minutes:  sum && sum.deep  ? (sum.deep.minutes  || 0) : null,
+          rem_minutes:   sum && sum.rem   ? (sum.rem.minutes   || 0) : null,
+          light_minutes: sum && sum.light ? (sum.light.minutes || 0) : null,
+          wake_minutes:  sum && sum.wake  ? (sum.wake.minutes  || 0) : null,
+          hrv: hrv,
+          rhr: rhr,
         };
       })(),
       rolling7: {
@@ -823,6 +872,15 @@ app.get("/api/profiles/:id/daily", async function(req, res) {
         console.error("[Body] fitbit upsert failed:", e.message);
       });
     }
+    // Fire-and-forget: persist last night's sleep (hours + computed score +
+    // stage minutes + morning HRV/RHR) so Life OS gets an instant,
+    // Fitbit-independent copy for the rest of the day.
+    var sl = result.data && result.data.sleepSummary;
+    if (sl && sl.date && (typeof sl.hours === "number" || typeof sl.score === "number" || typeof sl.hrv === "number" || typeof sl.rhr === "number")) {
+      upsertDailySleep(req.params.id, sl).catch(function(e) {
+        console.error("[Sleep] daily upsert failed:", e.message);
+      });
+    }
     // NOTE: the legacy fitbit_pending_imports queue is deprecated and no longer
     // written. The Today-tab "Unmatched Fitbit Activities" card
     // (GET /api/profiles/:id/unmatched-fitbit) replaces it — it computes
@@ -860,6 +918,41 @@ async function upsertDailySteps(profileId, summary) {
     throw new Error("daily_steps upsert " + r.status + ": " + t);
   }
   console.log("[Steps] upserted profile=" + profileId + " date=" + summary.date + " steps=" + summary.steps);
+}
+
+// ── DAILY SLEEP ─────────────────────────────────────────────────────────────
+// Persist last night's sleep (hours + computed personal score + stage minutes)
+// plus the morning HRV/RHR snapshot so Life OS — and any other reader — gets it
+// instantly without a live Fitbit call, surviving Render cold starts / Vercel
+// timeouts after the first successful sync each day. profile_id + date unique;
+// upserted on conflict (later syncs overwrite a partial early-morning row).
+async function upsertDailySleep(profileId, summary) {
+  var payload = {
+    profile_id: profileId,
+    date: summary.date,
+    hours: summary.hours,
+    score: summary.score,
+    deep_minutes: summary.deep_minutes,
+    rem_minutes: summary.rem_minutes,
+    light_minutes: summary.light_minutes,
+    wake_minutes: summary.wake_minutes,
+    hrv: summary.hrv,
+    rhr: summary.rhr,
+    source: "fitbit",
+  };
+  var r = await fetch(
+    SUPABASE_URL + "/rest/v1/daily_sleep?on_conflict=profile_id,date",
+    {
+      method: "POST",
+      headers: sbHeaders("return=minimal,resolution=merge-duplicates"),
+      body: JSON.stringify(payload),
+    }
+  );
+  if (!r.ok) {
+    var t = await r.text();
+    throw new Error("daily_sleep upsert " + r.status + ": " + t);
+  }
+  console.log("[Sleep] upserted profile=" + profileId + " date=" + summary.date + " score=" + summary.score + " hours=" + summary.hours);
 }
 
 // When new step data lands, any active micro_goal that looks like a step/walk
@@ -2902,35 +2995,72 @@ app.get("/api/profiles/:id/life-os-summary", async function(req, res) {
       console.error("[LifeOS] workouts read failed:", e.message);
     }
 
-    // ── Fitbit read (best-effort, hard 7s timeout) → sleep / hrv / rhr ──
+    // ── sleep / hrv / rhr ──
     var sleep = { hours: null, score: null };
     var hrv = null;
     var rhr = null;
-    var timer = null;
+
+    // Fast path: serve from daily_sleep if we already persisted today's row
+    // (after the first successful Fitbit sync). No live Fitbit call, so cold
+    // starts / Fitbit slowness can't null these out once a row exists.
+    var sleepFromDb = false;
+    var num = function(v) { return v == null ? null : (isNaN(Number(v)) ? null : Number(v)); };
     try {
-      var token = await getValidProfileToken(pid);
-      var dailyPromise = buildDailyData(token, dateParam);
-      dailyPromise.catch(function() {}); // swallow a late rejection if we time out first
-      var fit = await Promise.race([
-        dailyPromise,
-        new Promise(function(_, reject) {
-          timer = setTimeout(function() { reject(new Error("fitbit timeout")); }, 7000);
-        }),
-      ]);
-      clearTimeout(timer);
-      if (fit && fit.data) {
-        var d = fit.data;
-        sleep = {
-          hours: (d.sleep && typeof d.sleep.hours === "number") ? d.sleep.hours : null,
-          score: (d.sleep && typeof d.sleep.fitbit_score === "number") ? d.sleep.fitbit_score : null,
-        };
-        hrv = (typeof d.hrv === "number") ? d.hrv : null;
-        rhr = (typeof d.rhr === "number") ? d.rhr : null;
+      var sr = await fetch(
+        SUPABASE_URL + "/rest/v1/daily_sleep?profile_id=eq." + encodeURIComponent(pid) +
+          "&date=eq." + encodeURIComponent(today) +
+          "&select=hours,score,hrv,rhr&limit=1",
+        { headers: sbHeaders() }
+      );
+      var srows = await sr.json();
+      if (Array.isArray(srows) && srows.length) {
+        var srow = srows[0];
+        sleep = { hours: num(srow.hours), score: num(srow.score) };
+        hrv = num(srow.hrv);
+        rhr = num(srow.rhr);
+        sleepFromDb = true;
+        console.log("[LifeOS] sleep served from daily_sleep (date=" + today + ")");
       }
     } catch (e) {
-      clearTimeout(timer);
-      console.error("[LifeOS] fitbit fetch failed/timeout:", e.message);
-      // sleep/hrv/rhr stay null — don't fail the response on a wearable problem.
+      console.error("[LifeOS] daily_sleep read failed:", e.message);
+    }
+
+    // Fallback: live Fitbit call (best-effort, hard 7s timeout) → then upsert
+    // to daily_sleep so subsequent calls today take the fast path above.
+    if (!sleepFromDb) {
+      var timer = null;
+      try {
+        var token = await getValidProfileToken(pid);
+        var dailyPromise = buildDailyData(token, dateParam);
+        dailyPromise.catch(function() {}); // swallow a late rejection if we time out first
+        var fit = await Promise.race([
+          dailyPromise,
+          new Promise(function(_, reject) {
+            timer = setTimeout(function() { reject(new Error("fitbit timeout")); }, 7000);
+          }),
+        ]);
+        clearTimeout(timer);
+        if (fit && fit.data) {
+          var d = fit.data;
+          sleep = {
+            hours: (d.sleep && typeof d.sleep.hours === "number") ? d.sleep.hours : null,
+            score: (d.sleep && typeof d.sleep.score === "number") ? d.sleep.score : null,
+          };
+          hrv = (typeof d.hrv === "number") ? d.hrv : null;
+          rhr = (typeof d.rhr === "number") ? d.rhr : null;
+          // Persist for next time (fire-and-forget — don't delay the response).
+          var sl = d.sleepSummary;
+          if (sl && sl.date && (sleep.hours != null || sleep.score != null || hrv != null || rhr != null)) {
+            upsertDailySleep(pid, sl).catch(function(e) {
+              console.error("[LifeOS] daily_sleep upsert failed:", e.message);
+            });
+          }
+        }
+      } catch (e) {
+        clearTimeout(timer);
+        console.error("[LifeOS] fitbit fetch failed/timeout:", e.message);
+        // sleep/hrv/rhr stay null — don't fail the response on a wearable problem.
+      }
     }
 
     res.json({
