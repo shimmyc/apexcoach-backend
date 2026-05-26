@@ -419,22 +419,6 @@ async function fetchDailyData(token, ymd) {
   var hrvRes = settled[0], rhrRes = settled[1], sleepRes = settled[2];
   var stepsRes = settled[3], azmRes = settled[4], weightRes = settled[5];
 
-  // Debug: log the raw response (or error) from each parallel call so we can
-  // see exactly what each Google Health endpoint returned for this date.
-  function _ghLog(label, r) {
-    if (r.status === "fulfilled") {
-      console.log("[google_health] " + label + " raw: " + JSON.stringify(r.value).slice(0, 200));
-    } else {
-      var msg = r.reason && r.reason.message ? r.reason.message : String(r.reason);
-      console.log("[google_health] " + label + " error: " + String(msg).slice(0, 200));
-    }
-  }
-  _ghLog("hrv", hrvRes);
-  _ghLog("rhr", rhrRes);
-  _ghLog("sleep", sleepRes);
-  _ghLog("steps", stepsRes);
-  _ghLog("azm", azmRes);
-
   // Daily records carry their calendar date either as a "YYYY-MM-DD" string or
   // a { year, month, day } object — at the dataPoint level or nested under the
   // daily payload. Normalize to "YYYY-MM-DD" so we can compare against `ymd`.
@@ -456,9 +440,7 @@ async function fetchDailyData(token, ymd) {
     if (hpts.length && hpts[0].dailyHeartRateVariability) {
       var hrvPayload = hpts[0].dailyHeartRateVariability;
       var hrvDate = _dailyDate(hpts[0], hrvPayload);
-      if (hrvDate && hrvDate !== ymd) {
-        console.log("[google_health] hrv skipped — record date " + hrvDate + " != " + ymd);
-      } else {
+      if (!hrvDate || hrvDate === ymd) {
         var hv = hrvPayload.averageHeartRateVariabilityMilliseconds;
         var hvn = typeof hv === "number" ? hv : parseFloat(hv);
         hrv = isFinite(hvn) ? hvn : null;
@@ -472,9 +454,7 @@ async function fetchDailyData(token, ymd) {
     if (rpts.length && rpts[0].dailyRestingHeartRate) {
       var rhrPayload = rpts[0].dailyRestingHeartRate;
       var rhrDate = _dailyDate(rpts[0], rhrPayload);
-      if (rhrDate && rhrDate !== ymd) {
-        console.log("[google_health] rhr skipped — record date " + rhrDate + " != " + ymd);
-      } else {
+      if (!rhrDate || rhrDate === ymd) {
         var rv = parseInt(rhrPayload.beatsPerMinute, 10);
         rhr = isFinite(rv) ? rv : null;
       }
@@ -482,41 +462,31 @@ async function fetchDailyData(token, ymd) {
   }
   // Sleep
   var sleepData = sleepRes.status === "fulfilled" ? parseSleep(sleepRes.value) : null;
-  // Steps — dailyRollUp responses live in `rollupDataPoints`. The count may be
-  // nested as rollupDataPoints[0].steps.count OR directly as rollupDataPoints[0].count
-  // depending on the rollup shape — try both, and log the raw item.
+  // Steps — dailyRollUp responses live in `rollupDataPoints`; the aggregated
+  // count is `steps.countSum` (confirmed from API logs).
   var steps = null;
   if (stepsRes.status === "fulfilled") {
     var stepsRollup = stepsRes.value && stepsRes.value.rollupDataPoints;
-    console.log('[google_health] steps rollupDataPoints[0]:', JSON.stringify(stepsRollup && stepsRollup[0]).slice(0, 300));
-    var stepsItem = stepsRollup && stepsRollup[0];
-    var stepsVal = (stepsItem && stepsItem.steps && stepsItem.steps.count != null) ? stepsItem.steps.count
-                 : (stepsItem && stepsItem.count != null) ? stepsItem.count
-                 : null;
-    if (stepsVal != null) {
-      var sv = parseInt(stepsVal, 10);
-      steps = isFinite(sv) ? sv : null;
-    }
+    var sv = parseInt(stepsRollup && stepsRollup[0] && stepsRollup[0].steps && stepsRollup[0].steps.countSum, 10);
+    steps = isFinite(sv) ? sv : null;
   }
-  // Active Zone Minutes — dailyRollUp → `rollupDataPoints`; one item per zone.
-  // Each item's value may be nested as activeZoneMinutes.activeZoneMinutes OR be
-  // the activeZoneMinutes field directly — try both, summing across all items.
+  // Active Zone Minutes — dailyRollUp → `rollupDataPoints`; each item exposes
+  // three per-zone sums (cardio / peak / fat-burn). Total = their sum across all
+  // items (confirmed from API logs).
   var activeZoneMinutes = null;
   if (azmRes.status === "fulfilled") {
     var azmRollup = (azmRes.value && azmRes.value.rollupDataPoints) || [];
-    console.log('[google_health] azm rollupDataPoints[0]:', JSON.stringify(azmRollup[0]).slice(0, 300));
-    var sum = 0, any = false;
+    var sum = 0;
     for (var i = 0; i < azmRollup.length; i++) {
       var azmObj = azmRollup[i] && azmRollup[i].activeZoneMinutes;
-      var val = (azmObj && azmObj.activeZoneMinutes != null) ? azmObj.activeZoneMinutes
-              : (azmObj != null && typeof azmObj !== "object") ? azmObj
-              : null;
-      if (val != null) {
-        var av = parseInt(val, 10);
-        if (isFinite(av)) { sum += av; any = true; }
+      if (azmObj) {
+        var cardio = parseInt(azmObj.sumInCardioHeartZone, 10) || 0;
+        var peak = parseInt(azmObj.sumInPeakHeartZone, 10) || 0;
+        var fatBurn = parseInt(azmObj.sumInFatBurnHeartZone, 10) || 0;
+        sum += cardio + peak + fatBurn;
       }
     }
-    activeZoneMinutes = any ? sum : null;
+    activeZoneMinutes = sum || null;
   }
   // Weight — most recent sample in the window.
   var weightData = null;
