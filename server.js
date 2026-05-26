@@ -610,14 +610,19 @@ app.get("/callback", async function(req, res) {
 // Google Health API v4 OAuth callback (additive — does NOT touch /callback).
 // Exchanges the auth code for tokens, stores them in wearable_connections,
 // records the Google Health user identity in provider_metadata, then redirects.
+// Registered on TWO routes below: /callback/google_health and
+// /api/wearables/callback/google_health (the path POST /api/wearables/connect
+// generates for non-Fitbit providers). The token-exchange redirect_uri is
+// derived from req.path so it matches whichever route Google redirected to —
+// Google requires an exact match with the redirect_uri sent at authorize time.
 // Migration: migrations/2026-05-26_google_health.sql adds provider_metadata.
-app.get("/callback/google_health", async function(req, res) {
+async function handleGoogleHealthCallback(req, res) {
   var code = req.query.code;
   var profileId = decodeURIComponent(req.query.state || "").trim();
-  console.log("[google_health] /callback/google_health received. code=" + (code ? "yes" : "no") + ", profileId='" + profileId + "'");
+  console.log("[google_health] " + req.path + " received. code=" + (code ? "yes" : "no") + ", profileId='" + profileId + "'");
   if (!code || !profileId) return res.redirect("/?error=google_health_connect_failed");
   try {
-    var redirectUri = (process.env.RENDER_URL || "https://apexcoach-backend.onrender.com") + "/callback/google_health";
+    var redirectUri = (process.env.RENDER_URL || "https://apexcoach-backend.onrender.com") + req.path;
     var tokenBody = "grant_type=authorization_code"
       + "&code=" + encodeURIComponent(code)
       + "&redirect_uri=" + encodeURIComponent(redirectUri)
@@ -665,7 +670,10 @@ app.get("/callback/google_health", async function(req, res) {
     console.error("[google_health] callback error: " + err.message);
     res.redirect("/?error=google_health_connect_failed");
   }
-});
+}
+
+app.get("/callback/google_health", handleGoogleHealthCallback);
+app.get("/api/wearables/callback/google_health", handleGoogleHealthCallback);
 
 // ── PROFILES ──────────────────────────────────────────────────────────────
 app.get("/api/profiles", async function(req, res) {
