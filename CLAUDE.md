@@ -42,6 +42,17 @@ ApexCoach is a personalized AI fitness coaching web app. Users connect their Fit
 
 - daily_sleep: id (bigint identity pk), profile_id (fk → profiles, on delete cascade), date (date), hours (numeric(4,2)), score (int — the COMPUTED personal sleep score, NOT Fitbit's), deep_minutes / rem_minutes / light_minutes / wake_minutes (int), hrv (numeric(6,2)), rhr (int), source (text default 'fitbit'), created_at (timestamptz default now()). UNIQUE(profile_id, date). Upserted nightly from the Fitbit sync (`GET /api/profiles/:id/daily`) and on the `life-os-summary` fallback path. Powers the Life OS fast path: `life-os-summary` reads this first and returns sleep/HRV/RHR instantly with no live Fitbit call once the day's row exists. See migration `2026-05-24_daily_sleep.sql`.
 
+## Row Level Security (RLS)
+
+Row Level Security is enabled on **all 11 Supabase tables**: `profiles`, `workouts`, `exercises`, `daily_checkins`, `micro_goals`, `daily_steps`, `body_metrics`, `workout_templates`, `wearable_connections`, `rejected_wearable_matches`, `tokens`. Each table has a `service_role_bypass` policy, so the backend — which authenticates with the Supabase **service key** (`SUPABASE_KEY`) — keeps full access while public **anon**-key access is now closed. Because `server.js` talks to PostgREST with the service role, RLS is transparent to the app and no query changes were needed; this closes the prior gap where the anon key could read/write tables directly.
+
+Enabled once in the Supabase SQL editor (representative, repeated per table):
+```sql
+ALTER TABLE <table> ENABLE ROW LEVEL SECURITY;
+CREATE POLICY service_role_bypass ON <table>
+  FOR ALL TO service_role USING (true) WITH CHECK (true);
+```
+
 ## Onboarding Flow (Full-Page Paginated)
 
 New users go through a 7-question full-screen paginated onboarding flow:
@@ -73,6 +84,15 @@ New users go through a 7-question full-screen paginated onboarding flow:
 - Profile tab: Dynamic from profile_data JSON - goals, injuries, belt tracker (if martial arts), schedule, philosophy
 
 - + button: opens Log Workout modal directly (not a tab) — no type dropdown, just a notes textarea with voice input and quick-log shortcuts (MMA, Walk, Rest Day). Workout type/title is AI-generated from notes on save.
+
+## Branding, Logo & PWA
+
+- **Logo asset** — `public/logo.png` is the ApexCoach mark, wired throughout `public/index.html`:
+  - **Favicon** (`<link rel="icon" type="image/png" href="/logo.png">`) + **apple-touch-icon** (`<link rel="apple-touch-icon" href="/logo.png">`).
+  - **Splash screen** — `#apex-splash`, a pure-CSS intro overlay (`<div id="apex-splash"><img src="/logo.png">`) that fades the logo in, holds, then fades out on load (`@keyframes apexSplashFade`, ~2s, ending `visibility:hidden`). No JS.
+  - **Profile-selector header** (~80px) and **desktop nav header** (~32px tall) both render the logo.
+- **PWA manifest** — `public/manifest.json` (`<link rel="manifest" href="/manifest.json">`) makes the app installable: `name:"ApexCoach"`, `short_name:"Apex"`, `/logo.png` icons at 192/512, `theme_color`/`background_color` `#08090A`, `display:"standalone"`.
+- **Known gap** — `public/logo.png` currently has a solid (black) background; a transparent-background version is a TODO so the figure floats on the app canvas (see `ROADMAP.md` §7 Next up / §9 tech debt).
 
 ## Readiness Formula V3
 
