@@ -385,15 +385,15 @@ async function fetchDailyData(token, ymd) {
   var M = parseInt(parts[1], 10);
   var D = parseInt(parts[2], 10);
 
-  // 1. HRV (Daily type — filter on the .date field DIRECTLY (= equality),
-  //    NOT a >=/<= timestamp range. Daily types are keyed by calendar date.)
+  // 1. HRV (Daily type — Daily types don't support the "=" filter operator, so
+  //    list with page_size=1 and rely on the API returning the most recent
+  //    daily record; its date is verified against `ymd` below before use.)
   var hrvP = ghGet(token, "/users/me/dataTypes/daily-heart-rate-variability/dataPoints", {
-    filter: 'daily_heart_rate_variability.date = "' + ymd + '"',
+    page_size: 1,
   });
-  // 2. RHR (Daily type — filter on the .date field DIRECTLY (= equality),
-  //    NOT a >=/<= timestamp range.)
+  // 2. RHR (Daily type — same page_size=1 / most-recent approach as HRV.)
   var rhrP = ghGet(token, "/users/me/dataTypes/daily-resting-heart-rate/dataPoints", {
-    filter: 'daily_resting_heart_rate.date = "' + ymd + '"',
+    page_size: 1,
   });
   // 3. Sleep (Session type — reconcile for wearable data)
   var sleepP = ghGet(token, "/users/me/dataTypes/sleep/dataPoints:reconcile", {
@@ -435,43 +435,70 @@ async function fetchDailyData(token, ymd) {
   _ghLog("steps", stepsRes);
   _ghLog("azm", azmRes);
 
-  // HRV
+  // Daily records carry their calendar date either as a "YYYY-MM-DD" string or
+  // a { year, month, day } object — at the dataPoint level or nested under the
+  // daily payload. Normalize to "YYYY-MM-DD" so we can compare against `ymd`.
+  function _dailyDate(dp, payload) {
+    var d = (dp && dp.date) || (payload && payload.date) || null;
+    if (!d) return null;
+    if (typeof d === "string") return d.slice(0, 10);
+    if (typeof d === "object" && d.year) {
+      return d.year + "-" + String(d.month || 1).padStart(2, "0") + "-" + String(d.day || 1).padStart(2, "0");
+    }
+    return null;
+  }
+
+  // HRV — use the most recent daily record only if it's for `ymd`. If the
+  // record's date can't be determined, use it anyway (page_size=1 → most recent).
   var hrv = null;
   if (hrvRes.status === "fulfilled") {
     var hpts = (hrvRes.value && hrvRes.value.dataPoints) || [];
     if (hpts.length && hpts[0].dailyHeartRateVariability) {
-      var hv = hpts[0].dailyHeartRateVariability.averageHeartRateVariabilityMilliseconds;
-      var hvn = typeof hv === "number" ? hv : parseFloat(hv);
-      hrv = isFinite(hvn) ? hvn : null;
+      var hrvPayload = hpts[0].dailyHeartRateVariability;
+      var hrvDate = _dailyDate(hpts[0], hrvPayload);
+      if (hrvDate && hrvDate !== ymd) {
+        console.log("[google_health] hrv skipped — record date " + hrvDate + " != " + ymd);
+      } else {
+        var hv = hrvPayload.averageHeartRateVariabilityMilliseconds;
+        var hvn = typeof hv === "number" ? hv : parseFloat(hv);
+        hrv = isFinite(hvn) ? hvn : null;
+      }
     }
   }
-  // RHR
+  // RHR — same most-recent-with-date-check approach.
   var rhr = null;
   if (rhrRes.status === "fulfilled") {
     var rpts = (rhrRes.value && rhrRes.value.dataPoints) || [];
     if (rpts.length && rpts[0].dailyRestingHeartRate) {
-      var rv = parseInt(rpts[0].dailyRestingHeartRate.beatsPerMinute, 10);
-      rhr = isFinite(rv) ? rv : null;
+      var rhrPayload = rpts[0].dailyRestingHeartRate;
+      var rhrDate = _dailyDate(rpts[0], rhrPayload);
+      if (rhrDate && rhrDate !== ymd) {
+        console.log("[google_health] rhr skipped — record date " + rhrDate + " != " + ymd);
+      } else {
+        var rv = parseInt(rhrPayload.beatsPerMinute, 10);
+        rhr = isFinite(rv) ? rv : null;
+      }
     }
   }
   // Sleep
   var sleepData = sleepRes.status === "fulfilled" ? parseSleep(sleepRes.value) : null;
-  // Steps
+  // Steps — dailyRollUp responses live in `rollupDataPoints`, NOT `dataPoints`.
   var steps = null;
   if (stepsRes.status === "fulfilled") {
-    var spts = (stepsRes.value && stepsRes.value.dataPoints) || [];
-    if (spts.length && spts[0].steps) {
-      var sv = parseInt(spts[0].steps.count, 10);
+    var srp = (stepsRes.value && stepsRes.value.rollupDataPoints) || [];
+    if (srp.length && srp[0].steps && srp[0].steps.count != null) {
+      var sv = parseInt(srp[0].steps.count, 10);
       steps = isFinite(sv) ? sv : null;
     }
   }
-  // Active Zone Minutes — one dataPoint per zone; sum them.
+  // Active Zone Minutes — dailyRollUp → `rollupDataPoints`; one item per zone,
+  // sum them all.
   var activeZoneMinutes = null;
   if (azmRes.status === "fulfilled") {
-    var apts = (azmRes.value && azmRes.value.dataPoints) || [];
+    var arp = (azmRes.value && azmRes.value.rollupDataPoints) || [];
     var sum = 0, any = false;
-    for (var i = 0; i < apts.length; i++) {
-      var azmObj = apts[i].activeZoneMinutes;
+    for (var i = 0; i < arp.length; i++) {
+      var azmObj = arp[i].activeZoneMinutes;
       if (azmObj && azmObj.activeZoneMinutes != null) {
         var av = parseInt(azmObj.activeZoneMinutes, 10);
         if (isFinite(av)) { sum += av; any = true; }
