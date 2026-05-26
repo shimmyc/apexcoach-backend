@@ -607,6 +607,66 @@ app.get("/callback", async function(req, res) {
   }
 });
 
+// Google Health API v4 OAuth callback (additive — does NOT touch /callback).
+// Exchanges the auth code for tokens, stores them in wearable_connections,
+// records the Google Health user identity in provider_metadata, then redirects.
+// Migration: migrations/2026-05-26_google_health.sql adds provider_metadata.
+app.get("/callback/google_health", async function(req, res) {
+  var code = req.query.code;
+  var profileId = decodeURIComponent(req.query.state || "").trim();
+  console.log("[google_health] /callback/google_health received. code=" + (code ? "yes" : "no") + ", profileId='" + profileId + "'");
+  if (!code || !profileId) return res.redirect("/?error=google_health_connect_failed");
+  try {
+    var redirectUri = (process.env.RENDER_URL || "https://apexcoach-backend.onrender.com") + "/callback/google_health";
+    var tokenBody = "grant_type=authorization_code"
+      + "&code=" + encodeURIComponent(code)
+      + "&redirect_uri=" + encodeURIComponent(redirectUri)
+      + "&client_id=" + encodeURIComponent(process.env.GOOGLE_HEALTH_CLIENT_ID || "")
+      + "&client_secret=" + encodeURIComponent(process.env.GOOGLE_HEALTH_CLIENT_SECRET || "");
+    var resp = await fetch("https://oauth2.googleapis.com/token", {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: tokenBody,
+    });
+    if (!resp.ok) {
+      var errText = await resp.text();
+      console.error("[google_health] token exchange failed (" + resp.status + "): " + errText.substring(0, 200));
+      return res.redirect("/?error=google_health_connect_failed");
+    }
+    var data = await resp.json();
+    var tokenData = {
+      access_token: data.access_token,
+      refresh_token: data.refresh_token,
+      expires_at: Date.now() + (data.expires_in * 1000) - 60000,
+    };
+    // Look up the stable Google Health identity (best-effort).
+    var identity = null;
+    try {
+      identity = await wearables.getProviderAdapter("google_health").getIdentity(tokenData.access_token);
+    } catch (e) {
+      console.warn("[google_health] getIdentity failed: " + e.message);
+    }
+    await saveWearableTokens(profileId, "google_health", tokenData);
+    // Persist the identity into wearable_connections.provider_metadata (jsonb).
+    if (identity) {
+      try {
+        await fetch(SUPABASE_URL + "/rest/v1/wearable_connections?profile_id=eq." + profileId + "&provider=eq.google_health", {
+          method: "PATCH",
+          headers: sbHeaders("return=minimal"),
+          body: JSON.stringify({ provider_metadata: identity }),
+        });
+      } catch (e) {
+        console.warn("[google_health] provider_metadata write failed: " + e.message);
+      }
+    }
+    console.log("[google_health] Connected profile " + profileId + ", healthUserId: " + (identity ? identity.healthUserId : "unknown"));
+    res.redirect("/");
+  } catch (err) {
+    console.error("[google_health] callback error: " + err.message);
+    res.redirect("/?error=google_health_connect_failed");
+  }
+});
+
 // ── PROFILES ──────────────────────────────────────────────────────────────
 app.get("/api/profiles", async function(req, res) {
   try {
@@ -846,6 +906,107 @@ app.get("/api/daily", async function(req, res) {
 // Per-profile endpoint (uses profile's fitbit tokens from profiles table)
 app.get("/api/profiles/:id/daily", async function(req, res) {
   try {
+    // ── Google Health API v4 (cloud REST — Fitbit Web API successor) ──
+    // Preferred over Fitbit when connected (Fitbit Web API shuts down Sep 2026).
+    // Fully additive + non-fatal: any failure falls through to the Fitbit path
+    // below with existing behavior 100% unchanged. NOTE: ghDate (not "dateStr")
+    // — dateStr is the module-level helper fn; shadowing it here would TDZ-throw.
+    let ghToken = null;
+    try {
+      ghToken = await getValidWearableToken(req.params.id, "google_health");
+    } catch (e) { /* not connected or expired — fall through to Fitbit */ }
+
+    if (ghToken) {
+      try {
+        const ghAdapter = wearables.getProviderAdapter("google_health");
+        const ghDate = req.query.date || dateStr(0); // local today
+        const ghData = await ghAdapter.fetchDailyData(ghToken, ghDate);
+
+        // Fire-and-forget persistence (mirrors the Fitbit path below).
+        if (ghData.steps != null) {
+          upsertDailySteps(req.params.id, {
+            date: ghDate, steps: ghData.steps,
+            calories: null, distance_miles: null, floors: null,
+          }).catch(function(e){ console.error("[google_health] steps upsert:", e.message); });
+          autoTrackStepMicroGoals(req.params.id, ghData.steps)
+            .catch(function(e){ console.error("[google_health] step micro-goals:", e.message); });
+        }
+        if (ghData.weight) {
+          upsertBodyMetrics(req.params.id, {
+            date: ghDate, weight_lbs: ghData.weight.weight_lbs,
+            body_fat_pct: ghData.weight.body_fat_pct, source: "google_health",
+          }).catch(function(e){ console.error("[google_health] weight upsert:", e.message); });
+        }
+        // estimateSleepScore returns null when stage minutes are absent (CLASSIC sleep).
+        const ghSleepScore = ghData.sleep ? estimateSleepScore(
+          ghData.sleep.deep_minutes, ghData.sleep.rem_minutes,
+          ghData.sleep.light_minutes, ghData.sleep.wake_minutes
+        ) : null;
+        if (ghData.sleep) {
+          upsertDailySleep(req.params.id, {
+            date: ghDate,
+            hours: ghData.sleep.hours,
+            score: ghSleepScore,
+            deep_minutes: ghData.sleep.deep_minutes,
+            rem_minutes: ghData.sleep.rem_minutes,
+            light_minutes: ghData.sleep.light_minutes,
+            wake_minutes: ghData.sleep.wake_minutes,
+            hrv: ghData.hrv,
+            rhr: ghData.rhr,
+          }).catch(function(e){ console.error("[google_health] sleep upsert:", e.message); });
+        }
+
+        // Build the response in the shape the client expects (mirrors buildDailyData).
+        const responseData = {
+          sleep: ghData.sleep ? {
+            hours: ghData.sleep.hours,
+            stages: {
+              deep: ghData.sleep.deep_minutes,
+              rem: ghData.sleep.rem_minutes,
+              light: ghData.sleep.light_minutes,
+              wake: ghData.sleep.wake_minutes,
+            },
+            score: ghSleepScore,
+            fitbit_score: null,
+          } : null,
+          rhr: ghData.rhr,
+          hrv: ghData.hrv,
+          prevZones: null,
+          steps: ghData.steps,
+          activeZoneMinutes: ghData.activeZoneMinutes,
+          stepsSummary: ghData.steps != null ? {
+            date: ghDate, steps: ghData.steps,
+            calories: null, distance_miles: null, floors: null,
+          } : null,
+          todaysActivities: [],
+          bodySummary: ghData.weight ? {
+            date: ghDate, weight_lbs: ghData.weight.weight_lbs,
+            body_fat_pct: ghData.weight.body_fat_pct,
+          } : null,
+          sleepSummary: ghData.sleep ? {
+            date: ghDate,
+            hours: ghData.sleep.hours,
+            score: ghSleepScore,
+            deep_minutes: ghData.sleep.deep_minutes,
+            rem_minutes: ghData.sleep.rem_minutes,
+            light_minutes: ghData.sleep.light_minutes,
+            wake_minutes: ghData.sleep.wake_minutes,
+            hrv: ghData.hrv,
+            rhr: ghData.rhr,
+          } : null,
+          rolling7: { rhr: null, hrv: null },
+          rhrHistory7Day: [],
+          source: "google_health",
+        };
+
+        console.log("[google_health] daily served profile=" + req.params.id + " date=" + ghDate + " hrv=" + ghData.hrv + " rhr=" + ghData.rhr + " steps=" + ghData.steps);
+        return res.json({ success: true, date: ghDate, data: responseData });
+      } catch (e) {
+        console.error("[google_health] fetchDailyData failed:", e.message);
+        // Fall through to the Fitbit path below.
+      }
+    }
+
     console.log("[Fitbit] /api/profiles/" + req.params.id + "/daily called - loading tokens from profiles table");
     const token = await getValidProfileToken(req.params.id);
     const dateParam = req.query.date || null;

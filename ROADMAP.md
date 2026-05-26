@@ -200,7 +200,8 @@ Commit hashes attached where known (from `git log`). Areas without a hash predat
 
 ### Wearable Integration
 - **Provider-agnostic architecture** — `wearables/` dir (`index.js` registry, `base.js` contract) (`0192a57`)
-- **Fitbit adapter** (full); Google Health / Apple Health / Samsung / Garmin (stubs)
+- **Fitbit adapter** (full) + **Google Health API v4 adapter** (full — cloud REST, Fitbit successor; see next bullet); Apple Health / Samsung / Garmin (stubs)
+- **Google Health API v4 integration** (2026-05-26) — cloud REST adapter at `health.googleapis.com/v4` (the Fitbit Web API successor, **not** the on-device Health Connect SDK). Google OAuth 2.0 (`GET /callback/google_health`, 1-hour tokens auto-refreshed by `getValidWearableToken`). `fetchActivities` / `fetchActivityDetail` (peak HR derived from the HR sample series) + `fetchDailyData` returning HRV / RHR / sleep stages / steps / active-zone-minutes / weight. `GET /api/profiles/:id/daily` **prefers Google Health when connected** and falls through to Fitbit otherwise (additive, non-fatal). Amber **reconsent banner** (Profile tab + Settings) nudges Fitbit users to migrate before the Sept-2026 shutdown. New env: `GOOGLE_HEALTH_CLIENT_ID` / `GOOGLE_HEALTH_CLIENT_SECRET`; migration `2026-05-26_google_health.sql` adds `wearable_connections.provider_metadata`.
 - **NormalizedActivity schema** — cross-provider shape
 - **Sync UI** — date-range picker, activity-type filter, batch review panel (`0de7f29`)
 - **Match / Skip / Import / Ignore** actions
@@ -328,7 +329,7 @@ All verified present in `server.js`. `:id`/`:userId` = profile id.
 | Provider | Status | Notes |
 |----------|--------|-------|
 | **Fitbit** | ✅ Fully implemented | OAuth2 + auto-refresh, list/detail/TCX/intraday HR, full normalization |
-| **Google Health Connect** | 🔲 Stub (TODO) | Highest-priority next integration; Android API |
+| **Google Health (API v4)** | ✅ Implemented | Google Health API v4 — **cloud REST**, the Fitbit Web API successor. OAuth2 + auto-refresh; HRV / RHR / sleep stages / steps / AZM / weight + exercise activities. Preferred over Fitbit in `/daily`. (`2026-05-26`) |
 | **Apple Health** | 🔲 Stub (TODO) | Needs iOS companion app pattern + Apple Developer account |
 | **Samsung Health** | 🔲 Stub (TODO) | Galaxy devices via Samsung Health Data SDK |
 | **Garmin** | 🔲 Stub (TODO) | Public API, **OAuth 1.0a** (differs from Fitbit's 2.0) |
@@ -418,7 +419,7 @@ Macro roadmap shape (stored on `profiles.roadmap_data`):
 
 ### Next up
 
-- **Google Health Connect integration** — **HIGH PRIORITY.** Fitbit is being deprecated / migrated to Google Health Connect. A stub already exists at `wearables/google_health.js`. Needs: Google OAuth, Health Connect API implementation, and field mapping to the `NormalizedActivity` shape. Health Connect aggregates Samsung, Pixel, OnePlus, and most Android-14+ devices — one integration covers most Android wearables.
+- ~~**Google Health Connect integration**~~ — ✅ **DONE (2026-05-26).** Built as the **Google Health API v4** cloud REST adapter (the Fitbit Web API successor, not the on-device SDK): full OAuth2 adapter, `GET /callback/google_health`, `/daily` Google-Health-first sync, and the Fitbit-sunset reconsent banner. See §3 → Wearable Integration and §5.
 - **Apple HealthKit / iOS integration** — opens the app to all iPhone users. Requires an iOS companion app + an Apple Developer Account ($99/yr). Long-term but high impact.
 - **Today tab declutter** — above the fold should be only: readiness score + sleep score + "how are you feeling" tap + workout rec. Body metrics moves to Profile; Recent Workouts removed from Today.
 - **Profile tab cleanup** — too cluttered; needs breathing room and reorganization.
@@ -428,7 +429,7 @@ Macro roadmap shape (stored on `profiles.roadmap_data`):
 ### Medium term
 - **Garmin** adapter (OAuth 1.0a).
 - **Peak HR:** revisit once Health Connect is available (fewer API restrictions than Fitbit Server-type).
-- Google Health Connect + Apple Health adapters were promoted to **Next up** (above).
+- Apple Health adapter is in **Next up** (above); Google Health is ✅ done (API v4 — see §3 / §5).
 
 ### Long term
 - **Full Analytics tab** — dedicated page, not just a profile card.
@@ -474,7 +475,8 @@ Macro roadmap shape (stored on `profiles.roadmap_data`):
 - [ ] **Rename `?max_intraday=` → `?max_calls=`** in `/api/debug/backfill-wearable-hr` (the budget now covers TCX **+** intraday calls, not just intraday). Keep `max_intraday` as an alias for back-compat.
 - [ ] **Retire the legacy `tokens` table** path once confirmed no profile depends on it.
 - [ ] **Regenerate the logo with a transparent background.** `public/logo.png` currently has a solid (black) background; a transparent PNG would let the figure float on the app background instead of a black box. (Also tracked in §7 → Next up.)
-- [ ] **Fitbit API deprecation — migrate to Google Health Connect before shutdown.** Fitbit is being deprecated / migrated to Google Health Connect; port the wearable integration to Health Connect (stub at `wearables/google_health.js`) before the cutoff so users don't lose sync. (Primary integration work tracked in §7 → Next up.)
+- [ ] **Drive Fitbit → Google Health migration before the Sept-2026 shutdown.** The Google Health API v4 adapter is ✅ built (§3); the remaining work is getting every active Fitbit profile to reconnect via the reconsent banner so no one loses sync at cutover.
+- [ ] **Drop the Fitbit adapter + legacy Fitbit routes after September 2026** once all active profiles have migrated to Google Health (remove `/auth`, `/callback`, `buildDailyData`/`getValidProfileToken` Fitbit paths, and the `wearables/fitbit.js` adapter).
 
 ---
 
@@ -489,6 +491,8 @@ All read via `process.env.*` in `server.js`. No values here — set them in the 
 | `ANTHROPIC_KEY` | ✅ | Anthropic API key for the `/api/ai` proxy |
 | `FITBIT_CLIENT_ID` | ✅ | Fitbit OAuth app client id |
 | `FITBIT_CLIENT_SECRET` | ✅ | Fitbit OAuth app client secret |
+| `GOOGLE_HEALTH_CLIENT_ID` | ⚠ for Google Health | Google Health API v4 OAuth client id |
+| `GOOGLE_HEALTH_CLIENT_SECRET` | ⚠ for Google Health | Google Health API v4 OAuth client secret |
 | `ADMIN_SECRET` | ⚠ Recommended | Gates `/api/debug/*` admin endpoints when set |
 | `PORT` | optional | Server port (Render injects this) |
 | `FITBIT_ACCESS_TOKEN` | legacy | Single-user fallback token (pre-multi-profile) |

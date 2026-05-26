@@ -2005,6 +2005,102 @@ function bootApp() {
       .catch(function() {});
     loadRoadmap();
   }
+
+  // Fitbit-sunset reconsent prompt — force a fresh providers fetch on profile load.
+  if (typeof showGoogleHealthBanner === 'function') showGoogleHealthBanner(true);
+}
+
+// ── GOOGLE HEALTH RECONSENT BANNER ───────────────────────────────────────
+// The Fitbit Web API shuts down September 2026. When a profile is still on
+// Fitbit and hasn't connected Google Health (the cloud REST successor),
+// surface an amber "action required" banner on the Profile tab (above the
+// Sync Wearables card) and in Settings -> Account. The X dismisses only the
+// floating profile-tab banner (localStorage flag); the requirement persists.
+var _ghProviders = null;
+
+function showGoogleHealthBanner(forceRefresh) {
+  if (!currentProfileId) return;
+  if (_ghProviders && !forceRefresh) { _applyGHBanner(); return; }
+  fetch('/api/wearables/providers/' + currentProfileId)
+    .then(function(r){ return r.json(); })
+    .then(function(data){ _ghProviders = (data && data.providers) || []; _applyGHBanner(); })
+    .catch(function(){});
+}
+
+function _applyGHBanner() {
+  var providers = _ghProviders || [];
+  var gh = null, fb = null;
+  for (var i = 0; i < providers.length; i++) {
+    if (providers[i].provider === 'google_health') gh = providers[i];
+    if (providers[i].provider === 'fitbit') fb = providers[i];
+  }
+  var ghConnected = !!(gh && gh.connected);
+  var pd = currentProfileData || {};
+  var fitbitConnected = pd.fitbit === true || !!(fb && fb.connected);
+  _renderGHBanner(ghConnected, fitbitConnected);
+}
+
+function _ghBannerInner(forSettings) {
+  return ''
+    + '<div style="display:flex;align-items:flex-start;gap:12px">'
+    +   '<div style="flex:1;min-width:0">'
+    +     '<div style="font-weight:700;font-size:14px;color:#f5c842;margin-bottom:4px">&#9888; Action required: Fitbit is shutting down in September 2026</div>'
+    +     '<div style="font-size:13px;color:var(--text-muted);line-height:1.5;margin-bottom:10px">Connect via Google Health to keep your data syncing.</div>'
+    +     '<button onclick="connectGoogleHealth()" style="background:#f5c842;border:none;color:#1a1a1a;padding:9px 16px;border-radius:10px;cursor:pointer;font-size:13px;font-weight:700">Connect with Google Health &rarr;</button>'
+    +   '</div>'
+    +   (forSettings ? '' : '<button onclick="dismissGoogleHealthBanner()" title="Dismiss" style="background:transparent;border:none;color:var(--text-muted);font-size:20px;line-height:1;cursor:pointer;padding:0 4px">&times;</button>')
+    + '</div>';
+}
+
+function _renderGHBanner(ghConnected, fitbitConnected) {
+  // Always clear any previously-injected profile-tab banner first (idempotent).
+  var existing = document.getElementById('gh-reconsent-banner');
+  if (existing && existing.parentNode) existing.parentNode.removeChild(existing);
+  var settingsEl = document.getElementById('gh-banner-settings');
+
+  if (ghConnected) {
+    if (settingsEl) settingsEl.innerHTML = '<div style="background:rgba(34,201,122,0.10);border:1px solid rgba(34,201,122,0.5);border-radius:10px;padding:10px 14px;margin-bottom:6px;font-size:13px;color:var(--color-positive,#22c97a);font-weight:600">&#10003; Connected via Google Health</div>';
+    return;
+  }
+  if (!fitbitConnected) {
+    if (settingsEl) settingsEl.innerHTML = '';
+    return;
+  }
+  // Fitbit connected, Google Health not → action required.
+  if (settingsEl) {
+    settingsEl.innerHTML = '<div style="background:rgba(245,200,66,0.10);border:1px solid rgba(245,200,66,0.5);border-radius:12px;padding:14px 16px;margin-bottom:12px">' + _ghBannerInner(true) + '</div>';
+  }
+  if (localStorage.getItem('ac_gh_banner_dismissed') === '1') return;
+  var card = document.getElementById('sync-wearables-card');
+  if (card && card.parentNode) {
+    var banner = document.createElement('div');
+    banner.id = 'gh-reconsent-banner';
+    banner.className = 'card';
+    banner.style.cssText = 'background:rgba(245,200,66,0.10);border:1px solid rgba(245,200,66,0.5)';
+    banner.innerHTML = _ghBannerInner(false);
+    card.parentNode.insertBefore(banner, card);
+  }
+}
+
+function connectGoogleHealth() {
+  if (!currentProfileId) return;
+  fetch('/api/wearables/connect/google_health', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ profile_id: currentProfileId })
+  })
+  .then(function(r){ return r.json(); })
+  .then(function(data){
+    if (data && data.auth_url) { window.location.href = data.auth_url; }
+    else { alert('Could not start the Google Health connection. Please try again.'); }
+  })
+  .catch(function(){ alert('Could not start the Google Health connection. Please try again.'); });
+}
+
+function dismissGoogleHealthBanner() {
+  localStorage.setItem('ac_gh_banner_dismissed', '1');
+  var b = document.getElementById('gh-reconsent-banner');
+  if (b && b.parentNode) b.parentNode.removeChild(b);
 }
 
 // ── DAY NAVIGATION ───────────────────────────────────────────────────────
@@ -12108,6 +12204,7 @@ function renderSettingsContent() {
   // ── ACCOUNT ──
   h += '<div class="settings-section' + (currentSettingsTab === 'account' ? ' active' : '') + '">';
   h += '<h3>Account & Security</h3>';
+  h += '<div id="gh-banner-settings"></div>';
   h += '<div class="s-row"><label class="s-label">DISPLAY NAME</label>';
   h += '<input type="text" id="s-display-name" value="' + ((pd.name || currentProfileName || '').replace(/"/g,'&quot;')) + '" onchange="saveDisplayName(this.value)"></div>';
   h += '<div class="s-row"><label class="s-label">PROFILE PHOTO</label>';
@@ -12311,6 +12408,7 @@ function renderSettingsContent() {
   h += '</div>';
 
   document.getElementById('settings-content').innerHTML = h;
+  if (typeof showGoogleHealthBanner === 'function') showGoogleHealthBanner();
 }
 
 function saveSetting(key, val) {

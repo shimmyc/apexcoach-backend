@@ -375,7 +375,7 @@ Shimmy Castle - blue belt MMA, wedding musician, new dad. Injuries: pubic osteit
 
 - Manual check-in: supported (sleep/energy/pain emoji selectors → simplified readiness score capped at 85)
 
-- **Google Health Connect (HIGH PRIORITY, next integration)**: Android API supporting Samsung, Pixel, OnePlus, most Android 14+ devices. Direct API — no Open Wearables needed. Covers steps, HRV, sleep, heart rate, workouts.
+- **Google Health (API v4) — ✅ IMPLEMENTED (2026-05-26)**: the cloud REST API at `health.googleapis.com/v4` that is the direct **Fitbit Web API successor** — **NOT** the on-device Android Health Connect SDK (that has no cloud API; the old stub's companion-app "Path A" design is **obsolete and was discarded**). Standard Google OAuth 2.0 server-to-server (`GET /callback/google_health`; 1-hour access tokens auto-refreshed by `getValidWearableToken`). `wearables/google_health.js` implements `fetchActivities`, `fetchActivityDetail` (peak HR from the per-sample heart-rate series over the exercise interval), `fetchDailyData`, `refreshToken`, `buildAuthUrl`, `getIdentity`, `normalize`. `fetchDailyData` returns HRV (`averageHeartRateVariabilityMilliseconds`), RHR, sleep stages (DEEP/REM/LIGHT/AWAKE), steps, active zone minutes, and weight (gramme→lb). `GET /api/profiles/:id/daily` **prefers Google Health when connected** and falls through to the Fitbit path otherwise. An amber **reconsent banner** (Profile tab + Settings → Account, `showGoogleHealthBanner()`) prompts Fitbit users to migrate before the Sept-2026 shutdown. Env: `GOOGLE_HEALTH_CLIENT_ID` / `GOOGLE_HEALTH_CLIENT_SECRET`. Migration `2026-05-26_google_health.sql` adds `wearable_connections.provider_metadata` (jsonb; stores `{healthUserId, legacyUserId}` from `getIdentity`).
 
 - **Open Wearables (Phase 2)**: Unified API for all wearables. Deploy on Railway ($5/mo). Android SDK ready now, iOS needs companion app. Long-term replacement for individual integrations. Supports: Samsung, Garmin, Whoop, Oura, Polar, Suunto, Apple Health (via iOS app).
 
@@ -466,7 +466,9 @@ The 5-agent UI overhaul is **complete**: **Agent 1 (token foundation)**, **Agent
 
 ## Environment Variables (on Render)
 
-FITBIT_CLIENT_ID, FITBIT_CLIENT_SECRET, SUPABASE_URL, SUPABASE_KEY, ANTHROPIC_KEY, ADMIN_SECRET, LIFE_OS_API_KEY
+FITBIT_CLIENT_ID, FITBIT_CLIENT_SECRET, GOOGLE_HEALTH_CLIENT_ID, GOOGLE_HEALTH_CLIENT_SECRET, SUPABASE_URL, SUPABASE_KEY, ANTHROPIC_KEY, ADMIN_SECRET, LIFE_OS_API_KEY
+
+`GOOGLE_HEALTH_CLIENT_ID` / `GOOGLE_HEALTH_CLIENT_SECRET` — OAuth 2.0 credentials for the Google Health API v4 adapter (`wearables/google_health.js`). Optional `RENDER_URL` overrides the OAuth redirect base for `/callback/google_health` (falls back to `https://apexcoach-backend.onrender.com`).
 
 `LIFE_OS_API_KEY` — shared secret for the read-only Life OS integration endpoint (`GET /api/profiles/:id/life-os-summary`). The caller passes it as the `X-Life-OS-Key` header. The endpoint fails closed: if neither `LIFE_OS_API_KEY` nor `ADMIN_SECRET` is set it returns 503; `ADMIN_SECRET` (via `X-Admin-Secret` or `?secret=`) is also accepted for server-to-server calls.
 
@@ -844,7 +846,8 @@ All wearable workout-matching flows route through a provider abstraction layer i
 **Files**:
 - `wearables/base.js` — adapter contract (JSDoc) + `KEYWORD_MAP` + `matchWearableToManual()` scoring (+40 within 15min, +20 within 30min, +30 keyword category match, threshold ≥40).
 - `wearables/fitbit.js` — full implementation. OAuth 2.0, `/1/user/-/activities/list.json` pagination, per-activity detail via `/1/user/-/activities/{logId}.json`, refresh against `/oauth2/token`.
-- `wearables/{google_health,apple_health,samsung_health,garmin}.js` — stubs with documented endpoints + integration strategy (HealthKit/Health Connect companion-app pattern, Garmin OAuth 1.0a notes).
+- `wearables/google_health.js` — **full implementation**: Google Health API v4 (cloud REST at `health.googleapis.com/v4`, the Fitbit Web API successor). OAuth 2.0 + auto-refresh, `fetchActivities` / `fetchActivityDetail` / `fetchDailyData` (HRV/RHR/sleep stages/steps/AZM/weight) / `getIdentity`. See "Wearable Support" → Google Health.
+- `wearables/{apple_health,samsung_health,garmin}.js` — stubs with documented endpoints + integration strategy (HealthKit companion-app pattern, Garmin OAuth 1.0a notes).
 - `wearables/index.js` — `getProviderAdapter(provider)` factory, `listProviders()`, `namespacedId(provider, id)` helper.
 
 **NormalizedActivity shape** (every provider maps to this): `{ provider, provider_activity_id, date, activity_type, duration_minutes, steps, calories, avg_hr, peak_hr, active_zone_minutes, zones, raw }`. The `raw` field preserves the original provider payload for future use.
