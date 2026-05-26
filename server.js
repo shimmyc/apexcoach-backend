@@ -979,7 +979,13 @@ app.get("/api/profiles/:id/daily", async function(req, res) {
           } : null,
           rhr: ghData.rhr,
           hrv: ghData.hrv,
-          prevZones: null,
+          // No per-zone breakdown at the daily level yet — only the AZM total.
+          // Put it all in `cardio` so the client's zone-minutes UI displays it.
+          prevZones: ghData.activeZoneMinutes ? {
+            peak: 0,
+            cardio: ghData.activeZoneMinutes,
+            fatBurn: 0,
+          } : null,
           steps: ghData.steps,
           activeZoneMinutes: ghData.activeZoneMinutes,
           stepsSummary: ghData.steps != null ? {

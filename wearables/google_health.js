@@ -476,17 +476,18 @@ async function fetchDailyData(token, ymd) {
   var activeZoneMinutes = null;
   if (azmRes.status === "fulfilled") {
     var azmRollup = (azmRes.value && azmRes.value.rollupDataPoints) || [];
-    var sum = 0;
+    var azmTotal = 0;
     for (var i = 0; i < azmRollup.length; i++) {
       var azmObj = azmRollup[i] && azmRollup[i].activeZoneMinutes;
       if (azmObj) {
         var cardio = parseInt(azmObj.sumInCardioHeartZone, 10) || 0;
         var peak = parseInt(azmObj.sumInPeakHeartZone, 10) || 0;
         var fatBurn = parseInt(azmObj.sumInFatBurnHeartZone, 10) || 0;
-        sum += cardio + peak + fatBurn;
+        azmTotal += cardio + peak + fatBurn;
       }
     }
-    activeZoneMinutes = sum || null;
+    console.log('[google_health] azm total:', azmTotal);
+    activeZoneMinutes = azmTotal > 0 ? azmTotal : null;
   }
   // Weight — most recent sample in the window.
   var weightData = null;
