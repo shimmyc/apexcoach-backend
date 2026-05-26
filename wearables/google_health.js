@@ -486,7 +486,6 @@ async function fetchDailyData(token, ymd) {
         azmTotal += cardio + peak + fatBurn;
       }
     }
-    console.log('[google_health] azm total:', azmTotal);
     activeZoneMinutes = azmTotal > 0 ? azmTotal : null;
   }
   // Weight — most recent sample in the window.
