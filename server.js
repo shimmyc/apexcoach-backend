@@ -979,15 +979,14 @@ app.get("/api/profiles/:id/daily", async function(req, res) {
           } : null,
           rhr: ghData.rhr,
           hrv: ghData.hrv,
-          // No per-zone breakdown at the daily level yet — only the AZM total.
-          // Put it all in `cardio` so the client's zone-minutes UI displays it.
+          // ghData.activeZoneMinutes is { peak, cardio, fatBurn, total } (or null).
           prevZones: ghData.activeZoneMinutes ? {
-            peak: 0,
-            cardio: ghData.activeZoneMinutes,
-            fatBurn: 0,
+            peak: ghData.activeZoneMinutes.peak,
+            cardio: ghData.activeZoneMinutes.cardio,
+            fatBurn: ghData.activeZoneMinutes.fatBurn,
           } : null,
           steps: ghData.steps,
-          activeZoneMinutes: ghData.activeZoneMinutes,
+          activeZoneMinutes: ghData.activeZoneMinutes ? ghData.activeZoneMinutes.total : null,
           stepsSummary: ghData.steps != null ? {
             date: ghDate, steps: ghData.steps,
             calories: null, distance_miles: null, floors: null,
@@ -1013,7 +1012,7 @@ app.get("/api/profiles/:id/daily", async function(req, res) {
           source: "google_health",
         };
 
-        console.log("[google_health] daily served profile=" + req.params.id + " date=" + ghDate + " hrv=" + ghData.hrv + " rhr=" + ghData.rhr + " steps=" + ghData.steps);
+        console.log("[google_health] daily served profile=" + req.params.id + " date=" + ghDate + " hrv=" + ghData.hrv + " rhr=" + ghData.rhr + " steps=" + ghData.steps + " azm=" + (ghData.activeZoneMinutes ? ghData.activeZoneMinutes.total : null));
         return res.json({ success: true, date: ghDate, data: responseData });
       } catch (e) {
         console.error("[google_health] fetchDailyData failed:", e.message);

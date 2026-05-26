@@ -471,22 +471,24 @@ async function fetchDailyData(token, ymd) {
     steps = isFinite(sv) ? sv : null;
   }
   // Active Zone Minutes — dailyRollUp → `rollupDataPoints`; each item exposes
-  // three per-zone sums (cardio / peak / fat-burn). Total = their sum across all
-  // items (confirmed from API logs).
+  // three per-zone sums (peak / cardio / fat-burn). Capture the per-zone
+  // breakdown AND the total (confirmed from API logs). Returns an object
+  // { peak, cardio, fatBurn, total } or null when there's no AZM.
   var activeZoneMinutes = null;
   if (azmRes.status === "fulfilled") {
     var azmRollup = (azmRes.value && azmRes.value.rollupDataPoints) || [];
-    var azmTotal = 0;
-    for (var i = 0; i < azmRollup.length; i++) {
-      var azmObj = azmRollup[i] && azmRollup[i].activeZoneMinutes;
-      if (azmObj) {
-        var cardio = parseInt(azmObj.sumInCardioHeartZone, 10) || 0;
-        var peak = parseInt(azmObj.sumInPeakHeartZone, 10) || 0;
-        var fatBurn = parseInt(azmObj.sumInFatBurnHeartZone, 10) || 0;
-        azmTotal += cardio + peak + fatBurn;
-      }
-    }
-    activeZoneMinutes = azmTotal > 0 ? azmTotal : null;
+    var azmResult = azmRollup.reduce(function(acc, dp) {
+      var azm = dp && dp.activeZoneMinutes;
+      if (!azm) return acc;
+      acc.peak += parseInt(azm.sumInPeakHeartZone) || 0;
+      acc.cardio += parseInt(azm.sumInCardioHeartZone) || 0;
+      acc.fatBurn += parseInt(azm.sumInFatBurnHeartZone) || 0;
+      acc.total += (parseInt(azm.sumInPeakHeartZone) || 0) +
+                   (parseInt(azm.sumInCardioHeartZone) || 0) +
+                   (parseInt(azm.sumInFatBurnHeartZone) || 0);
+      return acc;
+    }, { peak: 0, cardio: 0, fatBurn: 0, total: 0 });
+    activeZoneMinutes = (azmResult && azmResult.total > 0) ? azmResult : null;
   }
   // Weight — most recent sample in the window.
   var weightData = null;
