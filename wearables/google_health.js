@@ -482,25 +482,37 @@ async function fetchDailyData(token, ymd) {
   }
   // Sleep
   var sleepData = sleepRes.status === "fulfilled" ? parseSleep(sleepRes.value) : null;
-  // Steps — dailyRollUp responses live in `rollupDataPoints`, NOT `dataPoints`.
+  // Steps — dailyRollUp responses live in `rollupDataPoints`. The count may be
+  // nested as rollupDataPoints[0].steps.count OR directly as rollupDataPoints[0].count
+  // depending on the rollup shape — try both, and log the raw item.
   var steps = null;
   if (stepsRes.status === "fulfilled") {
-    var srp = (stepsRes.value && stepsRes.value.rollupDataPoints) || [];
-    if (srp.length && srp[0].steps && srp[0].steps.count != null) {
-      var sv = parseInt(srp[0].steps.count, 10);
+    var stepsRollup = stepsRes.value && stepsRes.value.rollupDataPoints;
+    console.log('[google_health] steps rollupDataPoints[0]:', JSON.stringify(stepsRollup && stepsRollup[0]).slice(0, 300));
+    var stepsItem = stepsRollup && stepsRollup[0];
+    var stepsVal = (stepsItem && stepsItem.steps && stepsItem.steps.count != null) ? stepsItem.steps.count
+                 : (stepsItem && stepsItem.count != null) ? stepsItem.count
+                 : null;
+    if (stepsVal != null) {
+      var sv = parseInt(stepsVal, 10);
       steps = isFinite(sv) ? sv : null;
     }
   }
-  // Active Zone Minutes — dailyRollUp → `rollupDataPoints`; one item per zone,
-  // sum them all.
+  // Active Zone Minutes — dailyRollUp → `rollupDataPoints`; one item per zone.
+  // Each item's value may be nested as activeZoneMinutes.activeZoneMinutes OR be
+  // the activeZoneMinutes field directly — try both, summing across all items.
   var activeZoneMinutes = null;
   if (azmRes.status === "fulfilled") {
-    var arp = (azmRes.value && azmRes.value.rollupDataPoints) || [];
+    var azmRollup = (azmRes.value && azmRes.value.rollupDataPoints) || [];
+    console.log('[google_health] azm rollupDataPoints[0]:', JSON.stringify(azmRollup[0]).slice(0, 300));
     var sum = 0, any = false;
-    for (var i = 0; i < arp.length; i++) {
-      var azmObj = arp[i].activeZoneMinutes;
-      if (azmObj && azmObj.activeZoneMinutes != null) {
-        var av = parseInt(azmObj.activeZoneMinutes, 10);
+    for (var i = 0; i < azmRollup.length; i++) {
+      var azmObj = azmRollup[i] && azmRollup[i].activeZoneMinutes;
+      var val = (azmObj && azmObj.activeZoneMinutes != null) ? azmObj.activeZoneMinutes
+              : (azmObj != null && typeof azmObj !== "object") ? azmObj
+              : null;
+      if (val != null) {
+        var av = parseInt(val, 10);
         if (isFinite(av)) { sum += av; any = true; }
       }
     }
