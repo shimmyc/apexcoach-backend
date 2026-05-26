@@ -929,6 +929,7 @@ app.get("/api/profiles/:id/daily", async function(req, res) {
         const ghAdapter = wearables.getProviderAdapter("google_health");
         const ghDate = req.query.date || dateStr(0); // local today
         const ghData = await ghAdapter.fetchDailyData(ghToken, ghDate);
+        console.log('[google_health] fetchDailyData result:', JSON.stringify(ghData).slice(0,500));
 
         // Fire-and-forget persistence (mirrors the Fitbit path below).
         if (ghData.steps != null) {

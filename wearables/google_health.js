@@ -385,13 +385,15 @@ async function fetchDailyData(token, ymd) {
   var M = parseInt(parts[1], 10);
   var D = parseInt(parts[2], 10);
 
-  // 1. HRV (Daily type — list, NOT dailyRollUp)
+  // 1. HRV (Daily type — filter on the .date field DIRECTLY (= equality),
+  //    NOT a >=/<= timestamp range. Daily types are keyed by calendar date.)
   var hrvP = ghGet(token, "/users/me/dataTypes/daily-heart-rate-variability/dataPoints", {
-    filter: 'daily_heart_rate_variability.date >= "' + ymd + '" AND daily_heart_rate_variability.date <= "' + ymd + '"',
+    filter: 'daily_heart_rate_variability.date = "' + ymd + '"',
   });
-  // 2. RHR (Daily type — list, NOT dailyRollUp)
+  // 2. RHR (Daily type — filter on the .date field DIRECTLY (= equality),
+  //    NOT a >=/<= timestamp range.)
   var rhrP = ghGet(token, "/users/me/dataTypes/daily-resting-heart-rate/dataPoints", {
-    filter: 'daily_resting_heart_rate.date >= "' + ymd + '" AND daily_resting_heart_rate.date <= "' + ymd + '"',
+    filter: 'daily_resting_heart_rate.date = "' + ymd + '"',
   });
   // 3. Sleep (Session type — reconcile for wearable data)
   var sleepP = ghGet(token, "/users/me/dataTypes/sleep/dataPoints:reconcile", {
@@ -416,6 +418,22 @@ async function fetchDailyData(token, ymd) {
   var settled = await Promise.allSettled([hrvP, rhrP, sleepP, stepsP, azmP, weightP]);
   var hrvRes = settled[0], rhrRes = settled[1], sleepRes = settled[2];
   var stepsRes = settled[3], azmRes = settled[4], weightRes = settled[5];
+
+  // Debug: log the raw response (or error) from each parallel call so we can
+  // see exactly what each Google Health endpoint returned for this date.
+  function _ghLog(label, r) {
+    if (r.status === "fulfilled") {
+      console.log("[google_health] " + label + " raw: " + JSON.stringify(r.value).slice(0, 200));
+    } else {
+      var msg = r.reason && r.reason.message ? r.reason.message : String(r.reason);
+      console.log("[google_health] " + label + " error: " + String(msg).slice(0, 200));
+    }
+  }
+  _ghLog("hrv", hrvRes);
+  _ghLog("rhr", rhrRes);
+  _ghLog("sleep", sleepRes);
+  _ghLog("steps", stepsRes);
+  _ghLog("azm", azmRes);
 
   // HRV
   var hrv = null;
