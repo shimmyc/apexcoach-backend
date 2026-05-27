@@ -1546,16 +1546,23 @@ app.post("/api/profiles/:id/fitbit-import", async function(req, res) {
 // Never 500s on a Fitbit failure: returns { activities: [], error: "fitbit_unavailable" }.
 app.get("/api/profiles/:id/unmatched-fitbit", async function(req, res) {
   var pid = req.params.id;
-  var provider = "fitbit";
   try {
-    // 1. Token — skip silently (empty list) if the user has never connected.
+    // 1. Token + provider — try Fitbit first (existing behavior), then fall back
+    //    to Google Health. Skip silently (empty list) if neither is connected.
+    //    Everything below is provider-agnostic (namespacedId(provider,...) etc.).
+    var provider = null;
     var token = null;
     try {
-      token = await getValidWearableToken(pid, provider);
-    } catch (e) {
-      return res.json({ activities: [] });
+      token = await getValidWearableToken(pid, "fitbit");
+      if (token) provider = "fitbit";
+    } catch (e) { /* no Fitbit — try Google Health */ }
+    if (!token) {
+      try {
+        token = await getValidWearableToken(pid, "google_health");
+        if (token) provider = "google_health";
+      } catch (e) { /* no Google Health either */ }
     }
-    if (!token) return res.json({ activities: [] });
+    if (!token || !provider) return res.json({ activities: [] });
 
     // 2. Window: 7 days ago → today (local dates, matching the rest of the app).
     var pad = function(n) { return String(n).padStart(2, "0"); };
@@ -1661,16 +1668,27 @@ app.get("/api/profiles/:id/unmatched-fitbit", async function(req, res) {
 // the activity never reappears in the unmatched-fitbit card (across all workouts).
 app.post("/api/profiles/:id/dismiss-fitbit-activity", async function(req, res) {
   var pid = req.params.id;
-  var provider = "fitbit";
   try {
     var body = req.body || {};
     var rawId = body.provider_activity_id;
     if (rawId == null || rawId === "") {
       return res.status(400).json({ success: false, error: "provider_activity_id required" });
     }
-    // Accept either a bare id or an already-namespaced "fitbit:<id>"; store
-    // the namespaced form so it matches the keys the GET endpoint filters on.
+    // Provider-agnostic: derive the provider from (a) an explicit body.provider,
+    // (b) a "<provider>:<id>" prefix already on the id, else default to fitbit
+    // (back-compat). Store the namespaced "<provider>:<id>" so it matches the keys
+    // the GET endpoint filters on — works for fitbit AND google_health.
     var s = String(rawId);
+    var KNOWN_PROVIDERS = ["fitbit", "google_health"];
+    var provider = null;
+    if (body.provider && KNOWN_PROVIDERS.indexOf(body.provider) >= 0) {
+      provider = body.provider;
+    } else {
+      for (var ki = 0; ki < KNOWN_PROVIDERS.length; ki++) {
+        if (s.indexOf(KNOWN_PROVIDERS[ki] + ":") === 0) { provider = KNOWN_PROVIDERS[ki]; break; }
+      }
+      if (!provider) provider = "fitbit";
+    }
     var bare = s.indexOf(provider + ":") === 0 ? s.slice(provider.length + 1) : s;
     var nsId = wearables.namespacedId(provider, bare);
 
@@ -1913,17 +1931,24 @@ async function getWorkoutProfileId(wid) {
 // a 4s Promise.race so it can never slow the save down.
 async function findWearableMatchOnSave(profileId, workout) {
   if (!profileId || !workout || !workout.date) return null;
-  var provider = "fitbit";
 
-  // 1. Token — same retrieval path as every other Fitbit endpoint. Skip
-  //    silently if the user has never connected (RECONNECT_REQUIRED / no token).
-  var token;
+  // 1. Token + provider — try Fitbit first (existing behavior), then fall back
+  //    to Google Health when there's no Fitbit connection. Never both. Skip
+  //    silently if neither is connected (RECONNECT_REQUIRED / no token). The rest
+  //    of the matching logic is provider-agnostic (works on NormalizedActivity).
+  var provider = null;
+  var token = null;
   try {
-    token = await getValidWearableToken(profileId, provider);
-  } catch (e) {
-    return null;
+    token = await getValidWearableToken(profileId, "fitbit");
+    if (token) provider = "fitbit";
+  } catch (e) { /* no Fitbit — try Google Health below */ }
+  if (!token) {
+    try {
+      token = await getValidWearableToken(profileId, "google_health");
+      if (token) provider = "google_health";
+    } catch (e) { /* no Google Health either */ }
   }
-  if (!token) return null;
+  if (!token || !provider) return null;
 
   var adapter = wearables.getProviderAdapter(provider);
   var date = workout.date;

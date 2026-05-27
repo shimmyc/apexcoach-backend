@@ -577,7 +577,7 @@ input[type=range]{width:100%;accent-color:var(--accent)}
     <div id="streak-card" style="display:none"></div>
     <div id="readiness-card" class="card" style="display:none"></div>
     <div id="body-metrics-card" class="card" style="display:none"></div>
-    <!-- Unmatched Fitbit activities (last 7 days). One card per activity. -->
+    <!-- Unmatched wearable activities (last 7 days). One card per activity. -->
     <div id="unmatched-fitbit-card"></div>
     <div id="feeling-checkin-card" class="card" style="display:none">
       <div id="feeling-checkin-full">
@@ -8772,8 +8772,9 @@ function deleteTemplate(templateId) {
     });
 }
 
-// ── UNMATCHED FITBIT ACTIVITIES (Today tab) ───────────────────────────────
-// Shows Fitbit activities from the last 7 days that aren't yet linked to a
+// ── UNMATCHED WEARABLE ACTIVITIES (Today tab) ─────────────────────────────
+// Shows wearable activities (Fitbit or Google Health) from the last 7 days that
+// aren't yet linked to a
 // workout and haven't been dismissed. Each card can be matched to a same-day
 // manual workout, imported as a new workout, or dismissed forever. Replaces the
 // legacy fitbit_pending_imports card. Cached in localStorage once per day
@@ -8795,6 +8796,17 @@ function ufFormatTime(iso) {
   var d = new Date(iso);
   if (isNaN(d.getTime())) return '';
   return d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+}
+
+// Friendly provider label for user-facing copy ("Fitbit" / "Google Health").
+function wearableLabel(provider) {
+  if (provider === 'google_health') return 'Google Health';
+  if (provider === 'fitbit') return 'Fitbit';
+  return 'Wearable';
+}
+// Uppercase per-card activity tag, e.g. "FITBIT ACTIVITY" / "GOOGLE HEALTH ACTIVITY".
+function ufProviderLabel(provider) {
+  return wearableLabel(provider).toUpperCase() + ' ACTIVITY';
 }
 
 function loadUnmatchedFitbit(force) {
@@ -8884,7 +8896,7 @@ function renderUnmatchedFitbit() {
     var timeStr = ufFormatTime(a.start_time);
 
     h += '<div class="card" style="background:var(--bg-surface-1);border:1px solid var(--border-subtle);border-radius:20px;padding:16px 20px;margin-bottom:12px">';
-    h += '<p style="font-size:10px;color:var(--text-muted);letter-spacing:0.08em;text-transform:uppercase;margin-bottom:4px">&#127939; FITBIT ACTIVITY &mdash; ' + escHtml(ufFormatDate(a.date)) + '</p>';
+    h += '<p style="font-size:10px;color:var(--text-muted);letter-spacing:0.08em;text-transform:uppercase;margin-bottom:4px">&#127939; ' + ufProviderLabel(a.provider) + ' &mdash; ' + escHtml(ufFormatDate(a.date)) + '</p>';
     h += '<div style="font-size:15px;font-weight:600;color:var(--text-primary)">' + escHtml(a.activity_type || 'Activity') + '</div>';
     if (meta) h += '<div class="font-mono" style="font-size:12px;color:var(--text-muted);margin-top:2px">' + meta + '</div>';
     if (timeStr) h += '<div class="font-mono" style="font-size:12px;color:var(--text-muted);margin-top:2px">Started at ' + escHtml(timeStr) + '</div>';
@@ -8928,20 +8940,21 @@ function ufMatch(provider_activity_id, workoutId) {
   (act.same_day_workouts || []).forEach(function(w) {
     if (String(w.id) === String(workoutId)) wType = w.type || 'workout';
   });
+  var prov = act.provider || 'fitbit';
   ufRemoveActivity(provider_activity_id);
   fetch('/api/wearables/merge/' + currentProfileId, {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
       workout_id: workoutId,
-      provider: 'fitbit',
-      wearable_activity_id: 'fitbit:' + provider_activity_id,
+      provider: prov,
+      wearable_activity_id: prov + ':' + provider_activity_id,
       list_activity: act,
     }),
   })
   .then(function(r) { return r.json(); })
   .then(function(resp) {
     if (resp && resp.success) {
-      showToast('Fitbit data linked to ' + wType + ' ✓');
+      showToast(wearableLabel(prov) + ' data linked to ' + wType + ' ✓');
       ufRefreshWorkoutViews();
     } else {
       console.warn('[UnmatchedFitbit] merge failed:', resp && resp.error);
@@ -8960,12 +8973,13 @@ function ufMatch(provider_activity_id, workoutId) {
 function ufImport(provider_activity_id) {
   var act = ufFindActivity(provider_activity_id);
   if (!act) return;
+  var prov = act.provider || 'fitbit';
   ufRemoveActivity(provider_activity_id);
   fetch('/api/wearables/import/' + currentProfileId, {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
-      provider: 'fitbit',
-      wearable_activity_id: 'fitbit:' + provider_activity_id,
+      provider: prov,
+      wearable_activity_id: prov + ':' + provider_activity_id,
       list_activity: act,
     }),
   })
@@ -8989,11 +9003,14 @@ function ufImport(provider_activity_id) {
 
 // Dismiss a Fitbit activity forever (global, not tied to a workout). Silent.
 function ufDismiss(provider_activity_id) {
+  // Capture the provider BEFORE removing the activity from the local array.
+  var act = ufFindActivity(provider_activity_id);
+  var prov = (act && act.provider) || 'fitbit';
   ufRemoveActivity(provider_activity_id);
   if (!currentProfileId) return;
   fetch('/api/profiles/' + currentProfileId + '/dismiss-fitbit-activity', {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ provider_activity_id: provider_activity_id }),
+    body: JSON.stringify({ provider_activity_id: provider_activity_id, provider: prov }),
   }).catch(function(e) { console.warn('[UnmatchedFitbit] dismiss error:', e && e.message); });
 }
 
@@ -9087,7 +9104,7 @@ function showWearableMatchModal(workoutId, match) {
   if (match.calories != null) bits.push(match.calories + ' cal');
   var detail = bits.length ? ' (' + bits.join(', ') + ')' : '';
   var actType = match.activity_type || 'workout';
-  var html = 'Fitbit recorded a <strong style="color:var(--text)">' + wsEsc(actType)
+  var html = wsEsc(wearableLabel(match.provider)) + ' recorded a <strong style="color:var(--text)">' + wsEsc(actType)
     + '</strong> session on this day' + wsEsc(detail) + '. Is this the same workout?';
   if (match.start_time) {
     var t = wmFormatTime(match.start_time);
@@ -9118,7 +9135,7 @@ function wmLink() {
   .then(function(r) { return r.json(); })
   .then(function(resp) {
     if (resp && resp.success) {
-      showToast('Fitbit data linked ✓');
+      showToast(wearableLabel(cur.match.provider) + ' data linked ✓');
       // Refresh the workout cards so the wearable badge + enriched stats appear.
       if (typeof loadWorkouts === 'function') {
         loadWorkouts().then(function() {
