@@ -375,7 +375,14 @@ Shimmy Castle - blue belt MMA, wedding musician, new dad. Injuries: pubic osteit
 
 - Manual check-in: supported (sleep/energy/pain emoji selectors → simplified readiness score capped at 85)
 
-- **Google Health (API v4) — ✅ IMPLEMENTED (2026-05-26)**: the cloud REST API at `health.googleapis.com/v4` that is the direct **Fitbit Web API successor** — **NOT** the on-device Android Health Connect SDK (that has no cloud API; the old stub's companion-app "Path A" design is **obsolete and was discarded**). Standard Google OAuth 2.0 server-to-server (`GET /callback/google_health`; 1-hour access tokens auto-refreshed by `getValidWearableToken`). `wearables/google_health.js` implements `fetchActivities`, `fetchActivityDetail` (peak HR from the per-sample heart-rate series over the exercise interval), `fetchDailyData`, `refreshToken`, `buildAuthUrl`, `getIdentity`, `normalize`. `fetchDailyData` returns HRV (`averageHeartRateVariabilityMilliseconds`), RHR, sleep stages (DEEP/REM/LIGHT/AWAKE), steps, active zone minutes, and weight (gramme→lb). `GET /api/profiles/:id/daily` **prefers Google Health when connected** and falls through to the Fitbit path otherwise. An amber **reconsent banner** (Profile tab + Settings → Account, `showGoogleHealthBanner()`) prompts Fitbit users to migrate before the Sept-2026 shutdown. Env: `GOOGLE_HEALTH_CLIENT_ID` / `GOOGLE_HEALTH_CLIENT_SECRET`. Migration `2026-05-26_google_health.sql` adds `wearable_connections.provider_metadata` (jsonb; stores `{healthUserId, legacyUserId}` from `getIdentity`).
+- **Google Health (API v4) — ✅ FULLY IMPLEMENTED (2026-05-26)**: the cloud REST API at `health.googleapis.com/v4/` — the direct **Fitbit Web API successor**. **NOT** the on-device Android Health Connect SDK (that has no cloud API; the old stub's "Path A companion app" design is **obsolete and was fully replaced**).
+  - **Covers:** HRV (`averageHeartRateVariabilityMilliseconds`), RHR (`beatsPerMinute`), sleep stages (DEEP/REM/LIGHT/AWAKE via `:reconcile`), steps (`dailyRollUp` → `countSum`), AZM (three-zone sum), weight (`weightGrams`), and exercise activities (`fetchActivities` + `fetchActivityDetail` with HR samples).
+  - **Auth:** Google OAuth 2.0; three `googlehealth.*.readonly` scope bundles; `access_type=offline`; 1-hour access tokens auto-refreshed by `getValidWearableToken`; refresh tokens expire after ~6 months of non-use. Callback `GET /callback/google_health` (+ `/api/wearables/callback/google_health` alias).
+  - **Daily sync:** `GET /api/profiles/:id/daily` **prefers Google Health when connected**, using the local date; falls through to the Fitbit path when GH returns nothing (`hasData` gate over hrv/rhr/sleep/steps). An amber **reconsent banner** (`showGoogleHealthBanner()`, Profile tab + Settings → Account) prompts Fitbit users to migrate.
+  - **Devices:** all Fitbit devices + Google Pixel Watch 1 / 2 / 3.
+  - **User onboarding:** add each user's Gmail to **Test Users** in the Google Cloud Console (cap 100 users until the restricted-scope review is completed).
+  - **September 2026:** the Fitbit Web API shuts down; Google Health is already preferred when connected, with Fitbit as the automatic fallback until then.
+  - **Implementation:** `wearables/google_health.js` exports `buildAuthUrl` / `refreshToken` / `fetchActivities` / `fetchActivityDetail` / `fetchDailyData` / `getIdentity` / `normalize`. Env: `GOOGLE_HEALTH_CLIENT_ID` / `GOOGLE_HEALTH_CLIENT_SECRET`. Migration `2026-05-26_google_health.sql` adds `wearable_connections.provider_metadata` (jsonb; stores `{healthUserId, legacyUserId}` from `getIdentity`). See **"Google Health API — Key Implementation Notes"** below.
 
 - **Open Wearables (Phase 2)**: Unified API for all wearables. Deploy on Railway ($5/mo). Android SDK ready now, iOS needs companion app. Long-term replacement for individual integrations. Supports: Samsung, Garmin, Whoop, Oura, Polar, Suunto, Apple Health (via iOS app).
 
@@ -871,6 +878,22 @@ All wearable workout-matching flows route through a provider abstraction layer i
 **Coexistence with legacy Fitbit code**: `profiles.fitbit_access_token`/`refresh_token`/`expires_at` columns and the `buildDailyData` / `runFitbitBackfill` flows are untouched. Token writes are mirrored to both stores. The legacy auto-import queue path (`diffAndQueueFitbitImports` + `/api/profiles/:id/fitbit-pending-imports` + `/api/profiles/:id/fitbit-import`) is now **deprecated dead code** — the daily sync no longer calls it, nothing writes `profiles.fitbit_pending_imports`, and the client no longer reads it; the Today-tab "Unmatched Fitbit Activities" card replaced it. The new explicit `sync-backlog` path remains the bulk-review flow.
 
 **Schema**: see `migrations/2026-05-19_wearables.sql`.
+
+## Google Health API — Key Implementation Notes
+
+Non-obvious gotchas that cost real debugging time on the Google Health API v4 integration (`wearables/google_health.js`, the cloud REST Fitbit successor at `health.googleapis.com/v4/`):
+
+- **Daily types (HRV, RHR) only support `list` and `:reconcile` — NOT `dailyRollUp`, and they do NOT accept `=` or range filters.** List with `?page_size=1` to get the most recent daily record, then verify its date matches the requested day before using it.
+- **`dailyRollUp` responses come back in `rollupDataPoints`, not `dataPoints`** (steps + AZM both use `dailyRollUp`).
+- **Steps field is `countSum`, not `count`:** `rollupDataPoints[0].steps.countSum`.
+- **AZM has three separate per-zone fields** — `sumInCardioHeartZone`, `sumInPeakHeartZone`, `sumInFatBurnHeartZone` — summed across all `rollupDataPoints`. There is no single "total" field. (`fetchDailyData` returns `{peak, cardio, fatBurn, total}`; the daily handler maps these to `prevZones`.)
+- **Sleep:** use `:reconcile` with `dataSourceFamily=users/me/dataSourceFamilies/google-wearables` and a `sleep.interval.civil_end_time` filter. Pick the main sleep via `metadata.main === true` (and `nap !== true`); fall back to the longest by `minutesAsleep`.
+- **`redirect_uri` at token exchange must EXACTLY match the authorize URL.** Because `POST /api/wearables/connect/:provider` builds the redirect as `/api/wearables/callback/:provider`, **both** `/api/wearables/callback/google_health` AND `/callback/google_health` must be registered in the Google Cloud Console. The callback handler derives `redirect_uri` from `req.path` so either route is self-consistent.
+- **Do NOT add `include_granted_scopes=true`** to the auth URL — it breaks Google Health API auth.
+- **Google sometimes omits `refresh_token` on a token refresh** — always keep the old refresh token as a fallback (`refreshToken` does this).
+- **Weight is in grams (`weightGrams`)** — divide by `453.592` for lbs.
+- **Distance is in millimetres throughout the API** (`distanceMillimeters`).
+- **Use the local date, not UTC.** The daily handler derives "today" with `getFullYear`/`getMonth`/`getDate` (inline IIFE), NOT the module's UTC-based `dateStr()`, which can roll to the wrong day in negative-offset timezones in the evening.
 
 ## Auto-Import on Workout Save
 

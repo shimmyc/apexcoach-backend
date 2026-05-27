@@ -8,7 +8,8 @@
 > `wearables/`, and `migrations/` rather than transcribed. Where the original brief differed
 > from the live code, the doc follows the code and flags it with **⚠ Correction**.
 >
-> **2026-05-26 session** (frontend + platform):
+> **2026-05-26 session** (Google Health API v4 + frontend + platform):
+> - **Google Health API v4 integration** — full cloud-REST adapter (`wearables/google_health.js`) replacing the obsolete on-device Health Connect stub: OAuth2 (`/callback/google_health` + `/api/wearables/callback/google_health` alias), `fetchDailyData` (HRV / RHR / sleep stages / steps / AZM / weight), exercise import on both surfaces (auto-match-on-save + unmatched card), the Fitbit-sunset reconsent banner, and migration `2026-05-26_google_health.sql` (`provider_metadata`). `/daily` prefers Google Health and falls through to Fitbit. See §3 / §5 / §9.
 > - **Living Goal Roadmap UI** — per-goal drill-down from each goal card: a two-step coached conversation (free-text statement → AI-generated questions → roadmap) renders near-term phase cards with progress bars, horizon phases, an adaptation log, an inline check-in, and Regenerate. Wired to the live per-goal endpoints. JS prefixed `grv*`; CSS scoped to `#goal-roadmap-view`.
 > - **Voice input on all textareas** — `startVoice(targetEl, btnEl)` + new `voiceMicBtn()` helper; mics now on every textarea (roadmap statement / answers / check-in, onboarding device follow-up, profile-builder review).
 > - **Dynamic schedule (v2)** — `anchors` / `frequency_targets` / `addons` replace the flat day-keyed schedule (legacy auto-migrates). The daily-rec prompt and the empty-state Build-with-AI flow (`callType:schedule_builder`, Haiku) were rewritten for v2.
@@ -26,7 +27,7 @@
 ## 1. Project Overview
 
 **ApexCoach** is an AI-powered personal fitness coaching web app. Users connect a wearable
-(Fitbit today), which auto-syncs sleep / HRV / RHR / zone minutes daily. A regression-fitted
+(Fitbit or Google Health API v4), which auto-syncs sleep / HRV / RHR / zone minutes daily. A regression-fitted
 readiness formula scores recovery (0–100), and Claude generates specific daily workout
 recommendations from biometrics, training history, goals, and short-horizon "challenges."
 
@@ -38,7 +39,7 @@ recommendations from biometrics, training history, goals, and short-horizon "cha
 | Frontend | Vanilla HTML/CSS/JS single-page app — `public/index.html` |
 | Database | Supabase (PostgreSQL), accessed via PostgREST (`/rest/v1/...`) |
 | AI | Anthropic Claude via `/api/ai` proxy — **Haiku** (`claude-haiku-4-5-20251001`) for cheap tasks, **Sonnet** (`claude-sonnet-4-20250514`) for smart tasks. Model is chosen **server-side** from a `callType` field; clients can't request the expensive model. System prompts auto-wrapped with `cache_control: ephemeral`. |
-| Wearables | Provider-agnostic adapters in `wearables/` — Fitbit fully implemented (OAuth2 + auto-refresh) |
+| Wearables | Provider-agnostic adapters in `wearables/` — **Fitbit** + **Google Health API v4** fully implemented (both OAuth2 + auto-refresh). Apple Health / Samsung / Garmin are stubs. |
 | Hosting | Render.com — auto-deploys on push to `main` |
 | Repo | github.com/shimmyc/apexcoach-backend |
 
@@ -70,7 +71,7 @@ Core user record. PIN-protected, all child data scoped by `profile_id`.
 | `height_inches`, `birth_date`, `sex`, `goal_weight_lbs`, `goal_weight_timeline_months` | | Body-composition profile fields |
 | `gym_access` | text | `yes` / `no` / `sometimes` |
 | `gym_type` | text | Commercial gym / Home gym / CrossFit / functional fitness / Multiple |
-| `dismissed_fitbit_activities` | jsonb (default `[]`) | Global Fitbit-activity dismissals — array of namespaced `"fitbit:id"` strings hidden from the Unmatched Fitbit Activities card (§3). Migration `2026-05-22_dismissed_fitbit_activities.sql`. |
+| `dismissed_fitbit_activities` | jsonb (default `[]`) | Global wearable-activity dismissals — array of namespaced `"provider:id"` strings (e.g. `fitbit:…` or `google_health:…`) hidden from the Unmatched Wearable Activities card (§3). Migration `2026-05-22_dismissed_fitbit_activities.sql`. |
 | `fitbit_pending_imports` | jsonb | **Deprecated** — nothing writes to it anymore (the daily-sync `diffAndQueueFitbitImports()` call was removed). Replaced by `dismissed_fitbit_activities` + the Unmatched Fitbit card (see §9). |
 | `created_at` | ts | |
 
@@ -117,6 +118,7 @@ One row per (profile, provider). OAuth tokens for every connected wearable.
 | `id` bigint PK, `profile_id` bigint FK (cascade), `provider` text | |
 | `access_token`, `refresh_token` text | |
 | `token_expires_at` | bigint (epoch ms) |
+| `provider_metadata` | jsonb (default `{}`); Google Health stores `{healthUserId, legacyUserId}` from `getIdentity`. Migration `2026-05-26_google_health.sql`. |
 | `last_synced_at`, `created_at`, `updated_at` | ts |
 | UNIQUE(`profile_id`, `provider`) | |
 
@@ -139,9 +141,11 @@ Remembers a user's "these are separate sessions" decision so a rejected pairing 
 ### Migrations
 - `migrations/2026-05-19_wearables.sql` — adds `workouts.wearable_data` + `wearable_activity_id`, creates `wearable_connections` + `rejected_wearable_matches`, backfills Fitbit tokens from `profiles.fitbit_*`.
 - `migrations/2026-05-22_roadmap_data.sql` — adds `profiles.roadmap_data` (jsonb) + `roadmap_data_updated_at` (timestamptz) for the structured macro roadmap. Legacy `profiles.roadmap` (text) is kept.
-- `migrations/2026-05-22_dismissed_fitbit_activities.sql` — adds `profiles.dismissed_fitbit_activities` jsonb (default `[]`) for global Fitbit-activity dismissals (workout-agnostic, because `rejected_wearable_matches.workout_id` is `NOT NULL`).
+- `migrations/2026-05-22_dismissed_fitbit_activities.sql` — adds `profiles.dismissed_fitbit_activities` jsonb (default `[]`) for global wearable-activity dismissals (workout-agnostic, because `rejected_wearable_matches.workout_id` is `NOT NULL`).
+- `migrations/2026-05-24_daily_sleep.sql` — adds the `daily_sleep` table (Life OS sleep fast-path; see `CLAUDE.md`).
+- `migrations/2026-05-26_google_health.sql` — adds `wearable_connections.provider_metadata` jsonb (default `{}`) for the Google Health API v4 integration (stores the stable Google Health identity).
 
-> Most other tables/columns were created ad-hoc via the Supabase SQL editor (the `CREATE TABLE`/`ALTER TABLE` snippets are documented inline in `CLAUDE.md`). Only the wearables + the two 2026-05-22 migrations are committed as files.
+> Most other tables/columns were created ad-hoc via the Supabase SQL editor (the `CREATE TABLE`/`ALTER TABLE` snippets are documented inline in `CLAUDE.md`). Only the wearables + the 2026-05-22 / 2026-05-24 / 2026-05-26 migrations are committed as files.
 
 ---
 
@@ -201,7 +205,16 @@ Commit hashes attached where known (from `git log`). Areas without a hash predat
 ### Wearable Integration
 - **Provider-agnostic architecture** — `wearables/` dir (`index.js` registry, `base.js` contract) (`0192a57`)
 - **Fitbit adapter** (full) + **Google Health API v4 adapter** (full — cloud REST, Fitbit successor; see next bullet); Apple Health / Samsung / Garmin (stubs)
-- **Google Health API v4 integration** (2026-05-26) — cloud REST adapter at `health.googleapis.com/v4` (the Fitbit Web API successor, **not** the on-device Health Connect SDK). Google OAuth 2.0 (`GET /callback/google_health`, 1-hour tokens auto-refreshed by `getValidWearableToken`). `fetchActivities` / `fetchActivityDetail` (peak HR derived from the HR sample series) + `fetchDailyData` returning HRV / RHR / sleep stages / steps / active-zone-minutes / weight. `GET /api/profiles/:id/daily` **prefers Google Health when connected** and falls through to Fitbit otherwise (additive, non-fatal). Amber **reconsent banner** (Profile tab + Settings) nudges Fitbit users to migrate before the Sept-2026 shutdown. New env: `GOOGLE_HEALTH_CLIENT_ID` / `GOOGLE_HEALTH_CLIENT_SECRET`; migration `2026-05-26_google_health.sql` adds `wearable_connections.provider_metadata`.
+- **Google Health API v4 integration** (2026-05-26) — full implementation replacing the obsolete on-device Health Connect stub. Cloud REST adapter for `health.googleapis.com/v4/` (the **Fitbit Web API successor**, NOT the on-device Android Health Connect SDK, which has no cloud API).
+  - **Adapter** (`wearables/google_health.js`, complete rewrite): `buildAuthUrl` (Google OAuth 2.0, `access_type=offline`, three `googlehealth.*.readonly` scopes), `refreshToken` (keeps the old refresh token when Google omits it on refresh), `fetchActivities` (paginated exercise dataPoints → `NormalizedActivity`, `mapExerciseType` helper), `fetchActivityDetail` (peak HR from the heart-rate sample series), `fetchDailyData` (HRV via list `page_size=1`, RHR via list `page_size=1`, sleep via `:reconcile` with the `metadata.main` filter, steps via `dailyRollUp` → `rollupDataPoints[0].steps.countSum`, AZM via `dailyRollUp` summing `sumInCardioHeartZone`+`sumInPeakHeartZone`+`sumInFatBurnHeartZone` across all `rollupDataPoints`, weight via list), `getIdentity`, `normalize`.
+  - **OAuth routes:** `GET /callback/google_health` and `GET /api/wearables/callback/google_health` (alias) both handled by a shared `handleGoogleHealthCallback()`; `redirect_uri` is derived from `req.path` so both routes work. Stores tokens via `saveWearableTokens`, PATCHes `provider_metadata` (`healthUserId` + `legacyUserId`).
+  - **Daily sync:** `GET /api/profiles/:id/daily` tries Google Health first using the **local** date (inline IIFE with `getFullYear`/`getMonth`/`getDate`, NOT UTC). Uses the GH response only if at least one of hrv/rhr/sleep/steps is non-null (`hasData` gate); otherwise falls through to Fitbit. Fire-and-forget persistence (`upsertDailySteps`, `upsertBodyMetrics`, `upsertDailySleep`, `estimateSleepScore`). Response shape matches the Fitbit path exactly; `prevZones` maps the real per-zone AZM breakdown `{peak, cardio, fatBurn}`.
+  - **Exercise import (both surfaces):** `findWearableMatchOnSave` tries Fitbit first, falls back to Google Health when there's no Fitbit token (auto-match-on-save → `#wm-modal`). `GET /api/profiles/:id/unmatched-fitbit` uses the same Fitbit-first → Google-Health fallback resolution. `POST /api/profiles/:id/dismiss-fitbit-activity` is now provider-agnostic (derives the provider from `body.provider`, else a `<provider>:` prefix on the id, else defaults to `fitbit`).
+  - **Reconsent banner:** `showGoogleHealthBanner()` (`public/index.html`) — amber "Fitbit shutting down Sept 2026 → connect Google Health" banner in Settings → Account and on the Profile wearables card when Fitbit is connected but Google Health isn't; shows "✓ Connected via Google Health" once connected; dismissable (banner only); called from `bootApp()`.
+  - **UI:** "FETCHING WEARABLE DATA" replaces "FETCHING FITBIT DATA"; per-card activity tags are provider-aware ("FITBIT ACTIVITY" / "GOOGLE HEALTH ACTIVITY"); the `#wm-modal` body copy + link toasts are provider-aware (`wearableLabel()`).
+  - **Migration:** `migrations/2026-05-26_google_health.sql` adds `wearable_connections.provider_metadata` (jsonb).
+  - **Bugs fixed during implementation:** (1) **redirect_uri mismatch** — `connect/:provider` generates `/api/wearables/callback/google_health` but only `/callback/google_health` existed → added the alias route + derive `redirect_uri` from `req.path`. (2) **HRV/RHR filter** — Daily types don't support `=` or range filters → switched to list `?page_size=1` with date verification. (3) **Steps parse** — `rollupDataPoints` not `dataPoints`; field is `countSum` not `count`. (4) **AZM parse** — `rollupDataPoints`; three separate zone fields, not one. (5) **AZM total** — `|| null` masked a valid `0` → explicit `> 0` check. (6) **Timezone** — `ghDate` used UTC `dateStr(0)` → local-date IIFE. (7) **hasData fallthrough** — GH returns all-nulls before the device syncs each morning → fall through to Fitbit when no data. (8) **dismiss endpoint** — hardcoded `fitbit:` prefix broke GH dismissals → provider-agnostic. (9) **`dateStr` variable shadowing** — the original daily-handler snippet declared `const dateStr` shadowing the module helper and called it in its own initializer (TDZ `ReferenceError`) → renamed to `ghDate`.
+  - New env: `GOOGLE_HEALTH_CLIENT_ID` / `GOOGLE_HEALTH_CLIENT_SECRET` (§10). Provider status §5; deprecation/migration tracking §9.
 - **NormalizedActivity schema** — cross-provider shape
 - **Sync UI** — date-range picker, activity-type filter, batch review panel (`0de7f29`)
 - **Match / Skip / Import / Ignore** actions
@@ -212,8 +225,8 @@ Commit hashes attached where known (from `git log`). Areas without a hash predat
 - **HR backfill endpoint** — avg HR from list (pass 1); peak HR via TCX → intraday → (analytics) zone estimate; `peak_hr_from_*` counters (`941e0ed`, `19f3524`, `d09f998`, `56a7a8b`)
 - **Peak HR estimation from Fitbit zones** — 185+/163+/108+ bpm (est.) when no measured peak (`387d723`)
 - **Workout history cards** — wearable badge + enriched stats
-- **Auto-import on workout save** — `findWearableMatchOnSave()` runs after `POST /api/workouts` (awaited, capped at 4s via `Promise.race`, fully non-fatal): fetches the day's Fitbit activities, drops already-matched (`workouts.wearable_activity_id`) + rejected (`rejected_wearable_matches` by `profile_id`), scores via `matchWearableToManual()` (threshold ≥40), and returns the single best candidate as `wearable_match` on the save response (omitted on no-match/timeout/no-Fitbit). Client shows the `#wm-modal` "Fitbit Activity Found" prompt 500ms after save → **Yes, Link It** (`POST /api/wearables/merge` → toast + `loadWorkouts()`) or **No, Keep Separate** (`POST /api/wearables/reject` with `create_standalone:false` — records the rejection only, no standalone workout). (`8d18f94`)
-- **Unmatched Fitbit Activities card** — Today-tab card listing the last 7 days of unmatched Fitbit activities (`GET /api/profiles/:id/unmatched-fitbit`), filtering already-matched + dismissed and attaching each activity's same-day completed-but-unlinked workouts. Per card: **Match to [workout type]** (up to 2) or **Import as New** + **Dismiss** when same-day workouts exist; **Import as Workout** + **Dismiss** otherwise. Match → `/wearables/merge`; Import → `/wearables/import`; Dismiss → `/dismiss-fitbit-activity` (global, silent). Cached once/day in `localStorage.ac_unmatched_fitbit`, invalidated on workout save/merge/reject; skeleton loader while fetching; hidden during previous-day navigation. **Replaced** the `fitbit_pending_imports` client flow (`renderFitbitImportPrompts` / `loadFitbitPendingImports` / `confirmFitbitImport` / `dismissFitbitImport` removed). (`7172681`, `de72c77`)
+- **Auto-import on workout save** — `findWearableMatchOnSave()` runs after `POST /api/workouts` (awaited, capped at 4s via `Promise.race`, fully non-fatal): fetches the day's wearable activities (tries Fitbit first, falls back to Google Health when no Fitbit token), drops already-matched (`workouts.wearable_activity_id`) + rejected (`rejected_wearable_matches` by `profile_id`), scores via `matchWearableToManual()` (threshold ≥40), and returns the single best candidate as `wearable_match` on the save response (omitted on no-match/timeout/no-Fitbit). Client shows the `#wm-modal` "Fitbit Activity Found" prompt 500ms after save → **Yes, Link It** (`POST /api/wearables/merge` → toast + `loadWorkouts()`) or **No, Keep Separate** (`POST /api/wearables/reject` with `create_standalone:false` — records the rejection only, no standalone workout). (`8d18f94`)
+- **Unmatched Wearable Activities card** — Today-tab card listing the last 7 days of unmatched **wearable** activities (`GET /api/profiles/:id/unmatched-fitbit`; provider-aware — tries Fitbit first, falls back to Google Health), filtering already-matched + dismissed and attaching each activity's same-day completed-but-unlinked workouts. Per card: **Match to [workout type]** (up to 2) or **Import as New** + **Dismiss** when same-day workouts exist; **Import as Workout** + **Dismiss** otherwise. Match → `/wearables/merge`; Import → `/wearables/import`; Dismiss → `/dismiss-fitbit-activity` (global, silent). Cached once/day in `localStorage.ac_unmatched_fitbit`, invalidated on workout save/merge/reject; skeleton loader while fetching; hidden during previous-day navigation. **Replaced** the `fitbit_pending_imports` client flow (`renderFitbitImportPrompts` / `loadFitbitPendingImports` / `confirmFitbitImport` / `dismissFitbitImport` removed). (`7172681`, `de72c77`)
 
 ### Dynamic Scheduling, Voice, Branding & Security (2026-05-26 session)
 - **Dynamic schedule system (UI + AI)** — replaced the flat day-keyed schedule with a three-tier **v2** format: `anchors` (fixed day + activity), `frequency_targets` (N×/week with a `suggested_day`), and `addons` (short supplemental work on training days). Legacy format auto-migrates on load. `buildScheduleInstruction()` rewritten for v2 — an anchor day makes Option 1 exactly that session with no exercise breakdown; frequency targets are tracked Mon–today via a `WEEKLY TARGET STATUS` block; add-ons are woven into workout options. `buildVarietyAndSkipAnalysis()` + `buildWeeklyVolumeSummary()` updated for v2. Empty-state **Build with AI** flow (4 inline steps) → `POST /api/ai callType:schedule_builder` → parses the returned v2 JSON → saves. `server.js`: `schedule_builder` → `MODEL_HAIKU`.
@@ -239,6 +252,7 @@ All verified present in `server.js`. `:id`/`:userId` = profile id.
 |--------|------|---------|
 | GET | `/auth` | Begin Fitbit OAuth |
 | GET | `/callback` | Fitbit OAuth callback (dual-writes tokens) |
+| GET | `/callback/google_health` · `/api/wearables/callback/google_health` | Google Health OAuth callback (shared `handleGoogleHealthCallback`; `redirect_uri` derived from `req.path`) |
 | GET | `/api/token-info` | Legacy token diagnostics |
 
 ### Profiles
@@ -329,7 +343,7 @@ All verified present in `server.js`. `:id`/`:userId` = profile id.
 | Provider | Status | Notes |
 |----------|--------|-------|
 | **Fitbit** | ✅ Fully implemented | OAuth2 + auto-refresh, list/detail/TCX/intraday HR, full normalization |
-| **Google Health (API v4)** | ✅ Implemented | Google Health API v4 — **cloud REST**, the Fitbit Web API successor. OAuth2 + auto-refresh; HRV / RHR / sleep stages / steps / AZM / weight + exercise activities. Preferred over Fitbit in `/daily`. (`2026-05-26`) |
+| **Google Health (API v4)** | ✅ Implemented | Google Health API v4 (cloud REST). OAuth2, HRV, RHR, sleep stages, steps, AZM, weight, exercise activities. Fitbit + Pixel Watch supported. **September 2026 deadline** for full Fitbit migration. Preferred over Fitbit in `/daily`. (`2026-05-26`) |
 | **Apple Health** | 🔲 Stub (TODO) | Needs iOS companion app pattern + Apple Developer account |
 | **Samsung Health** | 🔲 Stub (TODO) | Galaxy devices via Samsung Health Data SDK |
 | **Garmin** | 🔲 Stub (TODO) | Public API, **OAuth 1.0a** (differs from Fitbit's 2.0) |
@@ -419,8 +433,8 @@ Macro roadmap shape (stored on `profiles.roadmap_data`):
 
 ### Next up
 
-- ~~**Google Health Connect integration**~~ — ✅ **DONE (2026-05-26).** Built as the **Google Health API v4** cloud REST adapter (the Fitbit Web API successor, not the on-device SDK): full OAuth2 adapter, `GET /callback/google_health`, `/daily` Google-Health-first sync, and the Fitbit-sunset reconsent banner. See §3 → Wearable Integration and §5.
 - **Apple HealthKit / iOS integration** — opens the app to all iPhone users. Requires an iOS companion app + an Apple Developer Account ($99/yr). Long-term but high impact.
+- **Wearable Sync bulk-review modal — Google Health support.** The bulk-review modal (`openWearableSync`, `wsState.provider`) is currently **Fitbit-only**; it needs a provider picker so Google Health activities surface in the bulk backlog review UI. The `sync-backlog` endpoint is already provider-agnostic — this is UI-only.
 - **Today tab declutter** — above the fold should be only: readiness score + sleep score + "how are you feeling" tap + workout rec. Body metrics moves to Profile; Recent Workouts removed from Today.
 - **Profile tab cleanup** — too cluttered; needs breathing room and reorganization.
 - **Macro roadmap UI** — the structured `roadmap_data` endpoint is built, but the frontend still renders the legacy text roadmap. Migrate to a structured phase-card UI (see the Macro roadmap card item under Near term).
@@ -476,7 +490,9 @@ Macro roadmap shape (stored on `profiles.roadmap_data`):
 - [ ] **Retire the legacy `tokens` table** path once confirmed no profile depends on it.
 - [ ] **Regenerate the logo with a transparent background.** `public/logo.png` currently has a solid (black) background; a transparent PNG would let the figure float on the app background instead of a black box. (Also tracked in §7 → Next up.)
 - [ ] **Drive Fitbit → Google Health migration before the Sept-2026 shutdown.** The Google Health API v4 adapter is ✅ built (§3); the remaining work is getting every active Fitbit profile to reconnect via the reconsent banner so no one loses sync at cutover.
-- [ ] **Drop the Fitbit adapter + legacy Fitbit routes after September 2026** once all active profiles have migrated to Google Health (remove `/auth`, `/callback`, `buildDailyData`/`getValidProfileToken` Fitbit paths, and the `wearables/fitbit.js` adapter).
+- [ ] **Drop the Fitbit adapter + legacy Fitbit paths after September 2026** once all active profiles have migrated to Google Health: remove the `profiles.fitbit_*` columns, the legacy `/auth` + `/callback` routes, `buildDailyData` / `runFitbitBackfill`, the `getValidProfileToken` Fitbit special-case inside `getValidWearableToken`, the Fitbit-first preference logic in `findWearableMatchOnSave` + the `unmatched-fitbit` endpoint, and the `wearables/fitbit.js` adapter.
+- [ ] **Timezone verification — Google Health daily fetch.** The local-date fix (inline IIFE using `getFullYear`/`getMonth`/`getDate` instead of UTC `dateStr()`) appears to work, but logs still occasionally show a UTC date. Verify it applies correctly across timezone edge cases, particularly around midnight in negative-offset timezones.
+- [ ] **Google Health weight returns null** in testing — verify once a user logs weight in the Fitbit/Google Health app. The `weightGrams / 453.592` lb conversion is implemented in `fetchDailyData`.
 
 ---
 
@@ -491,8 +507,8 @@ All read via `process.env.*` in `server.js`. No values here — set them in the 
 | `ANTHROPIC_KEY` | ✅ | Anthropic API key for the `/api/ai` proxy |
 | `FITBIT_CLIENT_ID` | ✅ | Fitbit OAuth app client id |
 | `FITBIT_CLIENT_SECRET` | ✅ | Fitbit OAuth app client secret |
-| `GOOGLE_HEALTH_CLIENT_ID` | ⚠ for Google Health | Google Health API v4 OAuth client id |
-| `GOOGLE_HEALTH_CLIENT_SECRET` | ⚠ for Google Health | Google Health API v4 OAuth client secret |
+| `GOOGLE_HEALTH_CLIENT_ID` | ✅ Required | Google Cloud OAuth 2.0 client id (Google Health API v4) |
+| `GOOGLE_HEALTH_CLIENT_SECRET` | ✅ Required | Google Cloud OAuth 2.0 client secret (Google Health API v4) |
 | `ADMIN_SECRET` | ⚠ Recommended | Gates `/api/debug/*` admin endpoints when set |
 | `PORT` | optional | Server port (Render injects this) |
 | `FITBIT_ACCESS_TOKEN` | legacy | Single-user fallback token (pre-multi-profile) |
