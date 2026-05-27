@@ -927,93 +927,110 @@ app.get("/api/profiles/:id/daily", async function(req, res) {
     if (ghToken) {
       try {
         const ghAdapter = wearables.getProviderAdapter("google_health");
-        const ghDate = req.query.date || dateStr(0); // local today
+        // LOCAL today — dateStr() is UTC (toISOString), which can roll to the
+        // wrong day in negative-offset timezones in the evening. The rest of the
+        // app keys dates off local time (getFullYear/getMonth/getDate), so match it.
+        const ghDate = req.query.date || (function() {
+          const d = new Date();
+          return d.getFullYear() + "-" +
+            String(d.getMonth() + 1).padStart(2, "0") + "-" +
+            String(d.getDate()).padStart(2, "0");
+        })();
         const ghData = await ghAdapter.fetchDailyData(ghToken, ghDate);
 
-        // Fire-and-forget persistence (mirrors the Fitbit path below).
-        if (ghData.steps != null) {
-          upsertDailySteps(req.params.id, {
-            date: ghDate, steps: ghData.steps,
-            calories: null, distance_miles: null, floors: null,
-          }).catch(function(e){ console.error("[google_health] steps upsert:", e.message); });
-          autoTrackStepMicroGoals(req.params.id, ghData.steps)
-            .catch(function(e){ console.error("[google_health] step micro-goals:", e.message); });
-        }
-        if (ghData.weight) {
-          upsertBodyMetrics(req.params.id, {
-            date: ghDate, weight_lbs: ghData.weight.weight_lbs,
-            body_fat_pct: ghData.weight.body_fat_pct, source: "google_health",
-          }).catch(function(e){ console.error("[google_health] weight upsert:", e.message); });
-        }
-        // estimateSleepScore returns null when stage minutes are absent (CLASSIC sleep).
-        const ghSleepScore = ghData.sleep ? estimateSleepScore(
-          ghData.sleep.deep_minutes, ghData.sleep.rem_minutes,
-          ghData.sleep.light_minutes, ghData.sleep.wake_minutes
-        ) : null;
-        if (ghData.sleep) {
-          upsertDailySleep(req.params.id, {
-            date: ghDate,
-            hours: ghData.sleep.hours,
-            score: ghSleepScore,
-            deep_minutes: ghData.sleep.deep_minutes,
-            rem_minutes: ghData.sleep.rem_minutes,
-            light_minutes: ghData.sleep.light_minutes,
-            wake_minutes: ghData.sleep.wake_minutes,
-            hrv: ghData.hrv,
-            rhr: ghData.rhr,
-          }).catch(function(e){ console.error("[google_health] sleep upsert:", e.message); });
-        }
+        // Only serve Google Health if it actually returned something this day;
+        // otherwise fall through to Fitbit (e.g. a brand-new GH connection with
+        // nothing synced yet, or an empty/stale day).
+        const hasData = ghData.hrv !== null || ghData.rhr !== null ||
+                        ghData.sleep !== null || ghData.steps !== null;
+        if (hasData) {
+          // Fire-and-forget persistence (mirrors the Fitbit path below).
+          if (ghData.steps != null) {
+            upsertDailySteps(req.params.id, {
+              date: ghDate, steps: ghData.steps,
+              calories: null, distance_miles: null, floors: null,
+            }).catch(function(e){ console.error("[google_health] steps upsert:", e.message); });
+            autoTrackStepMicroGoals(req.params.id, ghData.steps)
+              .catch(function(e){ console.error("[google_health] step micro-goals:", e.message); });
+          }
+          if (ghData.weight) {
+            upsertBodyMetrics(req.params.id, {
+              date: ghDate, weight_lbs: ghData.weight.weight_lbs,
+              body_fat_pct: ghData.weight.body_fat_pct, source: "google_health",
+            }).catch(function(e){ console.error("[google_health] weight upsert:", e.message); });
+          }
+          // estimateSleepScore returns null when stage minutes are absent (CLASSIC sleep).
+          const ghSleepScore = ghData.sleep ? estimateSleepScore(
+            ghData.sleep.deep_minutes, ghData.sleep.rem_minutes,
+            ghData.sleep.light_minutes, ghData.sleep.wake_minutes
+          ) : null;
+          if (ghData.sleep) {
+            upsertDailySleep(req.params.id, {
+              date: ghDate,
+              hours: ghData.sleep.hours,
+              score: ghSleepScore,
+              deep_minutes: ghData.sleep.deep_minutes,
+              rem_minutes: ghData.sleep.rem_minutes,
+              light_minutes: ghData.sleep.light_minutes,
+              wake_minutes: ghData.sleep.wake_minutes,
+              hrv: ghData.hrv,
+              rhr: ghData.rhr,
+            }).catch(function(e){ console.error("[google_health] sleep upsert:", e.message); });
+          }
 
-        // Build the response in the shape the client expects (mirrors buildDailyData).
-        const responseData = {
-          sleep: ghData.sleep ? {
-            hours: ghData.sleep.hours,
-            stages: {
-              deep: ghData.sleep.deep_minutes,
-              rem: ghData.sleep.rem_minutes,
-              light: ghData.sleep.light_minutes,
-              wake: ghData.sleep.wake_minutes,
-            },
-            score: ghSleepScore,
-            fitbit_score: null,
-          } : null,
-          rhr: ghData.rhr,
-          hrv: ghData.hrv,
-          // ghData.activeZoneMinutes is { peak, cardio, fatBurn, total } (or null).
-          prevZones: ghData.activeZoneMinutes ? {
-            peak: ghData.activeZoneMinutes.peak,
-            cardio: ghData.activeZoneMinutes.cardio,
-            fatBurn: ghData.activeZoneMinutes.fatBurn,
-          } : null,
-          steps: ghData.steps,
-          activeZoneMinutes: ghData.activeZoneMinutes ? ghData.activeZoneMinutes.total : null,
-          stepsSummary: ghData.steps != null ? {
-            date: ghDate, steps: ghData.steps,
-            calories: null, distance_miles: null, floors: null,
-          } : null,
-          todaysActivities: [],
-          bodySummary: ghData.weight ? {
-            date: ghDate, weight_lbs: ghData.weight.weight_lbs,
-            body_fat_pct: ghData.weight.body_fat_pct,
-          } : null,
-          sleepSummary: ghData.sleep ? {
-            date: ghDate,
-            hours: ghData.sleep.hours,
-            score: ghSleepScore,
-            deep_minutes: ghData.sleep.deep_minutes,
-            rem_minutes: ghData.sleep.rem_minutes,
-            light_minutes: ghData.sleep.light_minutes,
-            wake_minutes: ghData.sleep.wake_minutes,
-            hrv: ghData.hrv,
+          // Build the response in the shape the client expects (mirrors buildDailyData).
+          const responseData = {
+            sleep: ghData.sleep ? {
+              hours: ghData.sleep.hours,
+              stages: {
+                deep: ghData.sleep.deep_minutes,
+                rem: ghData.sleep.rem_minutes,
+                light: ghData.sleep.light_minutes,
+                wake: ghData.sleep.wake_minutes,
+              },
+              score: ghSleepScore,
+              fitbit_score: null,
+            } : null,
             rhr: ghData.rhr,
-          } : null,
-          rolling7: { rhr: null, hrv: null },
-          rhrHistory7Day: [],
-          source: "google_health",
-        };
+            hrv: ghData.hrv,
+            // ghData.activeZoneMinutes is { peak, cardio, fatBurn, total } (or null).
+            prevZones: ghData.activeZoneMinutes ? {
+              peak: ghData.activeZoneMinutes.peak,
+              cardio: ghData.activeZoneMinutes.cardio,
+              fatBurn: ghData.activeZoneMinutes.fatBurn,
+            } : null,
+            steps: ghData.steps,
+            activeZoneMinutes: ghData.activeZoneMinutes ? ghData.activeZoneMinutes.total : null,
+            stepsSummary: ghData.steps != null ? {
+              date: ghDate, steps: ghData.steps,
+              calories: null, distance_miles: null, floors: null,
+            } : null,
+            todaysActivities: [],
+            bodySummary: ghData.weight ? {
+              date: ghDate, weight_lbs: ghData.weight.weight_lbs,
+              body_fat_pct: ghData.weight.body_fat_pct,
+            } : null,
+            sleepSummary: ghData.sleep ? {
+              date: ghDate,
+              hours: ghData.sleep.hours,
+              score: ghSleepScore,
+              deep_minutes: ghData.sleep.deep_minutes,
+              rem_minutes: ghData.sleep.rem_minutes,
+              light_minutes: ghData.sleep.light_minutes,
+              wake_minutes: ghData.sleep.wake_minutes,
+              hrv: ghData.hrv,
+              rhr: ghData.rhr,
+            } : null,
+            rolling7: { rhr: null, hrv: null },
+            rhrHistory7Day: [],
+            source: "google_health",
+          };
 
-        console.log("[google_health] daily served profile=" + req.params.id + " date=" + ghDate + " hrv=" + ghData.hrv + " rhr=" + ghData.rhr + " steps=" + ghData.steps + " azm=" + (ghData.activeZoneMinutes ? ghData.activeZoneMinutes.total : null));
-        return res.json({ success: true, date: ghDate, data: responseData });
+          console.log("[google_health] daily served profile=" + req.params.id + " date=" + ghDate + " hrv=" + ghData.hrv + " rhr=" + ghData.rhr + " steps=" + ghData.steps + " azm=" + (ghData.activeZoneMinutes ? ghData.activeZoneMinutes.total : null));
+          return res.json({ success: true, date: ghDate, data: responseData });
+        }
+        console.log("[google_health] no data for " + ghDate + " — falling through to Fitbit");
+        // No Google Health data this day → fall through to the Fitbit path below.
       } catch (e) {
         console.error("[google_health] fetchDailyData failed:", e.message);
         // Fall through to the Fitbit path below.
