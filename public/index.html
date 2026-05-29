@@ -273,6 +273,30 @@ input[type=range]{width:100%;accent-color:var(--accent)}
 #goal-roadmap-view .grv-back{background:transparent;border:none;color:var(--accent-ember);font-size:14px;font-weight:600;cursor:pointer;padding:4px 0;font-family:'Inter',sans-serif;flex-shrink:0}
 #goal-roadmap-view .grv-title{font-size:17px;font-weight:700;color:var(--text-primary);text-align:center;flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 #goal-roadmap-view .grv-content{flex:1;overflow-y:auto;padding:16px 16px 40px;-webkit-overflow-scrolling:touch}
+/* ── MACRO ROADMAP (structured roadmap_data) — scoped to #roadmap-data-card ── */
+#roadmap-data-card .rd-head{display:flex;align-items:center;justify-content:space-between;gap:8px}
+#roadmap-data-card .rd-regen{background:transparent;border:none;color:var(--text-muted);font-size:13px;cursor:pointer;padding:4px 0;font-family:'Inter',sans-serif}
+#roadmap-data-card .rd-regen:hover{color:var(--text-primary)}
+#roadmap-data-card .rd-timeline{font-family:'Fraunces',serif;font-size:24px;font-weight:700;color:var(--text-primary);margin-top:10px;line-height:1.2}
+#roadmap-data-card .rd-note{font-size:13px;color:var(--text-muted);font-style:italic;line-height:1.6;margin-top:4px}
+#roadmap-data-card .rd-pill{display:inline-block;background:var(--bg-surface-2);color:var(--text-primary);font-size:12px;padding:5px 12px;border-radius:9999px}
+#roadmap-data-card .rd-phase{background:var(--bg-surface-2);border-radius:14px;padding:14px 16px;margin-bottom:10px}
+#roadmap-data-card .rd-phase-name{font-size:15px;font-weight:700;color:var(--text-primary)}
+#roadmap-data-card .rd-badge{font-size:9px;text-transform:uppercase;letter-spacing:0.08em;font-weight:600;padding:3px 8px;border-radius:9999px;background:var(--bg-surface-1);flex-shrink:0}
+#roadmap-data-card .rd-bar{height:6px;background:var(--bg-surface-1);border-radius:3px;overflow:hidden;margin:8px 0 6px}
+#roadmap-data-card .rd-bar-fill{height:100%;border-radius:3px;transition:width .7s cubic-bezier(.4,0,.2,1)}
+#roadmap-data-card .rd-meta{font-size:11px;color:var(--text-muted);margin-bottom:8px}
+#roadmap-data-card .rd-target{font-size:13px;color:var(--text-muted);line-height:1.7;display:flex;gap:8px}
+#roadmap-data-card .rd-signal{font-size:13px;line-height:1.7;display:flex;gap:8px}
+#roadmap-data-card .rd-horizon{background:var(--bg-surface-2);border-left:3px solid var(--color-info);border-radius:14px;padding:14px 16px;margin-bottom:10px}
+#roadmap-data-card .rd-callout{border-radius:12px;padding:10px 14px;margin-bottom:8px;font-size:13px;line-height:1.5;display:flex;gap:10px;align-items:flex-start}
+#roadmap-data-card .rd-callout.gap{background:var(--bg-surface-2);border-left:3px solid var(--color-caution)}
+#roadmap-data-card .rd-callout.win{background:var(--bg-surface-2);border-left:3px solid var(--color-positive)}
+#roadmap-data-card .rd-cornerman-pill{display:inline-block;background:rgba(139,92,246,0.12);color:var(--accent-cornerman);font-size:11px;padding:3px 10px;border-radius:9999px;margin:4px 4px 0 0}
+#roadmap-data-card .rd-log-entry{font-size:13px;color:var(--text-muted);line-height:1.6;padding:6px 0;border-bottom:1px solid var(--border-subtle)}
+#roadmap-data-card .rd-foot{font-size:12px;color:var(--text-muted);margin-top:16px}
+#roadmap-data-card .rd-gen-btn{background:var(--accent-ember);border:none;color:#fff;padding:11px 18px;border-radius:14px;cursor:pointer;font-size:14px;font-weight:600}
+#roadmap-data-card .rd-spinner{width:14px;height:14px;border-radius:50%;background:var(--accent-ember);animation:pulse 1.2s ease-in-out infinite;margin:0 auto 14px}
 /* ── DYNAMIC SCHEDULE (scoped to #schedule-card) ──────────────────────────── */
 #schedule-card input[type=text],#schedule-card select{background:var(--bg-surface-1);border:1px solid var(--border-subtle);color:var(--text-primary);border-radius:8px;padding:8px;font-size:13px;font-family:'Inter',sans-serif;outline:none;box-sizing:border-box}
 #schedule-card input[type=text]:focus,#schedule-card select:focus{border-color:var(--accent-ember)}
@@ -822,6 +846,11 @@ input[type=range]{width:100%;accent-color:var(--accent)}
       </div>
       <div id="roadmap-content"></div>
       <div id="roadmap-updated" class="mono" style="font-size:10px;color:var(--text-dim);margin-top:10px;display:none"></div>
+    </div>
+
+    <!-- MACRO ROADMAP (structured roadmap_data) — replaces the legacy text card above (kept but no longer shown) -->
+    <div id="roadmap-data-card" class="card" style="display:none">
+      <div id="roadmap-data-body"></div>
     </div>
 
     <!-- ACCOUNT (moved to Settings) -->
@@ -2003,7 +2032,9 @@ function bootApp() {
         }
       })
       .catch(function() {});
-    loadRoadmap();
+    // Structured macro roadmap (replaces the legacy text card; loadRoadmap()
+    // and its /roadmap path stay intact but are no longer invoked).
+    loadRoadmapData();
   }
 
   // Fitbit-sunset reconsent prompt — force a fresh providers fetch on profile load.
@@ -4435,6 +4466,216 @@ function renderRoadmapContent(text, updatedAt) {
     upEl.textContent = 'Last generated: ' + new Date(updatedAt).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
     upEl.style.display = 'block';
   }
+}
+
+// ── MACRO ROADMAP (structured roadmap_data) ──────────────────────────────
+// Structured phase-card UI that replaces the legacy free-text roadmap render
+// on the Profile tab. Reads GET/POST /api/profiles/:id/roadmap-data. The
+// legacy loadRoadmap()/renderRoadmapContent()/generateRoadmap() functions and
+// the /roadmap (text) endpoint are intentionally left intact but uncalled.
+var currentRoadmapData = null;        // structured roadmap_data (null = not generated)
+var currentRoadmapUpdatedAt = null;   // roadmap_data_updated_at
+var roadmapDataLoaded = false;        // false until the first GET resolves for this profile
+var roadmapDataGenerating = false;    // true while a POST is in flight
+
+function rdEsc(s) { var d = document.createElement('div'); d.textContent = (s == null ? '' : s); return d.innerHTML; }
+function rdBodyEl() { return document.getElementById('roadmap-data-body'); }
+function rdItemText(x) { if (x == null) return ''; if (typeof x === 'string') return x; return x.text || x.summary || x.note || x.label || x.goal || x.title || JSON.stringify(x); }
+function rdFmtDay(d) { if (!d) return ''; var dt = new Date(String(d).slice(0, 10) + 'T12:00:00'); if (isNaN(dt.getTime())) return ''; return dt.toLocaleDateString('en-US', { month: 'short', day: 'numeric' }); }
+function rdFmtFull(d) { if (!d) return ''; var dt = new Date(d); if (isNaN(dt.getTime())) dt = new Date(String(d).slice(0, 10) + 'T12:00:00'); if (isNaN(dt.getTime())) return ''; return dt.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }); }
+
+// Fetch the structured roadmap for the current profile, then render. Called
+// from the Profile render path (in place of the legacy loadRoadmap()). Always
+// refetches so a profile switch never shows another profile's roadmap.
+function loadRoadmapData() {
+  if (!currentProfileId) return;
+  var card = document.getElementById('roadmap-data-card');
+  if (card) card.style.display = 'block';
+  roadmapDataLoaded = false;
+  var body = rdBodyEl();
+  if (body) body.innerHTML = '<div style="text-align:center;padding:30px 10px"><div class="rd-spinner"></div><p style="font-size:13px;color:var(--text-muted)">Loading roadmap…</p></div>';
+  fetch('/api/profiles/' + currentProfileId + '/roadmap-data')
+    .then(function (r) { return r.json(); })
+    .then(function (data) {
+      currentRoadmapData = (data && data.success) ? (data.roadmap_data || null) : null;
+      currentRoadmapUpdatedAt = (data && data.roadmap_data_updated_at) || null;
+      roadmapDataLoaded = true;
+      renderRoadmapData();
+    })
+    .catch(function () { roadmapDataLoaded = true; currentRoadmapData = null; renderRoadmapData(); });
+}
+
+// Pure renderer over the in-memory roadmap state (no fetch unless not yet
+// loaded for this profile, in which case it self-loads).
+function renderRoadmapData() {
+  var body = rdBodyEl(); if (!body) return;
+  var card = document.getElementById('roadmap-data-card'); if (card) card.style.display = 'block';
+  if (!roadmapDataLoaded) { loadRoadmapData(); return; }
+  if (roadmapDataGenerating) {
+    body.innerHTML = '<div style="text-align:center;padding:44px 10px"><div class="rd-spinner"></div><p style="font-size:13px;color:var(--text-muted)">Building your macro roadmap… (~5s)</p></div>';
+    return;
+  }
+  body.innerHTML = currentRoadmapData ? rdLoadedHtml(currentRoadmapData) : rdEmptyHtml();
+}
+
+function rdEmptyHtml() {
+  var h = '';
+  h += '<div class="rd-head"><p class="clabel" style="margin-bottom:0">MACRO ROADMAP</p></div>';
+  h += '<p style="font-size:13px;color:var(--text-muted);line-height:1.6;margin:10px 0 16px">Your AI coach will build a phased plan across all your goals.</p>';
+  h += '<button onclick="generateRoadmapData()" class="rd-gen-btn" style="width:100%">Generate</button>';
+  return h;
+}
+
+function rdLoadedHtml(rd) {
+  var h = '';
+  // 1. Header — MACRO ROADMAP label + secondary Regenerate link; timeline below.
+  h += '<div class="rd-head"><p class="clabel" style="margin-bottom:0">MACRO ROADMAP</p>';
+  h += '<span id="rd-regen-slot"><button class="rd-regen" onclick="rdAskRegen()">Regenerate</button></span></div>';
+  h += '<div id="rd-confirm"></div>';
+  if (rd.timeline_range) h += '<div class="rd-timeline">' + rdEsc(rd.timeline_range) + '</div>';
+  if (rd.timeline_note) h += '<div class="rd-note">' + rdEsc(rd.timeline_note) + '</div>';
+  // 2. Goals summary pills.
+  var gs = Array.isArray(rd.goals_summary) ? rd.goals_summary : [];
+  if (gs.length) {
+    h += '<p class="clabel" style="margin:18px 0 8px">COVERS</p><div style="display:flex;flex-wrap:wrap;gap:8px">';
+    for (var i = 0; i < gs.length; i++) h += '<span class="rd-pill">' + rdEsc(rdItemText(gs[i])) + '</span>';
+    h += '</div>';
+  }
+  var phases = Array.isArray(rd.phases) ? rd.phases : [];
+  // 3. Near-term phase cards.
+  var near = phases.filter(function (p) { return p && p.type !== 'horizon'; });
+  if (near.length) { h += '<div style="margin-top:18px">'; for (var n = 0; n < near.length; n++) h += rdNearPhase(near[n]); h += '</div>'; }
+  // 4. Horizon phase cards.
+  var hor = phases.filter(function (p) { return p && p.type === 'horizon'; });
+  for (var k = 0; k < hor.length; k++) h += rdHorizonPhase(hor[k]);
+  // 5. Exercise callouts (skip section entirely if both empty).
+  var gaps = Array.isArray(rd.exercise_gaps) ? rd.exercise_gaps : [];
+  var highs = Array.isArray(rd.exercise_highlights) ? rd.exercise_highlights : [];
+  if (gaps.length) {
+    h += '<p class="clabel" style="margin:18px 0 8px">GAPS TO ADDRESS</p>';
+    for (var a = 0; a < gaps.length; a++) h += '<div class="rd-callout gap"><span style="color:var(--color-caution)">⚠</span><span style="color:var(--text-primary)">' + rdEsc(rdItemText(gaps[a])) + '</span></div>';
+  }
+  if (highs.length) {
+    h += '<p class="clabel" style="margin:18px 0 8px">WHAT&#39;S WORKING</p>';
+    for (var b = 0; b < highs.length; b++) h += '<div class="rd-callout win"><span style="color:var(--color-positive)">✓</span><span style="color:var(--text-primary)">' + rdEsc(rdItemText(highs[b])) + '</span></div>';
+  }
+  // 6. Adaptation log (collapsible, collapsed by default; hidden if empty).
+  var log = Array.isArray(rd.adaptation_log) ? rd.adaptation_log : [];
+  if (log.length) {
+    h += '<div style="margin-top:18px">';
+    h += '<div id="rd-log-toggle" onclick="rdToggleLog()" style="font-size:13px;color:var(--text-muted);cursor:pointer;padding:4px 0">Show history (' + log.length + ' update' + (log.length === 1 ? '' : 's') + ')</div>';
+    h += '<div id="rd-log" style="display:none;margin-top:6px">';
+    for (var l = log.length - 1; l >= 0; l--) h += rdLogEntry(log[l]);
+    h += '</div></div>';
+  }
+  // 7. Footer.
+  var foot = [];
+  var genDate = rdFmtFull(rd.generated_at || currentRoadmapUpdatedAt);
+  if (genDate) foot.push('Generated ' + genDate);
+  if (rd.version != null) foot.push('v' + rd.version);
+  if (foot.length) h += '<div class="rd-foot">' + foot.join('  ·  ') + '</div>';
+  return h;
+}
+
+function rdNearPhase(p) {
+  var st = String(p.status || '').toLowerCase();
+  var color = st === 'current' ? 'var(--accent-ember)' : st === 'complete' ? 'var(--color-positive)' : 'var(--text-muted)';
+  var label = st === 'current' ? 'CURRENT' : st === 'complete' ? 'COMPLETE' : 'UPCOMING';
+  var pct = (typeof p.progress_pct === 'number') ? Math.max(0, Math.min(100, p.progress_pct)) : 0;
+  var shown = (st === 'complete') ? pct : Math.min(90, pct); // cap at 90% unless complete
+  var h = '<div class="rd-phase">';
+  h += '<div style="display:flex;align-items:center;justify-content:space-between;gap:8px">';
+  h += '<span class="rd-phase-name">' + rdEsc(p.name || 'Phase') + '</span>';
+  h += '<span class="rd-badge" style="color:' + color + '">' + label + '</span></div>';
+  h += '<div class="rd-bar"><div class="rd-bar-fill" style="width:' + shown + '%;background:' + color + '"></div></div>';
+  var durParts = [];
+  if (p.duration_weeks != null) durParts.push(p.duration_weeks + ' week' + (Number(p.duration_weeks) === 1 ? '' : 's'));
+  var endf = rdFmtDay(p.end_date);
+  var durLine = durParts.join('');
+  if (endf) durLine += (durLine ? ' · ' : '') + 'ends ' + endf;
+  if (durLine) h += '<div class="rd-meta">' + rdEsc(durLine) + '</div>';
+  var wt = Array.isArray(p.weekly_targets) ? p.weekly_targets : [];
+  for (var t = 0; t < wt.length; t++) h += '<div class="rd-target"><span style="color:var(--text-muted)">•</span><span>' + rdEsc(rdItemText(wt[t])) + '</span></div>';
+  var cs = Array.isArray(p.completion_signals) ? p.completion_signals : [];
+  if (cs.length) {
+    var done = (st === 'complete');
+    h += '<div style="margin-top:6px">';
+    for (var s = 0; s < cs.length; s++) h += '<div class="rd-signal"><span style="color:' + (done ? 'var(--color-positive)' : 'var(--text-muted)') + '">' + (done ? '☑' : '☐') + '</span><span style="color:var(--text-muted)">' + rdEsc(rdItemText(cs[s])) + '</span></div>';
+    h += '</div>';
+  }
+  var gc = Array.isArray(p.goal_connections) ? p.goal_connections : [];
+  if (gc.length) {
+    h += '<div style="margin-top:8px">';
+    for (var c = 0; c < gc.length; c++) h += '<span class="rd-cornerman-pill">' + rdEsc(rdItemText(gc[c])) + '</span>';
+    h += '</div>';
+  }
+  h += '</div>';
+  return h;
+}
+
+function rdHorizonPhase(p) {
+  var h = '<div class="rd-horizon">';
+  h += '<div style="display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:6px">';
+  h += '<span class="rd-phase-name" style="font-size:14px">' + rdEsc(p.name || '') + '</span>';
+  h += '<span class="rd-badge" style="color:var(--color-info)">HORIZON</span></div>';
+  if (p.milestone) h += '<div style="font-size:16px;color:var(--text-primary);line-height:1.5">' + rdEsc(p.milestone) + '</div>';
+  if (p.estimated_range) h += '<div style="font-size:13px;color:var(--text-muted);margin-top:4px">' + rdEsc(p.estimated_range) + '</div>';
+  h += '</div>';
+  return h;
+}
+
+function rdLogEntry(e) {
+  if (!e) return '';
+  var trig = String(e.trigger || '').toLowerCase();
+  var tColor = trig === 'weekly' ? 'var(--color-info)' : trig === 'checkin' ? 'var(--accent-cornerman)' : 'var(--text-muted)';
+  var h = '<div class="rd-log-entry">';
+  h += '<div style="display:flex;align-items:center;justify-content:space-between;gap:8px">';
+  h += '<strong style="color:var(--text-primary);font-size:12px">' + rdEsc(rdFmtDay(e.date)) + '</strong>';
+  if (trig) h += '<span class="rd-badge" style="color:' + tColor + '">' + rdEsc(trig) + '</span>';
+  h += '</div>';
+  if (e.summary) h += '<div style="margin-top:2px">' + rdEsc(e.summary) + '</div>';
+  h += '</div>';
+  return h;
+}
+
+function rdToggleLog() {
+  var el = document.getElementById('rd-log'); var tg = document.getElementById('rd-log-toggle');
+  if (!el) return;
+  if (el.style.display === 'none') { el.style.display = 'block'; if (tg) tg.textContent = 'Hide history'; }
+  else { el.style.display = 'none'; var log = (currentRoadmapData && currentRoadmapData.adaptation_log) || []; if (tg) tg.textContent = 'Show history (' + log.length + ' update' + (log.length === 1 ? '' : 's') + ')'; }
+}
+
+// Inline regenerate confirmation — swaps the Regenerate link for Yes/Cancel
+// (no modal). Cancel just re-renders the loaded state.
+function rdAskRegen() {
+  var slot = document.getElementById('rd-regen-slot');
+  var confirmEl = document.getElementById('rd-confirm');
+  if (slot) slot.innerHTML = '<button class="rd-regen" onclick="generateRoadmapData(true)" style="color:var(--accent-ember);font-weight:600">Yes, regenerate</button><button class="rd-regen" onclick="renderRoadmapData()" style="margin-left:12px">Cancel</button>';
+  if (confirmEl) confirmEl.innerHTML = '<div style="font-size:12px;color:var(--text-muted);margin-top:8px">Regenerate your macro roadmap? This may take ~5 seconds.</div>';
+}
+
+function generateRoadmapData(isRegen) {
+  if (!currentProfileId || roadmapDataGenerating) return;
+  roadmapDataGenerating = true;
+  renderRoadmapData(); // swap to spinner
+  fetch('/api/profiles/' + currentProfileId + '/roadmap-data', { method: 'POST', headers: { 'Content-Type': 'application/json' } })
+    .then(function (r) { return r.json(); })
+    .then(function (data) {
+      roadmapDataGenerating = false;
+      if (data && data.success && data.roadmap_data) {
+        currentRoadmapData = data.roadmap_data;
+        currentRoadmapUpdatedAt = data.roadmap_data_updated_at || currentRoadmapUpdatedAt;
+        roadmapDataLoaded = true;
+        renderRoadmapData();
+        showToast(isRegen ? 'Roadmap regenerated ✓' : 'Roadmap generated ✓');
+        // Plan changed → invalidate cached daily recs if the rec card is visible.
+        try { var ac = document.getElementById('ai-card'); if (ac && ac.style.display === 'block' && typeof regenerateAIForContextChange === 'function') regenerateAIForContextChange('macro_roadmap_regenerated'); } catch (e) {}
+      } else {
+        renderRoadmapData();
+        showToast('Could not generate roadmap');
+      }
+    })
+    .catch(function () { roadmapDataGenerating = false; renderRoadmapData(); showToast('Could not generate roadmap'); });
 }
 
 function escHtml(s) {
