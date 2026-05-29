@@ -3887,19 +3887,58 @@ function previewNormalizeAnchor(v) {
   return [];
 }
 
-// Finer muscle-group classification for recovery logic. Generic / keyword-based
-// (no user-specific assumptions). Returns strength_upper | strength_lower |
-// full_body | martial_arts | cardio | mind_body | rehab | sports | other | rest.
-function previewMuscleGroup(typeStr, exNames) {
-  var cat = inferWorkoutCategoryServer(typeStr);
-  if (cat !== "strength") return cat;
-  var t = (String(typeStr || "") + " " + (Array.isArray(exNames) ? exNames.join(" ") : "")).toLowerCase();
-  var upper = /\b(upper|push|pull|bench|press|row|curl|chin.?up|pull.?up|push.?up|dip|shoulder|chest|back|tricep|bicep|lat|ohp|overhead)\b/.test(t);
-  var lower = /\b(lower|legs?|squat|deadlift|lunge|glute|calf|calves|hamstring|quad|hip thrust|rdl|leg press)\b/.test(t);
-  if (upper && lower) return "full_body";
-  if (upper) return "strength_upper";
-  if (lower) return "strength_lower";
-  return "full_body"; // unspecified strength → treat as full body (conservative recovery)
+// Generic keyword → muscle-group lookup. Maps an exercise NAME to the specific
+// muscle groups it works. Keyword `.` is a regex wildcard so "push.up" matches
+// "push up" / "push-up" / "pushup". Zero user-specific assumptions.
+var MUSCLE_GROUP_MAP = {
+  chest:         ["press", "push.up", "pushup", "fly", "dip", "pec"],
+  back:          ["row", "pull.up", "pullup", "chin", "lat", "deadlift", "cable", "seated.row", "back"],
+  shoulders:     ["press", "lateral", "front.raise", "overhead", "shoulder", "delt", "ohp"],
+  biceps:        ["curl", "bicep", "hammer", "chin"],
+  triceps:       ["tricep", "pushdown", "extension", "skull", "dip", "close.grip"],
+  core:          ["plank", "crunch", "sit.up", "ab", "core", "dead.bug", "bird.dog", "pallof", "hollow"],
+  glutes:        ["glute", "bridge", "hip.thrust", "deadlift", "squat", "lunge", "step.up", "carry"],
+  quads:         ["squat", "lunge", "leg.press", "step.up", "quad", "extension", "carry"],
+  hamstrings:    ["deadlift", "curl", "hamstring", "hinge", "nordic", "rdl"],
+  calves:        ["calf", "raise", "jump", "run", "walk", "hike"],
+  grip_forearms: ["hang", "carry", "farmer", "grip", "forearm", "wrist", "dead.hang"],
+};
+// Precompiled { group: [RegExp,...] } so we don't rebuild regexes per call.
+var MUSCLE_GROUP_RE = (function() {
+  var out = {};
+  Object.keys(MUSCLE_GROUP_MAP).forEach(function(g) {
+    out[g] = MUSCLE_GROUP_MAP[g].map(function(k) { return new RegExp(k); });
+  });
+  return out;
+})();
+var ALL_MAJOR_MUSCLES = ["chest", "back", "shoulders", "biceps", "triceps", "glutes", "quads", "hamstrings", "core"];
+
+// Which muscle groups an exercise NAME works (any keyword regex hit).
+function muscleGroupsForExercise(name) {
+  var n = String(name || "").toLowerCase();
+  if (!n) return [];
+  var out = [];
+  Object.keys(MUSCLE_GROUP_RE).forEach(function(g) {
+    var res = MUSCLE_GROUP_RE[g];
+    for (var i = 0; i < res.length; i++) { if (res[i].test(n)) { out.push(g); break; } }
+  });
+  return out;
+}
+
+// Which muscle groups a scheduled ACTIVITY (e.g. "Upper Body Strength", "MMA
+// Class", "Run") requires for recovery purposes. Generic keyword-based; returns
+// [] when no constraint applies (e.g. mobility/yoga/rehab).
+function activityMuscles(activity) {
+  var a = String(activity || "").toLowerCase();
+  var set = {};
+  function add(arr) { arr.forEach(function(m) { set[m] = true; }); }
+  if (/(full|total)/.test(a)) add(ALL_MAJOR_MUSCLES);
+  if (/(upper|push|pull|chest|back|arm)/.test(a)) add(["chest", "back", "shoulders", "biceps", "triceps"]);
+  if (/(lower|leg|squat|hinge)/.test(a)) add(["glutes", "quads", "hamstrings"]);
+  if (/(core|\bab\b|abs)/.test(a)) add(["core"]);
+  if (/(cardio|run|hike|walk)/.test(a)) add(["calves"]);
+  if (/(mma|martial|grapple|bjj|boxing)/.test(a)) add(["shoulders", "core", "grip_forearms"]);
+  return Object.keys(set);
 }
 
 // STEP 1 — pure-JS rule engine. Returns the 7-day skeleton array.
@@ -3912,6 +3951,7 @@ function buildWeekSkeleton(schedule, workouts, exercises, today) {
   var monday = previewMondayOf(today);
   var todayStr = ymdLocal(today);
   var todayMs = Date.parse(todayStr + "T00:00:00");
+  var WIN48 = 48 * 3600000;
 
   var days = [];
   var dateMs = [];
@@ -3922,33 +3962,42 @@ function buildWeekSkeleton(schedule, workouts, exercises, today) {
     days.push({ dayKey: PREVIEW_DAYS[i], date: dateStr, dayLabel: PREVIEW_DAY_LABELS[i], planned: [], done: false, actual_workout: null, recovery_notes: [] });
   }
 
-  // exercises grouped by date (names) — refines strength upper/lower classification.
-  var exByDate = {};
-  (exercises || []).forEach(function(e) { if (e && e.date) { (exByDate[e.date] = exByDate[e.date] || []).push(e.name || ""); } });
   // first done workout per date.
   var doneByDate = {};
   (workouts || []).forEach(function(w) { if (w && w.date && w.done && !doneByDate[w.date]) doneByDate[w.date] = w; });
-
-  // (e) recovery map: most-recent hit (ms) per muscle group over the last 7 days
-  // of ACTUAL (done) workouts. Passed into the frequency-target scoring below.
-  var recovery = {};
-  (workouts || []).forEach(function(w) {
-    if (!w || !w.done || !w.date) return;
-    var ms = Date.parse(w.date + "T00:00:00");
-    if (isNaN(ms) || ms > todayMs || (todayMs - ms) > 7 * 86400000) return;
-    var g = previewMuscleGroup(w.type, exByDate[w.date]);
-    if (!recovery[g] || ms > recovery[g]) recovery[g] = ms;
+  // distinct exercise NAMES per workout_id — used to disqualify single-exercise
+  // sessions (e.g. a multi-set Dead Hang or one meditation) from counting as a
+  // frequency target. > 1 distinct name = a substantive multi-movement session.
+  var namesByWorkout = {};
+  (exercises || []).forEach(function(e) {
+    if (!e || e.workout_id == null) return;
+    (namesByWorkout[e.workout_id] = namesByWorkout[e.workout_id] || {})[String(e.name || "").toLowerCase().trim()] = true;
   });
-  // Within-48h check for a muscle group at candidate time candMs. Only strength
-  // groups + full_body overlap; cardio/mind_body/rehab never block (daily OK).
-  function hitWithin48h(group, candMs) {
-    var related = [group];
-    if (group === "strength_upper" || group === "strength_lower") related.push("full_body");
-    if (group === "full_body") related.push("strength_upper", "strength_lower");
-    var last = -Infinity;
-    related.forEach(function(g) { if (recovery[g] != null && recovery[g] > last) last = recovery[g]; });
-    if (last === -Infinity) return false;
-    return (candMs - last) < 48 * 3600000;
+  function distinctExerciseCount(wid) { return (wid != null && namesByWorkout[wid]) ? Object.keys(namesByWorkout[wid]).length : 0; }
+
+  // (e) MUSCLE-GROUP RECOVERY MAP — most-recent worked time (ms) per specific
+  // muscle group, from each exercise row of ACTUAL (done) workouts in the last
+  // 7 days, classified via MUSCLE_GROUP_MAP. Flat 48h window, presence-based.
+  var muscleRecovery = {}; // group -> ms last worked
+  (exercises || []).forEach(function(e) {
+    if (!e || !e.date) return;
+    var ms = Date.parse(e.date + "T00:00:00");
+    if (isNaN(ms) || ms > todayMs || (todayMs - ms) > 7 * 86400000) return;
+    if (!doneByDate[e.date]) return; // only count exercises from actual (done) workouts
+    muscleGroupsForExercise(e.name).forEach(function(g) {
+      if (!muscleRecovery[g] || ms > muscleRecovery[g]) muscleRecovery[g] = ms;
+    });
+  });
+  // For an activity at candidate time candMs: which required muscle groups were
+  // worked within 48h. Returns the conflicting group list ([] = fully recovered).
+  function recentConflicts(activity, candMs) {
+    var req = activityMuscles(activity);
+    var hits = [];
+    req.forEach(function(mg) {
+      var last = muscleRecovery[mg];
+      if (last != null && (candMs - last) < WIN48) hits.push(mg);
+    });
+    return { required: req, conflicts: hits };
   }
 
   // (a) ANCHORS — locked; never move. done handled per-day below.
@@ -3971,13 +4020,20 @@ function buildWeekSkeleton(schedule, workouts, exercises, today) {
 
   // (b) FREQUENCY TARGETS — place each remaining slot on the best open day.
   var assignedFreq = {};
+  var targetDiag = []; // for logging which targets counted as met
   targets.forEach(function(target) {
     if (!target || !target.activity) return;
     var tpw = Number(target.times_per_week) || 1;
     var cat = inferWorkoutCategoryServer(target.activity);
-    var group = previewMuscleGroup(target.activity);
-    var doneCount = weekDone.filter(function(w) { return inferWorkoutCategoryServer(w.type) === cat; }).length;
+    // A workout counts toward this target only when: category matches AND it is
+    // a substantive multi-exercise session (>1 distinct exercise name) AND done.
+    // Never counts single-exercise micro-goal sessions. workout.type is authority.
+    var qualifying = weekDone.filter(function(w) {
+      return w.done === true && inferWorkoutCategoryServer(w.type) === cat && distinctExerciseCount(w.id) > 1;
+    });
+    var doneCount = qualifying.length;
     var slots = Math.max(0, tpw - doneCount);
+    targetDiag.push({ activity: target.activity, category: cat, tpw: tpw, doneCount: doneCount, met: doneCount >= tpw, qualifying_dates: qualifying.map(function(w) { return w.date; }) });
     for (var s = 0; s < slots; s++) {
       var bestIdx = -1;
       var sugIdx = PREVIEW_DAYS.indexOf(target.suggested_day);
@@ -3990,7 +4046,10 @@ function buildWeekSkeleton(schedule, workouts, exercises, today) {
           var dk = PREVIEW_DAYS[i];
           var score = 0;
           if (!adjacentHard(i)) score += 30;
-          if (!hitWithin48h(group, dateMs[i])) score += 20;
+          // Muscle-specific recovery: +20 only if ALL required groups have ≥48h
+          // since last worked; -20 if ANY required group was hit within 48h.
+          var rc = recentConflicts(target.activity, dateMs[i]);
+          if (rc.required.length) score += (rc.conflicts.length ? -20 : 20);
           if (dk === "wed" || dk === "thu") score += 10;
           if (assignedFreq[dk]) score -= 20;
           if (score > bestScore) { bestScore = score; bestIdx = i; }
@@ -4002,7 +4061,7 @@ function buildWeekSkeleton(schedule, workouts, exercises, today) {
     }
   });
 
-  // (c) ADDONS — attach to every training day (has anchor or frequency target).
+  // (c) ADDONS — attach to EVERY training day (has an anchor OR a frequency target).
   for (var i = 0; i < 7; i++) {
     var isTraining = days[i].planned.some(function(p) { return p.type === "anchor" || p.type === "frequency_target"; });
     if (!isTraining) continue;
@@ -4016,19 +4075,35 @@ function buildWeekSkeleton(schedule, workouts, exercises, today) {
     if (!days[i].planned.length) days[i].planned.push({ activity: "Rest", type: "rest", duration: null, category: "rest" });
   }
 
-  // per-day done / actual_workout + recovery_notes (within-48h muscle conflicts).
+  // per-day done / actual_workout + recovery_notes (specific muscle conflicts).
   for (var i = 0; i < 7; i++) {
     var w = doneByDate[days[i].date];
     if (w) { days[i].done = true; days[i].actual_workout = { type: w.type || "Workout" }; }
+    var seen = {};
     days[i].planned.forEach(function(p) {
       if (p.type !== "anchor" && p.type !== "frequency_target") return;
-      var g = previewMuscleGroup(p.activity);
-      if ((g === "strength_upper" || g === "strength_lower" || g === "full_body") && hitWithin48h(g, dateMs[i])) {
-        var note = (CATEGORY_PRETTY_SERVER[inferWorkoutCategoryServer(p.activity)] || "Muscle group") + " trained <48h prior";
-        if (days[i].recovery_notes.indexOf(note) < 0) days[i].recovery_notes.push(note);
-      }
+      recentConflicts(p.activity, dateMs[i]).conflicts.forEach(function(mg) {
+        if (!seen[mg]) { seen[mg] = true; days[i].recovery_notes.push(mg + " worked <48h prior"); }
+      });
     });
   }
+
+  // (5) LOGGING — full skeleton + which targets are met + per-day recovery flags.
+  try {
+    var recStr = Object.keys(muscleRecovery).map(function(g) { return g + "=" + ymdLocal(new Date(muscleRecovery[g])); }).join(", ") || "none";
+    var lines = days.map(function(dd) {
+      var acts = dd.planned.map(function(p) { return p.activity + "[" + p.type + "]"; }).join(", ");
+      return "    " + dd.dayKey + " " + dd.date + " | done=" + dd.done + (dd.actual_workout ? "(" + dd.actual_workout.type + ")" : "") +
+        " | " + acts + (dd.recovery_notes.length ? " | recovery: " + dd.recovery_notes.join("; ") : "");
+    });
+    var tgtLines = targetDiag.map(function(t) {
+      return "    " + t.activity + " [" + t.category + "] " + t.doneCount + "/" + t.tpw + " met=" + t.met + (t.qualifying_dates.length ? " via " + t.qualifying_dates.join(",") : "");
+    });
+    console.log("[WeekPreview] skeleton:\n" + lines.join("\n") +
+      "\n  frequency targets:\n" + (tgtLines.join("\n") || "    none") +
+      "\n  muscle recovery (last 7d): " + recStr);
+  } catch (e) { /* logging is best-effort */ }
+
   return days;
 }
 
@@ -4067,8 +4142,8 @@ app.post("/api/profiles/:id/week-preview", async function(req, res) {
     var sinceStr = ymdLocal(since);
 
     var results = await Promise.all([
-      fetch(SUPABASE_URL + "/rest/v1/workouts?profile_id=eq." + pid + "&date=gte." + sinceStr + "&select=date,type,done&order=date.desc&limit=200", { headers: sbHeaders() }),
-      fetch(SUPABASE_URL + "/rest/v1/exercises?profile_id=eq." + pid + "&date=gte." + sinceStr + "&select=date,name,main_category,subcategory&order=date.desc&limit=1000", { headers: sbHeaders() }),
+      fetch(SUPABASE_URL + "/rest/v1/workouts?profile_id=eq." + pid + "&date=gte." + sinceStr + "&select=id,date,type,done&order=date.desc&limit=200", { headers: sbHeaders() }),
+      fetch(SUPABASE_URL + "/rest/v1/exercises?profile_id=eq." + pid + "&date=gte." + sinceStr + "&select=workout_id,date,name,main_category,subcategory&order=date.desc&limit=1000", { headers: sbHeaders() }),
       fetch(SUPABASE_URL + "/rest/v1/profiles?id=eq." + pid + "&select=profile_data", { headers: sbHeaders() }),
       fetch(SUPABASE_URL + "/rest/v1/micro_goals?profile_id=eq." + pid + "&is_active=eq.true&select=title&limit=20", { headers: sbHeaders() }),
     ]);

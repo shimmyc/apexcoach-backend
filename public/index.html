@@ -304,9 +304,9 @@ input[type=range]{width:100%;accent-color:var(--accent)}
 #schedule-card .sched-step{width:26px;height:26px;border-radius:9999px;background:var(--bg-surface-1);border:1px solid var(--border-subtle);color:var(--text-primary);font-size:15px;line-height:1;cursor:pointer;flex-shrink:0}
 /* ── 7-DAY SMART SCHEDULE PREVIEW (scoped to #week-preview-section) ───────── */
 #week-preview-section{margin-bottom:14px}
-#week-preview-section .wp-head{display:flex;align-items:baseline;justify-content:space-between;gap:10px;margin-bottom:10px}
-#week-preview-section .wp-title{font-size:12px;text-transform:uppercase;letter-spacing:0.06em;color:var(--text-muted);font-weight:600;flex-shrink:0}
-#week-preview-section .wp-note{font-size:13px;color:var(--text-muted);font-style:italic;text-align:right;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}
+#week-preview-section .wp-head{margin-bottom:10px}
+#week-preview-section .wp-title{font-size:12px;text-transform:uppercase;letter-spacing:0.06em;color:var(--text-muted);font-weight:600}
+#week-preview-section .wp-note{font-size:13px;color:var(--text-muted);font-style:italic;line-height:1.45;margin-top:4px}
 #week-preview-section .wp-row{display:flex;align-items:flex-start;gap:10px;padding:7px 8px;border-radius:10px;border-left:3px solid transparent}
 #week-preview-section .wp-row.today{border-left-color:var(--accent-ember);background:var(--bg-surface-2)}
 #week-preview-section .wp-row.past{opacity:0.7}
@@ -8134,9 +8134,10 @@ function renderWeekPreview(data) {
   currentWeekPreview = data;
   var todayStr = ds(0);
   var note = data.week_note || '';
-  var noteTrunc = note.length > 60 ? note.slice(0, 57) + '…' : note;
-  var h = '<div class="wp-head"><span class="wp-title">This Week</span>' +
-    (note ? '<span class="wp-note" title="' + attrEsc(note) + '">' + escHtml(noteTrunc) + '</span>' : '') + '</div>';
+  // "THIS WEEK" header with the full week_note wrapping on its own line below
+  // (no truncation, no tooltip).
+  var h = '<div class="wp-head"><div class="wp-title">This Week</div>' +
+    (note ? '<div class="wp-note">' + escHtml(note) + '</div>' : '') + '</div>';
   for (var i = 0; i < data.week.length; i++) {
     var d = data.week[i];
     var when = d.date < todayStr ? 'past' : (d.date === todayStr ? 'today' : 'future');
@@ -8147,11 +8148,13 @@ function renderWeekPreview(data) {
     if (isRest) {
       actHtml = '<span class="wp-act rest">Rest</span>';
     } else {
-      var main = primary.length ? primary[0].activity : (planned[0] ? planned[0].activity : '');
-      var suffix = '';
-      if (primary.length > 1) suffix = ' <span class="wp-suffix">+' + (primary.length - 1) + ' more</span>';
-      else if (planned.some(function (p) { return p.type === 'addon'; })) suffix = ' <span class="wp-suffix">+ add-ons</span>';
-      actHtml = '<span class="wp-act">' + escHtml(main) + suffix + '</span>';
+      // Primary activities in normal text, then actual add-on names (muted)
+      // joined by " · " — e.g. "MMA Class · Posture Exercises · Ab Workout".
+      var primaryNames = primary.map(function (p) { return p.activity; });
+      var addonNames = planned.filter(function (p) { return p.type === 'addon'; }).map(function (p) { return p.activity; });
+      var mainTxt = primaryNames.length ? primaryNames.join(' · ') : (planned[0] ? planned[0].activity : '');
+      actHtml = '<span class="wp-act">' + escHtml(mainTxt) + '</span>';
+      if (addonNames.length) actHtml += '<span class="wp-suffix"> · ' + addonNames.map(escHtml).join(' · ') + '</span>';
     }
     var coach = d.coaching_note ? '<div class="wp-coach">' + escHtml(d.coaching_note) + '</div>' : '';
     var status = d.done ? '<span class="wp-status done">✓</span>'
