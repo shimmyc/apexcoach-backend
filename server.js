@@ -3861,14 +3861,32 @@ app.post("/api/profiles/:id/roadmap-data", async function(req, res) {
 
 // ── 7-DAY SMART SCHEDULE PREVIEW ─────────────────────────────────────────────
 // POST /api/profiles/:id/week-preview  body: { schedule (v2), readiness }
-// Builds a deterministic Mon–Sun skeleton from the v2 schedule + the athlete's
-// recent training (anchors locked, frequency targets placed by a recovery-aware
-// rule engine, add-ons attached to training days, rest elsewhere), then asks
-// Haiku for per-day coaching notes. Generic: no hardcoded assumptions about any
-// specific user. Capped at 6s on the AI step; returns the skeleton on
+// Builds a deterministic ROLLING 7-day skeleton (today … today+6) from the v2
+// schedule + the athlete's recent training (anchors locked, frequency targets
+// placed by a recovery-aware rule engine, add-ons attached to training days,
+// rest elsewhere), then asks Haiku for per-day coaching notes. Frequency-target
+// satisfaction is counted from the start of the current Mon–Sun week so a target
+// met earlier this week stays met, and one missed earlier this week carries
+// forward and gets placed in the rolling window. Generic: no hardcoded
+// assumptions. Capped at 6s on the AI step; returns the skeleton on
 // timeout/failure so the card always renders.
 var PREVIEW_DAYS = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"];
 var PREVIEW_DAY_LABELS = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"];
+// Mon-first index (0=mon … 6=sun) for a JS Date (getDay: 0=Sun..6=Sat).
+function previewDayIdx(d) { return (d.getDay() + 6) % 7; }
+
+// Frequency-target category GROUP for the "1 target per category per day" cap.
+// Generic keyword lookup (falls back to inferWorkoutCategoryServer). Anchors are
+// NOT passed through this — they never count toward the cap.
+function freqCatGroup(activity) {
+  var a = String(activity || "").toLowerCase();
+  if (/(strength|upper|lower|full.?body|push|pull)/.test(a)) return "strength";
+  if (/(mma|bjj|boxing|grappl|martial)/.test(a)) return "martial_arts";
+  if (/(cardio|run|bike|cycl|hike|walk|swim)/.test(a)) return "cardio";
+  if (/(yoga|pilates|stretch|meditat|breath)/.test(a)) return "mind_body";
+  if (/(rehab|\bpt\b|recovery|mobility)/.test(a)) return "rehab";
+  return inferWorkoutCategoryServer(activity);
+}
 
 // Monday 00:00 of the week containing `d` (local server time).
 function previewMondayOf(d) {
@@ -3948,18 +3966,23 @@ function buildWeekSkeleton(schedule, workouts, exercises, today) {
   var targets = Array.isArray(schedule.frequency_targets) ? schedule.frequency_targets : [];
   var addons = Array.isArray(schedule.addons) ? schedule.addons : [];
 
-  var monday = previewMondayOf(today);
   var todayStr = ymdLocal(today);
   var todayMs = Date.parse(todayStr + "T00:00:00");
   var WIN48 = 48 * 3600000;
+  // Start of the current Mon–Sun week (for carry-forward done-counting only).
+  var weekStartMs = Date.parse(ymdLocal(previewMondayOf(today)) + "T00:00:00");
 
+  // ROLLING WINDOW: today … today+6. Each day's dayKey/dayLabel is its ACTUAL
+  // weekday (anchors are keyed by weekday), so the array starts at today.
   var days = [];
   var dateMs = [];
+  var base = new Date(today.getFullYear(), today.getMonth(), today.getDate());
   for (var i = 0; i < 7; i++) {
-    var d = new Date(monday); d.setDate(monday.getDate() + i);
+    var d = new Date(base); d.setDate(base.getDate() + i);
     var dateStr = ymdLocal(d);
+    var pIdx = previewDayIdx(d);
     dateMs.push(Date.parse(dateStr + "T00:00:00"));
-    days.push({ dayKey: PREVIEW_DAYS[i], date: dateStr, dayLabel: PREVIEW_DAY_LABELS[i], planned: [], done: false, actual_workout: null, recovery_notes: [] });
+    days.push({ dayKey: PREVIEW_DAYS[pIdx], date: dateStr, dayLabel: PREVIEW_DAY_LABELS[pIdx], planned: [], done: false, actual_workout: null, recovery_notes: [] });
   }
 
   // first done workout per date (for the day-level done flag + display label).
@@ -4020,9 +4043,9 @@ function buildWeekSkeleton(schedule, workouts, exercises, today) {
     return { required: req, conflicts: hits };
   }
 
-  // (a) ANCHORS — locked; never move. done handled per-day below.
+  // (a) ANCHORS — locked; never move. Keyed by the day's actual weekday.
   for (var i = 0; i < 7; i++) {
-    previewNormalizeAnchor(anchors[PREVIEW_DAYS[i]]).forEach(function(a) {
+    previewNormalizeAnchor(anchors[days[i].dayKey]).forEach(function(a) {
       days[i].planned.push({ activity: a.activity, type: "anchor", duration: a.duration || null, category: inferWorkoutCategoryServer(a.activity) });
     });
   }
@@ -4034,17 +4057,29 @@ function buildWeekSkeleton(schedule, workouts, exercises, today) {
     return !!((prev && isHardDay(prev)) || (next && isHardDay(next)));
   }
 
-  // ALL done workouts logged this Mon–Sun week (for frequency-target counts).
-  // Use every done row, not just one-per-date, so a strength session logged as a
-  // second workout on an anchor day still counts.
-  var weekDateSet = {}; days.forEach(function(d) { weekDateSet[d.date] = true; });
-  var weekDone = (workouts || []).filter(function(w) { return w && w.done === true && weekDateSet[w.date]; });
+  // CARRY-FORWARD done-counting: ALL done workouts from the START of the current
+  // Mon–Sun week through the end of the rolling window. This way a target met
+  // earlier this week stays met (not re-placed), and one missed Mon→yesterday
+  // carries forward as unmet and gets placed in the rolling window. Every done
+  // row counts (not one-per-date) so a strength session logged as a 2nd workout
+  // on an anchor day still counts.
+  var windowEndMs = dateMs[6];
+  var weekDone = (workouts || []).filter(function(w) {
+    if (!w || w.done !== true || !w.date) return false;
+    var ms = Date.parse(w.date + "T00:00:00");
+    return !isNaN(ms) && ms >= weekStartMs && ms <= windowEndMs;
+  });
 
   // (b) FREQUENCY TARGETS.
-  // assignedFreq enforces max ONE frequency target per day (completed ones count).
-  var assignedFreq = {};
+  // CAP: at most ONE frequency target per CATEGORY GROUP per day (anchors don't
+  // count). So Upper Body + Yoga can share a day (strength vs mind_body), but
+  // Upper Body + Lower Body cannot (both strength). dayFreqCats[idx] = {grp:true}.
+  var dayFreqCats = {};
   var targetDiag = [];
   function dayIdxForDate(dateStr) { for (var i = 0; i < 7; i++) { if (days[i].date === dateStr) return i; } return -1; }
+  function dayIdxForKey(key) { for (var i = 0; i < 7; i++) { if (days[i].dayKey === key) return i; } return -1; }
+  function freqOccupied(idx, grp) { return !!(dayFreqCats[idx] && dayFreqCats[idx][grp]); }
+  function markFreq(idx, grp) { (dayFreqCats[idx] = dayFreqCats[idx] || {})[grp] = true; }
   // Category rank for placement order: strength/martial_arts (0) < cardio (1) <
   // mind_body/rehab (2) < other (3). Derived from the target ACTIVITY (schedule),
   // not any workout.
@@ -4070,14 +4105,15 @@ function buildWeekSkeleton(schedule, workouts, exercises, today) {
   orderedTargets.forEach(function(target) {
     var tpw = Number(target.times_per_week) || 1;
     var cat = inferWorkoutCategoryServer(target.activity);
+    var grp = freqCatGroup(target.activity); // category group for the per-day cap
     var reqMuscles = activityMuscles(target.activity);
     // (1) DONE-COUNTING via the exercises table (never workout.type).
     var qualifying = weekDone.filter(function(w) { return workoutSatisfiesTarget(w, reqMuscles); });
     var doneCount = qualifying.length;
 
-    // (2) Surface completed targets on the day(s) they actually happened, with
-    // done:true, so the user sees what was accomplished (e.g. Upper Body shown on
-    // Wednesday next to the anchor). One frequency_target item per day.
+    // (2) Surface completed targets on the day(s) they happened (done:true) IF
+    // that day is inside the rolling window. Completions earlier this week (not
+    // in the window) still count toward doneCount but aren't drawn.
     var placedDates = {};
     qualifying.forEach(function(w) {
       var di = dayIdxForDate(w.date);
@@ -4085,24 +4121,24 @@ function buildWeekSkeleton(schedule, workouts, exercises, today) {
       var already = days[di].planned.some(function(p) { return p.type === "frequency_target" && p.activity === target.activity; });
       if (!already) days[di].planned.push({ activity: target.activity, type: "frequency_target", duration: target.duration || null, category: cat, done: true });
       placedDates[w.date] = true;
-      assignedFreq[PREVIEW_DAYS[di]] = true; // occupies this day's single freq slot
+      markFreq(di, grp); // occupies this day's slot for this category group
     });
 
     var slots = Math.max(0, tpw - doneCount);
     var placedFuture = [];
     for (var s = 0; s < slots; s++) {
-      // (4) GUARANTEED PLACEMENT — available = non-anchor day with no freq target
-      // yet. Pick the highest-scoring available day even if the score is negative;
-      // only skip when literally zero unassigned days remain.
+      // (4) GUARANTEED PLACEMENT — available = non-anchor day with no frequency
+      // target of THIS category group yet. Pick the highest-scoring available day
+      // even if negative; only skip when zero available days remain.
       var bestIdx = -1;
-      var sugIdx = PREVIEW_DAYS.indexOf(target.suggested_day);
-      if (sugIdx >= 0 && !hasAnchor(sugIdx) && !assignedFreq[PREVIEW_DAYS[sugIdx]]) {
+      var sugIdx = dayIdxForKey(target.suggested_day);
+      if (sugIdx >= 0 && !hasAnchor(sugIdx) && !freqOccupied(sugIdx, grp)) {
         bestIdx = sugIdx; // honor the suggested day when still open
       } else {
         var bestScore = -Infinity;
         for (var i = 0; i < 7; i++) {
-          if (hasAnchor(i) || assignedFreq[PREVIEW_DAYS[i]]) continue; // not available
-          var dk = PREVIEW_DAYS[i];
+          if (hasAnchor(i) || freqOccupied(i, grp)) continue; // not available for this group
+          var dk = days[i].dayKey;
           var score = 0;
           if (!adjacentHard(i)) score += 30;
           var rc = recentConflicts(target.activity, dateMs[i]);
@@ -4111,12 +4147,12 @@ function buildWeekSkeleton(schedule, workouts, exercises, today) {
           if (score > bestScore) { bestScore = score; bestIdx = i; }
         }
       }
-      if (bestIdx < 0) break; // no unassigned day left anywhere — cannot place more
+      if (bestIdx < 0) break; // no day left that can take this category — cannot place more
       days[bestIdx].planned.push({ activity: target.activity, type: "frequency_target", duration: target.duration || null, category: cat });
-      assignedFreq[PREVIEW_DAYS[bestIdx]] = true;
+      markFreq(bestIdx, grp);
       placedFuture.push(days[bestIdx].date);
     }
-    targetDiag.push({ activity: target.activity, category: cat, tpw: tpw, doneCount: doneCount, met: doneCount >= tpw, qualifying_dates: qualifying.map(function(w) { return w.date; }), placed: placedFuture });
+    targetDiag.push({ activity: target.activity, category: cat, group: grp, tpw: tpw, doneCount: doneCount, met: doneCount >= tpw, qualifying_dates: qualifying.map(function(w) { return w.date; }), placed: placedFuture });
   });
 
   // (c) ADDONS — attach to EVERY training day (has an anchor OR a frequency target).
@@ -4134,9 +4170,15 @@ function buildWeekSkeleton(schedule, workouts, exercises, today) {
   }
 
   // per-day done / actual_workout + recovery_notes (specific muscle conflicts).
+  // A day is "done" only when a completed workout exists AND the date is BEFORE
+  // today (today shows the • indicator instead). actual_workout is still surfaced
+  // for today so the user sees what they logged.
   for (var i = 0; i < 7; i++) {
     var w = doneByDate[days[i].date];
-    if (w) { days[i].done = true; days[i].actual_workout = { type: w.type || "Workout" }; }
+    if (w) {
+      days[i].actual_workout = { type: w.type || "Workout" };
+      if (dateMs[i] < todayMs) days[i].done = true;
+    }
     var seen = {};
     days[i].planned.forEach(function(p) {
       if (p.type !== "anchor" && p.type !== "frequency_target") return;
@@ -4169,7 +4211,7 @@ function buildWeekSkeleton(schedule, workouts, exercises, today) {
 
 // STEP 2 — Haiku coaching notes. Returns { week_note, days:[{dayKey,coaching_note}] }.
 async function enrichWeekPreviewWithCoaching(skeleton, pd, workouts, readiness, microGoals, today) {
-  var sys = "You are an expert personal trainer and strength & conditioning coach. You think in terms of weekly periodization, muscle recovery, and progressive overload. You know that adjacent hard sessions on the same muscle group cause overtraining. You know MMA and martial arts tax the nervous system similarly to heavy strength work. You write like a real coach — direct, specific, encouraging without being sycophantic. Return ONLY valid JSON: { \"week_note\": string (ONE sentence big-picture coaching note for this week), \"days\": [ { \"dayKey\": \"mon\", \"coaching_note\": string, max 12 words, specific, coach voice } ] } with EXACTLY one entry per day for all 7 days (mon, tue, wed, thu, fri, sat, sun). For rest days, give a short recovery cue. Keep it scannable.";
+  var sys = "You are an expert personal trainer and strength & conditioning coach. You think in terms of weekly periodization, muscle recovery, and progressive overload. You know that adjacent hard sessions on the same muscle group cause overtraining. You know MMA and martial arts tax the nervous system similarly to heavy strength work. You write like a real coach — direct, specific, encouraging without being sycophantic. The plan is a ROLLING 7-day window starting today (it is NOT a Monday–Sunday week) — frame the week_note around 'this week'/'the next 7 days' generically. Return ONLY valid JSON: { \"week_note\": string (ONE sentence big-picture coaching note for this week), \"days\": [ { \"dayKey\": \"mon\", \"coaching_note\": string, max 12 words, specific, coach voice } ] } with EXACTLY one entry per day, one for each dayKey present in the skeleton (all 7 weekdays appear once). For rest days, give a short recovery cue. Keep it scannable.";
   var ctxStr = (pd && pd.ai_prompt_context ? String(pd.ai_prompt_context) : "").substring(0, 600);
   var dayNames = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
   var last7 = (workouts || []).slice(0, 12).map(function(w) { return w.date + ": " + (w.type || "Workout") + (w.done ? " (done)" : " (planned)"); }).join("\n");

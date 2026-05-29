@@ -328,6 +328,10 @@ input[type=range]{width:100%;accent-color:var(--accent)}
 #week-preview-section .wp-spin{width:11px;height:11px;border-radius:50%;background:var(--accent-ember);animation:pulse 1.1s ease-in-out infinite;display:inline-block}
 #week-preview-section .wp-sep{border:none;border-top:1px solid var(--border-subtle);margin:14px 0 0}
 #week-preview-section .wp-skel{display:flex;align-items:center;gap:8px;color:var(--text-muted);font-size:13px;padding:6px 8px}
+/* Training-blueprint collapse toggle (Schedule card) */
+#schedule-card .bp-toggle-row{display:flex;align-items:center;justify-content:space-between;gap:10px;cursor:pointer;padding:2px 0}
+#schedule-card .bp-toggle-label{font-size:12px;text-transform:uppercase;letter-spacing:0.06em;color:var(--text-muted);font-weight:600}
+#schedule-card .bp-toggle-edit{font-size:12px;font-weight:600;color:var(--accent-ember);white-space:nowrap}
 .settings-header{display:flex;align-items:center;justify-content:space-between;padding:14px 24px;border-bottom:1px solid var(--border);flex-shrink:0}
 .settings-body{display:flex;flex:1;overflow:hidden}
 .settings-nav{width:200px;border-right:1px solid var(--border);padding:16px 0;overflow-y:auto;flex-shrink:0}
@@ -785,6 +789,7 @@ input[type=range]{width:100%;accent-color:var(--accent)}
     <!-- 2. Weekly Schedule (dynamic v2: anchors / weekly targets / add-ons) -->
     <div class="card" id="schedule-card">
       <div id="week-preview-section"></div>
+      <div id="blueprint-toggle"></div>
       <div id="schedule-grid"></div>
     </div>
 
@@ -1324,7 +1329,7 @@ var DURATION_OPTIONS = [15, 30, 45, 60, 75, 90];
 
 // ── Dynamic schedule v2: anchors / weekly targets / daily add-ons ──────────
 var currentSchedule = { anchors: {}, frequency_targets: [], addons: [] };
-var schedEditMode = false;   // view (default) vs edit
+var schedEditMode = (function(){ try { return localStorage.getItem('ac_schedule_blueprint_open') === 'true'; } catch(e){ return false; } })();   // view (default) vs edit — restores the persisted blueprint open/closed state (open === edit)
 var schedOpenDay = null;     // day whose anchor popover/editor is open
 // "Build with AI" inline flow state (replaces the empty-state card while active)
 var schedAIActive = false;   // flow open?
@@ -8159,7 +8164,9 @@ function renderWeekPreview(data) {
     var coach = d.coaching_note ? '<div class="wp-coach">' + escHtml(d.coaching_note) + '</div>' : '';
     var status = d.done ? '<span class="wp-status done">✓</span>'
       : (when === 'today' ? '<span class="wp-status today">•</span>' : '<span class="wp-status"></span>');
-    var dayLabel = DAY_LABELS[i] || (d.dayLabel || '').slice(0, 3);
+    // Rolling window: use the server-provided actual weekday (abbreviated), not
+    // the position index (which is no longer Monday-first).
+    var dayLabel = (d.dayLabel ? d.dayLabel.slice(0, 3) : (DAY_LABELS[i] || ''));
     h += '<div class="wp-row' + (when === 'today' ? ' today' : when === 'past' ? ' past' : '') + '">' +
       '<span class="wp-day ' + when + '">' + dayLabel + '</span>' +
       '<span class="wp-body">' + actHtml + coach + '</span>' + status + '</div>';
@@ -8176,8 +8183,49 @@ function wpRefresh() {
   loadWeekPreview({ force: true });
 }
 
+// ── Training-blueprint collapse (Schedule card) ──────────────────────────────
+// The Fixed Days / Weekly Targets / Daily Add-ons blueprint (#schedule-grid) is
+// collapsed by default behind a "YOUR TRAINING BLUEPRINT ▸ Edit" toggle, so the
+// default Schedule view is just the 7-day preview. Open state mirrors edit mode
+// (expand = enter edit, ✓ Done = collapse) and persists in localStorage. This is
+// additive — schedRender*/schedToggleEdit/schedPersist are unchanged.
+function isBlueprintOpen() { try { return localStorage.getItem('ac_schedule_blueprint_open') === 'true'; } catch (e) { return false; } }
+function setBlueprintOpen(v) { try { localStorage.setItem('ac_schedule_blueprint_open', v ? 'true' : 'false'); } catch (e) {} }
+function openBlueprintEdit() {
+  // Expand + enter edit mode (same as the existing Edit button). schedToggleEdit
+  // re-renders; applyBlueprintChrome() then shows the grid and hides this toggle.
+  if (typeof schedEditMode !== 'undefined' && !schedEditMode && typeof schedToggleEdit === 'function') schedToggleEdit();
+  else renderSchedule();
+}
+function applyBlueprintChrome() {
+  var grid = document.getElementById('schedule-grid');
+  var toggle = document.getElementById('blueprint-toggle');
+  if (!grid || !toggle) return;
+  var sched = (typeof currentSchedule !== 'undefined' && currentSchedule) ? currentSchedule : {};
+  var isEmpty = !(sched.anchors && Object.keys(sched.anchors).length) &&
+    !(sched.frequency_targets && sched.frequency_targets.length) &&
+    !(sched.addons && sched.addons.length);
+  // Always-open cases: empty schedule (onboarding), AI build flow, or edit mode.
+  var forceOpen = isEmpty || (typeof schedAIActive !== 'undefined' && schedAIActive) ||
+    (typeof schedEditMode !== 'undefined' && schedEditMode);
+  // Persist open == edit mode (expand enters edit; ✓ Done exits + collapses).
+  setBlueprintOpen(typeof schedEditMode !== 'undefined' && schedEditMode);
+  if (forceOpen) {
+    grid.style.display = '';
+    toggle.style.display = 'none';
+    toggle.innerHTML = '';
+  } else {
+    grid.style.display = 'none';
+    toggle.style.display = '';
+    toggle.innerHTML = '<div class="bp-toggle-row" onclick="openBlueprintEdit()">' +
+      '<span class="bp-toggle-label">Your Training Blueprint</span>' +
+      '<span class="bp-toggle-edit">&#9656; Edit</span></div>';
+  }
+}
+
 function renderSchedule() {
   loadWeekPreview();
+  applyBlueprintChrome();
   var el = document.getElementById('schedule-grid');
   if (!el) return;
   el.style.cssText = '';
