@@ -329,6 +329,7 @@ input[type=range]{width:100%;accent-color:var(--accent)}
 #week-preview-section .wp-sep{border:none;border-top:1px solid var(--border-subtle);margin:14px 0 0}
 #week-preview-section .wp-skel{display:flex;align-items:center;gap:8px;color:var(--text-muted);font-size:13px;padding:6px 8px}
 /* Training-blueprint collapse toggle (Schedule card) */
+#schedule-card #schedule-grid.bp-collapsed{display:none}
 #schedule-card .bp-toggle-row{display:flex;align-items:center;justify-content:space-between;gap:10px;cursor:pointer;padding:2px 0}
 #schedule-card .bp-toggle-label{font-size:12px;text-transform:uppercase;letter-spacing:0.06em;color:var(--text-muted);font-weight:600}
 #schedule-card .bp-toggle-edit{font-size:12px;font-weight:600;color:var(--accent-ember);white-space:nowrap}
@@ -8210,12 +8211,17 @@ function applyBlueprintChrome() {
     (typeof schedEditMode !== 'undefined' && schedEditMode);
   // Persist open == edit mode (expand enters edit; ✓ Done exits + collapses).
   setBlueprintOpen(typeof schedEditMode !== 'undefined' && schedEditMode);
+  // Toggle a CLASS (not inline display) on #schedule-grid: renderSchedule() resets
+  // el.style.cssText right after this runs, which would wipe an inline display:none
+  // — but it never touches classList, so the collapse sticks. #schedule-grid wraps
+  // ONLY the blueprint header + the three sections (the week preview is a separate
+  // sibling), so this hides exactly the blueprint.
   if (forceOpen) {
-    grid.style.display = '';
+    grid.classList.remove('bp-collapsed');
     toggle.style.display = 'none';
     toggle.innerHTML = '';
   } else {
-    grid.style.display = 'none';
+    grid.classList.add('bp-collapsed');
     toggle.style.display = '';
     toggle.innerHTML = '<div class="bp-toggle-row" onclick="openBlueprintEdit()">' +
       '<span class="bp-toggle-label">Your Training Blueprint</span>' +
@@ -8239,7 +8245,10 @@ function renderSchedule() {
   var h = '';
   h += '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px">';
   h += '<span style="font-size:12px;text-transform:uppercase;letter-spacing:0.06em;color:var(--text-muted)">Schedule</span>';
-  h += '<button onclick="schedToggleEdit()" style="background:transparent;border:none;color:var(--accent-ember);font-size:12px;font-weight:600;cursor:pointer">' + (schedEditMode ? '✓ Done' : '✏️ Edit') + '</button>';
+  // Only the ✓ Done button renders here (edit mode). The original ✏️ Edit trigger
+  // is suppressed — the "YOUR TRAINING BLUEPRINT ▸ Edit" toggle row opens editing
+  // instead, so there's no duplicate Edit button.
+  if (schedEditMode) h += '<button onclick="schedToggleEdit()" style="background:transparent;border:none;color:var(--accent-ember);font-size:12px;font-weight:600;cursor:pointer">✓ Done</button>';
   h += '</div>';
   h += schedRenderAnchors();
   h += schedRenderTargets();
@@ -8331,6 +8340,16 @@ function schedRenderTargets() {
     }
     return h;
   }
+  // Materialize the keyword-based stackable default for any NAMED target lacking
+  // an explicit boolean, so the editor checkbox and the server agree (existing
+  // pre-feature targets get a sensible default the first time they're edited).
+  var _bpDirty = false;
+  for (var k = 0; k < t.length; k++) {
+    if (typeof t[k].stackable !== 'boolean' && t[k].activity && t[k].activity.trim()) {
+      t[k].stackable = schedStackableDefault(t[k].activity); _bpDirty = true;
+    }
+  }
+  if (_bpDirty) schedPersist();
   for (var j = 0; j < t.length; j++) h += schedTargetRow(t[j], j);
   h += '<button onclick="schedAddTarget()" style="width:100%;margin-top:8px;background:transparent;border:1px dashed var(--border-subtle);color:var(--text-muted);border-radius:12px;padding:12px;font-size:13px;cursor:pointer;font-family:Inter,sans-serif">+ Add Weekly Target</button>';
   return h;
@@ -8341,6 +8360,9 @@ function schedTargetRow(x, idx) {
   h += '<input type="text" value="' + attrEsc(x.activity || '') + '" placeholder="Activity" onblur="schedTargetSet(' + idx + ',\'activity\',this.value)" style="flex:1;min-width:0">';
   h += '<button onclick="schedTargetDelete(' + idx + ')" title="Delete" style="background:transparent;border:none;color:var(--text-muted);font-size:16px;cursor:pointer;flex-shrink:0">🗑</button>';
   h += '</div>';
+  // Stackable toggle — lets light/recovery work share a day with a main session.
+  h += '<label style="display:flex;align-items:center;gap:8px;margin-bottom:4px;cursor:pointer"><input type="checkbox" ' + (schedTargetStackable(x) ? 'checked' : '') + ' onchange="schedTargetSet(' + idx + ',\'stackable\',this.checked)" style="flex-shrink:0;width:15px;height:15px"><span style="font-size:12px;color:var(--text-primary)">Can be done on the same day as other workouts</span></label>';
+  h += '<div style="font-size:11px;color:var(--text-muted);font-style:italic;margin-bottom:8px">e.g. yoga or mobility can share a day with a strength session</div>';
   h += '<div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center">';
   h += '<div style="display:flex;align-items:center;gap:6px"><span style="font-size:11px;color:var(--text-muted)">x/week</span>' + schedStepper('schedTargetStep(' + idx + ',-1)', 'schedTargetStep(' + idx + ',1)', x.times_per_week || 1) + '</div>';
   h += '<select onchange="schedTargetSet(' + idx + ',\'suggested_day\',this.value)" style="width:auto">' + schedDayOptions(x.suggested_day) + '</select>';
@@ -8348,12 +8370,29 @@ function schedTargetRow(x, idx) {
   h += '</div></div>';
   return h;
 }
+// Default for the "stackable" toggle, by activity keyword: ON for light /
+// recovery work (yoga, pilates, stretch, meditation, mobility, rehab, pt), OFF
+// for everything else. Used only when the target has no explicit stackable yet.
+function schedStackableDefault(activity) {
+  return /(yoga|pilates|stretch|meditat|mobility|rehab|\bpt\b)/i.test(String(activity || ''));
+}
+function schedTargetStackable(x) {
+  return (x && typeof x.stackable === 'boolean') ? x.stackable : schedStackableDefault(x && x.activity);
+}
 function schedTargetSet(idx, field, value) {
   var x = currentSchedule.frequency_targets[idx]; if (!x) return;
-  if (field === 'activity') x.activity = String(value || '').trim();
+  var rerender = false;
+  if (field === 'activity') {
+    x.activity = String(value || '').trim();
+    // First time a target gets a name, apply the keyword-based stackable default
+    // (the user can still override via the checkbox). Re-render so it shows.
+    if (typeof x.stackable !== 'boolean' && x.activity) { x.stackable = schedStackableDefault(x.activity); rerender = true; }
+  }
   else if (field === 'suggested_day') x.suggested_day = (value && value !== 'any') ? value : null;
   else if (field === 'duration') x.duration = schedParseDur(value);
+  else if (field === 'stackable') x.stackable = !!value;
   schedPersist();
+  if (rerender) renderSchedule();
 }
 function schedTargetStep(idx, delta) {
   var x = currentSchedule.frequency_targets[idx]; if (!x) return;

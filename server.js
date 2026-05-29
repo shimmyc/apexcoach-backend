@@ -3875,19 +3875,6 @@ var PREVIEW_DAY_LABELS = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"
 // Mon-first index (0=mon … 6=sun) for a JS Date (getDay: 0=Sun..6=Sat).
 function previewDayIdx(d) { return (d.getDay() + 6) % 7; }
 
-// Frequency-target category GROUP for the "1 target per category per day" cap.
-// Generic keyword lookup (falls back to inferWorkoutCategoryServer). Anchors are
-// NOT passed through this — they never count toward the cap.
-function freqCatGroup(activity) {
-  var a = String(activity || "").toLowerCase();
-  if (/(strength|upper|lower|full.?body|push|pull)/.test(a)) return "strength";
-  if (/(mma|bjj|boxing|grappl|martial)/.test(a)) return "martial_arts";
-  if (/(cardio|run|bike|cycl|hike|walk|swim)/.test(a)) return "cardio";
-  if (/(yoga|pilates|stretch|meditat|breath)/.test(a)) return "mind_body";
-  if (/(rehab|\bpt\b|recovery|mobility)/.test(a)) return "rehab";
-  return inferWorkoutCategoryServer(activity);
-}
-
 // Monday 00:00 of the week containing `d` (local server time).
 function previewMondayOf(d) {
   var t = new Date(d.getFullYear(), d.getMonth(), d.getDate());
@@ -4071,18 +4058,20 @@ function buildWeekSkeleton(schedule, workouts, exercises, today) {
   });
 
   // (b) FREQUENCY TARGETS.
-  // CAP: at most ONE frequency target per CATEGORY GROUP per day (anchors don't
-  // count). So Upper Body + Yoga can share a day (strength vs mind_body), but
-  // Upper Body + Lower Body cannot (both strength). dayFreqCats[idx] = {grp:true}.
-  var dayFreqCats = {};
+  // CAP: at most ONE NON-STACKABLE frequency target per day (anchors never count
+  // toward the cap). Targets flagged `stackable:true` (e.g. yoga / mobility /
+  // light work) may ADDITIONALLY share a day that already has an anchor or a
+  // non-stackable target — coached as a combined block. A day can hold multiple
+  // stackable targets but only one non-stackable. Missing flag → false (safe).
+  var dayNonStackable = {}; // idx -> true once a non-stackable freq target sits there
   var targetDiag = [];
   function dayIdxForDate(dateStr) { for (var i = 0; i < 7; i++) { if (days[i].date === dateStr) return i; } return -1; }
   function dayIdxForKey(key) { for (var i = 0; i < 7; i++) { if (days[i].dayKey === key) return i; } return -1; }
-  function freqOccupied(idx, grp) { return !!(dayFreqCats[idx] && dayFreqCats[idx][grp]); }
-  function markFreq(idx, grp) { (dayFreqCats[idx] = dayFreqCats[idx] || {})[grp] = true; }
+  function targetStackable(t) { return !!(t && t.stackable === true); }
+  function hasNonStackable(i) { return !!dayNonStackable[i]; }
+  function isTrainingDay(i) { return hasAnchor(i) || hasNonStackable(i); }
   // Category rank for placement order: strength/martial_arts (0) < cardio (1) <
-  // mind_body/rehab (2) < other (3). Derived from the target ACTIVITY (schedule),
-  // not any workout.
+  // mind_body/rehab (2) < other (3). Derived from the target ACTIVITY (schedule).
   function catRank(activity) {
     var c = inferWorkoutCategoryServer(activity);
     if (c === "strength" || c === "martial_arts") return 0;
@@ -4090,10 +4079,12 @@ function buildWeekSkeleton(schedule, workouts, exercises, today) {
     if (c === "mind_body" || c === "rehab") return 2;
     return 3;
   }
-  // (3) Placement order: targets with a suggested_day first, then times_per_week
-  // ascending, then category rank — so e.g. 1x/week Lower Body Strength claims a
-  // day before 2x/week Cardio consumes all open slots.
+  // (3) Placement order: NON-STACKABLE targets first (so stackable ones can land
+  // on the training days they create), then suggested_day-present, then
+  // times_per_week ascending, then category rank.
   var orderedTargets = targets.filter(function(t) { return t && t.activity; }).slice().sort(function(a, b) {
+    var ka = targetStackable(a) ? 1 : 0, kb = targetStackable(b) ? 1 : 0;
+    if (ka !== kb) return ka - kb;
     var sa = PREVIEW_DAYS.indexOf(a.suggested_day) >= 0 ? 0 : 1;
     var sb = PREVIEW_DAYS.indexOf(b.suggested_day) >= 0 ? 0 : 1;
     if (sa !== sb) return sa - sb;
@@ -4105,7 +4096,7 @@ function buildWeekSkeleton(schedule, workouts, exercises, today) {
   orderedTargets.forEach(function(target) {
     var tpw = Number(target.times_per_week) || 1;
     var cat = inferWorkoutCategoryServer(target.activity);
-    var grp = freqCatGroup(target.activity); // category group for the per-day cap
+    var stackable = targetStackable(target);
     var reqMuscles = activityMuscles(target.activity);
     // (1) DONE-COUNTING via the exercises table (never workout.type).
     var qualifying = weekDone.filter(function(w) { return workoutSatisfiesTarget(w, reqMuscles); });
@@ -4119,40 +4110,63 @@ function buildWeekSkeleton(schedule, workouts, exercises, today) {
       var di = dayIdxForDate(w.date);
       if (di < 0 || placedDates[w.date]) return;
       var already = days[di].planned.some(function(p) { return p.type === "frequency_target" && p.activity === target.activity; });
-      if (!already) days[di].planned.push({ activity: target.activity, type: "frequency_target", duration: target.duration || null, category: cat, done: true });
+      if (!already) days[di].planned.push({ activity: target.activity, type: "frequency_target", duration: target.duration || null, category: cat, stackable: stackable, done: true });
       placedDates[w.date] = true;
-      markFreq(di, grp); // occupies this day's slot for this category group
+      if (!stackable) dayNonStackable[di] = true; // occupies the day's single non-stackable slot
     });
 
     var slots = Math.max(0, tpw - doneCount);
     var placedFuture = [];
+    var placedIdx = {}; // never place the same target twice on one day
     for (var s = 0; s < slots; s++) {
-      // (4) GUARANTEED PLACEMENT — available = non-anchor day with no frequency
-      // target of THIS category group yet. Pick the highest-scoring available day
-      // even if negative; only skip when zero available days remain.
       var bestIdx = -1;
-      var sugIdx = dayIdxForKey(target.suggested_day);
-      if (sugIdx >= 0 && !hasAnchor(sugIdx) && !freqOccupied(sugIdx, grp)) {
-        bestIdx = sugIdx; // honor the suggested day when still open
-      } else {
-        var bestScore = -Infinity;
-        for (var i = 0; i < 7; i++) {
-          if (hasAnchor(i) || freqOccupied(i, grp)) continue; // not available for this group
-          var dk = days[i].dayKey;
-          var score = 0;
-          if (!adjacentHard(i)) score += 30;
-          var rc = recentConflicts(target.activity, dateMs[i]);
-          if (rc.required.length) score += (rc.conflicts.length ? -20 : 20);
-          if (dk === "wed" || dk === "thu") score += 10;
-          if (score > bestScore) { bestScore = score; bestIdx = i; }
+      if (!stackable) {
+        // (4) GUARANTEED PLACEMENT (non-stackable): available = non-anchor day with
+        // no non-stackable target yet. Highest-scoring day even if negative; only
+        // skip when zero available days remain.
+        var sugIdx = dayIdxForKey(target.suggested_day);
+        if (sugIdx >= 0 && !hasAnchor(sugIdx) && !hasNonStackable(sugIdx) && !placedIdx[sugIdx]) {
+          bestIdx = sugIdx;
+        } else {
+          var bestScore = -Infinity;
+          for (var i = 0; i < 7; i++) {
+            if (hasAnchor(i) || hasNonStackable(i) || placedIdx[i]) continue;
+            var dk = days[i].dayKey;
+            var score = 0;
+            if (!adjacentHard(i)) score += 30;
+            var rc = recentConflicts(target.activity, dateMs[i]);
+            if (rc.required.length) score += (rc.conflicts.length ? -20 : 20);
+            if (dk === "wed" || dk === "thu") score += 10;
+            if (score > bestScore) { bestScore = score; bestIdx = i; }
+          }
         }
+        if (bestIdx < 0) break;
+        dayNonStackable[bestIdx] = true;
+      } else {
+        // STACKABLE: prefer a training day (anchor or non-stackable target) it can
+        // share; fall back to an open day only if no training day is available.
+        var sugIdx2 = dayIdxForKey(target.suggested_day);
+        if (sugIdx2 >= 0 && isTrainingDay(sugIdx2) && !placedIdx[sugIdx2]) {
+          bestIdx = sugIdx2;
+        } else {
+          var bestTrain = -Infinity, fbScore = -Infinity, fbIdx = -1;
+          for (var j = 0; j < 7; j++) {
+            if (placedIdx[j]) continue;
+            var dk2 = days[j].dayKey;
+            var sc = (dk2 === "wed" || dk2 === "thu") ? 10 : 0;
+            if (isTrainingDay(j)) { if (sc > bestTrain) { bestTrain = sc; bestIdx = j; } }
+            else if (sc > fbScore) { fbScore = sc; fbIdx = j; }
+          }
+          if (bestIdx < 0) bestIdx = fbIdx; // no training day left → use a rest day
+        }
+        if (bestIdx < 0) break;
+        // stackable does NOT occupy the non-stackable slot (multiple allowed).
       }
-      if (bestIdx < 0) break; // no day left that can take this category — cannot place more
-      days[bestIdx].planned.push({ activity: target.activity, type: "frequency_target", duration: target.duration || null, category: cat });
-      markFreq(bestIdx, grp);
+      days[bestIdx].planned.push({ activity: target.activity, type: "frequency_target", duration: target.duration || null, category: cat, stackable: stackable });
+      placedIdx[bestIdx] = true;
       placedFuture.push(days[bestIdx].date);
     }
-    targetDiag.push({ activity: target.activity, category: cat, group: grp, tpw: tpw, doneCount: doneCount, met: doneCount >= tpw, qualifying_dates: qualifying.map(function(w) { return w.date; }), placed: placedFuture });
+    targetDiag.push({ activity: target.activity, category: cat, stackable: stackable, tpw: tpw, doneCount: doneCount, met: doneCount >= tpw, qualifying_dates: qualifying.map(function(w) { return w.date; }), placed: placedFuture });
   });
 
   // (c) ADDONS — attach to EVERY training day (has an anchor OR a frequency target).
@@ -4197,7 +4211,7 @@ function buildWeekSkeleton(schedule, workouts, exercises, today) {
         " | " + acts + (dd.recovery_notes.length ? " | recovery: " + dd.recovery_notes.join("; ") : "");
     });
     var tgtLines = targetDiag.map(function(t) {
-      return "    " + t.activity + " [" + t.category + "] " + t.doneCount + "/" + t.tpw + " met=" + t.met +
+      return "    " + t.activity + " [" + t.category + (t.stackable ? ",stackable" : "") + "] " + t.doneCount + "/" + t.tpw + " met=" + t.met +
         (t.qualifying_dates.length ? " done@" + t.qualifying_dates.join(",") : "") +
         (t.placed && t.placed.length ? " placed@" + t.placed.join(",") : "");
     });
@@ -4211,13 +4225,13 @@ function buildWeekSkeleton(schedule, workouts, exercises, today) {
 
 // STEP 2 — Haiku coaching notes. Returns { week_note, days:[{dayKey,coaching_note}] }.
 async function enrichWeekPreviewWithCoaching(skeleton, pd, workouts, readiness, microGoals, today) {
-  var sys = "You are an expert personal trainer and strength & conditioning coach. You think in terms of weekly periodization, muscle recovery, and progressive overload. You know that adjacent hard sessions on the same muscle group cause overtraining. You know MMA and martial arts tax the nervous system similarly to heavy strength work. You write like a real coach — direct, specific, encouraging without being sycophantic. The plan is a ROLLING 7-day window starting today (it is NOT a Monday–Sunday week) — frame the week_note around 'this week'/'the next 7 days' generically. Return ONLY valid JSON: { \"week_note\": string (ONE sentence big-picture coaching note for this week), \"days\": [ { \"dayKey\": \"mon\", \"coaching_note\": string, max 12 words, specific, coach voice } ] } with EXACTLY one entry per day, one for each dayKey present in the skeleton (all 7 weekdays appear once). For rest days, give a short recovery cue. Keep it scannable.";
+  var sys = "You are an expert personal trainer and strength & conditioning coach. You think in terms of weekly periodization, muscle recovery, and progressive overload. You know that adjacent hard sessions on the same muscle group cause overtraining. You know MMA and martial arts tax the nervous system similarly to heavy strength work. You write like a real coach — direct, specific, encouraging without being sycophantic. Stackable sessions (yoga, mobility, light work) paired with a main session should be coached as a combined block, not two separate hard efforts. The plan is a ROLLING 7-day window starting today (it is NOT a Monday–Sunday week) — frame the week_note around 'this week'/'the next 7 days' generically. Return ONLY valid JSON: { \"week_note\": string (ONE sentence big-picture coaching note for this week), \"days\": [ { \"dayKey\": \"mon\", \"coaching_note\": string, max 12 words, specific, coach voice } ] } with EXACTLY one entry per day, one for each dayKey present in the skeleton (all 7 weekdays appear once). For rest days, give a short recovery cue. Keep it scannable.";
   var ctxStr = (pd && pd.ai_prompt_context ? String(pd.ai_prompt_context) : "").substring(0, 600);
   var dayNames = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
   var last7 = (workouts || []).slice(0, 12).map(function(w) { return w.date + ": " + (w.type || "Workout") + (w.done ? " (done)" : " (planned)"); }).join("\n");
   var mgTitles = (microGoals || []).map(function(m) { return m && m.title; }).filter(Boolean).join(", ");
   var skel = skeleton.map(function(d) {
-    var acts = d.planned.map(function(p) { return p.activity + (p.type !== "rest" ? " [" + p.type + "]" : ""); }).join(", ");
+    var acts = d.planned.map(function(p) { return p.activity + (p.type !== "rest" ? " [" + p.type + (p.stackable ? ",stackable" : "") + "]" : ""); }).join(", ");
     return d.dayKey + " (" + d.date + "): " + acts +
       (d.done ? " — DONE: " + ((d.actual_workout && d.actual_workout.type) || "") : "") +
       (d.recovery_notes && d.recovery_notes.length ? " — recovery: " + d.recovery_notes.join("; ") : "");
