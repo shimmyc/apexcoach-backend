@@ -302,6 +302,32 @@ input[type=range]{width:100%;accent-color:var(--accent)}
 #schedule-card input[type=text]:focus,#schedule-card select:focus{border-color:var(--accent-ember)}
 #schedule-card .sched-day{flex:1;min-width:36px;border:none;border-radius:9999px;padding:7px 4px;font-size:11px;cursor:pointer;font-family:'Inter',sans-serif}
 #schedule-card .sched-step{width:26px;height:26px;border-radius:9999px;background:var(--bg-surface-1);border:1px solid var(--border-subtle);color:var(--text-primary);font-size:15px;line-height:1;cursor:pointer;flex-shrink:0}
+/* ── 7-DAY SMART SCHEDULE PREVIEW (scoped to #week-preview-section) ───────── */
+#week-preview-section{margin-bottom:14px}
+#week-preview-section .wp-head{display:flex;align-items:baseline;justify-content:space-between;gap:10px;margin-bottom:10px}
+#week-preview-section .wp-title{font-size:12px;text-transform:uppercase;letter-spacing:0.06em;color:var(--text-muted);font-weight:600;flex-shrink:0}
+#week-preview-section .wp-note{font-size:13px;color:var(--text-muted);font-style:italic;text-align:right;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}
+#week-preview-section .wp-row{display:flex;align-items:flex-start;gap:10px;padding:7px 8px;border-radius:10px;border-left:3px solid transparent}
+#week-preview-section .wp-row.today{border-left-color:var(--accent-ember);background:var(--bg-surface-2)}
+#week-preview-section .wp-row.past{opacity:0.7}
+#week-preview-section .wp-day{font-size:13px;font-weight:700;width:34px;flex-shrink:0;padding-top:1px}
+#week-preview-section .wp-day.today{color:var(--accent-ember)}
+#week-preview-section .wp-day.past{color:var(--text-muted)}
+#week-preview-section .wp-day.future{color:var(--text-primary)}
+#week-preview-section .wp-body{flex:1;min-width:0}
+#week-preview-section .wp-act{font-size:14px;color:var(--text-primary);line-height:1.35}
+#week-preview-section .wp-act.rest{color:var(--text-muted)}
+#week-preview-section .wp-suffix{color:var(--text-muted);font-size:12px}
+#week-preview-section .wp-coach{font-size:12px;color:var(--text-muted);line-height:1.4;margin-top:1px}
+#week-preview-section .wp-status{flex-shrink:0;width:16px;text-align:center;font-size:13px;padding-top:1px}
+#week-preview-section .wp-status.done{color:var(--color-positive)}
+#week-preview-section .wp-status.today{color:var(--accent-ember)}
+#week-preview-section .wp-foot{display:flex;justify-content:flex-end;align-items:center;gap:8px;margin-top:8px}
+#week-preview-section .wp-refresh{background:transparent;border:none;color:var(--text-muted);font-size:12px;cursor:pointer;font-family:'Inter',sans-serif;padding:2px 4px}
+#week-preview-section .wp-refresh:hover{color:var(--text-primary)}
+#week-preview-section .wp-spin{width:11px;height:11px;border-radius:50%;background:var(--accent-ember);animation:pulse 1.1s ease-in-out infinite;display:inline-block}
+#week-preview-section .wp-sep{border:none;border-top:1px solid var(--border-subtle);margin:14px 0 0}
+#week-preview-section .wp-skel{display:flex;align-items:center;gap:8px;color:var(--text-muted);font-size:13px;padding:6px 8px}
 .settings-header{display:flex;align-items:center;justify-content:space-between;padding:14px 24px;border-bottom:1px solid var(--border);flex-shrink:0}
 .settings-body{display:flex;flex:1;overflow:hidden}
 .settings-nav{width:200px;border-right:1px solid var(--border);padding:16px 0;overflow-y:auto;flex-shrink:0}
@@ -758,6 +784,7 @@ input[type=range]{width:100%;accent-color:var(--accent)}
 
     <!-- 2. Weekly Schedule (dynamic v2: anchors / weekly targets / add-ons) -->
     <div class="card" id="schedule-card">
+      <div id="week-preview-section"></div>
       <div id="schedule-grid"></div>
     </div>
 
@@ -2035,6 +2062,9 @@ function bootApp() {
     // Structured macro roadmap (replaces the legacy text card; loadRoadmap()
     // and its /roadmap path stay intact but are no longer invoked).
     loadRoadmapData();
+    // Warm the 7-day schedule preview so it's ready when the user reaches the
+    // Profile tab (renders from cache if same-day, else fetches).
+    if (typeof loadWeekPreview === 'function') loadWeekPreview();
   }
 
   // Fitbit-sunset reconsent prompt — force a fresh providers fetch on profile load.
@@ -8023,6 +8053,9 @@ function schedPersist() {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ profile_data: Object.assign({}, currentProfileData, { schedule: currentSchedule }) })
   }).catch(function(e) { console.warn('[Schedule] save skipped:', e && e.message); });
+  // Schedule changed → the 7-day preview is stale. Clear cache (+ re-fetch if
+  // the preview is currently on screen, which it is during live editing).
+  if (typeof invalidateSchedulePreview === 'function') invalidateSchedulePreview();
 }
 function schedToast(msg) {
   var t = document.createElement('div');
@@ -8032,7 +8065,116 @@ function schedToast(msg) {
   setTimeout(function() { if (t.parentNode) t.remove(); }, 2000);
 }
 
+// ── 7-DAY SMART SCHEDULE PREVIEW (client) ────────────────────────────────────
+// Lives in #week-preview-section (above Fixed Days inside #schedule-card).
+// Cache: localStorage 'ac_schedule_preview' = { date, profileId, data }. Loaded
+// from renderSchedule() + bootApp(); invalidated on workout save/delete and
+// schedule edit (schedPersist).
+var SCHED_PREVIEW_KEY = 'ac_schedule_preview';
+var currentWeekPreview = null;
+var _wpLoading = false;
+
+function wpSectionEl() { return document.getElementById('week-preview-section'); }
+
+function invalidateSchedulePreview() {
+  try { localStorage.removeItem(SCHED_PREVIEW_KEY); } catch (e) {}
+  // Re-fetch immediately only if the preview is currently on screen; otherwise
+  // the next renderSchedule()/bootApp() pass will rebuild it from the server.
+  var el = wpSectionEl();
+  if (el && el.querySelector('.wp-row')) loadWeekPreview({ force: true });
+}
+
+function loadWeekPreview(opts) {
+  var el = wpSectionEl();
+  if (!el || !currentProfileId) { if (el) el.innerHTML = ''; return; }
+  // The AI build flow takes over the whole schedule card — don't show a preview.
+  if (typeof schedAIActive !== 'undefined' && schedAIActive) { el.innerHTML = ''; return; }
+  var sched = schedActiveSchedule();
+  var isEmpty = !(sched.anchors && Object.keys(sched.anchors).length) &&
+    !(sched.frequency_targets && sched.frequency_targets.length) &&
+    !(sched.addons && sched.addons.length);
+  if (isEmpty) { el.innerHTML = ''; return; } // nothing meaningful to preview yet
+  var todayStr = ds(0);
+  if (!(opts && opts.force)) {
+    try {
+      var raw = localStorage.getItem(SCHED_PREVIEW_KEY);
+      if (raw) {
+        var c = JSON.parse(raw);
+        if (c && c.date === todayStr && String(c.profileId) === String(currentProfileId) && c.data) {
+          renderWeekPreview(c.data); return;
+        }
+      }
+    } catch (e) {}
+  }
+  if (_wpLoading) return;
+  _wpLoading = true;
+  if (!el.querySelector('.wp-row')) el.innerHTML = '<div class="wp-skel"><span class="wp-spin"></span> Building your week preview…</div>';
+  var rd = (typeof readiness !== 'undefined' && readiness && typeof readiness.score === 'number') ? readiness.score : null;
+  fetch('/api/profiles/' + currentProfileId + '/week-preview', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ schedule: sched, readiness: rd })
+  })
+    .then(function (r) { return r.json(); })
+    .then(function (data) {
+      _wpLoading = false;
+      if (!data || !data.success || !Array.isArray(data.week)) throw new Error('bad preview');
+      try { localStorage.setItem(SCHED_PREVIEW_KEY, JSON.stringify({ date: todayStr, profileId: currentProfileId, data: data })); } catch (e) {}
+      renderWeekPreview(data);
+    })
+    .catch(function () {
+      _wpLoading = false;
+      var e2 = wpSectionEl();
+      if (e2 && !e2.querySelector('.wp-row')) e2.innerHTML = '<div class="wp-skel" style="font-style:italic">Preview unavailable</div><hr class="wp-sep">';
+    });
+}
+
+function renderWeekPreview(data) {
+  var el = wpSectionEl();
+  if (!el || !data || !Array.isArray(data.week)) return;
+  currentWeekPreview = data;
+  var todayStr = ds(0);
+  var note = data.week_note || '';
+  var noteTrunc = note.length > 60 ? note.slice(0, 57) + '…' : note;
+  var h = '<div class="wp-head"><span class="wp-title">This Week</span>' +
+    (note ? '<span class="wp-note" title="' + attrEsc(note) + '">' + escHtml(noteTrunc) + '</span>' : '') + '</div>';
+  for (var i = 0; i < data.week.length; i++) {
+    var d = data.week[i];
+    var when = d.date < todayStr ? 'past' : (d.date === todayStr ? 'today' : 'future');
+    var planned = Array.isArray(d.planned) ? d.planned : [];
+    var primary = planned.filter(function (p) { return p.type === 'anchor' || p.type === 'frequency_target'; });
+    var isRest = planned.length === 1 && planned[0].type === 'rest';
+    var actHtml;
+    if (isRest) {
+      actHtml = '<span class="wp-act rest">Rest</span>';
+    } else {
+      var main = primary.length ? primary[0].activity : (planned[0] ? planned[0].activity : '');
+      var suffix = '';
+      if (primary.length > 1) suffix = ' <span class="wp-suffix">+' + (primary.length - 1) + ' more</span>';
+      else if (planned.some(function (p) { return p.type === 'addon'; })) suffix = ' <span class="wp-suffix">+ add-ons</span>';
+      actHtml = '<span class="wp-act">' + escHtml(main) + suffix + '</span>';
+    }
+    var coach = d.coaching_note ? '<div class="wp-coach">' + escHtml(d.coaching_note) + '</div>' : '';
+    var status = d.done ? '<span class="wp-status done">✓</span>'
+      : (when === 'today' ? '<span class="wp-status today">•</span>' : '<span class="wp-status"></span>');
+    var dayLabel = DAY_LABELS[i] || (d.dayLabel || '').slice(0, 3);
+    h += '<div class="wp-row' + (when === 'today' ? ' today' : when === 'past' ? ' past' : '') + '">' +
+      '<span class="wp-day ' + when + '">' + dayLabel + '</span>' +
+      '<span class="wp-body">' + actHtml + coach + '</span>' + status + '</div>';
+  }
+  h += '<div class="wp-foot"><span id="wp-foot-spin"></span><button class="wp-refresh" onclick="wpRefresh()">Refresh</button></div>';
+  h += '<hr class="wp-sep">';
+  el.innerHTML = h;
+}
+
+function wpRefresh() {
+  var spin = document.getElementById('wp-foot-spin');
+  if (spin) spin.innerHTML = '<span class="wp-spin"></span>';
+  invalidateSchedulePreview();
+  loadWeekPreview({ force: true });
+}
+
 function renderSchedule() {
+  loadWeekPreview();
   var el = document.getElementById('schedule-grid');
   if (!el) return;
   el.style.cssText = '';
@@ -9293,6 +9435,8 @@ function saveWorkoutToSupabase(entry) {
       // The new workout is now a same-day match target — refresh the
       // unmatched-Fitbit card so its "Match to …" buttons reflect it.
       if (typeof invalidateUnmatchedFitbit === 'function') invalidateUnmatchedFitbit();
+      // A logged workout changes the week's done/recovery state → refresh preview.
+      if (typeof invalidateSchedulePreview === 'function') invalidateSchedulePreview();
       if (entry.notes && entry.notes.trim() && currentProfileId) {
       console.log('[ApexCoach] Auto-extracting exercises from workout notes...');
       fetch('/api/profiles/' + currentProfileId + '/extract-exercises', {
@@ -9457,6 +9601,8 @@ function deleteWorkout(id) {
   localStorage.setItem('ac_cache', JSON.stringify(cachedPB));
   progressRec = null;
   if (document.getElementById('progress-card').style.display === 'block') fetchProgress();
+  // Deleting a workout changes the week's done/recovery state → refresh preview.
+  if (typeof invalidateSchedulePreview === 'function') invalidateSchedulePreview();
 }
 
 function showDeleteConfirm() {

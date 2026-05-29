@@ -2289,6 +2289,7 @@ var CALL_TYPE_MODEL = {
   goal_description:  MODEL_HAIKU,
   goal_estimate:     MODEL_HAIKU,
   schedule_builder:  MODEL_HAIKU,
+  schedule_preview:  MODEL_HAIKU,
 };
 
 function modelForCallType(callType) {
@@ -3854,6 +3855,249 @@ app.post("/api/profiles/:id/roadmap-data", async function(req, res) {
     res.json({ success: true, roadmap_data: roadmapData, roadmap_data_updated_at: now });
   } catch (e) {
     console.error("[MacroRoadmap] generate error:", e.message);
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+// ── 7-DAY SMART SCHEDULE PREVIEW ─────────────────────────────────────────────
+// POST /api/profiles/:id/week-preview  body: { schedule (v2), readiness }
+// Builds a deterministic Mon–Sun skeleton from the v2 schedule + the athlete's
+// recent training (anchors locked, frequency targets placed by a recovery-aware
+// rule engine, add-ons attached to training days, rest elsewhere), then asks
+// Haiku for per-day coaching notes. Generic: no hardcoded assumptions about any
+// specific user. Capped at 6s on the AI step; returns the skeleton on
+// timeout/failure so the card always renders.
+var PREVIEW_DAYS = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"];
+var PREVIEW_DAY_LABELS = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"];
+
+// Monday 00:00 of the week containing `d` (local server time).
+function previewMondayOf(d) {
+  var t = new Date(d.getFullYear(), d.getMonth(), d.getDate());
+  var dow = t.getDay(); // 0=Sun..6=Sat
+  t.setDate(t.getDate() + ((dow === 0) ? -6 : (1 - dow)));
+  return t;
+}
+
+// Normalize a v2 anchor day value into an array of {activity, duration}.
+function previewNormalizeAnchor(v) {
+  if (!v) return [];
+  if (Array.isArray(v)) return v.filter(function(a) { return a && a.activity; });
+  if (typeof v === "object" && v.activity) return [v];
+  if (typeof v === "string" && v.trim()) return [{ activity: v.trim(), duration: null }];
+  return [];
+}
+
+// Finer muscle-group classification for recovery logic. Generic / keyword-based
+// (no user-specific assumptions). Returns strength_upper | strength_lower |
+// full_body | martial_arts | cardio | mind_body | rehab | sports | other | rest.
+function previewMuscleGroup(typeStr, exNames) {
+  var cat = inferWorkoutCategoryServer(typeStr);
+  if (cat !== "strength") return cat;
+  var t = (String(typeStr || "") + " " + (Array.isArray(exNames) ? exNames.join(" ") : "")).toLowerCase();
+  var upper = /\b(upper|push|pull|bench|press|row|curl|chin.?up|pull.?up|push.?up|dip|shoulder|chest|back|tricep|bicep|lat|ohp|overhead)\b/.test(t);
+  var lower = /\b(lower|legs?|squat|deadlift|lunge|glute|calf|calves|hamstring|quad|hip thrust|rdl|leg press)\b/.test(t);
+  if (upper && lower) return "full_body";
+  if (upper) return "strength_upper";
+  if (lower) return "strength_lower";
+  return "full_body"; // unspecified strength → treat as full body (conservative recovery)
+}
+
+// STEP 1 — pure-JS rule engine. Returns the 7-day skeleton array.
+function buildWeekSkeleton(schedule, workouts, exercises, today) {
+  schedule = schedule || {};
+  var anchors = (schedule.anchors && typeof schedule.anchors === "object") ? schedule.anchors : {};
+  var targets = Array.isArray(schedule.frequency_targets) ? schedule.frequency_targets : [];
+  var addons = Array.isArray(schedule.addons) ? schedule.addons : [];
+
+  var monday = previewMondayOf(today);
+  var todayStr = ymdLocal(today);
+  var todayMs = Date.parse(todayStr + "T00:00:00");
+
+  var days = [];
+  var dateMs = [];
+  for (var i = 0; i < 7; i++) {
+    var d = new Date(monday); d.setDate(monday.getDate() + i);
+    var dateStr = ymdLocal(d);
+    dateMs.push(Date.parse(dateStr + "T00:00:00"));
+    days.push({ dayKey: PREVIEW_DAYS[i], date: dateStr, dayLabel: PREVIEW_DAY_LABELS[i], planned: [], done: false, actual_workout: null, recovery_notes: [] });
+  }
+
+  // exercises grouped by date (names) — refines strength upper/lower classification.
+  var exByDate = {};
+  (exercises || []).forEach(function(e) { if (e && e.date) { (exByDate[e.date] = exByDate[e.date] || []).push(e.name || ""); } });
+  // first done workout per date.
+  var doneByDate = {};
+  (workouts || []).forEach(function(w) { if (w && w.date && w.done && !doneByDate[w.date]) doneByDate[w.date] = w; });
+
+  // (e) recovery map: most-recent hit (ms) per muscle group over the last 7 days
+  // of ACTUAL (done) workouts. Passed into the frequency-target scoring below.
+  var recovery = {};
+  (workouts || []).forEach(function(w) {
+    if (!w || !w.done || !w.date) return;
+    var ms = Date.parse(w.date + "T00:00:00");
+    if (isNaN(ms) || ms > todayMs || (todayMs - ms) > 7 * 86400000) return;
+    var g = previewMuscleGroup(w.type, exByDate[w.date]);
+    if (!recovery[g] || ms > recovery[g]) recovery[g] = ms;
+  });
+  // Within-48h check for a muscle group at candidate time candMs. Only strength
+  // groups + full_body overlap; cardio/mind_body/rehab never block (daily OK).
+  function hitWithin48h(group, candMs) {
+    var related = [group];
+    if (group === "strength_upper" || group === "strength_lower") related.push("full_body");
+    if (group === "full_body") related.push("strength_upper", "strength_lower");
+    var last = -Infinity;
+    related.forEach(function(g) { if (recovery[g] != null && recovery[g] > last) last = recovery[g]; });
+    if (last === -Infinity) return false;
+    return (candMs - last) < 48 * 3600000;
+  }
+
+  // (a) ANCHORS — locked; never move. done handled per-day below.
+  for (var i = 0; i < 7; i++) {
+    previewNormalizeAnchor(anchors[PREVIEW_DAYS[i]]).forEach(function(a) {
+      days[i].planned.push({ activity: a.activity, type: "anchor", duration: a.duration || null, category: inferWorkoutCategoryServer(a.activity) });
+    });
+  }
+
+  function hasAnchor(i) { return days[i].planned.some(function(p) { return p.type === "anchor"; }); }
+  function isHardDay(dayObj) { return dayObj.planned.some(function(p) { return ["strength", "martial_arts", "cardio"].indexOf(p.category) >= 0; }); }
+  function adjacentHard(i) {
+    var prev = i > 0 ? days[i - 1] : null, next = i < 6 ? days[i + 1] : null;
+    return !!((prev && isHardDay(prev)) || (next && isHardDay(next)));
+  }
+
+  // done workouts logged this Mon–Sun week (for frequency-target counts).
+  var weekDone = [];
+  for (var i = 0; i < 7; i++) { if (doneByDate[days[i].date]) weekDone.push(doneByDate[days[i].date]); }
+
+  // (b) FREQUENCY TARGETS — place each remaining slot on the best open day.
+  var assignedFreq = {};
+  targets.forEach(function(target) {
+    if (!target || !target.activity) return;
+    var tpw = Number(target.times_per_week) || 1;
+    var cat = inferWorkoutCategoryServer(target.activity);
+    var group = previewMuscleGroup(target.activity);
+    var doneCount = weekDone.filter(function(w) { return inferWorkoutCategoryServer(w.type) === cat; }).length;
+    var slots = Math.max(0, tpw - doneCount);
+    for (var s = 0; s < slots; s++) {
+      var bestIdx = -1;
+      var sugIdx = PREVIEW_DAYS.indexOf(target.suggested_day);
+      if (sugIdx >= 0 && !hasAnchor(sugIdx) && !assignedFreq[PREVIEW_DAYS[sugIdx]]) {
+        bestIdx = sugIdx; // prefer the suggested day when free
+      } else {
+        var bestScore = -Infinity;
+        for (var i = 0; i < 7; i++) {
+          if (hasAnchor(i)) continue;
+          var dk = PREVIEW_DAYS[i];
+          var score = 0;
+          if (!adjacentHard(i)) score += 30;
+          if (!hitWithin48h(group, dateMs[i])) score += 20;
+          if (dk === "wed" || dk === "thu") score += 10;
+          if (assignedFreq[dk]) score -= 20;
+          if (score > bestScore) { bestScore = score; bestIdx = i; }
+        }
+      }
+      if (bestIdx < 0) break; // no open day left
+      days[bestIdx].planned.push({ activity: target.activity, type: "frequency_target", duration: target.duration || null, category: cat });
+      assignedFreq[PREVIEW_DAYS[bestIdx]] = true;
+    }
+  });
+
+  // (c) ADDONS — attach to every training day (has anchor or frequency target).
+  for (var i = 0; i < 7; i++) {
+    var isTraining = days[i].planned.some(function(p) { return p.type === "anchor" || p.type === "frequency_target"; });
+    if (!isTraining) continue;
+    addons.forEach(function(ad) {
+      if (ad && ad.activity) days[i].planned.push({ activity: ad.activity, type: "addon", duration: ad.duration || null, category: inferWorkoutCategoryServer(ad.activity) });
+    });
+  }
+
+  // (d) REST — any still-empty day.
+  for (var i = 0; i < 7; i++) {
+    if (!days[i].planned.length) days[i].planned.push({ activity: "Rest", type: "rest", duration: null, category: "rest" });
+  }
+
+  // per-day done / actual_workout + recovery_notes (within-48h muscle conflicts).
+  for (var i = 0; i < 7; i++) {
+    var w = doneByDate[days[i].date];
+    if (w) { days[i].done = true; days[i].actual_workout = { type: w.type || "Workout" }; }
+    days[i].planned.forEach(function(p) {
+      if (p.type !== "anchor" && p.type !== "frequency_target") return;
+      var g = previewMuscleGroup(p.activity);
+      if ((g === "strength_upper" || g === "strength_lower" || g === "full_body") && hitWithin48h(g, dateMs[i])) {
+        var note = (CATEGORY_PRETTY_SERVER[inferWorkoutCategoryServer(p.activity)] || "Muscle group") + " trained <48h prior";
+        if (days[i].recovery_notes.indexOf(note) < 0) days[i].recovery_notes.push(note);
+      }
+    });
+  }
+  return days;
+}
+
+// STEP 2 — Haiku coaching notes. Returns { week_note, days:[{dayKey,coaching_note}] }.
+async function enrichWeekPreviewWithCoaching(skeleton, pd, workouts, readiness, microGoals, today) {
+  var sys = "You are an expert personal trainer and strength & conditioning coach. You think in terms of weekly periodization, muscle recovery, and progressive overload. You know that adjacent hard sessions on the same muscle group cause overtraining. You know MMA and martial arts tax the nervous system similarly to heavy strength work. You write like a real coach — direct, specific, encouraging without being sycophantic. Return ONLY valid JSON: { \"week_note\": string (ONE sentence big-picture coaching note for this week), \"days\": [ { \"dayKey\": \"mon\", \"coaching_note\": string, max 12 words, specific, coach voice } ] } with EXACTLY one entry per day for all 7 days (mon, tue, wed, thu, fri, sat, sun). For rest days, give a short recovery cue. Keep it scannable.";
+  var ctxStr = (pd && pd.ai_prompt_context ? String(pd.ai_prompt_context) : "").substring(0, 600);
+  var dayNames = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
+  var last7 = (workouts || []).slice(0, 12).map(function(w) { return w.date + ": " + (w.type || "Workout") + (w.done ? " (done)" : " (planned)"); }).join("\n");
+  var mgTitles = (microGoals || []).map(function(m) { return m && m.title; }).filter(Boolean).join(", ");
+  var skel = skeleton.map(function(d) {
+    var acts = d.planned.map(function(p) { return p.activity + (p.type !== "rest" ? " [" + p.type + "]" : ""); }).join(", ");
+    return d.dayKey + " (" + d.date + "): " + acts +
+      (d.done ? " — DONE: " + ((d.actual_workout && d.actual_workout.type) || "") : "") +
+      (d.recovery_notes && d.recovery_notes.length ? " — recovery: " + d.recovery_notes.join("; ") : "");
+  }).join("\n");
+  var userMsg = "7-DAY PLAN SKELETON (rule-engine output):\n" + skel + "\n\n" +
+    "ATHLETE PROFILE (goals/injuries):\n" + (ctxStr || "none") + "\n\n" +
+    "LAST WORKOUTS:\n" + (last7 || "none") + "\n\n" +
+    "TODAY: " + ymdLocal(today) + " (" + dayNames[today.getDay()] + ")\n" +
+    "READINESS TODAY: " + (readiness != null ? readiness + "/100" : "unknown") + "\n" +
+    "ACTIVE MICRO-GOALS: " + (mgTitles || "none") + "\n\n" +
+    "Write the week_note and a coaching_note for EACH of the 7 days. Factor in recovery windows, periodization, today's readiness, and the athlete's goals.";
+  var text = await callAISystem(sys, userMsg, 700, MODEL_HAIKU);
+  return parseAIJson(text);
+}
+
+app.post("/api/profiles/:id/week-preview", async function(req, res) {
+  try {
+    var pid = req.params.id;
+    var body = req.body || {};
+    var schedule = body.schedule || {};
+    var readiness = (body.readiness != null && isFinite(Number(body.readiness))) ? Number(body.readiness) : null;
+    var today = new Date();
+    var since = new Date(today); since.setDate(since.getDate() - 14);
+    var sinceStr = ymdLocal(since);
+
+    var results = await Promise.all([
+      fetch(SUPABASE_URL + "/rest/v1/workouts?profile_id=eq." + pid + "&date=gte." + sinceStr + "&select=date,type,done&order=date.desc&limit=200", { headers: sbHeaders() }),
+      fetch(SUPABASE_URL + "/rest/v1/exercises?profile_id=eq." + pid + "&date=gte." + sinceStr + "&select=date,name,main_category,subcategory&order=date.desc&limit=1000", { headers: sbHeaders() }),
+      fetch(SUPABASE_URL + "/rest/v1/profiles?id=eq." + pid + "&select=profile_data", { headers: sbHeaders() }),
+      fetch(SUPABASE_URL + "/rest/v1/micro_goals?profile_id=eq." + pid + "&is_active=eq.true&select=title&limit=20", { headers: sbHeaders() }),
+    ]);
+    var workouts = await results[0].json(); if (!Array.isArray(workouts)) workouts = [];
+    var exercises = await results[1].json(); if (!Array.isArray(exercises)) exercises = [];
+    var profiles = await results[2].json();
+    var pd = (Array.isArray(profiles) && profiles[0] && profiles[0].profile_data) || {};
+    var microGoals = await results[3].json(); if (!Array.isArray(microGoals)) microGoals = [];
+
+    var skeleton = buildWeekSkeleton(schedule, workouts, exercises, today);
+
+    // STEP 2 — non-fatal Haiku enrichment, capped at 6s (return skeleton on timeout/fail).
+    var enriched = null;
+    try {
+      enriched = await Promise.race([
+        enrichWeekPreviewWithCoaching(skeleton, pd, workouts, readiness, microGoals, today),
+        new Promise(function(resolve) { setTimeout(function() { resolve(null); }, 6000); }),
+      ]);
+    } catch (e) { enriched = null; }
+
+    var weekNote = (enriched && enriched.week_note) ? enriched.week_note : null;
+    if (enriched && Array.isArray(enriched.days)) {
+      var noteByKey = {};
+      enriched.days.forEach(function(d) { if (d && d.dayKey) noteByKey[d.dayKey] = d.coaching_note || ""; });
+      skeleton.forEach(function(d) { if (noteByKey[d.dayKey]) d.coaching_note = noteByKey[d.dayKey]; });
+    }
+    res.json({ success: true, week: skeleton, week_note: weekNote, generated_at: new Date().toISOString() });
+  } catch (e) {
+    console.error("[WeekPreview] error:", e.message);
     res.status(500).json({ success: false, error: e.message });
   }
 });
