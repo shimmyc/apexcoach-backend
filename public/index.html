@@ -4500,6 +4500,10 @@ function loadRoadmapData() {
       currentRoadmapData = (data && data.success) ? (data.roadmap_data || null) : null;
       currentRoadmapUpdatedAt = (data && data.roadmap_data_updated_at) || null;
       roadmapDataLoaded = true;
+      // Auto-generate on first view rather than showing the manual empty state.
+      // generateRoadmapData() shows its own in-card spinner and, on failure,
+      // re-renders → falls back to the empty state (manual Generate button).
+      if (!currentRoadmapData && !roadmapDataGenerating) { generateRoadmapData(false); return; }
       renderRoadmapData();
     })
     .catch(function () { roadmapDataLoaded = true; currentRoadmapData = null; renderRoadmapData(); });
@@ -4663,6 +4667,7 @@ function generateRoadmapData(isRegen) {
     .then(function (data) {
       roadmapDataGenerating = false;
       if (data && data.success && data.roadmap_data) {
+        console.log('[MacroRoadmap] raw roadmap_data:', data.roadmap_data);
         currentRoadmapData = data.roadmap_data;
         currentRoadmapUpdatedAt = data.roadmap_data_updated_at || currentRoadmapUpdatedAt;
         roadmapDataLoaded = true;

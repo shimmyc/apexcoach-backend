@@ -3714,13 +3714,32 @@ function computePhaseProgress(phase, exerciseContext) {
   return pct;
 }
 
-// Recompute progress_pct on read (don't store). Current near-term phases get a
-// fresh time-based estimate; complete phases show 100; upcoming stay 0. Mutates
-// the roadmap's phases in place and returns it.
+// Recompute near-term phase status + progress_pct on read (don't store).
+// Status is DERIVED FROM DATES (assigned by assignNearTermDates) rather than
+// trusted from the AI, which tends to return everything as "upcoming":
+//   end_date < today                  => complete
+//   start_date <= today <= end_date   => current (only the FIRST such phase)
+//   start_date > today                => upcoming
+// Then current phases get a fresh time-based estimate, complete = 100, upcoming
+// = 0. Horizon phases are left untouched. Mutates phases in place and returns it.
 function recomputeRoadmapProgress(roadmap, exerciseContext) {
   if (!roadmap || !Array.isArray(roadmap.phases)) return roadmap;
+  var todayMs = Date.parse(new Date().toISOString().slice(0, 10) + "T00:00:00");
+  var foundCurrent = false;
   roadmap.phases.forEach(function(p) {
     if (!p || p.type === "horizon") return;
+    var startMs = p.start_date ? Date.parse(String(p.start_date).slice(0, 10) + "T00:00:00") : NaN;
+    var endMs = p.end_date ? Date.parse(String(p.end_date).slice(0, 10) + "T00:00:00") : NaN;
+    if (!isNaN(startMs) || !isNaN(endMs)) {
+      if (!isNaN(endMs) && endMs < todayMs) {
+        p.status = "complete";
+      } else if (!foundCurrent && (isNaN(startMs) || startMs <= todayMs) && (isNaN(endMs) || endMs >= todayMs)) {
+        p.status = "current";
+        foundCurrent = true;
+      } else {
+        p.status = "upcoming";
+      }
+    }
     if (p.status === "current") p.progress_pct = computePhaseProgress(p, exerciseContext);
     else if (p.status === "complete") p.progress_pct = 100;
     else p.progress_pct = (typeof p.progress_pct === "number") ? p.progress_pct : 0;
@@ -3734,7 +3753,20 @@ function recomputeRoadmapProgress(roadmap, exerciseContext) {
 // endpoints are kept for the current client; nothing writes profiles.roadmap
 // from the new system. Client migrates to /roadmap-data when its UI is built.
 
-var MACRO_ROADMAP_SYS = "You are an elite fitness coach building a comprehensive macro training roadmap that ties together all of an athlete's goals. Return ONLY valid JSON with this shape: { timeline_range, timeline_note, goals_summary, phases, exercise_gaps, exercise_highlights, generated_at, version, adaptation_log }. Use 3 near-term phases (4-6 weeks, type: near_term) and 2 horizon phases (milestone-based, type: horizon). Each near-term phase should have weekly_targets (2-4 items spanning ALL goals), completion_signals, and goal_connections (which goals this phase advances). exercise_gaps are specific things missing from the training (be direct: 'No lower body strength in 5 weeks'). exercise_highlights celebrate what's working. Use evidence-based timelines. Be concise — this should be scannable, not an essay. Each phase max 3 sentences total.";
+var MACRO_ROADMAP_SYS = "You are an elite fitness coach building a comprehensive macro training roadmap that ties together ALL of an athlete's goals. Return ONLY valid JSON (no prose, no markdown fences) with EXACTLY this shape:\n" +
+"{\n" +
+'  "timeline_range": "8-15 months",  // overall range as a string\n' +
+'  "timeline_note": "one honest sentence about what that range depends on",\n' +
+'  "goals_summary": ["Goal title A", "Goal title B"],  // REQUIRED non-empty array of SHORT strings — one entry per athlete goal this roadmap covers, using the goal titles\n' +
+'  "phases": [\n' +
+'    // EXACTLY 3 near-term phases (type "near_term") THEN EXACTLY 2 horizon phases (type "horizon"), in that order\n' +
+'    { "name": "Phase name", "type": "near_term", "duration_weeks": 5, "weekly_targets": ["2-4 concrete items spanning ALL goals"], "completion_signals": ["how you know this phase is done"], "goal_connections": ["which goals this phase advances"], "status": "upcoming" },\n' +
+'    { "name": "Phase name", "type": "horizon", "milestone": "the concrete milestone reached at this horizon (REQUIRED non-empty string)", "estimated_range": "a time range string like \\"6-12 months\\" (REQUIRED non-empty string)", "status": "upcoming" }\n' +
+"  ],\n" +
+'  "exercise_gaps": ["specific things missing from training, be direct e.g. \\"No lower body strength in 5 weeks\\""],\n' +
+'  "exercise_highlights": ["what is working"]\n' +
+"}\n" +
+"HARD REQUIREMENTS: (1) goals_summary MUST be a non-empty array of strings covering every goal listed. (2) EVERY horizon phase MUST include both a non-empty \"milestone\" string AND a non-empty \"estimated_range\" string — never omit or blank them. (3) duration_weeks is a number 4-6 for near-term phases. Do NOT include start_date/end_date — those are computed server-side. Use evidence-based timelines. Be concise and scannable, not an essay; each phase max 3 sentences total.";
 
 // GET the structured macro roadmap. progress_pct recomputed on read.
 app.get("/api/profiles/:id/roadmap-data", async function(req, res) {
@@ -3818,7 +3850,7 @@ app.post("/api/profiles/:id/roadmap-data", async function(req, res) {
       body: JSON.stringify({ roadmap_data: roadmapData, roadmap_data_updated_at: now }),
     });
     recomputeRoadmapProgress(roadmapData, fullEx);
-    console.log("[MacroRoadmap] generated for profile " + pid);
+    console.log("[MacroRoadmap] generated for profile " + pid + " — raw roadmap_data: " + JSON.stringify(roadmapData));
     res.json({ success: true, roadmap_data: roadmapData, roadmap_data_updated_at: now });
   } catch (e) {
     console.error("[MacroRoadmap] generate error:", e.message);
