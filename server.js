@@ -3962,18 +3962,38 @@ function buildWeekSkeleton(schedule, workouts, exercises, today) {
     days.push({ dayKey: PREVIEW_DAYS[i], date: dateStr, dayLabel: PREVIEW_DAY_LABELS[i], planned: [], done: false, actual_workout: null, recovery_notes: [] });
   }
 
-  // first done workout per date.
+  // first done workout per date (for the day-level done flag + display label).
   var doneByDate = {};
   (workouts || []).forEach(function(w) { if (w && w.date && w.done && !doneByDate[w.date]) doneByDate[w.date] = w; });
-  // distinct exercise NAMES per workout_id — used to disqualify single-exercise
-  // sessions (e.g. a multi-set Dead Hang or one meditation) from counting as a
-  // frequency target. > 1 distinct name = a substantive multi-movement session.
-  var namesByWorkout = {};
+
+  // Distinct exercise NAMES per workout_id, each pre-classified to its muscle
+  // groups via MUSCLE_GROUP_MAP. Done-counting uses THIS (the exercises table),
+  // never workout.type — the AI-generated title is polluted by micro-goal
+  // exercises (e.g. a Dead-Hang-only session gets titled "Strength (Upper Body)").
+  var exGroupsByWorkout = {}; // wid -> { name(lc): groups[] }
   (exercises || []).forEach(function(e) {
     if (!e || e.workout_id == null) return;
-    (namesByWorkout[e.workout_id] = namesByWorkout[e.workout_id] || {})[String(e.name || "").toLowerCase().trim()] = true;
+    var nm = String(e.name || "").toLowerCase().trim();
+    if (!nm) return;
+    var bucket = exGroupsByWorkout[e.workout_id] = exGroupsByWorkout[e.workout_id] || {};
+    if (!bucket[nm]) bucket[nm] = muscleGroupsForExercise(e.name);
   });
-  function distinctExerciseCount(wid) { return (wid != null && namesByWorkout[wid]) ? Object.keys(namesByWorkout[wid]).length : 0; }
+  function isGripOnly(groups) { return groups.length === 1 && groups[0] === "grip_forearms"; }
+  // A workout counts toward a target only when it is done AND its exercises
+  // contain >= 2 DISTINCT names mapping to the target's required muscle groups,
+  // EXCLUDING grip_forearms-only exercises (Dead Hang, farmer carry, bar hang…).
+  function workoutSatisfiesTarget(w, reqMuscles) {
+    if (!w || w.done !== true || !reqMuscles || !reqMuscles.length) return false;
+    var bucket = exGroupsByWorkout[w.id];
+    if (!bucket) return false;
+    var n = 0;
+    Object.keys(bucket).forEach(function(nm) {
+      var g = bucket[nm];
+      if (!g.length || isGripOnly(g)) return; // unmapped or grip-only never counts
+      if (g.some(function(mg) { return reqMuscles.indexOf(mg) >= 0; })) n++;
+    });
+    return n >= 2;
+  }
 
   // (e) MUSCLE-GROUP RECOVERY MAP — most-recent worked time (ms) per specific
   // muscle group, from each exercise row of ACTUAL (done) workouts in the last
@@ -4014,51 +4034,89 @@ function buildWeekSkeleton(schedule, workouts, exercises, today) {
     return !!((prev && isHardDay(prev)) || (next && isHardDay(next)));
   }
 
-  // done workouts logged this Mon–Sun week (for frequency-target counts).
-  var weekDone = [];
-  for (var i = 0; i < 7; i++) { if (doneByDate[days[i].date]) weekDone.push(doneByDate[days[i].date]); }
+  // ALL done workouts logged this Mon–Sun week (for frequency-target counts).
+  // Use every done row, not just one-per-date, so a strength session logged as a
+  // second workout on an anchor day still counts.
+  var weekDateSet = {}; days.forEach(function(d) { weekDateSet[d.date] = true; });
+  var weekDone = (workouts || []).filter(function(w) { return w && w.done === true && weekDateSet[w.date]; });
 
-  // (b) FREQUENCY TARGETS — place each remaining slot on the best open day.
+  // (b) FREQUENCY TARGETS.
+  // assignedFreq enforces max ONE frequency target per day (completed ones count).
   var assignedFreq = {};
-  var targetDiag = []; // for logging which targets counted as met
-  targets.forEach(function(target) {
-    if (!target || !target.activity) return;
+  var targetDiag = [];
+  function dayIdxForDate(dateStr) { for (var i = 0; i < 7; i++) { if (days[i].date === dateStr) return i; } return -1; }
+  // Category rank for placement order: strength/martial_arts (0) < cardio (1) <
+  // mind_body/rehab (2) < other (3). Derived from the target ACTIVITY (schedule),
+  // not any workout.
+  function catRank(activity) {
+    var c = inferWorkoutCategoryServer(activity);
+    if (c === "strength" || c === "martial_arts") return 0;
+    if (c === "cardio") return 1;
+    if (c === "mind_body" || c === "rehab") return 2;
+    return 3;
+  }
+  // (3) Placement order: targets with a suggested_day first, then times_per_week
+  // ascending, then category rank — so e.g. 1x/week Lower Body Strength claims a
+  // day before 2x/week Cardio consumes all open slots.
+  var orderedTargets = targets.filter(function(t) { return t && t.activity; }).slice().sort(function(a, b) {
+    var sa = PREVIEW_DAYS.indexOf(a.suggested_day) >= 0 ? 0 : 1;
+    var sb = PREVIEW_DAYS.indexOf(b.suggested_day) >= 0 ? 0 : 1;
+    if (sa !== sb) return sa - sb;
+    var ta = Number(a.times_per_week) || 1, tb = Number(b.times_per_week) || 1;
+    if (ta !== tb) return ta - tb;
+    return catRank(a.activity) - catRank(b.activity);
+  });
+
+  orderedTargets.forEach(function(target) {
     var tpw = Number(target.times_per_week) || 1;
     var cat = inferWorkoutCategoryServer(target.activity);
-    // A workout counts toward this target only when: category matches AND it is
-    // a substantive multi-exercise session (>1 distinct exercise name) AND done.
-    // Never counts single-exercise micro-goal sessions. workout.type is authority.
-    var qualifying = weekDone.filter(function(w) {
-      return w.done === true && inferWorkoutCategoryServer(w.type) === cat && distinctExerciseCount(w.id) > 1;
-    });
+    var reqMuscles = activityMuscles(target.activity);
+    // (1) DONE-COUNTING via the exercises table (never workout.type).
+    var qualifying = weekDone.filter(function(w) { return workoutSatisfiesTarget(w, reqMuscles); });
     var doneCount = qualifying.length;
+
+    // (2) Surface completed targets on the day(s) they actually happened, with
+    // done:true, so the user sees what was accomplished (e.g. Upper Body shown on
+    // Wednesday next to the anchor). One frequency_target item per day.
+    var placedDates = {};
+    qualifying.forEach(function(w) {
+      var di = dayIdxForDate(w.date);
+      if (di < 0 || placedDates[w.date]) return;
+      var already = days[di].planned.some(function(p) { return p.type === "frequency_target" && p.activity === target.activity; });
+      if (!already) days[di].planned.push({ activity: target.activity, type: "frequency_target", duration: target.duration || null, category: cat, done: true });
+      placedDates[w.date] = true;
+      assignedFreq[PREVIEW_DAYS[di]] = true; // occupies this day's single freq slot
+    });
+
     var slots = Math.max(0, tpw - doneCount);
-    targetDiag.push({ activity: target.activity, category: cat, tpw: tpw, doneCount: doneCount, met: doneCount >= tpw, qualifying_dates: qualifying.map(function(w) { return w.date; }) });
+    var placedFuture = [];
     for (var s = 0; s < slots; s++) {
+      // (4) GUARANTEED PLACEMENT — available = non-anchor day with no freq target
+      // yet. Pick the highest-scoring available day even if the score is negative;
+      // only skip when literally zero unassigned days remain.
       var bestIdx = -1;
       var sugIdx = PREVIEW_DAYS.indexOf(target.suggested_day);
       if (sugIdx >= 0 && !hasAnchor(sugIdx) && !assignedFreq[PREVIEW_DAYS[sugIdx]]) {
-        bestIdx = sugIdx; // prefer the suggested day when free
+        bestIdx = sugIdx; // honor the suggested day when still open
       } else {
         var bestScore = -Infinity;
         for (var i = 0; i < 7; i++) {
-          if (hasAnchor(i)) continue;
+          if (hasAnchor(i) || assignedFreq[PREVIEW_DAYS[i]]) continue; // not available
           var dk = PREVIEW_DAYS[i];
           var score = 0;
           if (!adjacentHard(i)) score += 30;
-          // Muscle-specific recovery: +20 only if ALL required groups have ≥48h
-          // since last worked; -20 if ANY required group was hit within 48h.
           var rc = recentConflicts(target.activity, dateMs[i]);
           if (rc.required.length) score += (rc.conflicts.length ? -20 : 20);
           if (dk === "wed" || dk === "thu") score += 10;
-          if (assignedFreq[dk]) score -= 20;
           if (score > bestScore) { bestScore = score; bestIdx = i; }
         }
       }
-      if (bestIdx < 0) break; // no open day left
+      if (bestIdx < 0) break; // no unassigned day left anywhere — cannot place more
       days[bestIdx].planned.push({ activity: target.activity, type: "frequency_target", duration: target.duration || null, category: cat });
       assignedFreq[PREVIEW_DAYS[bestIdx]] = true;
+      placedFuture.push(days[bestIdx].date);
     }
+    targetDiag.push({ activity: target.activity, category: cat, tpw: tpw, doneCount: doneCount, met: doneCount >= tpw, qualifying_dates: qualifying.map(function(w) { return w.date; }), placed: placedFuture });
   });
 
   // (c) ADDONS — attach to EVERY training day (has an anchor OR a frequency target).
@@ -4097,7 +4155,9 @@ function buildWeekSkeleton(schedule, workouts, exercises, today) {
         " | " + acts + (dd.recovery_notes.length ? " | recovery: " + dd.recovery_notes.join("; ") : "");
     });
     var tgtLines = targetDiag.map(function(t) {
-      return "    " + t.activity + " [" + t.category + "] " + t.doneCount + "/" + t.tpw + " met=" + t.met + (t.qualifying_dates.length ? " via " + t.qualifying_dates.join(",") : "");
+      return "    " + t.activity + " [" + t.category + "] " + t.doneCount + "/" + t.tpw + " met=" + t.met +
+        (t.qualifying_dates.length ? " done@" + t.qualifying_dates.join(",") : "") +
+        (t.placed && t.placed.length ? " placed@" + t.placed.join(",") : "");
     });
     console.log("[WeekPreview] skeleton:\n" + lines.join("\n") +
       "\n  frequency targets:\n" + (tgtLines.join("\n") || "    none") +
