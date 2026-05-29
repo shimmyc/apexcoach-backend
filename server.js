@@ -4688,7 +4688,46 @@ async function computeMicroGoalProgress(goal, pid) {
         return Math.round(maxSec);
       }
 
-      // Weight-based path (legacy)
+      // Rep-based milestones (e.g. "20 consecutive push-ups", unit 'reps') —
+      // the best SINGLE-SET rep count across matching exercises. Not summed:
+      // cumulative_volume already covers totals; a milestone is the best single
+      // effort. No main_category filter — bodyweight rep work is sometimes
+      // categorized 'other'/'calisthenics' rather than 'strength'.
+      var isRepUnit = unit === 'reps' || unit === 'rep';
+      if (isRepUnit) {
+        var rrp = await fetch(SUPABASE_URL + "/rest/v1/exercises?profile_id=eq." + pid + "&select=name,reps&order=date.desc&limit=5000", { headers: sbHeaders() });
+        var rprows = await rrp.json();
+        var maxReps = 0;
+        (rprows || []).forEach(function(e) {
+          if (!mgMatchesExercise(e.name, title)) return;
+          var rp = Number(e.reps || 0);
+          if (rp > maxReps) maxReps = rp;
+        });
+        return maxReps;
+      }
+
+      // Distance milestones (e.g. "run 5 miles", unit 'miles'/'km') — the
+      // longest SINGLE-SESSION distance. distance_miles is the stored unit; km
+      // targets convert from miles. No main_category filter (runs/rucks/hikes
+      // are cardio, not strength).
+      var isMile = unit === 'miles' || unit === 'mile' || unit === 'mi';
+      var isKm = unit === 'km' || unit === 'kilometer' || unit === 'kilometers' || unit === 'kilometre' || unit === 'kilometres' || unit === 'kms';
+      if (isMile || isKm) {
+        var rds = await fetch(SUPABASE_URL + "/rest/v1/exercises?profile_id=eq." + pid + "&select=name,distance_miles&order=date.desc&limit=5000", { headers: sbHeaders() });
+        var rdrows = await rds.json();
+        var maxMiles = 0;
+        (rdrows || []).forEach(function(e) {
+          if (!mgMatchesExercise(e.name, title)) return;
+          var ds = Number(e.distance_miles || 0);
+          if (ds > maxMiles) maxMiles = ds;
+        });
+        if (isKm) return +(maxMiles * 1.609344).toFixed(2);
+        return +maxMiles.toFixed(2);
+      }
+
+      // Weight-based path (default). lbs is the stored unit; kg targets convert
+      // from the stored lbs so current_value reads in the goal's own unit.
+      var isKg = unit === 'kg' || unit === 'kgs' || unit === 'kilo' || unit === 'kilos' || unit === 'kilogram' || unit === 'kilograms';
       var rm = await fetch(SUPABASE_URL + "/rest/v1/exercises?profile_id=eq." + pid + "&main_category=eq.strength&select=name,weight_lbs", { headers: sbHeaders() });
       var mrows = await rm.json();
       var max = 0;
@@ -4697,6 +4736,7 @@ async function computeMicroGoalProgress(goal, pid) {
         var wt = Number(e.weight_lbs || 0);
         if (wt > max) max = wt;
       });
+      if (isKg) return +(max * 0.45359237).toFixed(2);
       return max;
     }
 
