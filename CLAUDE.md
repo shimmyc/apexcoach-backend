@@ -512,8 +512,8 @@ Short-horizon, specific, measurable challenges that the AI weaves into EVERY dai
 - `cumulative_volume` — sums `sets*reps` (or `duration_minutes` if unit is minutes, `distance_miles` if unit is miles/km) from exercises matching title keywords since `created_at`
 - `weekly_frequency` — counts workouts in current week (Mon-Sun) matching title keywords
 - `streak` — consecutive days with `done=true` workouts ending today/yesterday
-- `daily_habit` — distinct days with a matching exercise logged since `created_at`
-- `strength_milestone` — max `weight_lbs` from strength exercises matching title keywords
+- `daily_habit` — distinct days the activity was logged, unioning (a) days with a matching `exercises` row and (b) days a workout's notes/type mention the canonical exercise even when the AI extractor never pulled an `exercises` row for it (`mgHabitDaySources` + `mgWorkoutTextMatches`, with a word-boundary guard so "hanging leg raise" etc. don't false-match the bare "hang"). This backstops extraction misses that silently dropped real habit days.
+- `strength_milestone` — for weight units, max `weight_lbs`; for **time units** (`seconds`/`minutes`), the max hold duration from matching exercises, preferring `parseDurationToSeconds(raw_text||notes)` over the often-mis-populated `duration_minutes` column. Aspirational/goal-statement rows (e.g. "Dead Hang - work toward 2:00 goal") are skipped via `mgIsAspirationalEntry()` so the parser doesn't read a TARGET time as an achieved PR.
 - `recovery_balance` — rest days (no completed workout) in the last 7 days
 - `skill_technique` — manual only (PATCH with `current_value`)
 
