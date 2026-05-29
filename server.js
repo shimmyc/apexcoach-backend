@@ -4467,6 +4467,87 @@ function mgMatchesExercise(exName, title) {
   return mgMatchesKeyword(exName, title);
 }
 
+// Detects an exercise entry that states a TARGET / aspiration rather than an
+// achieved effort, e.g. "Dead Hang - work toward 2:00 goal". Without this
+// guard parseDurationToSeconds reads the goal time ("2:00") as a logged hold
+// and pegs a time-based strength_milestone at 100%. Deliberately narrow so a
+// real log ("Dead Hang 1m 42s") is never excluded.
+function mgIsAspirationalEntry(text) {
+  if (!text) return false;
+  var s = String(text).toLowerCase();
+  return /(work(?:ing)?\s+toward|aim(?:ing)?\s+for|trying\s+for|build(?:ing)?\s+(?:up\s+)?to|shooting\s+for|\bgoal\b|\btarget\b)/.test(s);
+}
+
+// All lowercase alias phrases that canonicalize to `canonical` (reverse lookup
+// over CANONICAL_NAMES), plus the canonical name itself. Used to scan free-text
+// workout notes for a logged exercise the AI extractor failed to pull into its
+// own exercises row.
+function mgCanonicalAliases(canonical) {
+  if (!canonical) return [];
+  var cl = String(canonical).toLowerCase();
+  var out = [cl];
+  Object.keys(CANONICAL_NAMES).forEach(function(k) {
+    if (String(CANONICAL_NAMES[k]).toLowerCase() === cl) out.push(k);
+  });
+  return out.filter(function(v, i) { return out.indexOf(v) === i; });
+}
+
+// Does a free-text workout (notes + type) mention the goal's canonical
+// exercise? Backstops the exercises-table day count for the daily_habit /
+// streak trackers: when the extractor misses a hang buried in multi-exercise
+// notes, the workout text still proves the session happened. Alias phrases are
+// matched on word boundaries; a bare "hang"/"hanging" that's really part of a
+// different movement (e.g. "hanging leg raise") is rejected unless an explicit
+// dead-hang phrase is also present.
+function mgWorkoutTextMatches(text, title) {
+  if (!text) return false;
+  var h = String(text).toLowerCase();
+  var canonical = extractCanonicalFromTitle(title);
+  if (!canonical) return mgMatchesKeyword(text, title);
+  var aliases = mgCanonicalAliases(canonical);
+  var hasExplicitHang = /\b(dead\s*hangs?|bar\s*hangs?|passive\s*hangs?)\b/.test(h);
+  for (var i = 0; i < aliases.length; i++) {
+    var a = aliases[i];
+    var re = new RegExp('(^|[^a-z0-9])' + a.replace(/[-\/\\^$*+?.()|[\]{}]/g, '\\$&') + '([^a-z0-9]|$)');
+    if (!re.test(h)) continue;
+    // Bare hang/hangs/hanging that is actually another move ("hanging leg
+    // raise", "hanging knee raise") doesn't count unless a real dead-hang
+    // phrase is also in the text.
+    if (/^hang(?:s|ing)?$/.test(a) &&
+        /\bhang(?:ing|s)?\s+(?:leg|knee|oblique|windshield|toes?[\s-]*to)/.test(h) &&
+        !hasExplicitHang) {
+      continue;
+    }
+    return true;
+  }
+  return false;
+}
+
+// Distinct YYYY-MM-DD days a daily_habit/streak goal was satisfied, unioning
+// (a) days with a matching exercises row and (b) days a workout's notes/type
+// mention the exercise even though no exercises row was extracted. Returns
+// { days:Set, fromExercise:Set, fromWorkout:Set } so callers (and the debug
+// endpoint) can see where each day came from.
+async function mgHabitDaySources(pid, title) {
+  var fromExercise = new Set();
+  var fromWorkout = new Set();
+  var exR = await fetch(SUPABASE_URL + "/rest/v1/exercises?profile_id=eq." + pid + "&select=name,date&order=date.desc&limit=5000", { headers: sbHeaders() });
+  var exRows = await exR.json();
+  (Array.isArray(exRows) ? exRows : []).forEach(function(e) {
+    if (e.date && mgMatchesExercise(e.name, title)) fromExercise.add(e.date);
+  });
+  var wkR = await fetch(SUPABASE_URL + "/rest/v1/workouts?profile_id=eq." + pid + "&select=date,type,notes&order=date.desc&limit=5000", { headers: sbHeaders() });
+  var wkRows = await wkR.json();
+  (Array.isArray(wkRows) ? wkRows : []).forEach(function(w) {
+    if (!w.date) return;
+    if (fromExercise.has(w.date)) return; // already counted via an exercise row
+    if (mgWorkoutTextMatches((w.type || '') + ' \n ' + (w.notes || ''), title)) fromWorkout.add(w.date);
+  });
+  var days = new Set(fromExercise);
+  fromWorkout.forEach(function(d) { days.add(d); });
+  return { days: days, fromExercise: fromExercise, fromWorkout: fromWorkout };
+}
+
 async function computeMicroGoalProgress(goal, pid) {
   var type = goal.type;
   var title = goal.title || '';
@@ -4549,12 +4630,15 @@ async function computeMicroGoalProgress(goal, pid) {
       // logged on the same calendar day as goal creation (created_at is a UTC
       // timestamp; clipping by it dropped same-day-but-earlier rows for users
       // east of UTC) and any past-date workouts the user later log-corrected.
-      // De-dup is per (exercise, calendar date) via the Set below.
-      var rh2 = await fetch(SUPABASE_URL + "/rest/v1/exercises?profile_id=eq." + pid + "&select=name,date&order=date.desc&limit=5000", { headers: sbHeaders() });
-      var hrows2 = await rh2.json();
-      var days = new Set();
-      (hrows2 || []).forEach(function(e) { if (e.date && mgMatchesExercise(e.name, title)) days.add(e.date); });
-      return days.size;
+      // De-dup is per calendar date via the Set below.
+      //
+      // Count days from BOTH the exercises table AND workout notes — the AI
+      // extractor sometimes misses an exercise buried in a long multi-exercise
+      // note (e.g. a single "Dead hang" line in a 6-exercise session), which
+      // silently dropped real habit days from the count. `mgHabitDaySources`
+      // unions the two so an un-extracted-but-logged session still counts.
+      var habitSrc = await mgHabitDaySources(pid, title);
+      return habitSrc.days.size;
     }
 
     if (type === 'strength_milestone') {
@@ -4576,6 +4660,11 @@ async function computeMicroGoalProgress(goal, pid) {
         var maxSec = 0;
         (mtrows || []).forEach(function(e) {
           if (!mgMatchesExercise(e.name, title)) return;
+          // Ignore aspirational/goal-statement rows ("Dead Hang - work toward
+          // 2:00 goal"): the duration parser would otherwise read the TARGET
+          // time as an achieved hold and peg the milestone at 100%. A real
+          // logged effort ("Dead Hang 1m 42s") has no goal/target phrasing.
+          if (mgIsAspirationalEntry(e.raw_text) || mgIsAspirationalEntry(e.notes)) return;
           // Prefer parsed raw_text/notes — they preserve the user's literal
           // entry ("1:42", "1 min 42 sec") and are immune to the AI extractor
           // occasionally writing the seconds value into duration_minutes.
@@ -4716,6 +4805,84 @@ async function buildDailyHabitProgress(g, pid) {
     timeline_pct: timelinePct
   };
 }
+
+// ── DEBUG: Dead Hang daily-habit tracking ─────────────────────────────────
+// Temporary diagnostic for the "Dead Hang Everday" habit under-counting bug.
+// Shows the ILIKE patterns a notes search would use, the canonical resolution,
+// the distinct days found (split by source), and samples of exercise / workout
+// rows that DID and DIDN'T match. Optional ?title= overrides the goal title
+// (defaults to the profile's first daily_habit goal whose title resolves to a
+// canonical exercise, else "Dead Hang"). Remove once the count is verified.
+app.get("/api/debug/dead-hang/:userId", async function(req, res) {
+  try {
+    var pid = req.params.userId;
+    var title = req.query.title;
+    if (!title) {
+      var gr = await fetch(SUPABASE_URL + "/rest/v1/micro_goals?profile_id=eq." + pid + "&type=eq.daily_habit&is_active=eq.true&select=title&order=created_at.asc", { headers: sbHeaders() });
+      var grows = await gr.json();
+      var hit = (Array.isArray(grows) ? grows : []).find(function(g) { return extractCanonicalFromTitle(g.title); });
+      title = hit ? hit.title : (grows && grows[0] ? grows[0].title : "Dead Hang");
+    }
+    var canonical = extractCanonicalFromTitle(title);
+    var aliases = mgCanonicalAliases(canonical);
+    // The notes search uses a PostgREST `or=` of name.ilike per alias — this is
+    // the literal pattern set; the JS canonical matcher then filters results.
+    var ilikePatterns = aliases.map(function(a) { return "*" + a + "*"; });
+
+    var exR = await fetch(SUPABASE_URL + "/rest/v1/exercises?profile_id=eq." + pid + "&select=id,name,date,duration_minutes,raw_text,notes&order=date.desc&limit=5000", { headers: sbHeaders() });
+    var exRows = await exR.json();
+    exRows = Array.isArray(exRows) ? exRows : [];
+    var exMatched = [], exUnmatchedHangish = [];
+    exRows.forEach(function(e) {
+      var m = mgMatchesExercise(e.name, title);
+      if (m) exMatched.push(e);
+      else if (/hang/i.test(e.name || '')) exUnmatchedHangish.push(e); // ILIKE-positive but matcher-negative
+    });
+
+    var wkR = await fetch(SUPABASE_URL + "/rest/v1/workouts?profile_id=eq." + pid + "&select=id,date,type,notes&order=date.desc&limit=5000", { headers: sbHeaders() });
+    var wkRows = await wkR.json();
+    wkRows = Array.isArray(wkRows) ? wkRows : [];
+
+    var src = await mgHabitDaySources(pid, title);
+    var exerciseDays = [...src.fromExercise].sort();
+    var workoutOnlyDays = [...src.fromWorkout].sort();
+    var allDays = [...src.days].sort();
+
+    // Workouts that matched on notes but have NO exercise row (the recovered
+    // days) — show the note so we can eyeball false positives.
+    var workoutOnlySamples = wkRows
+      .filter(function(w) { return src.fromWorkout.has(w.date); })
+      .map(function(w) { return { id: w.id, date: w.date, type: w.type, notes_snippet: String(w.notes || '').replace(/\s+/g, ' ').slice(0, 160) }; });
+
+    // Workouts whose notes mention "hang" but were NOT counted at all (matcher
+    // rejected them AND no exercise row) — i.e. would-be false negatives.
+    var hangWkNotCounted = wkRows
+      .filter(function(w) { return /hang/i.test((w.notes || '') + ' ' + (w.type || '')); })
+      .filter(function(w) { return !src.days.has(w.date); })
+      .map(function(w) { return { id: w.id, date: w.date, type: w.type, notes_snippet: String(w.notes || '').replace(/\s+/g, ' ').slice(0, 160) }; });
+
+    res.json({
+      success: true,
+      title: title,
+      canonical: canonical,
+      ilike_patterns: ilikePatterns,
+      counts: {
+        from_exercise_rows: exerciseDays.length,
+        from_workout_notes_only: workoutOnlyDays.length,
+        combined_distinct_days: allDays.length,
+        exercise_rows_matched: exMatched.length,
+        exercise_rows_hangish_but_unmatched: exUnmatchedHangish.length
+      },
+      days: { exercise: exerciseDays, workout_only: workoutOnlyDays, combined: allDays },
+      sample_exercise_matched: exMatched.slice(0, 8).map(function(e) { return { id: e.id, date: e.date, name: e.name, raw_text: e.raw_text }; }),
+      sample_exercise_unmatched_hangish: exUnmatchedHangish.slice(0, 8).map(function(e) { return { id: e.id, date: e.date, name: e.name, raw_text: e.raw_text }; }),
+      sample_workout_only_recovered: workoutOnlySamples.slice(0, 12),
+      sample_hang_workouts_still_not_counted: hangWkNotCounted.slice(0, 12)
+    });
+  } catch (e) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
 
 app.get("/api/profiles/:id/micro-goals", async function(req, res) {
   try {
