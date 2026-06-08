@@ -382,6 +382,11 @@ input[type=range]{width:100%;accent-color:var(--accent)}
 .ob-textarea::placeholder{color:#444}
 .ob-textarea-wrap{position:relative;display:block;width:100%}
 .ob-mic{position:absolute;bottom:12px;right:12px;width:36px;height:36px;z-index:2;background:#22c97a18;border:1px solid #22c97a33;color:#22c97a;border-radius:8px;cursor:pointer;font-size:16px;display:flex;align-items:center;justify-content:center;padding:0}
+/* Voice dictation recording states (shared by all mic buttons) */
+@keyframes micPulse{0%,100%{box-shadow:0 0 0 0 rgba(255,74,28,.45)}50%{box-shadow:0 0 0 6px rgba(255,74,28,0)}}
+@keyframes micPulseWarn{0%,100%{box-shadow:0 0 0 0 rgba(245,176,65,.6)}50%{box-shadow:0 0 0 7px rgba(245,176,65,0)}}
+.mic-recording{animation:micPulse 1.4s ease-in-out infinite;color:#ff4a1c!important;border-color:#ff4a1c66!important}
+.mic-warning{animation:micPulseWarn .7s ease-in-out infinite;color:#f5b041!important;border-color:#f5b04166!important}
 .ob-pills{display:flex;flex-wrap:wrap;gap:10px;width:100%;max-width:560px}
 .ob-pill{background:#0d0f16;border:2px solid #1a1c22;color:#ccc;border-radius:14px;cursor:pointer;font-size:15px;font-family:'DM Sans',sans-serif;transition:all .2s;text-align:center;min-height:52px;display:flex;align-items:center;justify-content:center;padding:12px 20px}
 .ob-pill:hover{border-color:#22c97a44}
@@ -1802,17 +1807,20 @@ function obStartVoice(idx) {
   var ta = document.getElementById('ob-ta-' + idx);
   if (obRecognition) { obRecognition.stop(); obRecognition = null; if (mic) mic.textContent = '\uD83C\uDF99'; return; }
   obRecognition = new SR();
-  obRecognition.continuous = false;
+  obRecognition.continuous = true;
   obRecognition.interimResults = true;
   obRecognition.lang = 'en-US';
+  var obWatch = null;
   if (mic) mic.textContent = '\u23F9';
   obRecognition.onresult = function(e) {
+    if (obWatch) obWatch.bump();
     var t = '';
-    for (var i = 0; i < e.results.length; i++) t = e.results[i][0].transcript;
+    for (var i = 0; i < e.results.length; i++) t += e.results[i][0].transcript;
     if (ta) { ta.value = t; obAutoExpand(ta); obCheckContinue(); }
   };
-  obRecognition.onerror = function() { if (mic) mic.textContent = '\uD83C\uDF99'; obRecognition = null; };
-  obRecognition.onend = function() { if (mic) mic.textContent = '\uD83C\uDF99'; obRecognition = null; };
+  obRecognition.onerror = function() { if (obWatch) obWatch.dispose(); if (mic) mic.textContent = '\uD83C\uDF99'; obRecognition = null; };
+  obRecognition.onend = function() { if (obWatch) obWatch.dispose(); if (mic) mic.textContent = '\uD83C\uDF99'; obRecognition = null; };
+  obWatch = voiceSilenceWatch(obRecognition, mic, null);
   obRecognition.start();
 }
 
@@ -3174,9 +3182,13 @@ function startCheckinVoice() {
   checkinRecognition.interimResults = true;
   checkinRecognition.lang = 'en-US';
   var existing = document.getElementById('checkin-text').value;
-  document.getElementById('checkin-mic-btn').textContent = '\u23F9';
-  document.getElementById('checkin-voice-status').textContent = 'Listening...';
+  var cBtn = document.getElementById('checkin-mic-btn');
+  var cStatus = document.getElementById('checkin-voice-status');
+  var cWatch = null;
+  cBtn.textContent = '\u23F9';
+  cStatus.textContent = 'Listening...';
   checkinRecognition.onresult = function(e) {
+    if (cWatch) cWatch.bump();
     var interim = '';
     var finalT = '';
     for (var i = e.resultIndex; i < e.results.length; i++) {
@@ -3184,19 +3196,22 @@ function startCheckinVoice() {
       else interim += e.results[i][0].transcript;
     }
     document.getElementById('checkin-text').value = existing + (existing ? ' ' : '') + finalT;
-    document.getElementById('checkin-voice-status').textContent = interim ? 'Hearing: ' + interim : 'Listening...';
+    cStatus.textContent = interim ? 'Hearing: ' + interim : 'Listening...';
     fcValidate();
   };
   checkinRecognition.onerror = function(e) {
-    document.getElementById('checkin-voice-status').textContent = 'Error: ' + e.error;
-    document.getElementById('checkin-mic-btn').textContent = '\uD83C\uDF99';
+    if (cWatch) cWatch.dispose();
+    cStatus.textContent = 'Error: ' + e.error;
+    cBtn.textContent = '\uD83C\uDF99';
     checkinRecognition = null;
   };
   checkinRecognition.onend = function() {
-    document.getElementById('checkin-mic-btn').textContent = '\uD83C\uDF99';
-    document.getElementById('checkin-voice-status').textContent = '';
+    if (cWatch) cWatch.dispose();
+    cBtn.textContent = '\uD83C\uDF99';
+    cStatus.textContent = '';
     checkinRecognition = null;
   };
+  cWatch = voiceSilenceWatch(checkinRecognition, cBtn, cStatus);
   checkinRecognition.start();
 }
 
@@ -11410,6 +11425,50 @@ function renderCalBreakdown(types, label) {
 function renderWeek() { renderCalendar(); }
 
 // ── VOICE INPUT ───────────────────────────────────────────────────────────
+// Shared no-speech watchdog. Wraps a live SpeechRecognition with:
+//   • a pulsing "recording" mic state (.mic-recording),
+//   • an auto-stop after VOICE_SILENCE_MS of no speech activity, and
+//   • a final-2s countdown readout + amber warning pulse (.mic-warning),
+// so recording doesn't cut off unexpectedly. It only governs WHEN recording
+// stops — the transcription/processing wired to onend is untouched.
+// Callers: create AFTER setting handlers but BEFORE rec.start(); call
+// watch.bump() inside their own onresult; call watch.dispose() in onend/onerror.
+var VOICE_SILENCE_MS = 3000;
+function voiceSilenceWatch(rec, btn, statusEl) {
+  if (btn) btn.classList.add('mic-recording');
+  var deadline = Date.now() + VOICE_SILENCE_MS;
+  function bump() {
+    deadline = Date.now() + VOICE_SILENCE_MS;
+    if (btn) btn.classList.remove('mic-warning');
+  }
+  // soundstart/speechstart don't collide with the caller's onresult handler.
+  rec.onsoundstart = bump;
+  rec.onspeechstart = bump;
+  var iv = setInterval(function() {
+    var remain = deadline - Date.now();
+    if (remain <= 0) {
+      clearInterval(iv);
+      if (btn) btn.classList.remove('mic-warning');
+      try { rec.stop(); } catch (e) {} // fires onend → existing processing runs
+      return;
+    }
+    if (remain <= VOICE_SILENCE_MS - 1000) {
+      // ~1s+ of silence: show the countdown so the cut-off isn't a surprise.
+      if (btn) btn.classList.add('mic-warning');
+      if (statusEl) statusEl.textContent = '⏸ Auto-stopping in ' + Math.ceil(remain / 1000) + 's — keep talking…';
+    } else if (btn) {
+      btn.classList.remove('mic-warning');
+    }
+  }, 200);
+  return {
+    bump: bump,
+    dispose: function() {
+      clearInterval(iv);
+      if (btn) btn.classList.remove('mic-recording', 'mic-warning');
+    }
+  };
+}
+
 var recognition = null;
 // Dictation. Called with no args from the log-modal mic (#mic-btn → #wnotes,
 // with the #voice-status readout). Other mic buttons pass their own textarea +
@@ -11432,9 +11491,11 @@ function startVoice(targetEl, btnEl) {
   recognition.interimResults = true;
   recognition.lang = 'en-US';
   var existing = ta.value;
+  var watch = null;
   if (btn) btn.textContent = '⏹';
   if (statusEl) statusEl.textContent = 'Listening...';
   recognition.onresult = function(e) {
+    if (watch) watch.bump();
     var interim = '';
     var final = '';
     for (var i = e.resultIndex; i < e.results.length; i++) {
@@ -11448,15 +11509,18 @@ function startVoice(targetEl, btnEl) {
     try { ta.dispatchEvent(new Event('input', { bubbles: true })); } catch (e2) {}
   };
   recognition.onerror = function(e) {
+    if (watch) watch.dispose();
     if (statusEl) statusEl.textContent = 'Error: ' + e.error;
     if (btn) btn.textContent = '🎙';
     recognition = null;
   };
   recognition.onend = function() {
+    if (watch) watch.dispose();
     if (btn) btn.textContent = '🎙';
     if (statusEl) statusEl.textContent = 'Done. Click AI Format to clean it up.';
     recognition = null;
   };
+  watch = voiceSilenceWatch(recognition, btn, statusEl);
   recognition.start();
 }
 
@@ -12490,17 +12554,20 @@ function pbStartVoice(idx) {
   var ta = document.getElementById('pb-ta-' + idx);
   if (pbRecognition) { pbRecognition.stop(); pbRecognition = null; if (mic) mic.textContent = '\uD83C\uDF99'; return; }
   pbRecognition = new SR();
-  pbRecognition.continuous = false;
+  pbRecognition.continuous = true;
   pbRecognition.interimResults = true;
   pbRecognition.lang = 'en-US';
+  var pbWatch = null;
   if (mic) mic.textContent = '\u23F9';
   pbRecognition.onresult = function(e) {
+    if (pbWatch) pbWatch.bump();
     var t = '';
-    for (var i = 0; i < e.results.length; i++) t = e.results[i][0].transcript;
+    for (var i = 0; i < e.results.length; i++) t += e.results[i][0].transcript;
     if (ta) { ta.value = t; obAutoExpand(ta); pbCheckContinue(); }
   };
-  pbRecognition.onerror = function() { if (mic) mic.textContent = '\uD83C\uDF99'; pbRecognition = null; };
-  pbRecognition.onend = function() { if (mic) mic.textContent = '\uD83C\uDF99'; pbRecognition = null; };
+  pbRecognition.onerror = function() { if (pbWatch) pbWatch.dispose(); if (mic) mic.textContent = '\uD83C\uDF99'; pbRecognition = null; };
+  pbRecognition.onend = function() { if (pbWatch) pbWatch.dispose(); if (mic) mic.textContent = '\uD83C\uDF99'; pbRecognition = null; };
+  pbWatch = voiceSilenceWatch(pbRecognition, mic, null);
   pbRecognition.start();
 }
 
