@@ -2260,7 +2260,7 @@ function formatWorkoutForAI(w) {
 }
 
 // Model IDs — kept in one place so routing decisions live server-side.
-var MODEL_SONNET = "claude-sonnet-4-20250514";
+var MODEL_SONNET = "claude-sonnet-4-6";
 var MODEL_HAIKU  = "claude-haiku-4-5-20251001";
 
 // callType → model. Cheap tasks (formatting, extraction, short classification)

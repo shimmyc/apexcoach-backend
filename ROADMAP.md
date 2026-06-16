@@ -43,7 +43,7 @@ recommendations from biometrics, training history, goals, and short-horizon "cha
 | Backend | Node.js + Express — single file `server.js` |
 | Frontend | Vanilla HTML/CSS/JS single-page app — `public/index.html` |
 | Database | Supabase (PostgreSQL), accessed via PostgREST (`/rest/v1/...`) |
-| AI | Anthropic Claude via `/api/ai` proxy — **Haiku** (`claude-haiku-4-5-20251001`) for cheap tasks, **Sonnet** (`claude-sonnet-4-20250514`) for smart tasks. Model is chosen **server-side** from a `callType` field; clients can't request the expensive model. System prompts auto-wrapped with `cache_control: ephemeral`. |
+| AI | Anthropic Claude via `/api/ai` proxy — **Haiku** (`claude-haiku-4-5-20251001`) for cheap tasks, **Sonnet** (`claude-sonnet-4-6`) for smart tasks. Model is chosen **server-side** from a `callType` field; clients can't request the expensive model. System prompts auto-wrapped with `cache_control: ephemeral`. |
 | Wearables | Provider-agnostic adapters in `wearables/` — **Fitbit** + **Google Health API v4** fully implemented (both OAuth2 + auto-refresh). Apple Health / Samsung / Garmin are stubs. |
 | Hosting | Render.com — auto-deploys on push to `main` |
 | Repo | github.com/shimmyc/apexcoach-backend |
