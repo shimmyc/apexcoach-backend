@@ -222,19 +222,36 @@ async function getValidProfileToken(profileId) {
 }
 
 // ── FITBIT HELPERS ────────────────────────────────────────────────────────
-async function fitGet(endpoint, token) {
+// Per-call timeout so a single slow/hung Fitbit request can never stall the
+// parent endpoint into a platform 504. The AbortController actually cancels the
+// in-flight fetch (unlike a bare Promise.race), freeing the socket.
+const FITBIT_TIMEOUT_MS = 8000;
+async function fitGet(endpoint, token, timeoutMs) {
   console.log("[Fitbit API] GET " + endpoint);
-  const res = await fetch("https://api.fitbit.com" + endpoint, {
-    headers: { "Authorization": "Bearer " + token },
-  });
-  if (!res.ok) {
-    var errBody = await res.text();
-    console.error("[Fitbit API] ERROR " + res.status + " for " + endpoint + ": " + errBody.substring(0, 200));
-    throw new Error("Fitbit " + res.status + " for " + endpoint);
+  var controller = new AbortController();
+  var timer = setTimeout(function() { controller.abort(); }, timeoutMs || FITBIT_TIMEOUT_MS);
+  try {
+    const res = await fetch("https://api.fitbit.com" + endpoint, {
+      headers: { "Authorization": "Bearer " + token },
+      signal: controller.signal,
+    });
+    if (!res.ok) {
+      var errBody = await res.text();
+      console.error("[Fitbit API] ERROR " + res.status + " for " + endpoint + ": " + errBody.substring(0, 200));
+      throw new Error("Fitbit " + res.status + " for " + endpoint);
+    }
+    var data = await res.json();
+    console.log("[Fitbit API] OK " + endpoint + " -> keys: " + Object.keys(data).join(","));
+    return data;
+  } catch (e) {
+    if (e && e.name === "AbortError") {
+      console.error("[Fitbit API] TIMEOUT after " + (timeoutMs || FITBIT_TIMEOUT_MS) + "ms for " + endpoint);
+      throw new Error("Fitbit timeout for " + endpoint);
+    }
+    throw e;
+  } finally {
+    clearTimeout(timer);
   }
-  var data = await res.json();
-  console.log("[Fitbit API] OK " + endpoint + " -> keys: " + Object.keys(data).join(","));
-  return data;
 }
 
 function dateStr(offsetDays) {
@@ -265,12 +282,16 @@ async function buildDailyData(token, overrideDate) {
   const yesterday = overrideDate ? (() => { const d = new Date(overrideDate + 'T12:00:00'); d.setDate(d.getDate() - 1); return d.toISOString().slice(0,10); })() : dateStr(-1);
   const weekAgo   = overrideDate ? (() => { const d = new Date(overrideDate + 'T12:00:00'); d.setDate(d.getDate() - 7); return d.toISOString().slice(0,10); })() : dateStr(-7);
 
+  // Every Fitbit fetch is non-fatal: on any error (403/401/500/timeout) the
+  // call resolves to the empty shape its consumer expects, so a single failing
+  // metric degrades to null rather than rejecting the whole batch and 500ing the
+  // endpoint. The extractors below already treat these empties as "no data".
   const results = await Promise.all([
-    fitGet("/1.2/user/-/sleep/date/" + today + ".json", token),
-    fitGet("/1/user/-/activities/heart/date/" + today + "/1d.json", token),
-    fitGet("/1/user/-/activities/heart/date/" + yesterday + "/1d.json", token),
-    fitGet("/1/user/-/hrv/date/" + today + ".json", token),
-    fitGet("/1/user/-/activities/date/" + yesterday + ".json", token),
+    fitGet("/1.2/user/-/sleep/date/" + today + ".json", token).catch(function() { return {}; }),
+    fitGet("/1/user/-/activities/heart/date/" + today + "/1d.json", token).catch(function() { return { "activities-heart": [] }; }),
+    fitGet("/1/user/-/activities/heart/date/" + yesterday + "/1d.json", token).catch(function() { return { "activities-heart": [] }; }),
+    fitGet("/1/user/-/hrv/date/" + today + ".json", token).catch(function() { return { hrv: [] }; }),
+    fitGet("/1/user/-/activities/date/" + yesterday + ".json", token).catch(function() { return {}; }),
     fitGet("/1/user/-/hrv/date/" + weekAgo + "/" + today + ".json", token).catch(function() { return { hrv: [] }; }),
     fitGet("/1/user/-/activities/heart/date/" + weekAgo + "/" + today + ".json", token).catch(function() { return { "activities-heart": [] }; }),
     fitGet("/1/user/-/sleep/date/" + today + ".json", token).catch(function() { return {}; }),
@@ -519,6 +540,44 @@ async function buildDailyData(token, overrideDate) {
       rhrHistory7Day: rhrHistory7Day,
     },
   };
+}
+
+// Empty wearable snapshot returned (HTTP 200) when no wearable data is
+// available — e.g. Fitbit token refresh failed, every Fitbit call errored, or
+// the live fetch timed out. Shape mirrors the success payload (all null/empty)
+// so the client renders the "no biometrics" state and still generates a
+// recommendation from profile + manual check-in data instead of erroring.
+function emptyWearableData() {
+  return {
+    sleep: null,
+    rhr: null,
+    hrv: null,
+    prevZones: { peak: 0, cardio: 0, fatBurn: 0 },
+    steps: null,
+    stepsSummary: null,
+    todaysActivities: [],
+    bodySummary: null,
+    sleepSummary: null,
+    rolling7: { rhr: null, hrv: null },
+    rhrHistory7Day: [],
+    source: "unavailable",
+  };
+}
+
+// Bound any promise with a hard timeout so a hung upstream (e.g. the Google
+// Health adapter, whose fetches carry no AbortController) can never stall the
+// parent endpoint into a 504. The underlying work is abandoned, not cancelled —
+// fitGet cancels its own socket via AbortController; for others the orphaned
+// promise simply resolves later and is ignored.
+function withTimeout(promise, ms, label) {
+  return Promise.race([
+    promise,
+    new Promise(function(_, reject) {
+      setTimeout(function() {
+        reject(new Error((label || "operation") + " timed out after " + ms + "ms"));
+      }, ms);
+    }),
+  ]);
 }
 
 // ── OAUTH ──────────────────────────────────────────────────────────────────
@@ -903,11 +962,13 @@ app.delete("/api/profiles/:id", async function(req, res) {
 app.get("/api/daily", async function(req, res) {
   try {
     const token = await getValidToken();
-    const result = await buildDailyData(token);
+    const result = await withTimeout(buildDailyData(token), 25000, "buildDailyData");
     res.json({ success: true, date: result.date, data: result.data });
   } catch (err) {
-    console.error("Error:", err.message);
-    res.status(500).json({ success: false, error: err.message });
+    // Non-fatal: degrade to an empty wearable snapshot (200) on any Fitbit
+    // token/API/timeout failure rather than 500ing.
+    console.error("[Fitbit] /api/daily failed (non-fatal), returning empty wearable data:", err.message);
+    res.json({ success: true, date: dateStr(0), data: emptyWearableData(), fitbit_error: true });
   }
 });
 
@@ -936,7 +997,12 @@ app.get("/api/profiles/:id/daily", async function(req, res) {
             String(d.getMonth() + 1).padStart(2, "0") + "-" +
             String(d.getDate()).padStart(2, "0");
         })();
-        const ghData = await ghAdapter.fetchDailyData(ghToken, ghDate);
+        // Hard 8s cap — the GH adapter's fetches have no AbortController, so a
+        // hung upstream would otherwise stall the endpoint into a 504. On
+        // timeout this throws and falls through to the Fitbit path below.
+        const ghData = await withTimeout(
+          ghAdapter.fetchDailyData(ghToken, ghDate), 8000, "google_health fetchDailyData"
+        );
 
         // Only serve Google Health if it actually returned something this day;
         // otherwise fall through to Fitbit (e.g. a brand-new GH connection with
@@ -1038,9 +1104,21 @@ app.get("/api/profiles/:id/daily", async function(req, res) {
     }
 
     console.log("[Fitbit] /api/profiles/" + req.params.id + "/daily called - loading tokens from profiles table");
-    const token = await getValidProfileToken(req.params.id);
     const dateParam = req.query.date || null;
-    const result = await buildDailyData(token, dateParam);
+    // Non-fatal Fitbit fetch: a token/refresh failure, an API error, or a
+    // timeout must NOT 500/504 this endpoint. On any failure we return a 200
+    // with an empty wearable snapshot so the client still generates a
+    // recommendation from profile + manual data. (buildDailyData's individual
+    // calls already degrade to null internally; this guards the token step and
+    // any unexpected throw, and bounds the whole build so it can't hang.)
+    let result;
+    try {
+      const token = await getValidProfileToken(req.params.id);
+      result = await withTimeout(buildDailyData(token, dateParam), 25000, "buildDailyData");
+    } catch (fitbitErr) {
+      console.error("[Fitbit] daily fetch failed (non-fatal) for profile " + req.params.id + ", returning empty wearable data:", fitbitErr.message);
+      return res.json({ success: true, date: dateParam || dateStr(0), data: emptyWearableData(), fitbit_error: true });
+    }
     // Fire-and-forget: persist yesterday's steps and auto-track step micro-goals.
     // Do NOT block the daily response on this.
     var ss = result.data && result.data.stepsSummary;
