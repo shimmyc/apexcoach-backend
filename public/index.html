@@ -3768,16 +3768,38 @@ function fetchAI(opts) {
 
   microGoalsReady.then(function() {
   try {
+  // Condensed last-N-day exercise summary: one line per logged exercise as
+  // "DATE: EXERCISE (SETS x REPS @ WEIGHT)" — far smaller than dumping full
+  // workout objects, and keeps the daily_recs request body under ~6KB.
   var buildLog = function(days) {
-    var slice = workoutLog.slice(-days);
-    var out = '';
-    for (var i = 0; i < slice.length; i++) {
-      var w = slice[i];
-      out += '- ' + w.date + ': ' + w.type + (w.done ? ' done' : ' skipped') + (w.mobility ? ' + mobility' : '') + (w.med ? ' + meditation' : '') + (w.notes ? ' (' + w.notes + ')' : '') + '\n';
+    var cutoff = ds(-(days - 1)); // inclusive window: today .. (days-1) ago
+    var rows = [];
+    if (libExercises && libExercises.length) {
+      for (var li = 0; li < libExercises.length; li++) {
+        var lex = libExercises[li];
+        var sessions = lex.sessions || [];
+        for (var si = 0; si < sessions.length; si++) {
+          var s = sessions[si];
+          if (!s || !s.date || s.date < cutoff) continue;
+          rows.push({ date: s.date, name: lex.name, sets: s.sets, reps: s.reps, weight: s.weight_lbs });
+        }
+      }
     }
-    return out || 'No recent workouts logged yet.';
+    if (!rows.length) return 'No exercises logged in the last ' + days + ' days.';
+    rows.sort(function(a, b) { return a.date < b.date ? -1 : (a.date > b.date ? 1 : 0); });
+    var lines = [];
+    for (var ri = 0; ri < rows.length; ri++) {
+      var r = rows[ri];
+      var detail = '';
+      if (r.sets && r.reps) detail = r.sets + ' x ' + r.reps;
+      else if (r.reps) detail = r.reps + ' reps';
+      else if (r.sets) detail = r.sets + ' sets';
+      if (r.weight) detail += (detail ? ' @ ' : '') + r.weight + ' lbs';
+      lines.push(r.date + ': ' + r.name + (detail ? ' (' + detail + ')' : ''));
+    }
+    return lines.join('\n');
   };
-  var logDays = 10;
+  var logDays = 7;
   var recent = buildLog(logDays);
 
   var today = new Date().toLocaleDateString('en-US', {weekday:'long', month:'long', day:'numeric'});
@@ -3922,40 +3944,48 @@ function fetchAI(opts) {
   var systemPrompt = buildSystemPrompt(systemPromptOpts);
   var userMessage = buildUserMessage();
 
-  // Length guard: keep the COMBINED prompt under 8000 chars. Trim in this
-  // priority order (micro-goals and schedule instruction are NEVER dropped):
+  // Length guard: keep the COMBINED prompt under 6000 chars (~6KB body). Trim
+  // in this priority order (micro-goals and schedule instruction are NEVER
+  // dropped):
   //   1. historicalBrief → 400 chars
   //   2. coachingBrief → 400 chars
   //   3. exerciseHistory → top 5
-  //   4. 10-day log → 7 days
+  //   4. 7-day exercise log → 4 days
   var totalLen = function() { return systemPrompt.length + userMessage.length; };
-  if (totalLen() > 8000 && truncatedHistoricalBrief.length > 400) {
+  if (totalLen() > 6000 && truncatedHistoricalBrief.length > 400) {
     truncatedHistoricalBrief = truncatedHistoricalBrief.substring(0, 400) + '...';
     userMessage = buildUserMessage();
     console.log('[ApexCoach] fetchAI: trimmed historical brief to 400 chars (total=' + totalLen() + ')');
   }
-  if (totalLen() > 8000 && truncatedCoachingBrief.length > 400) {
+  if (totalLen() > 6000 && truncatedCoachingBrief.length > 400) {
     truncatedCoachingBrief = truncatedCoachingBrief.substring(0, 400) + '...';
     userMessage = buildUserMessage();
     console.log('[ApexCoach] fetchAI: trimmed coaching brief to 400 chars (total=' + totalLen() + ')');
   }
-  if (totalLen() > 8000 && exerciseLimit > 5) {
+  if (totalLen() > 6000 && exerciseLimit > 5) {
     exerciseLimit = 5;
     recentExerciseContext = buildExerciseHistory(exerciseLimit);
     userMessage = buildUserMessage();
     console.log('[ApexCoach] fetchAI: trimmed exercise history to 5 entries (total=' + totalLen() + ')');
   }
-  if (totalLen() > 8000 && logDays > 7) {
-    logDays = 7;
+  if (totalLen() > 6000 && logDays > 4) {
+    logDays = 4;
     recent = buildLog(logDays);
     userMessage = buildUserMessage();
-    console.log('[ApexCoach] fetchAI: trimmed recent log to 7 days (total=' + totalLen() + ')');
+    console.log('[ApexCoach] fetchAI: trimmed recent log to 4 days (total=' + totalLen() + ')');
   }
   console.log('[ApexCoach] AI prompt lengths: system=' + systemPrompt.length + ' user=' + userMessage.length + ' total=' + totalLen());
 
-  // 30 second timeout
+  // Idle timeout: daily_recs is streamed, so reset the abort timer on every
+  // chunk. As long as bytes keep arriving (within 30s gaps) the request stays
+  // alive even if the full response takes well over 30s to generate.
   var controller = new AbortController();
-  var timeoutId = setTimeout(function() { controller.abort(); }, 30000);
+  var IDLE_MS = 30000;
+  var timeoutId = setTimeout(function() { controller.abort(); }, IDLE_MS);
+  var resetIdle = function() {
+    clearTimeout(timeoutId);
+    timeoutId = setTimeout(function() { controller.abort(); }, IDLE_MS);
+  };
 
   fetch('/api/ai', {
     method: 'POST',
@@ -3969,15 +3999,35 @@ function fetchAI(opts) {
     signal: controller.signal
   })
   .then(function(r) {
-    clearTimeout(timeoutId);
     console.log('[ApexCoach] fetchAI: response received, status=' + r.status);
-    if (!r.ok) throw new Error('Server returned ' + r.status);
-    return r.json();
+    if (!r.ok) {
+      clearTimeout(timeoutId);
+      // Errors come back as non-streamed JSON; surface the message.
+      return r.json().then(function(d) {
+        throw new Error((d && d.error && (d.error.message || d.error)) || ('Server returned ' + r.status));
+      }, function() { throw new Error('Server returned ' + r.status); });
+    }
+    // Streamed plain-text body — reassemble the full text before parsing.
+    if (r.body && r.body.getReader) {
+      var reader = r.body.getReader();
+      var decoder = new TextDecoder();
+      var acc = '';
+      var pump = function() {
+        return reader.read().then(function(res) {
+          if (res.done) { clearTimeout(timeoutId); return acc; }
+          resetIdle();
+          acc += decoder.decode(res.value, { stream: true });
+          return pump();
+        });
+      };
+      return pump();
+    }
+    // Fallback for environments without streaming support.
+    return r.text().then(function(t) { clearTimeout(timeoutId); return t; });
   })
-  .then(function(data) {
-    console.log('[ApexCoach] fetchAI: parsing response');
-    if (data.error) throw new Error(data.error.message || data.error || 'AI returned an error');
-    var raw = (data.content && data.content[0]) ? data.content[0].text : '{}';
+  .then(function(raw) {
+    console.log('[ApexCoach] fetchAI: parsing response (' + (raw ? raw.length : 0) + ' chars)');
+    raw = raw || '{}';
     var cleaned = raw.indexOf('{') >= 0 ? raw.substring(raw.indexOf('{'), raw.lastIndexOf('}') + 1) : '{}';
     var parsed;
     try {

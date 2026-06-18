@@ -4773,6 +4773,75 @@ app.get("/api/profiles/:id/goals/:goalId", async function(req, res) {
   }
 });
 
+// Pump an Anthropic streaming (SSE) response straight to the client as plain
+// text. We forward ONLY the text deltas, so the client reassembles the exact
+// same string it previously read from data.content[0].text — no SSE parsing
+// needed on the frontend. Forwarding bytes as they arrive keeps the connection
+// alive past Render's ~25-30s idle-close window (Sonnet's daily_recs can take
+// >25s). A per-chunk idle timeout aborts a hung upstream. See shared/streaming.
+async function pipeAnthropicStream(upstream, controller, res) {
+  res.set({
+    "Content-Type": "text/plain; charset=utf-8",
+    "Cache-Control": "no-cache, no-transform",
+    "X-Accel-Buffering": "no", // don't let a proxy buffer the stream
+  });
+  if (typeof res.flushHeaders === "function") res.flushHeaders();
+
+  let buffer = "";
+  let usage = null;
+  let wroteAny = false;
+  let idleTimer = null;
+  const armIdle = function() {
+    if (idleTimer) clearTimeout(idleTimer);
+    idleTimer = setTimeout(function() {
+      try { controller.abort(); } catch (e) {}
+    }, 20000);
+  };
+  armIdle();
+
+  try {
+    for await (const chunk of upstream.body) {
+      armIdle();
+      buffer += chunk.toString("utf8");
+      // SSE frames are newline-delimited; content text is JSON-escaped inside
+      // the data line, so splitting transport on "\n" is safe.
+      let nl;
+      while ((nl = buffer.indexOf("\n")) >= 0) {
+        const line = buffer.slice(0, nl).trim();
+        buffer = buffer.slice(nl + 1);
+        if (line.indexOf("data:") !== 0) continue;
+        const payload = line.slice(5).trim();
+        if (!payload) continue;
+        let evt;
+        try { evt = JSON.parse(payload); } catch (e) { continue; }
+        if (evt.type === "content_block_delta" && evt.delta && evt.delta.type === "text_delta") {
+          res.write(evt.delta.text);
+          wroteAny = true;
+        } else if (evt.type === "message_start" && evt.message && evt.message.usage) {
+          usage = evt.message.usage;
+        } else if (evt.type === "message_delta" && evt.usage) {
+          usage = Object.assign({}, usage || {}, evt.usage);
+        } else if (evt.type === "error") {
+          console.error("[AI] stream error event:", JSON.stringify(evt.error || evt));
+        }
+      }
+    }
+  } catch (err) {
+    console.error("[AI] daily_recs stream read error:", err && err.message);
+  } finally {
+    if (idleTimer) clearTimeout(idleTimer);
+  }
+
+  if (usage) {
+    console.log("[AI] usage (stream): input=" + (usage.input_tokens || 0) +
+      " output=" + (usage.output_tokens || 0) +
+      " cache_write=" + (usage.cache_creation_input_tokens || 0) +
+      " cache_read=" + (usage.cache_read_input_tokens || 0));
+  }
+  console.log("[AI] daily_recs stream complete, wroteAny=" + wroteAny);
+  res.end();
+}
+
 // ── AI PROXY ──────────────────────────────────────────────────────────────
 // The client sends a `callType` ("daily_recs", "format_notes", "workout_title",
 // etc.) and the server picks the model. The client is no longer allowed to
@@ -4783,6 +4852,10 @@ app.get("/api/profiles/:id/goals/:goalId", async function(req, res) {
 // array with `cache_control: {type: "ephemeral"}` so the prefix (tools + system)
 // is cached on Anthropic's side and subsequent calls on the same prompt are
 // billed at ~10% of input-token rate. See shared/prompt-caching.md.
+//
+// daily_recs is STREAMED (Anthropic SSE → plain text) so the response survives
+// Render's idle-connection close; all other callTypes use the single-shot
+// JSON path unchanged.
 app.post("/api/ai", async function(req, res) {
   const bodySize = JSON.stringify(req.body).length;
   const callType = req.body && req.body.callType;
@@ -4824,6 +4897,11 @@ app.post("/api/ai", async function(req, res) {
       }
     }
 
+    // Only daily_recs streams — bytes flow continuously to the client so the
+    // request doesn't sit idle long enough for Render to close it.
+    const wantStream = callType === "daily_recs";
+    if (wantStream) forwarded.stream = true;
+
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), 25000);
     const response = await fetch("https://api.anthropic.com/v1/messages", {
@@ -4836,8 +4914,25 @@ app.post("/api/ai", async function(req, res) {
       body: JSON.stringify(forwarded),
       signal: controller.signal,
     });
+    console.log("[AI] Anthropic response status=" + response.status + " model=" + chosenModel + (wantStream ? " (streaming)" : ""));
+
+    if (wantStream) {
+      // Headers are in; the short request timeout no longer applies — the pump
+      // installs its own per-chunk idle timeout.
+      clearTimeout(timeoutId);
+      if (!response.ok) {
+        // Upstream failed before streaming — surface as JSON like the
+        // non-streaming path so the client's r.ok check catches it.
+        const errData = await response.json().catch(function() {
+          return { error: { message: "Anthropic error " + response.status } };
+        });
+        console.error("[AI] daily_recs upstream error status=" + response.status);
+        return res.status(response.status).json(errData);
+      }
+      return await pipeAnthropicStream(response, controller, res);
+    }
+
     clearTimeout(timeoutId);
-    console.log("[AI] Anthropic response status=" + response.status + " model=" + chosenModel);
     const data = await response.json();
     if (data && data.usage) {
       console.log("[AI] usage: input=" + (data.usage.input_tokens || 0) +
