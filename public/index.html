@@ -3733,9 +3733,38 @@ function invalidateDailyRecsAndRefresh(reason) {
   else fetchAI();
 }
 
+// Pending auto-retry timer for the main daily-recs fetch, so we never stack
+// multiple bounded retry chains on top of each other.
+var aiRetryTimer = null;
+
+// Extract the recommendation object from a daily_recs response body. The
+// streaming path delivers the model's raw text (the JSON itself); the legacy
+// path delivered an Anthropic message envelope ({content:[{text:"{...}"}]}).
+// This handles BOTH, plus markdown code fences, and returns null if nothing
+// parseable is found.
+function extractRecJSON(raw) {
+  raw = (raw || '').trim();
+  // Strip markdown code fences (```json ... ```) if the model wrapped its JSON.
+  if (raw.indexOf('```') >= 0) raw = raw.replace(/```+\s*json|```+/gi, '').trim();
+  if (raw.indexOf('{') < 0) return null;
+  var cleaned = raw.substring(raw.indexOf('{'), raw.lastIndexOf('}') + 1);
+  var obj;
+  try { obj = JSON.parse(cleaned); } catch (e) { return null; }
+  // Defensive: if we somehow got the Anthropic message envelope instead of the
+  // model's text, dig out content[0].text and re-extract from it.
+  if (obj && obj.content && Array.isArray(obj.content)) {
+    var inner = (obj.content[0] && obj.content[0].text) || '';
+    return extractRecJSON(inner);
+  }
+  return obj;
+}
+
 function fetchAI(opts) {
   opts = opts || {};
-  console.log('[ApexCoach] fetchAI: starting request' + (opts.silent ? ' (silent)' : ''));
+  // Attempt number within a bounded retry chain (1-based). External callers
+  // omit it (→ attempt 1); auto-retries increment it and stop at 3.
+  opts._attempt = opts._attempt || 1;
+  console.log('[ApexCoach] fetchAI: starting request' + (opts.silent ? ' (silent)' : '') + ' [attempt ' + opts._attempt + '/3]');
 
   // Safety check: ensure we have valid profile data for the current user
   if (!currentProfileData || !currentProfileData.name) {
@@ -4026,14 +4055,13 @@ function fetchAI(opts) {
     return r.text().then(function(t) { clearTimeout(timeoutId); return t; });
   })
   .then(function(raw) {
-    console.log('[ApexCoach] fetchAI: parsing response (' + (raw ? raw.length : 0) + ' chars)');
-    raw = raw || '{}';
-    var cleaned = raw.indexOf('{') >= 0 ? raw.substring(raw.indexOf('{'), raw.lastIndexOf('}') + 1) : '{}';
-    var parsed;
-    try {
-      parsed = JSON.parse(cleaned);
-    } catch (parseErr) {
-      console.error('[ApexCoach] fetchAI: JSON parse failed:', parseErr.message, 'Raw:', raw.substring(0, 200));
+    raw = raw || '';
+    // Diagnostic: log the FULL reassembled stream text before any extraction,
+    // so we can see exactly what the client received.
+    console.log('[ApexCoach] fetchAI: reassembled stream text (' + raw.length + ' chars):\n' + raw);
+    var parsed = extractRecJSON(raw);
+    if (!parsed) {
+      console.error('[ApexCoach] fetchAI: could not extract rec JSON. Raw head:', raw.substring(0, 300));
       throw new Error('Failed to parse AI response');
     }
     // Normalize: if old single-object format (no options array), wrap it
@@ -4053,6 +4081,8 @@ function fetchAI(opts) {
       return;
     }
 
+    // Success — cancel any pending auto-retry from an earlier failed chain.
+    if (aiRetryTimer) { clearTimeout(aiRetryTimer); aiRetryTimer = null; }
     aiRec = parsed;
     aiRecGeneratedAt = aiRec.generated_at;
     aiRecDate = ds(0);
@@ -4076,6 +4106,20 @@ function fetchAI(opts) {
       renderAI();
       return;
     }
+    // Bounded auto-retry for the main daily-recs path: wait 3s, cap at 3 total
+    // attempts. Prevents the instant/infinite retry storm seen when a response
+    // fails to parse. Manual "Retry" starts a fresh chain at attempt 1.
+    if (opts._attempt < 3) {
+      var nextAttempt = opts._attempt + 1;
+      console.warn('[ApexCoach] fetchAI: attempt ' + opts._attempt + ' failed, retrying in 3s (next ' + nextAttempt + '/3)');
+      if (aiRetryTimer) clearTimeout(aiRetryTimer);
+      aiRetryTimer = setTimeout(function() {
+        aiRetryTimer = null;
+        fetchAI(Object.assign({}, opts, { _attempt: nextAttempt }));
+      }, 3000);
+      return;
+    }
+    console.error('[ApexCoach] fetchAI: giving up after 3 attempts');
     if (!opts.silent) {
       document.getElementById('ai-content').innerHTML = '<div style="text-align:center;padding:20px 0"><p style="color:#e87;font-size:15px;margin-bottom:12px">Unable to load recommendation</p><p style="color:var(--text-dim);font-size:13px;margin-bottom:16px">' + msg + '</p><button onclick="fetchAI()" style="background:transparent;border:1px solid #333;color:var(--text-sec);padding:8px 20px;cursor:pointer;border-radius:6px;font-size:14px;font-family:DM Sans,sans-serif">Retry</button></div>';
     }
