@@ -33,6 +33,11 @@ function sbHeaders(prefer) {
     "Authorization": "Bearer " + SUPABASE_KEY,
     "Content-Type": "application/json",
     "Prefer": prefer || "return=representation",
+    // Force uncompressed responses — node-fetch intermittently throws
+    // "Invalid response body: Premature close" decompressing Supabase's
+    // Cloudflare-fronted Brotli/gzip streams. curl from the same container
+    // succeeds 100%, so this is isolated to node-fetch's decompression path.
+    "Accept-Encoding": "identity",
   };
 }
 
