@@ -242,16 +242,44 @@ async function refreshProfileToken(profileId) {
   const tokens = await loadProfileTokens(profileId);
   if (!tokens.refresh_token) throw new Error("No Fitbit refresh token for this profile. Please re-authorize.");
   const creds = Buffer.from(CLIENT_ID + ":" + CLIENT_SECRET).toString("base64");
-  const res = await fetch("https://api.fitbit.com/oauth2/token", {
-    method: "POST",
-    headers: {
-      "Authorization": "Basic " + creds,
-      "Content-Type": "application/x-www-form-urlencoded",
-    },
-    body: "grant_type=refresh_token&refresh_token=" + tokens.refresh_token,
-  });
-  if (!res.ok) throw new Error("Refresh failed: " + await res.text());
-  const data = await res.json();
+
+  // This POST is excluded from the generic GET-only retry wrapper, but it IS
+  // safe to retry on transient network / body-read failures ("Premature
+  // close" etc.). Guard: Fitbit rotates the refresh token on every successful
+  // exchange, so a non-2xx response (especially 400 invalid_grant) means the
+  // original request already succeeded server-side and the token is spent —
+  // stop immediately instead of retrying into a confusing invalid_grant loop.
+  const delays = [250, 500]; // up to 2 retries after the initial attempt
+  let data;
+  for (let attempt = 0; attempt <= delays.length; attempt++) {
+    try {
+      const res = await rawFetch("https://api.fitbit.com/oauth2/token", {
+        method: "POST",
+        headers: {
+          "Authorization": "Basic " + creds,
+          "Content-Type": "application/x-www-form-urlencoded",
+        },
+        body: "grant_type=refresh_token&refresh_token=" + tokens.refresh_token,
+      });
+      const text = await res.text(); // "Premature close" fires here, not on the fetch
+      if (!res.ok) {
+        if (res.status === 400 && /invalid_grant/i.test(text)) {
+          console.error("[Fitbit] Refresh token already rotated or invalid — re-auth required");
+        }
+        // Non-2xx is a server-side rejection, not a network blip — do not retry.
+        throw new Error("Refresh failed: " + text);
+      }
+      data = JSON.parse(text);
+      break;
+    } catch (err) {
+      if (attempt < delays.length && isTransientFetchError(err)) {
+        console.log(`[FetchRetry] POST https://api.fitbit.com/oauth2/token failed (attempt ${attempt + 1}), retrying...`);
+        await new Promise((r) => setTimeout(r, delays[attempt]));
+        continue;
+      }
+      throw err; // invalid_grant / non-2xx / non-transient / out of retries — preserve for caller fallback
+    }
+  }
   const next = {
     access_token:  data.access_token,
     refresh_token: data.refresh_token,
