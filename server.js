@@ -1,8 +1,42 @@
 const express = require("express");
-const fetch   = require("node-fetch");
+const rawFetch = require("node-fetch");
 const path    = require("path");
 const crypto  = require("crypto");
 const wearables = require("./wearables");
+
+// Retry wrapper for transient network flakiness ("Premature close" /
+// ECONNRESET / ETIMEDOUT / EPIPE) seen intermittently against multiple
+// external hosts (Supabase, Fitbit). GET-ONLY: non-GET requests can have
+// side effects and must never be silently re-sent, so they pass straight
+// through. Propagates from this single import point to every call site.
+function isTransientFetchError(err) {
+  if (!err) return false;
+  const msg = String(err.message || "");
+  if (msg.includes("Premature close")) return true;
+  return err.code === "ECONNRESET" || err.code === "ETIMEDOUT" || err.code === "EPIPE";
+}
+
+async function fetch(url, options) {
+  const method = ((options && options.method) || "GET").toUpperCase();
+  if (method !== "GET") return rawFetch(url, options); // never retry side-effecting requests
+
+  const delays = [250, 500]; // up to 2 retries after the initial attempt
+  let lastErr;
+  for (let attempt = 0; attempt <= delays.length; attempt++) {
+    try {
+      return await rawFetch(url, options);
+    } catch (err) {
+      lastErr = err;
+      if (attempt < delays.length && isTransientFetchError(err)) {
+        console.log(`[FetchRetry] ${method} ${url} failed (attempt ${attempt + 1}), retrying...`);
+        await new Promise((r) => setTimeout(r, delays[attempt]));
+        continue;
+      }
+      throw err; // non-transient, or out of retries — preserve original error
+    }
+  }
+  throw lastErr;
+}
 
 const app  = express();
 const PORT = process.env.PORT || 3000;
