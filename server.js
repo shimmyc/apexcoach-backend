@@ -24,7 +24,18 @@ async function fetch(url, options) {
   let lastErr;
   for (let attempt = 0; attempt <= delays.length; attempt++) {
     try {
-      return await rawFetch(url, options);
+      const res = await rawFetch(url, options);
+      // "Premature close" fires during BODY consumption, after fetch() has
+      // already resolved — so eagerly read the full body here, inside the
+      // retry loop, then hand callers a buffered Response-like object.
+      const text = await res.text();
+      return {
+        ok: res.ok,
+        status: res.status,
+        headers: res.headers,
+        text: async () => text,
+        json: async () => JSON.parse(text),
+      };
     } catch (err) {
       lastErr = err;
       if (attempt < delays.length && isTransientFetchError(err)) {
