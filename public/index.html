@@ -4073,7 +4073,7 @@ function fetchAI(opts) {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
       callType: 'daily_recs',
-      max_tokens: 1800,
+      max_tokens: 2200,
       system: systemPrompt,
       messages: [{ role: 'user', content: userMessage }]
     }),
@@ -7805,7 +7805,7 @@ function buildResponseShapeSpec(aiNumOpts, aiShowMV) {
   if (aiNumOpts >= 3) arr.push(optTmpl(20));
   if (aiNumOpts >= 4) arr.push(optTmpl(15));
   return 'Respond ONLY with raw JSON, no markdown:\n' +
-    '{"brief":"one sentence overall context based on goal priorities and today\'s schedule","options":[' + arr.join(',') + ']' +
+    '{"brief":"ONE short sentence (max ~25 words) of overall context based on goal priorities and today\'s schedule — even with a long Focus Override or many injuries/goals to weigh, summarize in one punchy sentence, never a list or paragraph","options":[' + arr.join(',') + ']' +
     (aiShowMV ? ',"minimum_viable":"genuine 10-15 min fallback that still includes every daily-habit micro-goal"' : '') +
     ',"warning":"one specific caution based on the data, or null"}';
 }
