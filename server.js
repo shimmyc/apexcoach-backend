@@ -1,8 +1,14 @@
 const express = require("express");
 const rawFetch = require("node-fetch");
+const https   = require("https");
 const path    = require("path");
 const crypto  = require("crypto");
 const wearables = require("./wearables");
+
+// Forces a fresh TCP/TLS connection — Render's node-fetch pool has a
+// compatibility issue with Fitbit's token endpoint that causes Premature
+// close on pooled sockets.
+const fitbitTokenAgent = new https.Agent({ keepAlive: false });
 
 // Retry wrapper for transient network flakiness ("Premature close" /
 // ECONNRESET / ETIMEDOUT / EPIPE) seen intermittently against multiple
@@ -151,6 +157,7 @@ async function refreshAccessToken() {
       "Content-Type": "application/x-www-form-urlencoded",
     },
     body: "grant_type=refresh_token&refresh_token=" + tokens.refresh_token,
+    agent: fitbitTokenAgent,
   });
   if (!res.ok) throw new Error("Refresh failed: " + await res.text());
   const data = await res.json();
@@ -260,6 +267,7 @@ async function refreshProfileToken(profileId) {
           "Content-Type": "application/x-www-form-urlencoded",
         },
         body: "grant_type=refresh_token&refresh_token=" + tokens.refresh_token,
+        agent: fitbitTokenAgent,
       });
       const text = await res.text(); // "Premature close" fires here, not on the fetch
       if (!res.ok) {
@@ -685,6 +693,7 @@ app.get("/callback", async function(req, res) {
         "Content-Type": "application/x-www-form-urlencoded",
       },
       body: "grant_type=authorization_code&code=" + code + "&redirect_uri=" + encodeURIComponent(REDIRECT_URI),
+      agent: fitbitTokenAgent,
     });
     if (!resp.ok) return res.status(400).send("Failed: " + await resp.text());
     const data = await resp.json();
