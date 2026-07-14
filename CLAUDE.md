@@ -520,6 +520,34 @@ Goals can be ranked by priority via "Prioritize" button on Profile tab. Desktop:
 - **Goal tags in AI response**: Each workout option includes `goal_tags` (array of goal titles targeted) and `goal_reasoning` (how it advances that goal). Rendered as amber pills below workout headline.
 - **Save**: Reordered goals saved via PATCH /api/profiles/:id. Goal progress cache cleared on reorder.
 
+## Focus Override System
+
+Standing directive on `profile_data.focus_override` that reshapes daily AI recs independent of the normal goal-priority weighting, plus a per-day manual override on the AI rec card. Profile tab card `#focus-override-card`; all functions prefixed `fo`.
+
+**Schema** (`profile_data.focus_override`): `{ active (bool), text, scope ('all' | array of goal ids), mode ('replace'|'boost'|'sprinkle'|'infuse'|'total'), start_date, end_date, daily_override_state (null|'forced'|'total'|'skipped') }`. `scope` only applies in `replace`/`boost` (scope selector hidden for sprinkle/infuse/total, which always save `scope:'all'`).
+
+**Modes** — what each does to schedule + `goalPriorityContext`:
+- `replace` — suppresses `goalPriorityContext` entirely (or just the in-scope goals if `scope` is an array); schedule (`buildScheduleInstruction()`) unaffected.
+- `boost` — `goalPriorityContext` kept but compressed (~60-70% weight to the override, remainder split across ranked goals); schedule unaffected.
+- `sprinkle` — schedule + goal weighting unchanged; asks for 1-2 non-anchored sessions this week to lean toward the override text.
+- `infuse` — schedule/duration/frequency unchanged; asks to weave the override into whatever session is already planned (accessory work, technique emphasis, substitutions).
+- `total` — suppresses `goalPriorityContext` like `replace` **and** skips `buildScheduleInstruction()`'s anchor-lock step entirely (Option 1 is not forced to match today's fixed commitment/weekly target) — recs are built purely from `focus_override.text`.
+
+**Date range presets** (`foSetDatePreset(preset)`, 5 pills in the card next to the `fo-start-date`/`fo-end-date` inputs): all except `custom` set `start_date=today`; both fields stay freely editable after.
+- `30d` — `end_date = today + 30` (rolling).
+- `month` — `end_date` = last day of the current calendar month.
+- `quarter` — `end_date` = last day of the current calendar quarter (Jan-Mar/Apr-Jun/Jul-Sep/Oct-Dec).
+- `year` — `end_date` = Dec 31 of the current year.
+- `custom` — no auto-fill; just focuses/opens the `fo-start-date` picker.
+
+**Daily override flags** — `force` / `total` / `skip`, passed as `fetchAI({ dailyOverrideFlag })` from the AI rec card's "Focus fully today" / "Full override today" / "Skip focus today" buttons (shown only when the standing config is active + in date range). These are **per-call resolutions that do not mutate the stored config** (`resolveFocusOverride()` only touches its return value, not `profile_data.focus_override.mode/text/scope/dates`):
+- `force` → resolves to `{forced:true, mode:'replace', scope:'all', text}` regardless of the standing mode.
+- `total` → resolves to `{forced:true, mode:'total', scope:'all', text}` regardless of the standing mode (same non-mutating shape as `force`, but flows through to the schedule anchor-skip).
+- `skip` → `resolveFocusOverride()` returns `null` (override off for this call).
+- The chosen flag's outcome (`'forced'`/`'total'`/`'skipped'`) is stamped onto the cached rec (`daily_override_state`) and mirrored to `profile_data.focus_override.daily_override_state` (PATCH) so the card shows the right pill ("Today: Full Focus" / "Today: Full Override" / "Today: Focus Off") across reloads until "Reset to normal" (`resetFocusOverrideDaily()`) clears it. `foSave()`/`foToggleActive()` also clear it since a config edit invalidates any earlier per-day decision.
+
+**Prompt injection** — `resolveFocusOverride(dailyOverrideFlag)` is the single source of truth for "is the override on for this call, and what mode/text/scope" (used by both the `goalPriorityContext` suppression logic and the schedule call in `fetchAI()`). `buildFocusOverrideContext(dailyOverrideFlag)` builds the actual `FOCUS OVERRIDE` prompt block from that resolution. Build order in `fetchAI()`'s user message: `buildScheduleInstruction()` (passed `{totalOverride: text}` when mode is `total`, `{categoryOverride}` when a category pill is active) → `buildFocusOverrideContext()` → biometrics/check-in/weekly-volume/log → ... → `goalPriorityContext` → `microGoalsContext`. `buildFocusOverrideContext()` never mutates `buildScheduleInstruction()`'s output — the `total`-mode schedule suppression is a separate early-return branch in `buildScheduleInstruction()` gated on `opts.totalOverride`.
+
 ## Active Challenges (Micro-Goals)
 
 Short-horizon, specific, measurable challenges that the AI weaves into EVERY daily recommendation. Separate from the long-term goal priority list — goals set direction, challenges set the next concrete target.
