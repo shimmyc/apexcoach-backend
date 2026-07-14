@@ -3937,7 +3937,7 @@ function fetchAI(opts) {
   var focusOverrideForWeighting = resolveFocusOverride(opts.dailyOverrideFlag);
   var weightedGoals = profileGoals;
   var skipGoalPriority = false;
-  if (focusOverrideForWeighting && focusOverrideForWeighting.mode === 'replace') {
+  if (focusOverrideForWeighting && (focusOverrideForWeighting.mode === 'replace' || focusOverrideForWeighting.mode === 'total')) {
     if (focusOverrideForWeighting.scope === 'all' || !Array.isArray(focusOverrideForWeighting.scope)) {
       skipGoalPriority = true;
     } else {
@@ -3976,7 +3976,8 @@ function fetchAI(opts) {
 
   // New sections (schedule must come first after any override)
   var scheduleInstruction = buildScheduleInstruction(
-    categoryOverrideBlock ? { categoryOverride: altOpts.category } : null
+    categoryOverrideBlock ? { categoryOverride: altOpts.category } :
+      (focusOverrideForWeighting && focusOverrideForWeighting.mode === 'total' ? { totalOverride: focusOverrideForWeighting.text } : null)
   );
   var focusOverrideContext = buildFocusOverrideContext(opts.dailyOverrideFlag);
   var varietyAnalysis = buildVarietyAndSkipAnalysis();
@@ -4124,6 +4125,7 @@ function fetchAI(opts) {
     // onto the cached rec so the "Today: Full Focus/Focus Off" pill survives
     // reloads; see renderAI() and focusOverrideDaily()/resetFocusOverrideDaily().
     if (opts.dailyOverrideFlag === 'force') parsed.daily_override_state = 'forced';
+    else if (opts.dailyOverrideFlag === 'total') parsed.daily_override_state = 'total';
     else if (opts.dailyOverrideFlag === 'skip') parsed.daily_override_state = 'skipped';
 
     if (altOpts) {
@@ -4152,7 +4154,7 @@ function fetchAI(opts) {
     // too, so the standing config carries a record of it (cleared on the next
     // config edit — see foPersist()).
     if (opts.dailyOverrideFlag && currentProfileId && currentProfileData) {
-      var foState = opts.dailyOverrideFlag === 'force' ? 'forced' : 'skipped';
+      var foState = opts.dailyOverrideFlag === 'force' ? 'forced' : (opts.dailyOverrideFlag === 'total' ? 'total' : 'skipped');
       currentProfileData.focus_override = Object.assign({}, currentProfileData.focus_override, { daily_override_state: foState });
       fetch('/api/profiles/' + currentProfileId, {
         method: 'PATCH',
@@ -4468,7 +4470,7 @@ function renderAI() {
     var foDailyState = activeRec.daily_override_state || null;
     var foInRangeToday = !!resolveFocusOverride(null);
     if (foDailyState) {
-      var foPillLabel = foDailyState === 'forced' ? 'Today: Full Focus' : 'Today: Focus Off';
+      var foPillLabel = foDailyState === 'forced' ? 'Today: Full Focus' : (foDailyState === 'total' ? 'Today: Full Override' : 'Today: Focus Off');
       html += '<div style="display:flex;justify-content:space-between;align-items:center;gap:10px;background:var(--bg-surface-2);border-radius:9999px;padding:6px 14px;margin-bottom:10px">';
       html += '<span style="font-size:12px;font-weight:600;color:var(--accent-ember)">' + foPillLabel + '</span>';
       html += '<a href="#" onclick="event.preventDefault();resetFocusOverrideDaily()" style="font-size:12px;color:var(--text-muted);text-decoration:underline;font-family:DM Sans,sans-serif">Reset to normal</a>';
@@ -4476,6 +4478,7 @@ function renderAI() {
     } else if (foInRangeToday) {
       html += '<div style="display:flex;gap:8px;margin-bottom:10px">';
       html += '<button type="button" onclick="focusOverrideDaily(\'force\')" style="flex:1;background:var(--accent-ember);border:none;color:#fff;padding:9px 12px;font-size:12px;font-weight:600;cursor:pointer;border-radius:9999px;font-family:DM Sans,sans-serif">Focus fully today</button>';
+      html += '<button type="button" onclick="focusOverrideDaily(\'total\')" style="flex:1;background:transparent;border:1px solid var(--accent-ember);color:var(--accent-ember);padding:9px 12px;font-size:12px;font-weight:600;cursor:pointer;border-radius:9999px;font-family:DM Sans,sans-serif">Full override today</button>';
       html += '<button type="button" onclick="focusOverrideDaily(\'skip\')" style="flex:1;background:transparent;border:1px solid var(--border-subtle);color:var(--text-muted);padding:9px 12px;font-size:12px;font-weight:600;cursor:pointer;border-radius:9999px;font-family:DM Sans,sans-serif">Skip focus today</button>';
       html += '</div>';
     }
@@ -5155,7 +5158,7 @@ function renderFocusOverrideCard() {
   html += '<input type="hidden" id="fo-mode" value="' + mode + '">';
   html += '<p class="mono" style="font-size:10px;color:var(--text-dim);letter-spacing:2px;margin-bottom:6px">MODE</p>';
   html += '<div id="fo-mode-pills" style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:14px">';
-  var modes = [['replace','Replace'],['boost','Boost'],['sprinkle','Sprinkle'],['infuse','Infuse']];
+  var modes = [['replace','Replace'],['boost','Boost'],['sprinkle','Sprinkle'],['infuse','Infuse'],['total','Total']];
   for (var mi = 0; mi < modes.length; mi++) {
     html += '<button type="button" class="fo-mode-pill' + (mode === modes[mi][0] ? ' active' : '') + '" data-mode="' + modes[mi][0] + '" onclick="foSelectMode(\'' + modes[mi][0] + '\')">' + modes[mi][1] + '</button>';
   }
@@ -7477,6 +7480,14 @@ function buildScheduleInstruction(opts) {
     return 'TODAY IS ' + weekday.toUpperCase() + '. NOTE: The athlete has manually chosen a ' + opts.categoryOverride + ' workout today instead of their scheduled activity. The normal schedule-matching rule does NOT apply to this call — follow the CATEGORY OVERRIDE block above.\n\n';
   }
 
+  // Focus Override in "total" mode (standing config or the daily "Full
+  // override today" flag) — skip the anchor-lock step entirely so Option 1
+  // isn't forced to match today's fixed commitment. Gated purely on this flag;
+  // the anchor/frequency_target logic below is otherwise untouched.
+  if (opts.totalOverride) {
+    return 'TODAY IS ' + weekday.toUpperCase() + '. NOTE: A Focus Override in TOTAL mode is active — the athlete wants today\'s options built purely around "' + opts.totalOverride + '" instead of the normal schedule. The normal schedule-matching rule (fixed commitments, weekly targets) does NOT apply to this call — follow the FOCUS OVERRIDE block above instead.\n\n';
+  }
+
   var sched = schedActiveSchedule();
   var anchors = sched.anchors;
   var targets = sched.frequency_targets;
@@ -7569,6 +7580,13 @@ function resolveFocusOverride(dailyOverrideFlag) {
   if (dailyOverrideFlag === 'force') {
     return { forced: true, mode: 'replace', scope: 'all', text: (fo && fo.text) || '' };
   }
+  if (dailyOverrideFlag === 'total') {
+    // Same as 'force' — a per-call override that doesn't touch the stored
+    // config — except mode:'total' also tells buildScheduleInstruction() (via
+    // the caller's totalOverride check in fetchAI) to skip the anchor lock for
+    // this call only.
+    return { forced: true, mode: 'total', scope: 'all', text: (fo && fo.text) || '' };
+  }
   if (!fo || !fo.active || !fo.text) return null;
   var today = ds(0);
   if (today < (fo.start_date || '') || today > (fo.end_date || '9999-99-99')) return null;
@@ -7581,7 +7599,12 @@ function resolveFocusOverride(dailyOverrideFlag) {
 function buildFocusOverrideContext(dailyOverrideFlag) {
   var fo = resolveFocusOverride(dailyOverrideFlag);
   if (!fo) return '';
-  var label = fo.forced ? 'FOCUS OVERRIDE (user manually forced full focus today)' : 'FOCUS OVERRIDE (standing directive)';
+  var label = fo.forced
+    ? (fo.mode === 'total' ? 'FOCUS OVERRIDE (user manually forced full override today)' : 'FOCUS OVERRIDE (user manually forced full focus today)')
+    : 'FOCUS OVERRIDE (standing directive)';
+  if (fo.mode === 'total') {
+    return label + ' — total override (schedule suspended):\nIgnore today\'s normal fixed-commitment/weekly-target schedule entirely. Build every option purely around: ' + fo.text + '. Ignore the GOAL PRIORITIES weighting below for this call.\n\n';
+  }
   if (fo.mode === 'replace') {
     if (fo.scope === 'all' || !Array.isArray(fo.scope)) {
       return label + ' — replaces normal goal-priority weighting for ALL goals:\nBuild every option around: ' + fo.text + '. Ignore the GOAL PRIORITIES weighting below for this call.\n\n';
