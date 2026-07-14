@@ -252,6 +252,10 @@ input[type=range]{width:100%;accent-color:var(--accent)}
 #tab-profile .mg-type-badge{background:var(--bg-surface-2);color:var(--text-muted);border:none;border-radius:9999px}
 #tab-profile .mg-pill,#tab-profile .mg-period-pill{background:var(--bg-surface-2);border:1px solid transparent;color:var(--text-muted);border-radius:9999px}
 #tab-profile .mg-pill.active,#tab-profile .mg-period-pill.active{background:var(--bg-surface-2);border-color:var(--accent-ember);color:var(--accent-ember)}
+/* Focus Override card (standing directive + daily toggle) — scoped, mirrors .mg-pill */
+#focus-override-card .fo-mode-pill,#focus-override-card .fo-goal-chip,#focus-override-card .fo-date-pill{background:var(--bg-surface-2);border:1px solid transparent;color:var(--text-muted);border-radius:9999px;padding:6px 12px;font-size:12px;cursor:pointer;font-family:'DM Sans',sans-serif;transition:all .15s}
+#focus-override-card .fo-mode-pill:hover,#focus-override-card .fo-goal-chip:hover,#focus-override-card .fo-date-pill:hover{border-color:var(--accent-ember)}
+#focus-override-card .fo-mode-pill.active,#focus-override-card .fo-goal-chip.active{background:var(--bg-surface-2);border-color:var(--accent-ember);color:var(--accent-ember)}
 #tab-profile .navBtn{background:var(--bg-surface-2);border:none;color:var(--text-muted);border-radius:9999px;padding:6px 14px;font-size:12px;font-weight:600;font-family:'Inter',sans-serif}
 #tab-profile .navBtn.active{background:var(--accent-ember);color:#fff}
 #tab-profile input[type=text],#tab-profile input[type=password],#tab-profile select,#tab-profile textarea{background:var(--bg-surface-2);border:1px solid var(--border-subtle);color:var(--text-primary);border-radius:10px}
@@ -831,6 +835,9 @@ input[type=range]{width:100%;accent-color:var(--accent)}
       </div>
       <button onclick="openWearableSync()" id="sync-wearables-btn" style="background:var(--accent-ember);border:none;color:#fff;padding:10px 16px;border-radius:12px;cursor:pointer;font-size:13px;font-weight:600;white-space:nowrap">Sync Wearables</button>
     </div>
+
+    <!-- 3.7 Focus Override -->
+    <div class="card" id="focus-override-card"></div>
 
     <!-- 4. Goals -->
     <div class="card">
@@ -3922,16 +3929,32 @@ function fetchAI(opts) {
     checkinBlock += '\n';
   }
 
-  // Goal priority (long-term goals)
+  // Goal priority (long-term goals) — Focus Override (replace/boost modes) can
+  // skip, narrow, or re-weight this block. See resolveFocusOverride() /
+  // buildFocusOverrideContext() near buildScheduleInstruction().
   var goalPriorityContext = '';
   var profileGoals = (currentProfileData && currentProfileData.goals) || [];
-  if (profileGoals.length) {
+  var focusOverrideForWeighting = resolveFocusOverride(opts.dailyOverrideFlag);
+  var weightedGoals = profileGoals;
+  var skipGoalPriority = false;
+  if (focusOverrideForWeighting && focusOverrideForWeighting.mode === 'replace') {
+    if (focusOverrideForWeighting.scope === 'all' || !Array.isArray(focusOverrideForWeighting.scope)) {
+      skipGoalPriority = true;
+    } else {
+      weightedGoals = profileGoals.filter(function(g) { return focusOverrideForWeighting.scope.indexOf(g.id) === -1; });
+    }
+  }
+  if (!skipGoalPriority && weightedGoals.length) {
     goalPriorityContext = 'GOAL PRIORITIES (most to least important):\n';
-    for (var gi = 0; gi < profileGoals.length; gi++) {
-      var pg = profileGoals[gi];
+    for (var gi = 0; gi < weightedGoals.length; gi++) {
+      var pg = weightedGoals[gi];
       goalPriorityContext += (gi + 1) + '. ' + pg.title + (pg.target_value ? ' (target: ' + pg.target_value + ' ' + (pg.unit || '') + ')' : '') + '\n';
     }
-    goalPriorityContext += '\nIMPORTANT: Weight workout recommendations toward top-ranked goals. Goal #1 should influence ~40% of recommendations, #2 ~25%, #3 ~15%, remaining goals share rest. Always mention which goal each workout option targets.\n\n';
+    if (focusOverrideForWeighting && focusOverrideForWeighting.mode === 'boost') {
+      goalPriorityContext += '\nIMPORTANT: The Focus Override above takes ~60-70% of the weighting for this call. Of the remainder: Goal #1 ~15%, #2 ~10%, #3 ~5%, remaining goals share what\'s left. Always mention which goal each workout option targets.\n\n';
+    } else {
+      goalPriorityContext += '\nIMPORTANT: Weight workout recommendations toward top-ranked goals. Goal #1 should influence ~40% of recommendations, #2 ~25%, #3 ~15%, remaining goals share rest. Always mention which goal each workout option targets.\n\n';
+    }
   }
 
   var altOpts = opts.alternative || null;
@@ -3955,6 +3978,7 @@ function fetchAI(opts) {
   var scheduleInstruction = buildScheduleInstruction(
     categoryOverrideBlock ? { categoryOverride: altOpts.category } : null
   );
+  var focusOverrideContext = buildFocusOverrideContext(opts.dailyOverrideFlag);
   var varietyAnalysis = buildVarietyAndSkipAnalysis();
   var weeklyVolume = buildWeeklyVolumeSummary();
   var microGoalsContext = buildMicroGoalsPromptContext();
@@ -3969,6 +3993,7 @@ function fetchAI(opts) {
   var buildUserMessage = function() {
     return categoryOverrideBlock +
       scheduleInstruction +
+      focusOverrideContext +
       'TODAY: ' + today + '\n' +
       'CURRENT WORKOUT STREAK: ' + currentStreak + ' days' + (currentStreak >= 7 ? ' (impressive consistency!)' : '') + '\n' +
       dataBlock + '\n' +
@@ -4095,6 +4120,11 @@ function fetchAI(opts) {
       parsed = { brief: parsed.brief || '', options: [parsed], warning: parsed.warning || null };
     }
     parsed.generated_at = new Date().toISOString();
+    // Real per-day decision (not a preview like reroll/category) — stamped
+    // onto the cached rec so the "Today: Full Focus/Focus Off" pill survives
+    // reloads; see renderAI() and focusOverrideDaily()/resetFocusOverrideDaily().
+    if (opts.dailyOverrideFlag === 'force') parsed.daily_override_state = 'forced';
+    else if (opts.dailyOverrideFlag === 'skip') parsed.daily_override_state = 'skipped';
 
     if (altOpts) {
       // Alternative call (re-roll or category filter) — DO NOT overwrite the
@@ -4118,6 +4148,18 @@ function fetchAI(opts) {
     localStorage.setItem('ac_cache', JSON.stringify(cached));
     var readinessForCache = (readiness && typeof readiness.score === 'number') ? readiness.score : null;
     cacheAIRecOnServer(aiRec, readinessForCache);
+    // Mirror the day's force/skip decision onto profile_data.focus_override
+    // too, so the standing config carries a record of it (cleared on the next
+    // config edit — see foPersist()).
+    if (opts.dailyOverrideFlag && currentProfileId && currentProfileData) {
+      var foState = opts.dailyOverrideFlag === 'force' ? 'forced' : 'skipped';
+      currentProfileData.focus_override = Object.assign({}, currentProfileData.focus_override, { daily_override_state: foState });
+      fetch('/api/profiles/' + currentProfileId, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ profile_data: { focus_override: { daily_override_state: foState } } })
+      }).catch(function(e) { console.warn('[FocusOverride] daily state save skipped:', e && e.message); });
+    }
     console.log('[ApexCoach] fetchAI: done');
     renderAI();
   })
@@ -4200,6 +4242,33 @@ function restoreCachedRecs() {
   altRecLoading = false;
   expandedOption = 0;
   renderAI();
+}
+
+// User tapped "Focus fully today" / "Skip focus today" on the AI rec card.
+// Unlike reroll/category, this is a real decision for today — it overwrites
+// the cached daily recs (see fetchAI()'s daily_override_state stamp), not a
+// throwaway altRec preview.
+function focusOverrideDaily(flag) {
+  expandedOption = 0;
+  fetchAI({ dailyOverrideFlag: flag });
+}
+
+// "Reset to normal" — clears today's force/skip stamp and regenerates from
+// the standing config (or no override, if inactive/out of range).
+function resetFocusOverrideDaily() {
+  if (aiRec) delete aiRec.daily_override_state;
+  if (currentProfileData && currentProfileData.focus_override) {
+    currentProfileData.focus_override.daily_override_state = null;
+    if (currentProfileId) {
+      fetch('/api/profiles/' + currentProfileId, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ profile_data: { focus_override: { daily_override_state: null } } })
+      }).catch(function(e) { console.warn('[FocusOverride] reset skipped:', e && e.message); });
+    }
+  }
+  expandedOption = 0;
+  fetchAI();
 }
 
 function prefillLogFromAI(type, headline, exercises, mobility) {
@@ -4393,6 +4462,24 @@ function renderAI() {
   // link at the top is the primary control).
   if (!viewingAlt) {
     html += '<div style="margin-top:18px;padding-top:14px;border-top:1px solid var(--border)">';
+
+    // Focus Override daily controls — only when a standing directive is
+    // active + in range, or today's rec already carries a force/skip stamp.
+    var foDailyState = activeRec.daily_override_state || null;
+    var foInRangeToday = !!resolveFocusOverride(null);
+    if (foDailyState) {
+      var foPillLabel = foDailyState === 'forced' ? 'Today: Full Focus' : 'Today: Focus Off';
+      html += '<div style="display:flex;justify-content:space-between;align-items:center;gap:10px;background:var(--bg-surface-2);border-radius:9999px;padding:6px 14px;margin-bottom:10px">';
+      html += '<span style="font-size:12px;font-weight:600;color:var(--accent-ember)">' + foPillLabel + '</span>';
+      html += '<a href="#" onclick="event.preventDefault();resetFocusOverrideDaily()" style="font-size:12px;color:var(--text-muted);text-decoration:underline;font-family:DM Sans,sans-serif">Reset to normal</a>';
+      html += '</div>';
+    } else if (foInRangeToday) {
+      html += '<div style="display:flex;gap:8px;margin-bottom:10px">';
+      html += '<button type="button" onclick="focusOverrideDaily(\'force\')" style="flex:1;background:var(--accent-ember);border:none;color:#fff;padding:9px 12px;font-size:12px;font-weight:600;cursor:pointer;border-radius:9999px;font-family:DM Sans,sans-serif">Focus fully today</button>';
+      html += '<button type="button" onclick="focusOverrideDaily(\'skip\')" style="flex:1;background:transparent;border:1px solid var(--border-subtle);color:var(--text-muted);padding:9px 12px;font-size:12px;font-weight:600;cursor:pointer;border-radius:9999px;font-family:DM Sans,sans-serif">Skip focus today</button>';
+      html += '</div>';
+    }
+
     html += '<button type="button" onclick="rerollAlternativeRecs()" style="width:100%;background:transparent;border:1px solid var(--accent-33);color:var(--accent);padding:11px 16px;font-size:13px;font-weight:600;cursor:pointer;border-radius:8px;font-family:DM Sans,sans-serif;margin-bottom:10px">&#x1F504; Show me different options</button>';
     html += '<p class="mono" style="font-size:10px;color:var(--text-dim);letter-spacing:2px;margin-bottom:8px;text-align:center">OR — I want to do something else &rarr;</p>';
     html += '<div style="display:flex;flex-wrap:wrap;gap:6px;justify-content:center">';
@@ -4454,6 +4541,9 @@ function renderProfileTab() {
 
   // ── GOALS ──
   renderProfileGoals();
+
+  // ── FOCUS OVERRIDE ──
+  if (typeof renderFocusOverrideCard === 'function') renderFocusOverrideCard();
 
   // ── INJURIES ──
   var injHTML = '';
@@ -5028,6 +5118,195 @@ function renderProfileGoals() {
 
   // Fetch progress if not cached
   if (!cached && currentProfileId && pGoals.length) fetchGoalProgress();
+}
+
+// ── FOCUS OVERRIDE (Profile tab card) ──────────────────────────────────────
+// Standing directive on profile_data.focus_override that reshapes daily AI
+// recs independent of the normal goal-priority weighting above, plus a
+// per-day manual force/skip toggle on the AI rec card (see focusOverrideDaily
+// / resetFocusOverrideDaily near rerollAlternativeRecs, and
+// buildFocusOverrideContext / resolveFocusOverride near buildScheduleInstruction).
+// foScopeSelection is the working copy of the scope editor ('all' or an array
+// of goal ids) — reset from the stored value on every render.
+var foScopeSelection = 'all';
+
+function renderFocusOverrideCard() {
+  var el = document.getElementById('focus-override-card');
+  if (!el) return;
+  var fo = (currentProfileData && currentProfileData.focus_override) || {};
+  var active = !!fo.active;
+  var text = fo.text || '';
+  var mode = fo.mode || 'infuse';
+  var scope = fo.scope === undefined ? 'all' : fo.scope;
+  var scopeIsAll = (scope === 'all' || !Array.isArray(scope));
+  foScopeSelection = scopeIsAll ? 'all' : scope.slice();
+  var startDate = fo.start_date || ds(0);
+  var endDate = fo.end_date || ds(90);
+  var goals = (currentProfileData && currentProfileData.goals) || [];
+  var scopeApplies = (mode === 'replace' || mode === 'boost');
+
+  var html = '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">';
+  html += '<p class="clabel" style="margin-bottom:0">&#x1F3AF; focus override</p>';
+  html += '<label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:12px;color:var(--text-muted)"><input type="checkbox" id="fo-active-toggle" ' + (active ? 'checked' : '') + ' onchange="foToggleActive(this.checked)"> Active</label>';
+  html += '</div>';
+
+  html += '<textarea id="fo-text" placeholder="e.g. Build toward a strict muscle-up" style="width:100%;min-height:60px;background:var(--bg-surface-2);border:1px solid var(--border-subtle);color:var(--text-primary);padding:10px 14px;border-radius:10px;font-size:14px;outline:none;font-family:Inter,sans-serif;margin-bottom:12px;resize:vertical">' + attrEsc(text) + '</textarea>';
+
+  html += '<input type="hidden" id="fo-mode" value="' + mode + '">';
+  html += '<p class="mono" style="font-size:10px;color:var(--text-dim);letter-spacing:2px;margin-bottom:6px">MODE</p>';
+  html += '<div id="fo-mode-pills" style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:14px">';
+  var modes = [['replace','Replace'],['boost','Boost'],['sprinkle','Sprinkle'],['infuse','Infuse']];
+  for (var mi = 0; mi < modes.length; mi++) {
+    html += '<button type="button" class="fo-mode-pill' + (mode === modes[mi][0] ? ' active' : '') + '" data-mode="' + modes[mi][0] + '" onclick="foSelectMode(\'' + modes[mi][0] + '\')">' + modes[mi][1] + '</button>';
+  }
+  html += '</div>';
+
+  html += '<div id="fo-scope-section" style="display:' + (scopeApplies ? 'block' : 'none') + ';margin-bottom:14px">';
+  html += '<p class="mono" style="font-size:10px;color:var(--text-dim);letter-spacing:2px;margin-bottom:6px">SCOPE</p>';
+  html += '<div style="display:flex;gap:14px;margin-bottom:8px;font-size:13px;color:var(--text-sec)">';
+  html += '<label style="display:flex;align-items:center;gap:6px;cursor:pointer"><input type="radio" name="fo-scope-type" ' + (scopeIsAll ? 'checked' : '') + ' onchange="foSelectScopeType(\'all\')"> All Goals</label>';
+  html += '<label style="display:flex;align-items:center;gap:6px;cursor:pointer"><input type="radio" name="fo-scope-type" ' + (!scopeIsAll ? 'checked' : '') + ' onchange="foSelectScopeType(\'specific\')"> Specific Goals</label>';
+  html += '</div>';
+  html += '<div id="fo-goal-chips" style="display:' + (scopeIsAll ? 'none' : 'flex') + ';flex-wrap:wrap;gap:6px">';
+  var selectedIds = scopeIsAll ? [] : scope;
+  for (var gi2 = 0; gi2 < goals.length; gi2++) {
+    var goal = goals[gi2];
+    if (!goal.id) continue;
+    var sel = selectedIds.indexOf(goal.id) !== -1;
+    html += '<button type="button" class="fo-goal-chip' + (sel ? ' active' : '') + '" data-goal-id="' + attrEsc(goal.id) + '" onclick="foToggleGoalScope(\'' + goal.id + '\')">' + attrEsc(goal.title || '') + '</button>';
+  }
+  html += '</div></div>';
+
+  html += '<p class="mono" style="font-size:10px;color:var(--text-dim);letter-spacing:2px;margin-bottom:6px">ACTIVE DATES</p>';
+  html += '<div style="display:flex;gap:8px;align-items:center;margin-bottom:14px;flex-wrap:wrap">';
+  html += '<input id="fo-start-date" type="date" value="' + startDate + '" style="background:var(--bg-surface-2);border:1px solid var(--border-subtle);color:var(--text-primary);padding:8px 10px;border-radius:8px;font-size:13px">';
+  html += '<span style="color:var(--text-muted);font-size:13px">to</span>';
+  html += '<input id="fo-end-date" type="date" value="' + endDate + '" style="background:var(--bg-surface-2);border:1px solid var(--border-subtle);color:var(--text-primary);padding:8px 10px;border-radius:8px;font-size:13px">';
+  html += '</div>';
+
+  html += '<div id="fo-date-presets" style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:14px">';
+  var datePresets = [['30d','30 Days'],['month','This Month'],['quarter','This Quarter'],['year','This Year'],['custom','Custom']];
+  for (var dpi = 0; dpi < datePresets.length; dpi++) {
+    html += '<button type="button" class="fo-date-pill" onclick="foSetDatePreset(\'' + datePresets[dpi][0] + '\')">' + datePresets[dpi][1] + '</button>';
+  }
+  html += '</div>';
+
+  html += '<button type="button" onclick="foSave()" class="btnPri" style="width:100%;font-size:14px;padding:12px">Save Focus Override</button>';
+
+  el.innerHTML = html;
+}
+
+function foSelectMode(mode) {
+  var modeEl = document.getElementById('fo-mode');
+  if (modeEl) modeEl.value = mode;
+  var pills = document.querySelectorAll('#fo-mode-pills .fo-mode-pill');
+  for (var i = 0; i < pills.length; i++) pills[i].classList.toggle('active', pills[i].getAttribute('data-mode') === mode);
+  var scopeSection = document.getElementById('fo-scope-section');
+  if (scopeSection) scopeSection.style.display = (mode === 'replace' || mode === 'boost') ? 'block' : 'none';
+}
+
+function foSelectScopeType(type) {
+  if (type === 'all') {
+    foScopeSelection = 'all';
+  } else {
+    // Preserve any goals already checked before the radio was switched away.
+    var already = [];
+    var chips = document.querySelectorAll('#fo-goal-chips .fo-goal-chip.active');
+    for (var i = 0; i < chips.length; i++) already.push(chips[i].getAttribute('data-goal-id'));
+    foScopeSelection = already;
+  }
+  var chipsWrap = document.getElementById('fo-goal-chips');
+  if (chipsWrap) chipsWrap.style.display = (type === 'all') ? 'none' : 'flex';
+}
+
+function foToggleGoalScope(goalId) {
+  if (!Array.isArray(foScopeSelection)) foScopeSelection = [];
+  var idx = foScopeSelection.indexOf(goalId);
+  if (idx === -1) foScopeSelection.push(goalId); else foScopeSelection.splice(idx, 1);
+  var chip = document.querySelector('#fo-goal-chips .fo-goal-chip[data-goal-id="' + goalId + '"]');
+  if (chip) chip.classList.toggle('active', foScopeSelection.indexOf(goalId) !== -1);
+}
+
+// 5 quick-fill presets on the Focus Override date range. All (except Custom,
+// which just focuses the inputs with no auto-fill) set start_date=today and
+// compute end_date; both fields remain freely editable afterward.
+function foDateStr(d) {
+  return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
+}
+
+function foSetDatePreset(preset) {
+  var startEl = document.getElementById('fo-start-date');
+  var endEl = document.getElementById('fo-end-date');
+  if (preset === 'custom') {
+    if (startEl) { startEl.focus(); if (startEl.showPicker) { try { startEl.showPicker(); } catch (e) {} } }
+    return;
+  }
+  var today = new Date();
+  today.setHours(0, 0, 0, 0);
+  if (startEl) startEl.value = ds(0);
+  var end;
+  if (preset === '30d') {
+    var d30 = new Date(today);
+    d30.setDate(d30.getDate() + 30);
+    end = foDateStr(d30);
+  } else if (preset === 'month') {
+    end = foDateStr(new Date(today.getFullYear(), today.getMonth() + 1, 0));
+  } else if (preset === 'quarter') {
+    var quarterEndMonth = Math.floor(today.getMonth() / 3) * 3 + 2;
+    end = foDateStr(new Date(today.getFullYear(), quarterEndMonth + 1, 0));
+  } else if (preset === 'year') {
+    end = today.getFullYear() + '-12-31';
+  }
+  if (endEl && end) endEl.value = end;
+}
+
+// Master toggle applies immediately; text/mode/scope/dates save via foSave().
+// Both paths clear daily_override_state — the standing directive changed, so
+// any force/skip decision made under the old config is stale.
+function foToggleActive(checked) {
+  var existing = (currentProfileData && currentProfileData.focus_override) || {};
+  var fo = Object.assign({ mode: 'infuse', scope: 'all', text: '', start_date: ds(0), end_date: ds(90) }, existing, { active: checked, daily_override_state: null });
+  foPersist(fo, checked ? 'focus_override_activated' : 'focus_override_deactivated');
+}
+
+function foSave() {
+  var textEl = document.getElementById('fo-text');
+  var modeEl = document.getElementById('fo-mode');
+  var startEl = document.getElementById('fo-start-date');
+  var endEl = document.getElementById('fo-end-date');
+  var activeEl = document.getElementById('fo-active-toggle');
+  var mode = (modeEl && modeEl.value) || 'infuse';
+  var scope = (mode === 'replace' || mode === 'boost') ? foScopeSelection : 'all';
+  var fo = {
+    active: !!(activeEl && activeEl.checked),
+    text: (textEl && textEl.value || '').trim(),
+    scope: scope,
+    mode: mode,
+    start_date: (startEl && startEl.value) || ds(0),
+    end_date: (endEl && endEl.value) || ds(90),
+    daily_override_state: null
+  };
+  foPersist(fo, 'focus_override_saved');
+}
+
+// PATCH profile_data.focus_override (server shallow-merges profile_data keys,
+// same pattern as schedPersist). Regenerates recs since the override changes
+// prompt weighting, using invalidateDailyRecsAndRefresh (not
+// regenerateAIForContextChange) so the change takes effect even when the AI
+// card isn't currently on screen — matching the actual micro-goal mutation
+// path (micro-goal add/edit/delete/complete), not just the visible-card case.
+function foPersist(fo, reason) {
+  if (currentProfileData) currentProfileData.focus_override = fo;
+  try { localStorage.setItem('ac_profile_data', JSON.stringify(currentProfileData)); } catch (e) {}
+  renderFocusOverrideCard();
+  if (currentProfileId) {
+    fetch('/api/profiles/' + currentProfileId, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ profile_data: Object.assign({}, currentProfileData, { focus_override: fo }) })
+    }).catch(function(e) { console.warn('[FocusOverride] save skipped:', e && e.message); });
+  }
+  if (typeof invalidateDailyRecsAndRefresh === 'function') invalidateDailyRecsAndRefresh(reason);
 }
 
 // ── LIVING GOAL ROADMAP DRILL-DOWN ─────────────────────────────────────────
@@ -7272,6 +7551,51 @@ function buildScheduleInstruction(opts) {
   out += statusLines.join('\n') + '\n\n';
 
   return out;
+}
+
+// ── FOCUS OVERRIDE (prompt building) ───────────────────────────────────────
+// Resolves profile_data.focus_override + an optional per-day flag into an
+// effective { forced, mode, scope, text } for THIS call, or null if the
+// override doesn't apply. Shared by buildFocusOverrideContext() below and the
+// goal-priority weighting block in fetchAI() so both agree on when it's "on".
+// dailyOverrideFlag is 'force' | 'skip' | null/undefined (no per-day flag —
+// use the standing config as-is). This is a pure per-call resolution; it does
+// NOT remember a previous force/skip choice across separate fetchAI() calls
+// the same day (see renderAI()'s "Today: Full Focus/Focus Off" pill, which is
+// driven by daily_override_state stamped onto the cached rec instead).
+function resolveFocusOverride(dailyOverrideFlag) {
+  var fo = currentProfileData && currentProfileData.focus_override;
+  if (dailyOverrideFlag === 'skip') return null;
+  if (dailyOverrideFlag === 'force') {
+    return { forced: true, mode: 'replace', scope: 'all', text: (fo && fo.text) || '' };
+  }
+  if (!fo || !fo.active || !fo.text) return null;
+  var today = ds(0);
+  if (today < (fo.start_date || '') || today > (fo.end_date || '9999-99-99')) return null;
+  return { forced: false, mode: fo.mode || 'infuse', scope: (fo.scope === undefined ? 'all' : fo.scope), text: fo.text };
+}
+
+// Builds the FOCUS OVERRIDE prompt block. Anchors/classes from
+// buildScheduleInstruction() above ALWAYS still fire regardless of mode —
+// this never touches that function's output.
+function buildFocusOverrideContext(dailyOverrideFlag) {
+  var fo = resolveFocusOverride(dailyOverrideFlag);
+  if (!fo) return '';
+  var label = fo.forced ? 'FOCUS OVERRIDE (user manually forced full focus today)' : 'FOCUS OVERRIDE (standing directive)';
+  if (fo.mode === 'replace') {
+    if (fo.scope === 'all' || !Array.isArray(fo.scope)) {
+      return label + ' — replaces normal goal-priority weighting for ALL goals:\nBuild every option around: ' + fo.text + '. Ignore the GOAL PRIORITIES weighting below for this call.\n\n';
+    }
+    return label + ' — replaces normal goal-priority weighting for specific goals:\nBuild every option around: ' + fo.text + '. The goals excluded from GOAL PRIORITIES below should NOT influence today\'s options; other goals keep their normal weight.\n\n';
+  }
+  if (fo.mode === 'boost') {
+    return label + ' — boosted priority:\nWeight recommendations heavily (~60-70%) toward: ' + fo.text + '. This outranks the #1 priority goal listed below for this call — see the compressed weighting in GOAL PRIORITIES.\n\n';
+  }
+  if (fo.mode === 'sprinkle') {
+    return label + ' — sprinkle:\nNormal goal-priority weighting below is unchanged. Additionally, shift 1-2 non-anchored sessions this week toward: ' + fo.text + '.\n\n';
+  }
+  // infuse
+  return label + ' — infuse:\nDo NOT change today\'s scheduled category, frequency, or duration. Instead weave elements serving "' + fo.text + '" into whatever session is already planned (accessory work, technique emphasis, intensity lean, or exercise substitutions).\n\n';
 }
 
 // Variety + skip analysis. Looks at last 7 days of workoutLog and compares
