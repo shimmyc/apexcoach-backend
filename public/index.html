@@ -2107,9 +2107,40 @@ document.addEventListener('DOMContentLoaded', function() {
 });
 
 // ── APP BOOT ──────────────────────────────────────────────────────────────
+// Silent timezone capture (2026-07-15) — fixes a recurring UTC-vs-local-day
+// mismatch bug class (server-side "today" was always computed from the
+// server's own clock, never the athlete's — see localToday() in server.js).
+// Self-contained (does its own tiny GET rather than threading a variable
+// through every login/boot-from-cache code path, since bootApp() is the one
+// function ALL of those paths converge on) and completely silent — no UI, no
+// toast, nothing for the athlete to notice or configure. Only PATCHes when
+// the browser's detected zone actually differs from what's stored, so this
+// is a no-op on every boot after the first one per device.
+function captureTimezoneIfNeeded() {
+  if (!currentProfileId) return;
+  var detected;
+  try {
+    detected = Intl.DateTimeFormat().resolvedOptions().timeZone;
+  } catch (e) { return; } // very old browser without Intl.DateTimeFormat — skip silently
+  if (!detected) return;
+  fetch('/api/profiles/' + currentProfileId)
+    .then(function(r) { return r.json(); })
+    .then(function(data) {
+      if (!data || !data.success || !data.profile) return;
+      if ((data.profile.timezone || null) === detected) return; // already correct
+      return fetch('/api/profiles/' + currentProfileId, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ timezone: detected })
+      });
+    })
+    .catch(function(e) { console.warn('[Timezone] capture failed (non-fatal):', e); });
+}
+
 function bootApp() {
   showScreen('app');
   updateProfileIcon();
+  captureTimezoneIfNeeded();
   document.getElementById('dow').textContent = new Date().toLocaleDateString('en-US', {weekday:'long'});
   document.getElementById('dom').textContent = new Date().toLocaleDateString('en-US', {month:'long', day:'numeric'});
 

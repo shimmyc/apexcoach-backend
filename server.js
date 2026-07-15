@@ -358,6 +358,57 @@ function dateStr(offsetDays) {
   return d.toISOString().split("T")[0];
 }
 
+// Returns YYYY-MM-DD for the ATHLETE's own calendar day, in their IANA
+// timezone (profiles.timezone, captured client-side via
+// Intl.DateTimeFormat().resolvedOptions().timeZone on boot) — falls back to
+// UTC when unset, so behavior is provably unchanged for any profile that
+// hasn't captured one yet. offsetDays shifts by whole calendar days (negative
+// = past), covering "today"/"yesterday"/"N days ago" with one function.
+//
+// This is the fix for a recurring bug class in this codebase (2026-07-15):
+// dateStr() above is UTC (toISOString()); ymdLocal() and several inline
+// getFullYear/getMonth/getDate IIFEs (the Google Health daily sync, the
+// week-preview builder, ...) use the Node PROCESS's own OS timezone, which on
+// Render is UTC too — neither has ever represented the athlete's real day.
+// localToday() is the ONLY athlete-timezone-aware date helper; dateStr()/
+// ymdLocal() stay as they are and remain correct for non-athlete-specific
+// things (OAuth token expiry, audit timestamps, the legacy single-tenant
+// /api/daily endpoint which predates the profile/timezone concept entirely).
+//
+// Uses Intl.DateTimeFormat (built into Node, no npm dependency) with the
+// `timeZone` option, which resolves any IANA identifier correctly regardless
+// of the server process's own OS timezone. en-CA formats as YYYY-MM-DD
+// directly, avoiding manual field assembly.
+function localToday(profile, offsetDays) {
+  var tz = (profile && profile.timezone) || "UTC";
+  var fmt;
+  try {
+    fmt = new Intl.DateTimeFormat("en-CA", { timeZone: tz, year: "numeric", month: "2-digit", day: "2-digit" });
+  } catch (e) {
+    console.warn("[Timezone] localToday: invalid timezone '" + tz + "' on profile " + (profile && profile.id) + ", falling back to UTC:", e && e.message);
+    fmt = new Intl.DateTimeFormat("en-CA", { timeZone: "UTC", year: "numeric", month: "2-digit", day: "2-digit" });
+  }
+  var todayInTz = fmt.format(new Date());
+  if (!offsetDays) return todayInTz;
+  // Shift by whole calendar days from the athlete's "today", not from the
+  // server's instant — parse it as a UTC-noon anchor (matches the
+  // "T12:00:00" pattern already used throughout this file for safe YMD
+  // arithmetic) and shift via UTC-date-math, immune to DST since we're only
+  // ever moving whole calendar days, never wall-clock hours.
+  var d = new Date(todayInTz + "T12:00:00Z");
+  d.setUTCDate(d.getUTCDate() + offsetDays);
+  return d.toISOString().slice(0, 10);
+}
+
+// Minimal profile fetch for callers that only need the athlete's timezone
+// (localToday()'s fallback-to-UTC-when-null makes this safe to call even for
+// profiles that haven't captured one yet — the caller never needs to check).
+async function getProfileTimezone(profileId) {
+  var r = await fetch(SUPABASE_URL + "/rest/v1/profiles?id=eq." + profileId + "&select=id,timezone", { headers: sbHeaders() });
+  var rows = await r.json();
+  return (Array.isArray(rows) && rows[0]) || {};
+}
+
 // Server-side mirror of estimateSleepScore() in public/index.html — the
 // personal regression sleep-score model (R²=0.883, MAE=2.45; see FORMULAS.md).
 // Keep the two in sync. Returns null when there's no stage data to score.
@@ -374,10 +425,17 @@ function estimateSleepScore(deepMinutes, remMinutes, lightMinutes, awakeMinutes)
   return Math.max(1, Math.min(100, Math.round(raw)));
 }
 
-async function buildDailyData(token, overrideDate) {
-  const today     = overrideDate || dateStr(0);
-  const yesterday = overrideDate ? (() => { const d = new Date(overrideDate + 'T12:00:00'); d.setDate(d.getDate() - 1); return d.toISOString().slice(0,10); })() : dateStr(-1);
-  const weekAgo   = overrideDate ? (() => { const d = new Date(overrideDate + 'T12:00:00'); d.setDate(d.getDate() - 7); return d.toISOString().slice(0,10); })() : dateStr(-7);
+// timezone (IANA string, may be null/undefined) is threaded in by callers so
+// "today" reflects the athlete's own calendar day, not the server's — see
+// localToday(). Falls back to UTC when not provided, so any call site that
+// hasn't been updated to pass it (the legacy single-tenant /api/daily
+// endpoint, which has no profile_id to look a timezone up for) behaves
+// exactly as before.
+async function buildDailyData(token, overrideDate, timezone) {
+  const tzProfile = { timezone: timezone };
+  const today     = overrideDate || localToday(tzProfile);
+  const yesterday = overrideDate ? (() => { const d = new Date(overrideDate + 'T12:00:00'); d.setDate(d.getDate() - 1); return d.toISOString().slice(0,10); })() : localToday(tzProfile, -1);
+  const weekAgo   = overrideDate ? (() => { const d = new Date(overrideDate + 'T12:00:00'); d.setDate(d.getDate() - 7); return d.toISOString().slice(0,10); })() : localToday(tzProfile, -7);
 
   // Every Fitbit fetch is non-fatal: on any error (403/401/500/timeout) the
   // call resolves to the empty shape its consumer expects, so a single failing
@@ -854,7 +912,7 @@ function pickProfileBody(p) {
   PROFILE_BODY_FIELDS.forEach(function(k) { out[k] = p && p[k] != null ? p[k] : null; });
   return out;
 }
-var PROFILE_SELECT_BASE = "id,name,avatar_color,profile_data,created_at," + PROFILE_BODY_FIELDS.join(",");
+var PROFILE_SELECT_BASE = "id,name,avatar_color,profile_data,created_at,timezone," + PROFILE_BODY_FIELDS.join(",");
 
 app.get("/api/profiles/:id", async function(req, res) {
   try {
@@ -876,7 +934,7 @@ app.get("/api/profiles/:id", async function(req, res) {
     res.json({ success: true, profile: Object.assign({
       id: p.id, name: p.name, avatar_color: p.avatar_color,
       profile_data: pd,
-      created_at: p.created_at,
+      created_at: p.created_at, timezone: p.timezone || null,
     }, pickProfileBody(p)) });
   } catch (e) {
     res.status(500).json({ success: false, error: e.message });
@@ -927,7 +985,7 @@ app.post("/api/profiles/verify", async function(req, res) {
         name: profile.name,
         avatar_color: profile.avatar_color,
         profile_data: cleanProfileData(profile.profile_data || {}),
-        created_at: profile.created_at,
+        created_at: profile.created_at, timezone: profile.timezone || null,
       }, pickProfileBody(profile)),
     });
   } catch (e) {
@@ -944,6 +1002,13 @@ app.patch("/api/profiles/:id", async function(req, res) {
     var updatePayload = {};
     if (body.name) updatePayload.name = body.name;
     if (body.avatar_color) updatePayload.avatar_color = body.avatar_color;
+    // Silent capture (2026-07-15): the client sends this on boot/profile load
+    // when its Intl-detected timezone differs from what's stored — see
+    // localToday() for why this exists. No UI; PATCH is just extended to
+    // accept it like any other top-level column.
+    if (Object.prototype.hasOwnProperty.call(body, "timezone")) {
+      updatePayload.timezone = body.timezone || null;
+    }
     PROFILE_BODY_FIELDS.forEach(function(k) {
       if (Object.prototype.hasOwnProperty.call(body, k)) {
         var v = body[k];
@@ -989,7 +1054,7 @@ app.patch("/api/profiles/:id", async function(req, res) {
     var profile = Array.isArray(updated) ? updated[0] : updated;
     res.json({ success: true, profile: Object.assign({
       id: profile.id, name: profile.name, avatar_color: profile.avatar_color,
-      profile_data: profile.profile_data,
+      profile_data: profile.profile_data, timezone: profile.timezone || null,
     }, pickProfileBody(profile)) });
   } catch (e) {
     res.status(500).json({ success: false, error: e.message });
@@ -1073,6 +1138,11 @@ app.get("/api/daily", async function(req, res) {
 // Per-profile endpoint (uses profile's fitbit tokens from profiles table)
 app.get("/api/profiles/:id/daily", async function(req, res) {
   try {
+    // Athlete's timezone (2026-07-15) — one lightweight fetch, reused for both
+    // the Google Health and Fitbit branches below via localToday(). Non-fatal:
+    // defaults to {} → UTC fallback inside localToday() on any read failure.
+    const profileTz = await getProfileTimezone(req.params.id).catch(function() { return {}; });
+
     // ── Google Health API v4 (cloud REST — Fitbit Web API successor) ──
     // Preferred over Fitbit when connected (Fitbit Web API shuts down Sep 2026).
     // Fully additive + non-fatal: any failure falls through to the Fitbit path
@@ -1086,15 +1156,13 @@ app.get("/api/profiles/:id/daily", async function(req, res) {
     if (ghToken) {
       try {
         const ghAdapter = wearables.getProviderAdapter("google_health");
-        // LOCAL today — dateStr() is UTC (toISOString), which can roll to the
-        // wrong day in negative-offset timezones in the evening. The rest of the
-        // app keys dates off local time (getFullYear/getMonth/getDate), so match it.
-        const ghDate = req.query.date || (function() {
-          const d = new Date();
-          return d.getFullYear() + "-" +
-            String(d.getMonth() + 1).padStart(2, "0") + "-" +
-            String(d.getDate()).padStart(2, "0");
-        })();
+        // ATHLETE's local today (2026-07-15 fix) — the previous version of this
+        // comment claimed getFullYear/getMonth/getDate matched "the app's local
+        // time", but that's the Node PROCESS's own OS timezone (UTC on Render),
+        // not the athlete's — same bug as dateStr()'s toISOString(), just a
+        // different symptom. localToday() uses the athlete's actual IANA
+        // timezone (profiles.timezone), falling back to UTC when unset.
+        const ghDate = req.query.date || localToday(profileTz);
         // Hard 8s cap — the GH adapter's fetches have no AbortController, so a
         // hung upstream would otherwise stall the endpoint into a 504. On
         // timeout this throws and falls through to the Fitbit path below.
@@ -1212,10 +1280,10 @@ app.get("/api/profiles/:id/daily", async function(req, res) {
     let result;
     try {
       const token = await getValidProfileToken(req.params.id);
-      result = await withTimeout(buildDailyData(token, dateParam), 25000, "buildDailyData");
+      result = await withTimeout(buildDailyData(token, dateParam, profileTz.timezone), 25000, "buildDailyData");
     } catch (fitbitErr) {
       console.error("[Fitbit] daily fetch failed (non-fatal) for profile " + req.params.id + ", returning empty wearable data:", fitbitErr.message);
-      return res.json({ success: true, date: dateParam || dateStr(0), data: emptyWearableData(), fitbit_error: true });
+      return res.json({ success: true, date: dateParam || localToday(profileTz), data: emptyWearableData(), fitbit_error: true });
     }
     // Fire-and-forget: persist yesterday's steps and auto-track step micro-goals.
     // Do NOT block the daily response on this.
@@ -2229,9 +2297,15 @@ app.post("/api/workouts", async function(req, res) {
       if (isNaN(parsed.getTime())) {
         return res.status(400).json({ success: false, error: "Invalid date" });
       }
-      var now = new Date();
-      var pad = function(n) { return String(n).padStart(2, "0"); };
-      var todayStr = now.getFullYear() + "-" + pad(now.getMonth() + 1) + "-" + pad(now.getDate());
+      // Athlete's timezone (2026-07-15) — this "todayStr" used to be the
+      // server's own OS-local getters (UTC-equivalent on Render). Real bug for
+      // POSITIVE-UTC-offset athletes specifically: in their morning, if the
+      // server (UTC) is still on the prior calendar day, a legitimately
+      // same-day log would get wrongly rejected as "future". Negative-offset
+      // athletes (e.g. the Chicago Coach Chat repro) don't hit this exact
+      // failure mode, but it's the same root cause — closing it while in here.
+      var profileTz = body.profile_id ? await getProfileTimezone(body.profile_id).catch(function() { return {}; }) : {};
+      var todayStr = localToday(profileTz);
       if (dateStr > todayStr) {
         return res.status(400).json({ success: false, error: "Cannot log workouts for future dates" });
       }
@@ -3352,10 +3426,15 @@ app.get("/api/profiles/:id/life-os-summary", async function(req, res) {
 
   try {
     var pid = req.params.id;
-    var pad = function(n) { return String(n).padStart(2, "0"); };
-    var now = new Date();
     var dateParam = req.query.date || null;
-    var today = dateParam || (now.getFullYear() + "-" + pad(now.getMonth() + 1) + "-" + pad(now.getDate()));
+    // Athlete's timezone (2026-07-15) — was previously computed via the
+    // server's own OS-local getters (UTC-equivalent on Render), same bug
+    // class as the Coach Chat "today" fix. Non-fatal: defaults to {} → UTC
+    // fallback inside localToday() so a DB hiccup here can't break the whole
+    // endpoint (dateParam, the external caller's own override, still wins
+    // when provided, unaffected by any of this).
+    var profileTz = await getProfileTimezone(pid).catch(function() { return {}; });
+    var today = dateParam || localToday(profileTz);
 
     // ── DB read 1: cached readiness + planned workouts off the profile row ──
     var readiness = null;
@@ -3450,7 +3529,7 @@ app.get("/api/profiles/:id/life-os-summary", async function(req, res) {
       var timer = null;
       try {
         var token = await getValidProfileToken(pid);
-        var dailyPromise = buildDailyData(token, dateParam);
+        var dailyPromise = buildDailyData(token, dateParam, profileTz.timezone);
         dailyPromise.catch(function() {}); // swallow a late rejection if we time out first
         var fit = await Promise.race([
           dailyPromise,
@@ -4455,21 +4534,33 @@ app.post("/api/profiles/:id/week-preview", async function(req, res) {
     var body = req.body || {};
     var schedule = body.schedule || {};
     var readiness = (body.readiness != null && isFinite(Number(body.readiness))) ? Number(body.readiness) : null;
-    var today = new Date();
-    var since = new Date(today); since.setDate(since.getDate() - 14);
-    var sinceStr = ymdLocal(since);
+
+    // Athlete's timezone (2026-07-15) — "today" here used to be the server's
+    // own OS-local getters (UTC-equivalent on Render), same bug class as the
+    // Coach Chat "today" fix, and this endpoint is even more exposure-prone
+    // since it determines which WEEKDAY is "today" for anchor matching in the
+    // whole rolling schedule preview. Sequenced before the workouts/exercises
+    // queries below (previously fetched in parallel with this) since they
+    // need sinceStr, which depends on it — one extra round-trip, acceptable
+    // given this endpoint is client-cached (localStorage.ac_schedule_preview)
+    // and not in a tight per-message loop.
+    var profileRow = await fetch(SUPABASE_URL + "/rest/v1/profiles?id=eq." + pid + "&select=profile_data,timezone", { headers: sbHeaders() })
+      .then(function(r) { return r.json(); })
+      .then(function(rows) { return (Array.isArray(rows) && rows[0]) || {}; })
+      .catch(function() { return {}; });
+    var pd = profileRow.profile_data || {};
+    var todayStr = localToday(profileRow);
+    var today = new Date(todayStr + "T12:00:00"); // noon-anchored local Date for buildWeekSkeleton's day-of-week arithmetic
+    var sinceStr = localToday(profileRow, -14);
 
     var results = await Promise.all([
       fetch(SUPABASE_URL + "/rest/v1/workouts?profile_id=eq." + pid + "&date=gte." + sinceStr + "&select=id,date,type,done&order=date.desc&limit=200", { headers: sbHeaders() }),
       fetch(SUPABASE_URL + "/rest/v1/exercises?profile_id=eq." + pid + "&date=gte." + sinceStr + "&select=workout_id,date,name,main_category,subcategory&order=date.desc&limit=1000", { headers: sbHeaders() }),
-      fetch(SUPABASE_URL + "/rest/v1/profiles?id=eq." + pid + "&select=profile_data", { headers: sbHeaders() }),
       fetch(SUPABASE_URL + "/rest/v1/micro_goals?profile_id=eq." + pid + "&is_active=eq.true&select=title&limit=20", { headers: sbHeaders() }),
     ]);
     var workouts = await results[0].json(); if (!Array.isArray(workouts)) workouts = [];
     var exercises = await results[1].json(); if (!Array.isArray(exercises)) exercises = [];
-    var profiles = await results[2].json();
-    var pd = (Array.isArray(profiles) && profiles[0] && profiles[0].profile_data) || {};
-    var microGoals = await results[3].json(); if (!Array.isArray(microGoals)) microGoals = [];
+    var microGoals = await results[2].json(); if (!Array.isArray(microGoals)) microGoals = [];
 
     var skeleton = buildWeekSkeleton(schedule, workouts, exercises, today);
 
@@ -5256,7 +5347,7 @@ var EXPERT_REASONING_CORE =
 // real test — see "Verifying prompt caching" in CLAUDE.md).
 var CHAT_SYSTEM_PERSONA =
   "You are ApexCoach's AI coach — the same coaching intelligence that generates this athlete's daily workout recommendations, now available for open-ended conversation. You are not a generic fitness chatbot: you know this specific athlete's real training history, goals, biometrics, and schedule, and every response should read like it comes from someone who has actually been paying attention to their training, not from a template.\n\n" +
-  "WHAT YOU KNOW: the ATHLETE SNAPSHOT below (rebuilt fresh for this message, never stale) contains, when present: the athlete's name and profile context (injuries, equipment, training environment); ALL of their long-term goals in priority order — not just the top few, every goal listed is real and current, including ones that might seem minor, like a specific injury or mobility target; their active short-horizon challenges with live progress; a standing Focus Override directive if one is currently active — this is the athlete's own explicit instruction about what to emphasize right now, treat it as a strong signal, not a suggestion you can ignore; their weekly training schedule (fixed sessions, frequency targets, add-ons); today's readiness score if one has been generated yet; their latest cached sleep, HRV, RHR, steps, and weight; and a condensed log of the last 7 days of actual training, INCLUDING anything logged moments ago (this log is rebuilt fresh on every message, not cached). If a section is missing from the snapshot, the athlete genuinely has no data there yet — don't invent it, and don't apologize for its absence, just work with what's actually there. IMPORTANT: only the biometrics (sleep/HRV/RHR/steps/weight) are cache-based, from the last wearable sync — logged workouts are never wearable-synced, they appear the instant they're saved. If the athlete says they just logged something and you don't see it, the honest answer is \"I don't see it yet\" — never guess at a \"sync\" or similar mechanism as the reason; if it's genuinely missing, say so plainly and suggest they check the entry saved correctly, don't fabricate an explanation for why.\n\n" +
+  "WHAT YOU KNOW: the ATHLETE SNAPSHOT below (rebuilt fresh for this message, never stale) contains, when present: a TODAY line stating the athlete's current calendar date in their own timezone — when you need to say or reason about \"today\", use that exact date; never assert, compute, or guess a date yourself, and never assume UTC or your own sense of \"now\" — the athlete's actual local day is not something you can infer, only what TODAY states; the athlete's name and profile context (injuries, equipment, training environment); ALL of their long-term goals in priority order — not just the top few, every goal listed is real and current, including ones that might seem minor, like a specific injury or mobility target; their active short-horizon challenges with live progress; a standing Focus Override directive if one is currently active — this is the athlete's own explicit instruction about what to emphasize right now, treat it as a strong signal, not a suggestion you can ignore; their weekly training schedule (fixed sessions, frequency targets, add-ons); today's readiness score if one has been generated yet; their latest cached sleep, HRV, RHR, steps, and weight; and a condensed log of the last 7 days of actual training, INCLUDING anything logged moments ago (this log is rebuilt fresh on every message, not cached). If a section is missing from the snapshot, the athlete genuinely has no data there yet — don't invent it, and don't apologize for its absence, just work with what's actually there. IMPORTANT: only the biometrics (sleep/HRV/RHR/steps/weight) are cache-based, from the last wearable sync — logged workouts are never wearable-synced, they appear the instant they're saved. If the athlete says they just logged something and you don't see it, the honest answer is \"I don't see it yet\" — never guess at a \"sync\" or similar mechanism as the reason; if it's genuinely missing, say so plainly and suggest they check the entry saved correctly, don't fabricate an explanation for why.\n\n" +
   "HOW TO TALK: conversational, direct, and specific — reference real numbers, real exercise names, and real dates when they're relevant to the question. Plain text with light markdown (short lists, bold for emphasis) is fine and usually clearer than dense paragraphs; you are NOT required to return JSON or any fixed structure here, unlike the daily recommendation cards elsewhere in the app. Match the athlete's register — casual questions get casual answers, precise technical questions get precise answers. Never pad a short answer with disclaimers, safety boilerplate, or \"as an AI\" framing — get to the point.\n\n" +
   "WHAT YOU CAN AND CAN'T DO: you can PROPOSE exactly three kinds of change, each via a tool call, and each requires the athlete's explicit confirmation before anything is actually written — you never apply a change yourself: updating an existing goal's target/timeline/notes/active-paused state (propose_goal_update — this only updates a goal that already exists, it cannot create or delete one), setting/updating/clearing the standing Focus Override (propose_focus_override), and logging a free-text check-in note (propose_checkin_note). When you call one of these, say what you're proposing and why in your reply — the app renders the actual confirm/cancel card, you don't need to ask them to \"confirm in the app\" yourself, just explain the change naturally. Everything else — creating or deleting goals, editing workouts or exercises, changing the weekly schedule, adjusting settings — you have no tool for; tell them exactly where in the app to make that change (for example, \"update that under Profile > Schedule\") and never imply you've already made an edit you haven't made. You also don't have live wearable data beyond what's in the snapshot — no live Fitbit or Google Health call happens per message, only the last cached sync — so if they ask about something more current than the snapshot's timestamp, say so plainly instead of guessing.\n\n" +
   "COACHING JUDGMENT: weigh advice against injuries and physical limitations mentioned in their profile context — never suggest something that would aggravate a known issue. Treat their active challenges and any standing Focus Override as close to non-negotiable unless the athlete is explicitly asking you to reconsider them. When discussing schedule or workout changes, reason from what's actually in their schedule and recent training log, not generic fitness advice divorced from their real data. If a question falls genuinely outside what the snapshot covers — nutrition specifics, something with zero connection to their logged data — answer as a knowledgeable coach would, but be upfront that you're reasoning generally rather than from their specific numbers.\n\n" +
@@ -5395,8 +5486,12 @@ function formatScheduleForChat(schedule) {
 // consistency even though chat isn't under the same size pressure. Also
 // returns the distinct workout_ids represented, so buildTodayWorkoutFallback
 // (below) can tell which of today's workouts DON'T have exercise rows yet.
-async function buildRecentExerciseLog(profileId, days) {
-  var since = ymdNDaysAgo(days || 7);
+// `profile` (used for its .timezone) is passed in by buildChatSnapshot, which
+// already has it loaded — this avoids a second profile fetch. localToday()
+// falls back to UTC if profile/timezone is missing, so this stays correct
+// even called with `profile` undefined.
+async function buildRecentExerciseLog(profileId, days, profile) {
+  var since = localToday(profile, -(days || 7));
   var r = await fetch(SUPABASE_URL + "/rest/v1/exercises?profile_id=eq." + profileId +
     "&date=gte." + since +
     "&select=name,date,sets,reps,weight_lbs,duration_minutes,distance_miles,workout_id&order=date.desc&limit=200",
@@ -5521,13 +5616,17 @@ function summarizeFocusOverrideForChat(pd, today) {
 // that bug (not a cap issue at all) is what this rewrite fixes.
 async function buildChatSnapshot(profileId, opts) {
   opts = opts || {};
-  var today = dateStr(0);
 
   var pr = await fetch(SUPABASE_URL + "/rest/v1/profiles?id=eq." + profileId +
     "&select=" + PROFILE_SELECT_BASE + ",daily_recommendations_readiness,daily_recommendations_date",
     { headers: sbHeaders() });
   var prows = await pr.json();
   var profile = (Array.isArray(prows) && prows[0]) || {};
+  // Athlete's timezone (2026-07-15 fix — the original reported bug this whole
+  // pass stems from): "today" must be computed AFTER the profile fetch above,
+  // not before, since it now depends on profile.timezone. PROFILE_SELECT_BASE
+  // already includes timezone, so this is free — no extra round-trip.
+  var today = localToday(profile);
   var pd = profile.profile_data || {};
   var goals = Array.isArray(pd.goals) ? pd.goals : [];
 
@@ -5543,7 +5642,7 @@ async function buildChatSnapshot(profileId, opts) {
   var bodyPromise = fetch(SUPABASE_URL + "/rest/v1/body_metrics?profile_id=eq." + profileId +
     "&select=date,weight_lbs,bmi&order=date.desc&limit=1",
     { headers: sbHeaders() }).then(function(r) { return r.json(); }).catch(function() { return []; });
-  var exLogPromise = buildRecentExerciseLog(profileId, 7).catch(function() { return { lines: [], workoutIds: [] }; });
+  var exLogPromise = buildRecentExerciseLog(profileId, 7, profile).catch(function() { return { lines: [], workoutIds: [] }; });
 
   var microGoals = await mgPromise;
   if (!Array.isArray(microGoals)) microGoals = [];
@@ -5593,7 +5692,11 @@ async function buildChatSnapshot(profileId, opts) {
 
   var ctxCap = 600; // elastic (tier 2, after the exercise log) — see below
   var buildHeader = function() {
-    var h = ["ATHLETE: " + (profile.name || "Unknown")];
+    // Always present (2026-07-15) so the persona's "use the snapshot's stated
+    // date" instruction always has something concrete to point to — before
+    // this, a date only appeared in the snapshot via "TODAY'S READINESS",
+    // which is conditional on a same-day daily rec existing.
+    var h = ["TODAY: " + today, "ATHLETE: " + (profile.name || "Unknown")];
     var ctx = (pd.ai_prompt_context || "").trim();
     if (ctx) h.push("PROFILE CONTEXT: " + (ctx.length > ctxCap ? ctx.slice(0, ctxCap) + "…" : ctx));
     return h.concat(coreLines).join("\n");
@@ -5826,9 +5929,10 @@ async function computeGoalUpdateProposal(profileId, input) {
 }
 
 async function computeFocusOverrideProposal(profileId, input) {
-  var pr = await fetch(SUPABASE_URL + "/rest/v1/profiles?id=eq." + profileId + "&select=profile_data", { headers: sbHeaders() });
+  var pr = await fetch(SUPABASE_URL + "/rest/v1/profiles?id=eq." + profileId + "&select=profile_data,timezone", { headers: sbHeaders() });
   var rows = await pr.json();
-  var pd = (Array.isArray(rows) && rows[0] && rows[0].profile_data) || {};
+  var profileRow = (Array.isArray(rows) && rows[0]) || {};
+  var pd = profileRow.profile_data || {};
   var existing = pd.focus_override || null;
 
   if (input.action === "clear") {
@@ -5851,8 +5955,8 @@ async function computeFocusOverrideProposal(profileId, input) {
     text: input.text !== undefined ? input.text : (existing && existing.text) || "",
     mode: input.mode || (existing && existing.mode) || "infuse",
     scope: (existing && existing.scope) || "all",
-    start_date: input.start_date || (existing && existing.start_date) || dateStr(0),
-    end_date: input.end_date || (existing && existing.end_date) || dateStr(90),
+    start_date: input.start_date || (existing && existing.start_date) || localToday(profileRow),
+    end_date: input.end_date || (existing && existing.end_date) || localToday(profileRow, 90),
     daily_override_state: null,
   };
   var changes = [];
@@ -5867,7 +5971,13 @@ async function computeFocusOverrideProposal(profileId, input) {
 }
 
 async function computeCheckinNoteProposal(profileId, input) {
-  var today = dateStr(0);
+  // Athlete's timezone (2026-07-15) — was dateStr(0) (UTC). Stored on the
+  // returned payload as _today so applyProposal() (called later, at confirm
+  // time) writes the SAME date key this function read, rather than
+  // recomputing localToday() a second time — strictly more correct in the
+  // (extremely unlikely) case a confirm lands right at a midnight boundary.
+  var profileRow = await getProfileTimezone(profileId).catch(function() { return {}; });
+  var today = localToday(profileRow);
   var cr = await fetch(SUPABASE_URL + "/rest/v1/daily_checkins?profile_id=eq." + profileId + "&date=eq." + today + "&limit=1", { headers: sbHeaders() });
   var rows = await cr.json();
   var existingRow = (Array.isArray(rows) && rows[0]) || null;
@@ -5880,6 +5990,7 @@ async function computeCheckinNoteProposal(profileId, input) {
     reason: "",
     _existingRow: existingRow,
     _mergedText: mergedText,
+    _today: today,
   };
 }
 
@@ -5964,9 +6075,11 @@ async function applyProposal(proposal, profileId) {
     var loaded2 = await loadProfileWithGoals(profileId); // full profile_data load, any key
     await saveProfileDataField(profileId, loaded2.profileData, "focus_override", payload._fo);
   } else if (proposal.type === "log_checkin_note") {
+    // Reuse the SAME date computeCheckinNoteProposal resolved (not a fresh
+    // dateStr(0)/localToday() call) — see that function's comment.
     var checkinPayload = {
       profile_id: profileId,
-      date: dateStr(0),
+      date: payload._today,
       energy: (payload._existingRow && payload._existingRow.energy) || null,
       soreness: (payload._existingRow && payload._existingRow.soreness) || [],
       severity: (payload._existingRow && payload._existingRow.severity) || null,
