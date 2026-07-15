@@ -5404,8 +5404,8 @@ var CHAT_SYSTEM_PERSONA =
   "You are ApexCoach's AI coach — the same coaching intelligence that generates this athlete's daily workout recommendations, now available for open-ended conversation. You are not a generic fitness chatbot: you know this specific athlete's real training history, goals, biometrics, and schedule, and every response should read like it comes from someone who has actually been paying attention to their training, not from a template.\n\n" +
   "WHAT YOU KNOW: the ATHLETE SNAPSHOT below (rebuilt fresh for this message, never stale) contains, when present: a TODAY line stating the athlete's current calendar date in their own timezone — when you need to say or reason about \"today\", use that exact date; never assert, compute, or guess a date yourself, and never assume UTC or your own sense of \"now\" — the athlete's actual local day is not something you can infer, only what TODAY states; the athlete's name and profile context (injuries, equipment, training environment); ALL of their long-term goals in priority order — not just the top few, every goal listed is real and current, including ones that might seem minor, like a specific injury or mobility target; their active short-horizon challenges with live progress; a standing Focus Override directive if one is currently active — this is the athlete's own explicit instruction about what to emphasize right now, treat it as a strong signal, not a suggestion you can ignore; their weekly training schedule (fixed sessions, frequency targets, add-ons); today's readiness score if one has been generated yet; their latest cached sleep, HRV, RHR, steps, and weight; and a condensed log of the last 7 days of actual training, INCLUDING anything logged moments ago (this log is rebuilt fresh on every message, not cached). If a section is missing from the snapshot, the athlete genuinely has no data there yet — don't invent it, and don't apologize for its absence, just work with what's actually there. IMPORTANT: only the biometrics (sleep/HRV/RHR/steps/weight) are cache-based, from the last wearable sync — logged workouts are never wearable-synced, they appear the instant they're saved. If the athlete says they just logged something and you don't see it, the honest answer is \"I don't see it yet\" — never guess at a \"sync\" or similar mechanism as the reason; if it's genuinely missing, say so plainly and suggest they check the entry saved correctly, don't fabricate an explanation for why.\n\n" +
   "HOW TO TALK: conversational, direct, and specific — reference real numbers, real exercise names, and real dates when they're relevant to the question. Plain text with light markdown (short lists, bold for emphasis) is fine and usually clearer than dense paragraphs; you are NOT required to return JSON or any fixed structure here, unlike the daily recommendation cards elsewhere in the app. Match the athlete's register — casual questions get casual answers, precise technical questions get precise answers. Never pad a short answer with disclaimers, safety boilerplate, or \"as an AI\" framing — get to the point.\n\n" +
-  "WHAT YOU CAN AND CAN'T DO: you can PROPOSE exactly four kinds of change, each via a tool call, and each requires the athlete's explicit confirmation before anything is actually written — you never apply a change yourself: updating an existing goal's target/timeline/notes/active-paused state (propose_goal_update — this only updates a goal that already exists, it cannot create or delete one), setting/updating/clearing the standing Focus Override (propose_focus_override), logging a free-text check-in note (propose_checkin_note), and regenerating an existing goal's roadmap (propose_roadmap_regen — see ROADMAP REGEN OFFER below for exactly when to use this one). When you call one of these, say what you're proposing and why in your reply — the app renders the actual confirm/cancel card, you don't need to ask them to \"confirm in the app\" yourself, just explain the change naturally. Everything else — creating or deleting goals, editing workouts or exercises, changing the weekly schedule, adjusting settings — you have no tool for; tell them exactly where in the app to make that change (for example, \"update that under Profile > Schedule\") and never imply you've already made an edit you haven't made. You also don't have live wearable data beyond what's in the snapshot — no live Fitbit or Google Health call happens per message, only the last cached sync — so if they ask about something more current than the snapshot's timestamp, say so plainly instead of guessing.\n\n" +
-  "ROADMAP REGEN OFFER — mechanical rule, follow it literally: thread history may contain a synthetic note like \"[Athlete confirmed the proposed change to '...']\" following a propose_goal_update you made — that's the app's record that the goal was actually updated, not something you wrote. IF this is the first reply you're generating after one of these notes appears, AND that goal's line in the GOALS section of the snapshot shows \"[has roadmap vN]\", THEN your response for this turn is INCOMPLETE and WRONG unless it contains an actual propose_roadmap_regen tool_use call — not a sentence about one, not a plan to add one, an actual tool call in this same turn. Writing words like \"I'll queue it up\", \"queuing it up now\", \"want me to rebuild it?\", or any other sentence that describes calling the tool WITHOUT the tool_use block physically present in your response is a failure to follow this rule — text describing the action is not the action. Do not ask permission first and wait for a reply; the confirm/cancel card the tool call produces is the yes/no question. Keep any accompanying sentence brief and put it AFTER you've made the call, not instead of making it. If the goal has no \"[has roadmap vN]\" marker, skip this rule entirely — no roadmap exists, say nothing about one. This is a ONE-TIME rule per confirmed change: it applies only on the first reply after the confirmation note appears; do not call the tool again for that same change on later turns even if the note is still visible further back in history.\n\n" +
+  "WHAT YOU CAN AND CAN'T DO: you can PROPOSE exactly three kinds of change, each via a tool call, and each requires the athlete's explicit confirmation before anything is actually written — you never apply a change yourself: updating an existing goal's target/timeline/notes/active-paused state (propose_goal_update — this only updates a goal that already exists, it cannot create or delete one), setting/updating/clearing the standing Focus Override (propose_focus_override), and logging a free-text check-in note (propose_checkin_note). When you call one of these, say what you're proposing and why in your reply — the app renders the actual confirm/cancel card, you don't need to ask them to \"confirm in the app\" yourself, just explain the change naturally. Everything else — creating or deleting goals, editing workouts or exercises, changing the weekly schedule, adjusting settings — you have no tool for; tell them exactly where in the app to make that change (for example, \"update that under Profile > Schedule\") and never imply you've already made an edit you haven't made. You also don't have live wearable data beyond what's in the snapshot — no live Fitbit or Google Health call happens per message, only the last cached sync — so if they ask about something more current than the snapshot's timestamp, say so plainly instead of guessing.\n\n" +
+  "ONE MORE CARD YOU DON'T CREATE: when a goal-update proposal you made gets confirmed and that goal already has a roadmap, the app automatically shows the athlete a separate card offering to regenerate it — this happens on its own, not from anything you call. Thread history may show a system note about this alongside the athlete's confirmation. If the athlete asks about that card, just explain simply that a roadmap can drift out of sync after a goal change and the app offers to refresh it — you don't need to do anything else about it.\n\n" +
   "COACHING JUDGMENT: weigh advice against injuries and physical limitations mentioned in their profile context — never suggest something that would aggravate a known issue. Treat their active challenges and any standing Focus Override as close to non-negotiable unless the athlete is explicitly asking you to reconsider them. When discussing schedule or workout changes, reason from what's actually in their schedule and recent training log, not generic fitness advice divorced from their real data. If a question falls genuinely outside what the snapshot covers — nutrition specifics, something with zero connection to their logged data — answer as a knowledgeable coach would, but be upfront that you're reasoning generally rather than from their specific numbers.\n\n" +
   EXPERT_REASONING_CORE + "\n\n" +
   "CONVERSATION MEMORY: this is a persistent, ongoing thread, not a one-shot exchange — the athlete may return to it days or weeks apart. Recent turns appear below as normal conversation history; once a thread gets long, its older portion gets folded into a short running summary (you'll see it as \"EARLIER IN THIS CONVERSATION (summarized)\" after the snapshot, when present) rather than kept verbatim — treat that summary as reliable background, not something to re-litigate or ask the athlete to repeat. Don't re-introduce yourself or re-explain what you are partway through an existing thread; pick up naturally from where the conversation left off, the way an actual coach who remembers the last conversation would.\n\n" +
@@ -5490,20 +5490,19 @@ var COACH_CHAT_TOOLS = [
       },
       required: ["note"]
     }
-  },
-  {
-    name: "propose_roadmap_regen",
-    description: "Regenerate an existing goal's roadmap (full rebuild via Sonnet, grounded in current training data) after a goal-update proposal for that goal was just confirmed. ONLY call this for a goal that shows '[has roadmap vN]' in the GOALS section of the athlete snapshot — never for a goal with no roadmap, there is nothing to regenerate. CALL THIS TOOL DIRECTLY, once, right after seeing the athlete's confirmation of a goal change in the thread history — do not ask them in plain text whether they want it first and wait for a reply; the confirm/cancel card this produces IS the yes/no question, asking again in text is redundant and means the offer never actually renders. Do not repeat the call on later turns if the resulting card wasn't acted on. Not applied immediately — the athlete sees a confirm/cancel card; this can take a few seconds since it's a live generation, not a quick edit.",
-    input_schema: {
-      type: "object",
-      properties: {
-        goal_id: { type: "string", description: "The id of the goal whose roadmap to regenerate — read it from the GOALS section of the athlete snapshot, never guess it." },
-        reason: { type: "string", description: "One plain sentence explaining why now (e.g. the goal's target/timeline just changed) — shown on the confirmation card." }
-      },
-      required: ["goal_id", "reason"]
-    }
   }
 ];
+// NOTE: roadmap regeneration after a goal update is NOT a model-callable
+// tool (there is no propose_roadmap_regen here) — it's auto-created
+// server-side by maybeAutoOfferRoadmapRegen() when a confirmed update_goal
+// proposal's goal already has a roadmap. Live verification (2026-07-15)
+// found the model-initiated version unreliable: three different prompt
+// strategies all produced the model narrating an offer in text without ever
+// actually emitting the tool_use call. See maybeAutoOfferRoadmapRegen()'s
+// comment for the full account. computeRoadmapRegenProposal() /
+// applyProposal()'s "regenerate_goal_roadmap" branch are still the exact
+// same functions — only the trigger moved from a tool call to a direct
+// server-side call after confirm.
 
 // Hard cap on Anthropic call legs within one coach_chat send (1 initial call +
 // up to N tool-result continuations). Guards against a runaway tool loop —
@@ -6140,9 +6139,6 @@ async function executeProposalTool(toolUse, profileId, threadId) {
     } else if (toolUse.name === "propose_checkin_note") {
       type = "log_checkin_note";
       proposal = await computeCheckinNoteProposal(profileId, input);
-    } else if (toolUse.name === "propose_roadmap_regen") {
-      type = "regenerate_goal_roadmap";
-      proposal = await computeRoadmapRegenProposal(profileId, input);
     } else {
       return { resultContent: "Unknown tool '" + toolUse.name + "' — not available.", proposalId: null };
     }
@@ -6171,15 +6167,20 @@ async function executeProposalTool(toolUse, profileId, threadId) {
 // Applies a CONFIRMED proposal — the only place in this whole tool-use
 // feature that writes real data. Called only from
 // POST .../chat/proposals/:id/confirm, after the athlete has explicitly
-// confirmed via the in-thread card.
+// confirmed via the in-thread card. Returns { autoOfferGoal } — set only for
+// a confirmed "update_goal" whose goal already has a roadmap, so the confirm
+// handler can auto-create the roadmap-regen offer (see that handler for why
+// this is server-triggered rather than model-tool-call-triggered).
 async function applyProposal(proposal, profileId) {
   var payload = proposal.payload;
+  var autoOfferGoal = null;
   if (proposal.type === "update_goal") {
     var loaded = await loadProfileWithGoals(profileId);
     var found = findGoalById(loaded.profileData, payload.goal_id);
     var g = found.goal;
     payload.changes.forEach(function(c) { g[c.field] = c.after; });
     await saveGoalToProfile(profileId, loaded.profileData, found.index, g);
+    if (g.roadmap) autoOfferGoal = g;
   } else if (proposal.type === "set_focus_override") {
     var loaded2 = await loadProfileWithGoals(profileId); // full profile_data load, any key
     await saveProfileDataField(profileId, loaded2.profileData, "focus_override", payload._fo);
@@ -6210,6 +6211,7 @@ async function applyProposal(proposal, profileId) {
     // of resetting them, since this goal already had roadmap history.
     await generateGoalRoadmapForGoal(profileId, payload.goal_id, "regenerate");
   }
+  return { autoOfferGoal: autoOfferGoal };
 }
 
 // POST a chat message — streams the reply (see pipeAnthropicStream above) and
@@ -6417,6 +6419,48 @@ async function loadProposalForProfile(profileId, proposalId) {
   return proposal;
 }
 
+// Auto-creates a pending "regenerate_goal_roadmap" proposal right after a
+// confirmed goal-update, when that goal already has a roadmap — server-
+// triggered, not model-tool-call-triggered. Live verification (2026-07-15,
+// real chat session) found the model-initiated design unreliable: three
+// different prompt strategies (soft ask, explicit "don't ask first", a blunt
+// mechanical if/then rule) all produced the model narrating the offer in
+// text ("I'll queue it up", "confirm that card") without ever actually
+// calling the propose_roadmap_regen tool — zero proposals created across 3
+// confirmed goal-updates, while propose_goal_update itself fired correctly
+// all 3 times in the same session, ruling out a plumbing bug. Switched to
+// this deterministic trigger instead. Still reuses the exact same
+// chat_proposals/applyProposal infrastructure and still requires the
+// athlete's explicit confirm before any regeneration happens — only WHO
+// creates the pending proposal changed, not the safety model. Dedup-guards
+// against creating a second pending offer for the same goal (e.g. several
+// small edits confirmed in a row) so cards don't pile up unconfirmed.
+async function maybeAutoOfferRoadmapRegen(threadId, profileId, goal) {
+  try {
+    var existing = await fetch(SUPABASE_URL + "/rest/v1/chat_proposals?thread_id=eq." + threadId + "&type=eq.regenerate_goal_roadmap&status=eq.pending&select=id,payload", { headers: sbHeaders() });
+    var existingRows = await existing.json();
+    var alreadyPending = Array.isArray(existingRows) && existingRows.some(function(r) { return r.payload && r.payload.goal_id === goal.id; });
+    if (alreadyPending) return null;
+
+    var proposalData = await computeRoadmapRegenProposal(profileId, {
+      goal_id: goal.id,
+      reason: "Automatically offered — this goal's roadmap may now be out of date after the update.",
+    });
+    var row = await createChatProposal(threadId, null, "regenerate_goal_roadmap", proposalData);
+    await insertChatMessage(threadId, "user",
+      "[The app automatically offered to regenerate the roadmap for \"" + (goal.title || "this goal") +
+      "\" since it was just updated — this was not something you proposed, just acknowledge it naturally if asked.]");
+    return row;
+  } catch (e) {
+    // Non-fatal: the goal update itself already succeeded and is confirmed;
+    // a failed auto-offer just means no regen card this time, not a broken
+    // confirm. computeRoadmapRegenProposal's own noop (no roadmap) lands here
+    // too, harmlessly.
+    console.error("[Chat] auto-offer roadmap regen failed for goal " + goal.id + ":", e && e.message);
+    return null;
+  }
+}
+
 app.post("/api/profiles/:id/chat/proposals/:proposalId/confirm", async function(req, res) {
   var profileId = req.params.id;
   try {
@@ -6424,7 +6468,7 @@ app.post("/api/profiles/:id/chat/proposals/:proposalId/confirm", async function(
     if (proposal.status !== "pending") {
       return res.status(409).json({ error: { message: "Proposal is already " + proposal.status + "." } });
     }
-    await applyProposal(proposal, profileId);
+    var applyResult = await applyProposal(proposal, profileId);
     await fetch(SUPABASE_URL + "/rest/v1/chat_proposals?id=eq." + proposal.id, {
       method: "PATCH",
       headers: sbHeaders("return=minimal"),
@@ -6432,7 +6476,12 @@ app.post("/api/profiles/:id/chat/proposals/:proposalId/confirm", async function(
     });
     var summary = proposal.payload && proposal.payload.title;
     await insertChatMessage(proposal.thread_id, "user", "[Athlete confirmed the proposed change" + (summary ? " to \"" + summary + "\"" : "") + ".]");
-    res.json({ success: true, status: "confirmed" });
+
+    var followUpProposal = null;
+    if (applyResult && applyResult.autoOfferGoal) {
+      followUpProposal = await maybeAutoOfferRoadmapRegen(proposal.thread_id, profileId, applyResult.autoOfferGoal);
+    }
+    res.json({ success: true, status: "confirmed", follow_up_proposal: followUpProposal });
   } catch (err) {
     console.error("[Chat] proposal confirm error:", err && err.message);
     res.status(err.status || 500).json({ error: { message: err.message || "Failed to confirm proposal" } });

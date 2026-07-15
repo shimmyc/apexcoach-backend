@@ -5611,6 +5611,15 @@ function cvConfirmProposal(id, attempt) {
       if (!res.ok || !res.data.success) throw new Error((res.data.error && res.data.error.message) || 'Confirm failed');
       cvSetProposalCardStatus(id, 'confirmed');
       cvRefreshProfileAfterApply();
+      // A confirmed goal-update on a goal that already has a roadmap
+      // auto-creates a regen offer server-side (see maybeAutoOfferRoadmapRegen
+      // in server.js) — render it immediately rather than waiting for the
+      // athlete's next message to reload the thread and find it.
+      var followUp = res.data.follow_up_proposal;
+      if (followUp && followUp.id && !cvProposalsById[followUp.id]) {
+        cvProposalsById[followUp.id] = followUp;
+        cvAppendProposalCards([followUp.id]);
+      }
     })
     .catch(function(e) {
       console.error('[Chat] confirm proposal failed:', e);
