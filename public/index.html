@@ -301,6 +301,20 @@ input[type=range]{width:100%;accent-color:var(--accent)}
 #chat-view .cv-mic-btn{background:var(--bg-surface-2);border:none;color:var(--text-muted);width:36px;height:36px;border-radius:50%;font-size:15px;cursor:pointer;flex-shrink:0}
 #chat-view .cv-send-btn{background:var(--accent-cornerman);border:none;color:#fff;width:40px;height:40px;border-radius:50%;font-size:16px;cursor:pointer;flex-shrink:0;display:flex;align-items:center;justify-content:center}
 #chat-view .cv-send-btn:disabled{opacity:.5;cursor:default}
+/* Desktop: docked bottom-right panel instead of a fullscreen takeover.
+   Breakpoint matches the app's existing mobile/desktop nav split (768/769px —
+   see "BOTTOM NAV (mobile)" rules above), not the separate 700px breakpoint
+   used for minor padding tweaks elsewhere, since this is the same
+   mobile-vs-desktop-chrome decision as the nav. */
+@media(min-width:769px){
+  #chat-view{top:auto;left:auto;right:24px;bottom:0;width:400px;height:66vh;max-height:720px;border-radius:16px 16px 0 0;border:1px solid var(--border-subtle);border-bottom:none;box-shadow:0 12px 40px rgba(0,0,0,0.35)}
+}
+/* Header entry point (all tabs, next to the profile avatar) — own class only,
+   .gearBtn/.syncBtn left untouched. Cornerman purple marks it as the AI
+   surface, matching the border-ai/accent-cornerman convention used for
+   Coach Chat elsewhere. */
+.chatHeaderBtn{background:transparent;border:1px solid var(--border-ai);color:var(--accent-cornerman);padding:8px 12px;font-size:16px;cursor:pointer;border-radius:4px;line-height:1}
+@media(max-width:700px){.chatHeaderBtn{padding:6px 8px;font-size:14px}}
 /* ── MACRO ROADMAP (structured roadmap_data) — scoped to #roadmap-data-card ── */
 #roadmap-data-card .rd-head{display:flex;align-items:center;justify-content:space-between;gap:8px}
 #roadmap-data-card .rd-regen{background:transparent;border:none;color:var(--text-muted);font-size:13px;cursor:pointer;padding:4px 0;font-family:'Inter',sans-serif}
@@ -577,6 +591,7 @@ input[type=range]{width:100%;accent-color:var(--accent)}
   <div style="display:flex;gap:8px;align-items:center">
     <span id="streak-badge" style="display:none;font-size:14px;color:#f5a623;font-weight:700;cursor:pointer;position:relative" onclick="toggleStreakTooltip(event)"></span>
     <button class="syncBtn" onclick="syncFitbit(true)"><span class="sync-text">sync</span><span class="sync-icon" style="display:none">&#8635;</span></button>
+    <button class="chatHeaderBtn" onclick="openChatView()" title="Coach Chat">&#x1F4AC;</button>
     <button class="gearBtn" onclick="openSettings()" title="Settings">&#9881;</button>
     <div style="position:relative">
       <button id="profile-icon-btn" onclick="openSettings()" style="width:34px;height:34px;border-radius:50%;border:1px solid var(--border-accent);background:var(--accent-18);color:var(--accent);font-family:'Oswald',sans-serif;font-size:15px;font-weight:700;cursor:pointer;overflow:hidden;padding:0" title="Settings"><span id="profile-icon-inner">S</span></button>
@@ -4523,7 +4538,6 @@ function renderAI() {
     }
 
     html += '<button type="button" onclick="rerollAlternativeRecs()" style="width:100%;background:transparent;border:1px solid var(--accent-33);color:var(--accent);padding:11px 16px;font-size:13px;font-weight:600;cursor:pointer;border-radius:8px;font-family:DM Sans,sans-serif;margin-bottom:10px">&#x1F504; Show me different options</button>';
-    html += '<button type="button" onclick="openChatView()" style="width:100%;background:transparent;border:1px solid var(--border-ai);color:var(--accent-cornerman);padding:11px 16px;font-size:13px;font-weight:600;cursor:pointer;border-radius:8px;font-family:\'Inter\',sans-serif;margin-bottom:10px">&#x1F4AC; Talk to your coach</button>';
     html += '<p class="mono" style="font-size:10px;color:var(--text-dim);letter-spacing:2px;margin-bottom:8px;text-align:center">OR — I want to do something else &rarr;</p>';
     html += '<div style="display:flex;flex-wrap:wrap;gap:6px;justify-content:center">';
     var cats = [

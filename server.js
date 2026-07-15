@@ -5084,8 +5084,18 @@ var CHAT_SYSTEM_PERSONA = "You are ApexCoach's AI coach, talking directly with t
 var CHAT_CHAR_GUARD = 20000;
 // Athlete snapshot (profile/goals/challenges/schedule/biometrics/recent
 // training) is built to fit within this on its own, leaving the rest of
-// CHAT_CHAR_GUARD for thread history.
+// CHAT_CHAR_GUARD for thread history. This is a SOFT cap: only the elastic
+// sections (recent-exercise log, then profile context) are trimmed to hit it,
+// and hitting it always logs a warning (see buildChatSnapshot). Goals/
+// challenges/focus-override/schedule/biometrics are never cut to make this
+// number — see CHAT_SNAPSHOT_HARD_CAP for the real backstop.
 var CHAT_SNAPSHOT_CHAR_CAP = 5000;
+// Absolute ceiling. If trimming the elastic sections isn't enough to get
+// under this, lowest-priority goals are dropped one at a time (from the tail
+// of the priority-ordered list) until under budget — each drop is logged
+// loudly. This should never fire in practice; if it does, CHAT_SNAPSHOT_CHAR_CAP
+// is too tight for this athlete's goal/challenge count and should be raised.
+var CHAT_SNAPSHOT_HARD_CAP = 8000;
 // Once a thread has more than this many messages since the last summary
 // cutoff, fire-and-forget summarization folds the older portion into
 // chat_threads.summary and advances the cutoff, always leaving the most
@@ -5154,17 +5164,77 @@ async function buildRecentExerciseLog(profileId, days) {
   });
 }
 
-// Server-side athlete snapshot for chat — profile/goals/challenges/schedule
-// (from profile_data, one fetch) + latest cached biometrics (daily_sleep/
-// daily_steps/body_metrics — DB-first, same philosophy as the life-os-summary
-// fast path: no live Fitbit/Google Health call, so chat never blocks on or
-// gets taken down by a wearable-API outage) + a condensed 7-day exercise log.
+// One condensed line per long-term goal (profile_data.goals[]), using only
+// already-stored fields (title/type/target_value/current_value/unit/status) —
+// NOT a fresh AI-computed progress %, which is what POST /goal-progress does.
+// Recomputing that per chat message would mean an extra AI call on every
+// send; this trades precision for staying DB-only, consistent with the
+// biometrics section below.
+function formatGoalLineForChat(g, idx) {
+  var line = (idx + 1) + ") " + (g.title || "Untitled") + (g.type ? " [" + g.type + "]" : "");
+  if (g.target_value != null) {
+    line += " — " + (g.current_value != null ? g.current_value : 0) + "/" + g.target_value + (g.unit ? " " + g.unit : "");
+  } else if (g.current_value != null) {
+    line += " — " + g.current_value + (g.unit ? " " + g.unit : "%");
+  } else if (g.status) {
+    line += " — " + g.status;
+  }
+  return line;
+}
+
+// One condensed line per active micro-goal (Active Challenge).
+function formatChallengeLineForChat(m) {
+  var unit = m.target_unit ? " " + m.target_unit : "";
+  return "- " + m.title + " [" + (m.type || "?") + "] — " + (m.current_value != null ? m.current_value : 0) + "/" + m.target_value + unit;
+}
+
+// Mirrors resolveFocusOverride()'s STANDING-DIRECTIVE branch in
+// public/index.html (not the per-call 'force'/'total'/'skip' daily flags,
+// which only apply to the daily-recs card, not chat): active + text + today
+// inside [start_date, end_date]. profile_data.focus_override is already
+// fetched as part of the profile row (PROFILE_SELECT_BASE selects the whole
+// profile_data column) — this was a pure omission, not missing data.
+function summarizeFocusOverrideForChat(pd, today) {
+  var fo = pd && pd.focus_override;
+  if (!fo || !fo.active || !fo.text) return "";
+  var start = fo.start_date || "";
+  var end = fo.end_date || "9999-99-99";
+  if (today < start || today > end) return "";
+  var scopeTxt = (fo.scope === "all" || fo.scope === undefined) ? "all goals" : "specific goals only";
+  var mode = fo.mode || "infuse";
+  var MODE_NOTE = {
+    replace: "replaces normal goal-priority weighting",
+    boost: "boosted ~60-70% above normal goal weighting",
+    sprinkle: "1-2 non-anchored sessions/week nudged toward this, goal weighting otherwise unchanged",
+    infuse: "woven into whatever's already planned, schedule/category unchanged",
+    total: "bypasses even the fixed schedule — the only mode that can override a locked commitment",
+  };
+  return "FOCUS OVERRIDE (standing directive, active " + start + " to " + end + ", mode: " + mode +
+    " — " + (MODE_NOTE[mode] || mode) + ", scope: " + scopeTxt + "): " + fo.text;
+}
+
+// Server-side athlete snapshot for chat — profile/goals/challenges/focus
+// override/schedule (from profile_data, one fetch) + latest cached biometrics
+// (daily_sleep/daily_steps/body_metrics — DB-first, same philosophy as the
+// life-os-summary fast path: no live Fitbit/Google Health call, so chat never
+// blocks on or gets taken down by a wearable-API outage) + a condensed 7-day
+// exercise log.
 // NOTE: zone/active-minutes aren't persisted anywhere in the schema (only
 // held transiently in the /daily response as prevZones) — omitted here rather
 // than adding a live wearable call per chat message, which would reintroduce
 // the class of latency/outage risk the June hardening pass fixed. Flagged as
 // a known gap, not silently dropped.
-async function buildChatSnapshot(profileId) {
+//
+// CAP DISCIPLINE (2026-07 fix — see ROADMAP.md changelog): goals/challenges/
+// focus-override/schedule/biometrics are NEVER truncated to hit
+// CHAT_SNAPSHOT_CHAR_CAP — only the exercise log and (as a second resort)
+// profile context are elastic. If the athlete's goal/challenge count is large
+// enough to blow even CHAT_SNAPSHOT_HARD_CAP, lowest-priority goals are
+// dropped one at a time (never a mid-string slice) and every drop is logged.
+// A prior version silently sliced goals to the first 5 regardless of budget —
+// that bug (not a cap issue at all) is what this rewrite fixes.
+async function buildChatSnapshot(profileId, opts) {
+  opts = opts || {};
   var today = dateStr(0);
 
   var pr = await fetch(SUPABASE_URL + "/rest/v1/profiles?id=eq." + profileId +
@@ -5176,7 +5246,7 @@ async function buildChatSnapshot(profileId) {
   var goals = Array.isArray(pd.goals) ? pd.goals : [];
 
   var mgPromise = fetch(SUPABASE_URL + "/rest/v1/micro_goals?profile_id=eq." + profileId +
-    "&is_active=eq.true&select=title,type,target_value,target_unit,current_value&order=created_at.desc&limit=10",
+    "&is_active=eq.true&select=title,type,target_value,target_unit,current_value&order=created_at.desc&limit=50",
     { headers: sbHeaders() }).then(function(r) { return r.json(); }).catch(function() { return []; });
   var sleepPromise = fetch(SUPABASE_URL + "/rest/v1/daily_sleep?profile_id=eq." + profileId +
     "&select=date,hours,score,hrv,rhr&order=date.desc&limit=1",
@@ -5197,48 +5267,47 @@ async function buildChatSnapshot(profileId) {
   var steps = (Array.isArray(stepsRows) && stepsRows[0]) || null;
   var body = (Array.isArray(bodyRows) && bodyRows[0]) || null;
 
-  var lines = [];
-  lines.push("ATHLETE: " + (profile.name || "Unknown"));
-
-  var ctx = (pd.ai_prompt_context || "").trim();
-  if (ctx) lines.push("PROFILE CONTEXT: " + (ctx.length > 600 ? ctx.slice(0, 600) + "…" : ctx));
-
-  if (goals.length) {
-    lines.push("GOALS (priority order): " + goals.slice(0, 5).map(function(g, i) {
-      return (i + 1) + ") " + (g.title || "Untitled");
-    }).join("; "));
-  }
-
-  if (microGoals.length) {
-    lines.push("ACTIVE CHALLENGES: " + microGoals.map(function(m) {
-      var unit = m.target_unit ? " " + m.target_unit : "";
-      return m.title + " (" + (m.current_value != null ? m.current_value : 0) + "/" + m.target_value + unit + ")";
-    }).join("; "));
-  }
-
+  // Priority-ordered, one line per goal, ALL goals — no count cap (see the
+  // CAP DISCIPLINE note above; a hardcoded slice(0,5) here was the actual bug
+  // behind "chat only sees ~4-5 of my goals"). Kept as an array (not
+  // pre-joined) so the hard-cap last-resort below can drop from the tail.
+  var goalLines = goals.map(formatGoalLineForChat);
+  var challengeLines = microGoals.map(formatChallengeLineForChat);
+  var foTxt = summarizeFocusOverrideForChat(pd, today);
   var schedTxt = formatScheduleForChat(pd.schedule);
-  if (schedTxt) lines.push("SCHEDULE: " + schedTxt);
 
+  var coreLines = []; // never trimmed except by the hard-cap goal-drop last resort
+  if (goalLines.length) coreLines.push("GOALS (priority order):\n" + goalLines.join("\n"));
+  if (challengeLines.length) coreLines.push("ACTIVE CHALLENGES:\n" + challengeLines.join("\n"));
+  if (foTxt) coreLines.push(foTxt);
+  if (schedTxt) coreLines.push("SCHEDULE: " + schedTxt);
   if (profile.daily_recommendations_date === today && profile.daily_recommendations_readiness != null) {
-    lines.push("TODAY'S READINESS: " + profile.daily_recommendations_readiness + "/100");
+    coreLines.push("TODAY'S READINESS: " + profile.daily_recommendations_readiness + "/100");
   }
-
   if (sleep) {
     var sd = sleep.date === today ? "today" : sleep.date;
     var bioBits = [];
     if (sleep.hrv != null) bioBits.push("HRV " + sleep.hrv + "ms");
     if (sleep.rhr != null) bioBits.push("RHR " + sleep.rhr + "bpm");
     if (sleep.hours != null) bioBits.push("Sleep " + sleep.hours + "h (score " + (sleep.score != null ? sleep.score : "n/a") + ")");
-    if (bioBits.length) lines.push("LATEST BIOMETRICS (" + sd + "): " + bioBits.join(", "));
+    if (bioBits.length) coreLines.push("LATEST BIOMETRICS (" + sd + "): " + bioBits.join(", "));
   }
-  if (steps && steps.steps != null) lines.push("LATEST STEPS (" + steps.date + "): " + steps.steps);
+  if (steps && steps.steps != null) coreLines.push("LATEST STEPS (" + steps.date + "): " + steps.steps);
   if (body && (body.weight_lbs != null || body.bmi != null)) {
-    lines.push("LATEST WEIGHT (" + body.date + "): " +
+    coreLines.push("LATEST WEIGHT (" + body.date + "): " +
       (body.weight_lbs != null ? body.weight_lbs + "lbs" : "n/a") +
       (body.bmi != null ? " (BMI " + body.bmi + ")" : ""));
   }
 
-  var header = lines.join("\n");
+  var ctxCap = 600; // elastic (tier 2, after the exercise log) — see below
+  var buildHeader = function() {
+    var h = ["ATHLETE: " + (profile.name || "Unknown")];
+    var ctx = (pd.ai_prompt_context || "").trim();
+    if (ctx) h.push("PROFILE CONTEXT: " + (ctx.length > ctxCap ? ctx.slice(0, ctxCap) + "…" : ctx));
+    return h.concat(coreLines).join("\n");
+  };
+
+  var header = buildHeader();
   var budgetForLog = Math.max(0, CHAT_SNAPSHOT_CHAR_CAP - header.length - 40);
   var logBlock = "";
   if (exLines.length) {
@@ -5248,7 +5317,52 @@ async function buildChatSnapshot(profileId) {
   }
 
   var snapshot = header + logBlock;
-  if (snapshot.length > CHAT_SNAPSHOT_CHAR_CAP) snapshot = snapshot.slice(0, CHAT_SNAPSHOT_CHAR_CAP) + "…";
+
+  // Soft cap: exercise-log trim above is the only "normal" lever. If core
+  // content alone (goals/challenges/override/schedule/biometrics) pushes past
+  // it, that's worth knowing about but NOT worth silently cutting — log and
+  // move on.
+  if (snapshot.length > CHAT_SNAPSHOT_CHAR_CAP) {
+    console.warn("[Chat] snapshot for profile " + profileId + " exceeded soft cap (" +
+      snapshot.length + "/" + CHAT_SNAPSHOT_CHAR_CAP + " chars) even after trimming the exercise log — " +
+      goalLines.length + " goals, " + challengeLines.length + " challenges. Not truncating; see hard cap.");
+  }
+
+  // Hard cap: last-resort trims, in order — (1) shrink profile context
+  // further, (2) drop lowest-priority goals from the tail one at a time.
+  // Every drop is logged; this should basically never fire.
+  if (snapshot.length > CHAT_SNAPSHOT_HARD_CAP) {
+    ctxCap = 200;
+    header = buildHeader();
+    snapshot = header + logBlock;
+  }
+  while (snapshot.length > CHAT_SNAPSHOT_HARD_CAP && goalLines.length > 0) {
+    var dropped = goalLines.pop();
+    console.warn("[Chat] snapshot for profile " + profileId + " still over HARD cap (" +
+      CHAT_SNAPSHOT_HARD_CAP + ") after context trim — dropping lowest-priority goal from this call's " +
+      "snapshot: \"" + dropped + "\". Raise CHAT_SNAPSHOT_CHAR_CAP/HARD_CAP if this recurs.");
+    coreLines = [];
+    if (goalLines.length) coreLines.push("GOALS (priority order):\n" + goalLines.join("\n"));
+    if (challengeLines.length) coreLines.push("ACTIVE CHALLENGES:\n" + challengeLines.join("\n"));
+    if (foTxt) coreLines.push(foTxt);
+    if (schedTxt) coreLines.push("SCHEDULE: " + schedTxt);
+    if (profile.daily_recommendations_date === today && profile.daily_recommendations_readiness != null) {
+      coreLines.push("TODAY'S READINESS: " + profile.daily_recommendations_readiness + "/100");
+    }
+    header = buildHeader();
+    snapshot = header + logBlock;
+  }
+
+  // Always-on, lightweight visibility (not a full dump — see the ?debug=1
+  // path in the send handler for that) so this class of bug is never silent
+  // again without spamming logs on every message.
+  console.log("[Chat] snapshot for profile " + profileId + ": " + snapshot.length + " chars, " +
+    goals.length + " goals, " + microGoals.length + " challenges" + (foTxt ? ", focus override active" : ""));
+
+  if (opts.debug) {
+    console.log("[Chat] ---- FULL SNAPSHOT DUMP (profile " + profileId + ") ----\n" + snapshot + "\n---- END SNAPSHOT DUMP ----");
+  }
+
   return snapshot;
 }
 
@@ -5379,8 +5493,18 @@ async function summarizeChatThreadIfNeeded(threadId) {
 // wrapped (via wrapSystemWithCache), so repeat calls within the TTL window
 // still hit Anthropic's prompt cache as long as the snapshot text is
 // unchanged between them.
+//
+// DEBUG: pass ?debug=1 to inspect exactly what the model would see — returns
+// the assembled system prompt + message array (+ char counts) as JSON instead
+// of calling Anthropic. No message is persisted and no API call is made, so
+// it's free to use repeatedly. Also triggers a full snapshot dump to the
+// server console (buildChatSnapshot's opts.debug) for log-based inspection
+// when you don't have easy access to the JSON response. This is a permanent
+// capability, not a one-off — snapshot-completeness bugs are expected to
+// recur as new context sources get added.
 app.post("/api/profiles/:id/chat/message", async function(req, res) {
   var profileId = req.params.id;
+  var debug = req.query && req.query.debug === "1";
   var text = ((req.body && req.body.text) || "").trim();
   if (!text) return res.status(400).json({ error: { message: "text is required" } });
   if (text.length > 4000) return res.status(400).json({ error: { message: "Message too long (max 4000 characters)" } });
@@ -5389,13 +5513,29 @@ app.post("/api/profiles/:id/chat/message", async function(req, res) {
     var thread = await getOrCreateChatThread(profileId);
     var history = await fetchChatMessagesAfter(thread.id, thread.summary_through_message_id);
 
-    var snapshot = await buildChatSnapshot(profileId);
+    var snapshot = await buildChatSnapshot(profileId, { debug: debug });
     var systemText = buildChatSystemPrompt(snapshot, thread.summary);
 
     var messages = history.map(function(m) { return { role: m.role, content: m.content }; });
     messages.push({ role: "user", content: text });
 
     var guarded = enforceChatCharGuard(systemText, messages, CHAT_CHAR_GUARD);
+
+    if (debug) {
+      return res.json({
+        debug: true,
+        snapshot: snapshot,
+        snapshot_chars: snapshot.length,
+        system: guarded.system,
+        system_chars: guarded.system.length,
+        messages: guarded.messages,
+        messages_chars: JSON.stringify(guarded.messages).length,
+        combined_chars: guarded.system.length + JSON.stringify(guarded.messages).length,
+        char_guard: CHAT_CHAR_GUARD,
+        trimmed_history: guarded.trimmed,
+      });
+    }
+
     var system = wrapSystemWithCache(guarded.system, "coach_chat");
 
     await insertChatMessage(thread.id, "user", text);
