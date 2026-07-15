@@ -6446,7 +6446,21 @@ async function maybeAutoOfferRoadmapRegen(threadId, profileId, goal) {
       goal_id: goal.id,
       reason: "Automatically offered — this goal's roadmap may now be out of date after the update.",
     });
-    var row = await createChatProposal(threadId, null, "regenerate_goal_roadmap", proposalData);
+    // tool_use_id is NOT NULL in chat_proposals (migrations/2026-07-15_chat_proposals.sql)
+    // — it was designed assuming every proposal originates from a model tool
+    // call. This one doesn't, so a synthetic sentinel stands in; caught live
+    // (2026-07-15) as a real 23502 not-null-constraint error on the first
+    // attempt, not by reading the schema.
+    var row = await createChatProposal(threadId, "server:auto-offer-roadmap-regen", "regenerate_goal_roadmap", proposalData);
+    // createChatProposal() doesn't check r.ok — a Supabase insert error comes
+    // back as an error object, not an array, so `row` would be that object
+    // rather than a real proposal row (caught live, see the tool_use_id note
+    // above). Guard here rather than fixing createChatProposal() globally, to
+    // keep this fix scoped to the one caller that actually hit it.
+    if (!row || !row.id) {
+      console.error("[Chat] auto-offer roadmap regen: createChatProposal returned no row for goal " + goal.id + ":", JSON.stringify(row));
+      return null;
+    }
     await insertChatMessage(threadId, "user",
       "[The app automatically offered to regenerate the roadmap for \"" + (goal.title || "this goal") +
       "\" since it was just updated — this was not something you proposed, just acknowledge it naturally if asked.]");
