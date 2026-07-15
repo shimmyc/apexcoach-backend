@@ -209,6 +209,25 @@ input[type=range]{width:100%;accent-color:var(--accent)}
 .fc-pill:hover{border-color:var(--accent-44)}
 .fc-pill.active{border-color:var(--accent);background:var(--accent-10);color:var(--accent)}
 .toast{position:fixed;bottom:30px;left:50%;transform:translateX(-50%);background:var(--bg-card);color:var(--accent);border:1px solid var(--accent-33);padding:10px 24px;border-radius:8px;font-family:'IBM Plex Mono',monospace;font-size:13px;letter-spacing:1px;z-index:200;pointer-events:none;animation:toastIn .25s ease,toastOut .25s ease 1.2s forwards}
+/* Exercise-catalog confirm chip (2026-07-15) — shown only for a fuzzy/Haiku/
+   custom-matched exercise name post-save (never for an exact/alias match,
+   which stays frictionless with no chip). Body-level, like #wm-modal/.toast,
+   since it fires from the Log modal's post-save extract-exercises callback
+   after that modal has already closed. Cornerman-purple per the existing
+   AI-attributed-UI convention (same accent Coach Chat's proposal cards use). */
+#ec-chip{position:fixed;bottom:24px;left:50%;transform:translateX(-50%);z-index:210;background:var(--bg-surface-1,var(--bg-card));border:1px solid var(--border-ai,var(--accent-33));border-radius:14px;padding:12px 16px;max-width:340px;width:calc(100% - 32px);box-shadow:0 8px 24px rgba(0,0,0,.3);animation:ecChipIn .2s ease}
+@keyframes ecChipIn{from{opacity:0;transform:translateX(-50%) translateY(12px)}to{opacity:1;transform:translateX(-50%) translateY(0)}}
+#ec-chip .ec-chip-title{font-size:13px;color:var(--text-primary,var(--text));line-height:1.4;font-family:'Inter',sans-serif}
+#ec-chip .ec-chip-title b{color:var(--accent-cornerman,var(--accent))}
+#ec-chip .ec-chip-actions{display:flex;gap:8px;margin-top:10px}
+#ec-chip .ec-chip-ok{flex:1;background:var(--accent-ember,var(--accent));border:none;color:#fff;padding:7px 12px;border-radius:9999px;font-size:12px;font-weight:600;cursor:pointer;font-family:'Inter',sans-serif}
+#ec-chip .ec-chip-change{flex:1;background:transparent;border:1px solid var(--border-subtle,var(--accent-33));color:var(--text-muted);padding:7px 12px;border-radius:9999px;font-size:12px;font-weight:600;cursor:pointer;font-family:'Inter',sans-serif}
+#ec-chip .ec-chip-picker{margin-top:10px;border-top:1px solid var(--border-subtle,var(--accent-33));padding-top:10px}
+#ec-chip .ec-chip-search{width:100%;box-sizing:border-box;background:var(--bg-surface-2,var(--bg-input));border:1px solid var(--border-subtle,var(--border));border-radius:8px;padding:7px 10px;font-size:13px;color:var(--text-primary,var(--text));font-family:'Inter',sans-serif;margin-bottom:6px}
+#ec-chip .ec-chip-results{max-height:140px;overflow-y:auto;display:flex;flex-direction:column;gap:2px}
+#ec-chip .ec-chip-result{text-align:left;background:transparent;border:none;color:var(--text-primary,var(--text));padding:6px 8px;border-radius:6px;font-size:13px;cursor:pointer;font-family:'Inter',sans-serif}
+#ec-chip .ec-chip-result:hover{background:var(--bg-surface-2,var(--bg-input))}
+#ec-chip .ec-chip-keep{width:100%;background:transparent;border:1px dashed var(--border-subtle,var(--accent-33));color:var(--text-muted);padding:7px 10px;border-radius:8px;font-size:12px;cursor:pointer;font-family:'Inter',sans-serif;margin-top:6px}
 .settings-overlay{position:fixed;inset:0;background:var(--bg-base);z-index:50;display:none;flex-direction:column;overflow:hidden}
 .settings-overlay.open{display:flex;animation:settingsSlideIn .28s cubic-bezier(.32,.72,0,1)}
 /* ── AGENT 3/5: NAV + MODAL OVERLAYS ──────────────────────────────────────
@@ -1357,6 +1376,144 @@ function showToast(msg) {
   t.textContent = msg || 'Saved \u2713';
   document.body.appendChild(t);
   setTimeout(function(){ if(t.parentNode) t.remove(); }, 1600);
+}
+
+// \u2500\u2500 EXERCISE CATALOG CONFIRM CHIP (2026-07-15) \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
+// Shown post-save ONLY when an extracted exercise name was fuzzy/Haiku-
+// matched or created as a new custom catalog entry (server's
+// catalog_match.method) \u2014 never for an exact/alias match, which stays
+// frictionless with no chip (see the extract-exercises response's per-
+// exercise catalog_match field). Body-level like #wm-modal/.toast, since it
+// fires from saveWorkoutToSupabase()'s post-save extract-exercises callback,
+// after the Log modal has already closed.
+var ecPendingExercise = null;
+var ecDismissTimer = null;
+var ecSearchDebounce = null;
+
+// exercise: one entry from the extract-exercises response's `exercises`
+// array \u2014 { id, name, catalog_match:{method, typed_name} }. Only the FIRST
+// exercise in a save that needs confirmation gets a chip (a multi-exercise
+// workout with several uncertain names would otherwise stack several chips,
+// which isn't "compact" \u2014 a minor scoping choice, not a correctness issue,
+// since every exercise is already saved under its best-guess canonical name
+// regardless of whether its chip was ever shown).
+function ecShowConfirmChip(exercise) {
+  var old = document.getElementById('ec-chip');
+  if (old) old.remove();
+  if (ecDismissTimer) { clearTimeout(ecDismissTimer); ecDismissTimer = null; }
+  ecPendingExercise = exercise;
+  var m = exercise.catalog_match || {};
+  var typed = m.typed_name;
+  var isNew = m.method === 'custom';
+  var titleHtml = (isNew && (!typed || typed === exercise.name))
+    ? 'Saved as <b>' + cvEsc(exercise.name) + '</b> (new exercise)'
+    : 'Saved as <b>' + cvEsc(exercise.name) + '</b>' + (typed ? ' (you typed "' + cvEsc(typed) + '")' : '');
+  var chip = document.createElement('div');
+  chip.id = 'ec-chip';
+  chip.innerHTML =
+    '<div class="ec-chip-title">' + titleHtml + '</div>' +
+    '<div class="ec-chip-actions">' +
+      '<button type="button" class="ec-chip-ok" onclick="ecDismissChip()">&#10003;</button>' +
+      '<button type="button" class="ec-chip-change" onclick="ecOpenChangePicker()">Change</button>' +
+    '</div>';
+  document.body.appendChild(chip);
+  ecDismissTimer = setTimeout(ecDismissChip, 8000); // untouched = left as saved, same as tapping (check)
+}
+
+function ecDismissChip() {
+  if (ecDismissTimer) { clearTimeout(ecDismissTimer); ecDismissTimer = null; }
+  var chip = document.getElementById('ec-chip');
+  if (chip) chip.remove();
+  ecPendingExercise = null;
+}
+
+// "change" -> catalog search + "keep as typed" picker, expanded in place
+// inside the same chip rather than a separate modal (stays compact).
+function ecOpenChangePicker() {
+  if (ecDismissTimer) { clearTimeout(ecDismissTimer); ecDismissTimer = null; }
+  var chip = document.getElementById('ec-chip');
+  if (!chip || !ecPendingExercise) return;
+  var actionsEl = chip.querySelector('.ec-chip-actions');
+  if (actionsEl) actionsEl.remove();
+  var picker = document.createElement('div');
+  picker.className = 'ec-chip-picker';
+  picker.innerHTML =
+    '<input type="text" class="ec-chip-search" placeholder="Search exercises...">' +
+    '<div class="ec-chip-results" id="ec-chip-results"></div>' +
+    '<button type="button" class="ec-chip-keep">Keep as typed &rarr; new custom entry</button>';
+  chip.appendChild(picker);
+  picker.querySelector('.ec-chip-search').addEventListener('input', function() { ecSearchCatalog(this.value); });
+  picker.querySelector('.ec-chip-keep').addEventListener('click', ecKeepAsTyped);
+  picker.querySelector('.ec-chip-search').focus();
+}
+
+function ecSearchCatalog(q) {
+  clearTimeout(ecSearchDebounce);
+  ecSearchDebounce = setTimeout(function() {
+    var resultsEl = document.getElementById('ec-chip-results');
+    if (!resultsEl) return;
+    resultsEl.innerHTML = '';
+    if (!q || q.trim().length < 2) return;
+    fetch('/api/exercise-catalog?q=' + encodeURIComponent(q.trim()))
+      .then(function(r) { return r.json(); })
+      .then(function(data) {
+        var results = (data && data.results) || [];
+        var el = document.getElementById('ec-chip-results');
+        if (!el) return;
+        el.innerHTML = '';
+        if (!results.length) {
+          var empty = document.createElement('div');
+          empty.className = 'ec-chip-title';
+          empty.style.opacity = '.6';
+          empty.textContent = 'No matches';
+          el.appendChild(empty);
+          return;
+        }
+        // Built via DOM + closures (not inline onclick string interpolation)
+        // so an exercise name containing a quote/apostrophe (e.g. "Farmer's
+        // Walk") can never break the handler.
+        results.slice(0, 8).forEach(function(r) {
+          var btn = document.createElement('button');
+          btn.type = 'button';
+          btn.className = 'ec-chip-result';
+          btn.textContent = r.canonical_name;
+          btn.addEventListener('click', function() { ecPickCatalogEntry(r.canonical_name); });
+          el.appendChild(btn);
+        });
+      })
+      .catch(function() {});
+  }, 250);
+}
+
+function ecAfterChangeApplied() {
+  if (typeof loadMicroGoals === 'function') loadMicroGoals();
+  if (typeof refreshGoalsAndMilestones === 'function') refreshGoalsAndMilestones('exercise_renamed');
+  if (document.getElementById('tab-library') && document.getElementById('tab-library').classList.contains('active') && typeof loadLibrary === 'function') loadLibrary();
+}
+
+function ecPickCatalogEntry(canonicalName) {
+  if (!ecPendingExercise || !ecPendingExercise.id || !currentProfileId) { ecDismissChip(); return; }
+  fetch('/api/profiles/' + currentProfileId + '/exercises/' + ecPendingExercise.id, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ canonical_name: canonicalName }),
+  })
+    .then(function(r) { return r.json(); })
+    .then(function(data) { if (data && data.success) ecAfterChangeApplied(); ecDismissChip(); })
+    .catch(function() { ecDismissChip(); });
+}
+
+function ecKeepAsTyped() {
+  if (!ecPendingExercise || !ecPendingExercise.id || !currentProfileId) { ecDismissChip(); return; }
+  var typed = (ecPendingExercise.catalog_match && ecPendingExercise.catalog_match.typed_name) || ecPendingExercise.name;
+  fetch('/api/profiles/' + currentProfileId + '/exercises/' + ecPendingExercise.id, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ keep_as_typed: true, typed_name: typed }),
+  })
+    .then(function(r) { return r.json(); })
+    .then(function(data) { if (data && data.success) ecAfterChangeApplied(); ecDismissChip(); })
+    .catch(function() { ecDismissChip(); });
 }
 // Apply saved theme on load
 (function(){
@@ -10533,6 +10690,14 @@ function saveWorkoutToSupabase(entry) {
         // Refresh long-term Goals & Milestones — the new exercises row
         // could shift a strength PR, consistency count, or AI estimate.
         if (typeof refreshGoalsAndMilestones === 'function') refreshGoalsAndMilestones('workout_saved');
+        // Exercise-catalog confirm chip (2026-07-15) — only for a fuzzy/
+        // Haiku/custom-matched name; exact/alias matches never show one.
+        if (exData.success && Array.isArray(exData.exercises)) {
+          var ecNeedsChip = exData.exercises.find(function(ex) {
+            return ex.id && ex.catalog_match && ['fuzzy', 'haiku', 'custom'].indexOf(ex.catalog_match.method) >= 0;
+          });
+          if (ecNeedsChip) ecShowConfirmChip(ecNeedsChip);
+        }
       })
       .catch(function(e) { console.error('[ApexCoach] Exercise extraction error:', e); });
       } else {

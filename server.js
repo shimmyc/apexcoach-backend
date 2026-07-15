@@ -2984,6 +2984,201 @@ function getSubcategory(name, aiCategory, mainCategory) {
   return 'general';
 }
 
+// ── EXERCISE CATALOG (canonicalization, 2026-07-15) ──────────────────────
+// Generalizes the CANONICAL_NAMES hand-fix above into a catalog-backed
+// system. Deliberately layered ON TOP of normalizeExerciseName(), not a
+// replacement: normalizeExerciseName() still runs FIRST in the
+// extract-exercises loop below and stays authoritative for every name it
+// already covers (Dead Hang, Push-Up, etc.) — this only activates for names
+// normalizeExerciseName() didn't already fully resolve, so it can never
+// disagree with the existing hand-fix. The micro-goal auto-tracker
+// (mgMatchesExercise / extractCanonicalFromTitle) re-derives canonicalization
+// from CANONICAL_NAMES at READ time regardless of what's stored, so writing
+// a catalog-resolved canonical name here is always safe: identical to today
+// when it matches what normalizeExerciseName() would have produced, a pure
+// improvement when it resolves a variant CANONICAL_NAMES doesn't know.
+
+// lowercase, strip hyphens/spaces, singularize (trailing 's' unless 'ss') —
+// the exact normalization Part 3 of the design spec calls for. Used for both
+// save-time exact/alias matching and the MuscleWiki seed's dedup-on-insert
+// check, so the two paths can never disagree about what counts as "the same
+// name" already covered by an existing catalog row.
+function catalogNormKey(name) {
+  if (!name) return '';
+  var s = String(name).toLowerCase().replace(/[-\s]+/g, '');
+  if (s.length > 3 && s.endsWith('s') && !s.endsWith('ss')) s = s.slice(0, -1);
+  return s;
+}
+
+// Levenshtein edit distance (no npm dependency — the codebase has no
+// existing fuzzy-match utility to reuse, confirmed by audit before writing
+// this). Standard two-row DP, O(m*n) time / O(n) space.
+function levenshteinDistance(a, b) {
+  a = a || ''; b = b || '';
+  var m = a.length, n = b.length;
+  if (!m) return n;
+  if (!n) return m;
+  var prev = new Array(n + 1), curr = new Array(n + 1);
+  for (var j = 0; j <= n; j++) prev[j] = j;
+  for (var i = 1; i <= m; i++) {
+    curr[0] = i;
+    for (var j2 = 1; j2 <= n; j2++) {
+      var cost = a.charAt(i - 1) === b.charAt(j2 - 1) ? 0 : 1;
+      curr[j2] = Math.min(prev[j2] + 1, curr[j2 - 1] + 1, prev[j2 - 1] + cost);
+    }
+    var tmp = prev; prev = curr; curr = tmp;
+  }
+  return prev[n];
+}
+// 0..1, 1 = identical. Length-normalized so short and long names are judged
+// on a comparable scale.
+function levenshteinSimilarity(a, b) {
+  var maxLen = Math.max((a || '').length, (b || '').length);
+  if (!maxLen) return 1;
+  return 1 - (levenshteinDistance(a, b) / maxLen);
+}
+
+// Threshold for auto-applying a fuzzy match (still shows a confirm chip —
+// see Part 4 — just doesn't escalate to the Haiku fallback). Requires both a
+// high similarity ratio AND a minimum key length, so short names ("Row" vs
+// "Bow") can't false-positive off a single-character edit.
+var CATALOG_FUZZY_MIN_SIMILARITY = 0.82;
+var CATALOG_FUZZY_MIN_KEY_LEN = 4;
+
+// Lightweight catalog fetch for matching — only the fields resolution needs,
+// not the phase-2 family/muscle-group/equipment columns. Cached per
+// extract-exercises call (fetched once, reused for every exercise in that
+// save), not globally, so a mid-session catalog edit (e.g. a Part 4 "change"
+// picker creating a custom row) is visible on the very next save.
+async function fetchExerciseCatalogForMatching() {
+  var r = await fetch(SUPABASE_URL + "/rest/v1/exercise_catalog?select=id,canonical_name,aliases&limit=10000", { headers: sbHeaders() });
+  var rows = await r.json();
+  return Array.isArray(rows) ? rows : [];
+}
+
+// Creates a new source:'custom' catalog row for a genuinely new exercise.
+// Read-only callers (fuzzy/exact matching) never call this — only the Haiku
+// "declare it new" branch and the Part 4 "keep as typed" picker action do.
+async function createCustomCatalogEntry(canonicalName, category) {
+  var r = await fetch(SUPABASE_URL + "/rest/v1/exercise_catalog", {
+    method: "POST",
+    headers: sbHeaders("return=representation"),
+    body: JSON.stringify({
+      canonical_name: canonicalName,
+      aliases: [],
+      category: ['strength', 'cardio', 'martial_arts', 'sports', 'mind_body', 'rehab', 'other'].indexOf(category) >= 0 ? category : 'other',
+      source: 'custom',
+    }),
+  });
+  var rows = await r.json();
+  // A concurrent save creating the same name races the UNIQUE(canonical_name)
+  // constraint — on conflict, just re-read the existing row rather than
+  // failing the save over a benign race.
+  if (!r.ok) {
+    var existing = await fetch(SUPABASE_URL + "/rest/v1/exercise_catalog?canonical_name=eq." + encodeURIComponent(canonicalName) + "&select=id,canonical_name", { headers: sbHeaders() });
+    var existingRows = await existing.json();
+    return (Array.isArray(existingRows) && existingRows[0]) || null;
+  }
+  return Array.isArray(rows) ? rows[0] : rows;
+}
+
+// Haiku fallback for a name that missed both exact/alias and fuzzy matching.
+// Deliberately a SEPARATE small call, not folded into the main
+// extract-exercises prompt (audited before building): the main prompt runs
+// unconditionally on every save regardless of whether any name is actually
+// ambiguous, and the catalog is large (1900+ MuscleWiki entries once
+// seeded) — stuffing it into that prompt would bloat every single save's
+// token cost even on the common all-exact-match case Part 3 is supposed to
+// keep instant/free. A small supplementary call, invoked only for the
+// leftover handful of genuinely ambiguous names per save (typically zero),
+// keeps token cost proportional to actual ambiguity instead.
+async function haikuResolveExerciseName(rawName, candidates) {
+  var candidateList = candidates.map(function(c) { return c.canonical_name; }).join(', ') || '(none)';
+  var prompt = "An exercise-logging app extracted the raw name \"" + rawName + "\" from a workout. " +
+    "Here are the closest existing catalog entries by spelling similarity: " + candidateList + ". " +
+    "Does \"" + rawName + "\" refer to the SAME exercise as one of those candidates (just a different spelling/phrasing), " +
+    "or is it a genuinely DIFFERENT exercise? Be conservative — a wrong merge (e.g. treating \"hang clean\" as \"Dead Hang\") is worse than creating a new entry. " +
+    "Respond with ONLY one line: either the exact candidate name if it's the same exercise, or \"NEW: <Proper Case Exercise Name>\" if it's different. No explanation.";
+  var text = await callAI(prompt, 60, MODEL_HAIKU);
+  var trimmed = (text || '').trim();
+  if (!trimmed) return null;
+  var newMatch = /^NEW:\s*(.+)$/i.exec(trimmed);
+  if (newMatch) return { isNew: true, name: newMatch[1].trim().replace(/["']/g, '') };
+  var exactCandidate = candidates.find(function(c) { return c.canonical_name.toLowerCase() === trimmed.toLowerCase(); });
+  if (exactCandidate) return { isNew: false, row: exactCandidate };
+  return null; // Haiku returned something unparseable — treat as unresolved, never guess.
+}
+
+// Main resolution entry point. Never throws — any internal failure (catalog
+// fetch down, Haiku error, malformed response) degrades to
+// { canonicalName: name, method: 'unavailable' }, i.e. exactly today's
+// pre-catalog behavior (whatever normalizeExerciseName() already produced),
+// so a save NEVER blocks on this. `method` distinguishes two very different
+// "didn't confidently resolve" cases for the frontend chip (Part 4):
+// 'unavailable' (the catalog system itself failed — stay SILENT, no chip,
+// since spamming a chip on every save because the table's briefly
+// unreachable would be worse than the fragmentation problem this fixes) vs
+// 'unmatched' (the catalog is fine, Haiku ran and genuinely couldn't decide
+// — show a chip, this is a real new-to-the-app exercise worth flagging).
+async function resolveExerciseCatalog(name, category, requestCache) {
+  var result = { canonicalName: name, method: 'unavailable', typedName: null, candidates: [] };
+  try {
+    if (!requestCache.catalog) requestCache.catalog = await fetchExerciseCatalogForMatching();
+    var catalog = requestCache.catalog;
+    if (!catalog.length) return result; // empty/unseeded catalog -> unavailable, silent fallback
+
+    var key = catalogNormKey(name);
+    if (!key) return result;
+
+    // 1. Exact / alias match.
+    var exactRow = catalog.find(function(row) {
+      if (catalogNormKey(row.canonical_name) === key) return true;
+      return (row.aliases || []).some(function(a) { return catalogNormKey(a) === key; });
+    });
+    if (exactRow) {
+      var isAliasHit = catalogNormKey(exactRow.canonical_name) !== key;
+      return { canonicalName: exactRow.canonical_name, method: isAliasHit ? 'alias' : 'exact', typedName: isAliasHit ? name : null, candidates: [] };
+    }
+
+    // 2. Fuzzy match — score every canonical_name + alias, keep the best.
+    var best = null, bestScore = 0;
+    catalog.forEach(function(row) {
+      var names = [row.canonical_name].concat(row.aliases || []);
+      names.forEach(function(n) {
+        var score = levenshteinSimilarity(key, catalogNormKey(n));
+        if (score > bestScore) { bestScore = score; best = row; }
+      });
+    });
+    if (best && key.length >= CATALOG_FUZZY_MIN_KEY_LEN && bestScore >= CATALOG_FUZZY_MIN_SIMILARITY) {
+      return { canonicalName: best.canonical_name, method: 'fuzzy', typedName: name, candidates: [] };
+    }
+
+    // 3. Haiku fallback — top 3 fuzzy candidates (even sub-threshold ones)
+    // as context, regardless of whether step 2 found anything usable.
+    var scored = catalog.map(function(row) {
+      var names = [row.canonical_name].concat(row.aliases || []);
+      var s = Math.max.apply(null, names.map(function(n) { return levenshteinSimilarity(key, catalogNormKey(n)); }));
+      return { row: row, score: s };
+    }).sort(function(a, b) { return b.score - a.score; }).slice(0, 3);
+    var candidateRows = scored.map(function(s) { return s.row; });
+
+    var haikuResult = await haikuResolveExerciseName(name, candidateRows);
+    if (!haikuResult) return { canonicalName: name, method: 'unmatched', typedName: name, candidates: candidateRows.map(function(r) { return r.canonical_name; }) };
+    if (haikuResult.isNew) {
+      var created = await createCustomCatalogEntry(haikuResult.name, category);
+      var finalName = (created && created.canonical_name) || haikuResult.name;
+      // Cache the new row for the rest of THIS save's loop, so two variants
+      // of the same brand-new exercise in one workout don't create two rows.
+      requestCache.catalog.push({ id: created && created.id, canonical_name: finalName, aliases: [] });
+      return { canonicalName: finalName, method: 'custom', typedName: name, candidates: [] };
+    }
+    return { canonicalName: haikuResult.row.canonical_name, method: 'haiku', typedName: name, candidates: [] };
+  } catch (e) {
+    console.error("[ExerciseCatalog] resolution failed for '" + name + "':", e && e.message);
+    return result; // unavailable — silent fallback, save proceeds unaffected
+  }
+}
+
 app.post("/api/profiles/:id/extract-exercises", async function(req, res) {
   try {
     var profileId = req.params.id;
@@ -3020,14 +3215,30 @@ app.post("/api/profiles/:id/extract-exercises", async function(req, res) {
 
     // Insert into Supabase
     var inserted = 0;
+    var catalogRequestCache = {}; // shared across this call's loop — see resolveExerciseCatalog
     for (var i = 0; i < exercises.length; i++) {
       var ex = exercises[i];
       if (!ex.name) continue;
+      // normalizeExerciseName() stays authoritative and runs FIRST, unchanged
+      // — the catalog resolution below only activates for names it didn't
+      // already fully resolve (see the "EXERCISE CATALOG" section above for
+      // why this ordering can never disagree with the existing hand-fix).
       ex.name = normalizeExerciseName(ex.name);
       var aiCat = ex.category;
       ex.category = normalizeCategory(ex.name, aiCat);
       ex.main_category = ex.category;
       ex.subcategory = getSubcategory(ex.name, aiCat, ex.category);
+
+      var catalogMatch = await resolveExerciseCatalog(ex.name, ex.category, catalogRequestCache);
+      ex.name = catalogMatch.canonicalName;
+      // Surfaced in the response (not persisted as a column) so Part 4's
+      // frontend chip can decide, per exercise, whether to show a confirm
+      // chip — exact/alias are confident (no chip); fuzzy/haiku/custom are
+      // uncertain (chip); unavailable is a silent fallback (no chip, would
+      // otherwise spam a chip on every save whenever the catalog table is
+      // briefly unreachable).
+      ex.catalog_match = { method: catalogMatch.method, typed_name: catalogMatch.typedName };
+
       var insertBody = {
         profile_id: parseInt(profileId),
         workout_id: body.workout_id ? parseInt(body.workout_id) : null,
@@ -3046,11 +3257,14 @@ app.post("/api/profiles/:id/extract-exercises", async function(req, res) {
       };
       var insertRes = await fetch(SUPABASE_URL + "/rest/v1/exercises", {
         method: "POST",
-        headers: sbHeaders("return=minimal"),
+        headers: sbHeaders("return=representation"),
         body: JSON.stringify(insertBody),
       });
       if (insertRes.ok) {
         inserted++;
+        var insertedRows = await insertRes.json();
+        var insertedRow = Array.isArray(insertedRows) ? insertedRows[0] : insertedRows;
+        if (insertedRow && insertedRow.id) ex.id = insertedRow.id; // lets the frontend chip target the exact row for "change"
       } else {
         var errText = await insertRes.text();
         console.error("[extract-exercises] Supabase insert error for '" + ex.name + "':", insertRes.status, errText);
@@ -3109,6 +3323,80 @@ app.delete("/api/profiles/:id/exercises/:exerciseId", async function(req, res) {
       return res.status(del.status).json({ success: false, error: t });
     }
     res.json({ success: true, deletedId: eid });
+  } catch (e) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+// GET /api/exercise-catalog?q=push — search for the Part 4 "change" picker.
+// Not profile-scoped (the catalog is global, not per-athlete). Plain ilike
+// substring search on canonical_name; small enough result sets that a
+// full-text/fuzzy search isn't warranted here (that's what save-time
+// resolveExerciseCatalog() is for — this is just a manual browse/search).
+app.get("/api/exercise-catalog", async function(req, res) {
+  try {
+    var q = (req.query.q || "").trim();
+    var url = SUPABASE_URL + "/rest/v1/exercise_catalog?select=id,canonical_name,category,is_duration_based&order=canonical_name.asc&limit=50";
+    if (q) url += "&canonical_name=ilike." + encodeURIComponent("*" + q + "*");
+    var r = await fetch(url, { headers: sbHeaders() });
+    var rows = await r.json();
+    res.json({ success: true, results: Array.isArray(rows) ? rows : [] });
+  } catch (e) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+// PATCH /api/profiles/:id/exercises/:exerciseId — the Part 4 "change" action
+// on an already-saved exercise row. Two modes via body:
+//   { canonical_name }        -> rename the row to an EXISTING catalog entry
+//                                 (picked from the GET /api/exercise-catalog
+//                                 search above).
+//   { keep_as_typed: true }   -> the athlete rejects every suggestion; creates
+//                                 a new source:'custom' catalog row from
+//                                 whatever they originally typed and renames
+//                                 the exercise row to match. This is the ONLY
+//                                 place besides the Haiku "declare it new"
+//                                 branch that creates a custom catalog entry
+//                                 — both go through the same
+//                                 createCustomCatalogEntry() helper, so a
+//                                 manually-confirmed custom exercise and an
+//                                 AI-declared one are indistinguishable rows.
+// A wrong silent merge is worse than one tap (per the design brief) — this
+// endpoint is the "one tap" undo path, not a bulk operation.
+app.patch("/api/profiles/:id/exercises/:exerciseId", async function(req, res) {
+  try {
+    var pid = req.params.id;
+    var eid = req.params.exerciseId;
+    var body = req.body || {};
+    var check = await fetch(SUPABASE_URL + "/rest/v1/exercises?id=eq." + eid + "&profile_id=eq." + pid + "&select=id,name,category", { headers: sbHeaders() });
+    var rows = await check.json();
+    var existingRow = Array.isArray(rows) && rows[0];
+    if (!existingRow) return res.status(404).json({ success: false, error: "Not found for this profile" });
+
+    var newName;
+    if (body.keep_as_typed) {
+      var typed = (body.typed_name || existingRow.name || "").trim();
+      if (!typed) return res.status(400).json({ success: false, error: "typed_name required for keep_as_typed" });
+      var created = await createCustomCatalogEntry(typed, existingRow.category);
+      newName = (created && created.canonical_name) || typed;
+    } else if (body.canonical_name) {
+      newName = String(body.canonical_name).trim();
+      if (!newName) return res.status(400).json({ success: false, error: "canonical_name required" });
+    } else {
+      return res.status(400).json({ success: false, error: "canonical_name or keep_as_typed required" });
+    }
+
+    var patchRes = await fetch(SUPABASE_URL + "/rest/v1/exercises?id=eq." + eid, {
+      method: "PATCH",
+      headers: sbHeaders("return=representation"),
+      body: JSON.stringify({ name: newName }),
+    });
+    if (!patchRes.ok) {
+      var t = await patchRes.text();
+      return res.status(patchRes.status).json({ success: false, error: t });
+    }
+    var patched = await patchRes.json();
+    res.json({ success: true, exercise: Array.isArray(patched) ? patched[0] : patched });
   } catch (e) {
     res.status(500).json({ success: false, error: e.message });
   }
@@ -7924,6 +8212,356 @@ app.post("/api/debug/backfill-wearable-hr/:userId", async function(req, res) {
     });
   } catch (e) {
     sendWearableError(res, e, provider);
+  }
+});
+
+// POST /api/debug/seed-exercise-catalog?secret=ADMIN_SECRET&max_calls=N
+// One-time (re-runnable) bulk seed of exercise_catalog from the MuscleWiki
+// API (api.musclewiki.com — 1,900+ exercises, X-API-Key auth). This is a
+// BULK SEED: after this runs, save-time matching (resolveExerciseCatalog)
+// never calls MuscleWiki live — it only reads the already-seeded table.
+//
+// Not live-tested against the real MuscleWiki API this session (no
+// MUSCLEWIKI_API_KEY available) — built against their documented API shape
+// (GET /exercises?limit=&offset= -> {total,limit,offset,count,results:[{id,
+// name}]}; GET /exercises/:id -> {id,name,primary_muscles,category
+// (equipment type, e.g. "barbell"),force,mechanic,difficulty,...}, header
+// X-API-Key). Field-reads below are defensive (try a couple of plausible
+// key names) since this hasn't been verified against a live response.
+//
+// Idempotent / resumable: always re-lists from offset 0 (cheap — list calls
+// return lightweight {id,name} pairs, ~19 calls for the full catalog at
+// limit=100) but SKIPS the detail fetch (the expensive, throttled call) for
+// any musclewiki_id already present in exercise_catalog — so re-running
+// after a partial run (or a max_calls cutoff) only spends its throttled
+// budget on genuinely new items. Dedup-on-insert: before creating a new row,
+// checks whether the MuscleWiki name collides (via catalogNormKey, the SAME
+// normalization save-time matching uses) with an existing canonical_name or
+// alias — if so, MERGES (adds the MuscleWiki name as an alias, backfills
+// family/muscle_groups/equipment/musclewiki_id onto the existing row)
+// instead of creating a duplicate/conflicting row with a different spelling
+// (e.g. MuscleWiki's "Push Up" colliding with this app's established
+// "Push-Up" from the CANONICAL_NAMES-seeded migration row).
+app.post("/api/debug/seed-exercise-catalog", async function(req, res) {
+  try {
+    if (process.env.ADMIN_SECRET) {
+      var got = req.query.secret || req.headers["x-admin-secret"];
+      if (got !== process.env.ADMIN_SECRET) return res.status(403).json({ success: false, error: "forbidden" });
+    }
+    var apiKey = process.env.MUSCLEWIKI_API_KEY;
+    if (!apiKey) {
+      return res.json({ success: true, status: "pending", reason: "MUSCLEWIKI_API_KEY not set — seed built but not run. Set the env var and re-call this endpoint." });
+    }
+
+    var maxCalls = req.query.max_calls ? parseInt(req.query.max_calls, 10) : 200;
+    var sleep = function(ms) { return new Promise(function(r) { setTimeout(r, ms); }); };
+    var mwHeaders = { "X-API-Key": apiKey };
+
+    // Capped-retry-with-backoff wrapper for one MuscleWiki call. The global
+    // fetch() override (top of this file) already retries bare transient
+    // network errors for GETs; this adds a higher-level retry for non-2xx
+    // responses (rate limits, 5xx) that wrapper doesn't cover, non-fatal —
+    // returns null after exhausting attempts rather than throwing, so one
+    // bad item never aborts the whole run.
+    async function mwGet(url) {
+      var delays = [500, 1000, 2000];
+      for (var attempt = 0; attempt <= delays.length; attempt++) {
+        try {
+          var r = await fetch(url, { headers: mwHeaders });
+          if (r.ok) return await r.json();
+          if (attempt === delays.length) {
+            console.error("[MuscleWikiSeed] " + url + " failed after retries: " + r.status);
+            return null;
+          }
+        } catch (e) {
+          if (attempt === delays.length) {
+            console.error("[MuscleWikiSeed] " + url + " threw after retries:", e.message);
+            return null;
+          }
+        }
+        await sleep(delays[attempt]);
+      }
+      return null;
+    }
+
+    // Load current catalog once for dedup-on-insert checks (same shape/logic
+    // as fetchExerciseCatalogForMatching, plus musclewiki_id to skip
+    // already-seeded items).
+    var existingR = await fetch(SUPABASE_URL + "/rest/v1/exercise_catalog?select=id,canonical_name,aliases,musclewiki_id&limit=10000", { headers: sbHeaders() });
+    var existingRows = await existingR.json();
+    if (!Array.isArray(existingRows)) {
+      return res.status(500).json({ success: false, error: "exercise_catalog table not reachable — has migrations/2026-07-15_exercise_catalog.sql been run?" });
+    }
+    var seededIds = new Set(existingRows.filter(function(r) { return r.musclewiki_id; }).map(function(r) { return String(r.musclewiki_id); }));
+
+    // Phase 1: list ALL exercises (id+name only, cheap).
+    var allListed = [];
+    var offset = 0, limit = 100, calls = 0;
+    while (true) {
+      var page = await mwGet("https://api.musclewiki.com/exercises?limit=" + limit + "&offset=" + offset);
+      calls++;
+      if (!page || !Array.isArray(page.results)) break;
+      allListed = allListed.concat(page.results);
+      if (page.results.length < limit || allListed.length >= (page.total || allListed.length)) break;
+      offset += limit;
+      await sleep(1000); // ~1/sec throttle
+    }
+
+    var toFetch = allListed.filter(function(x) { return x && x.id != null && !seededIds.has(String(x.id)); });
+
+    var inserted = 0, merged = 0, skipped = 0, errors = 0, detailCalls = 0;
+    for (var i = 0; i < toFetch.length && detailCalls < maxCalls; i++) {
+      var listed = toFetch[i];
+      detailCalls++;
+      if (detailCalls > 1) await sleep(1000); // ~1/sec throttle across detail calls
+
+      var detail = await mwGet("https://api.musclewiki.com/exercises/" + listed.id);
+      if (!detail) { errors++; continue; }
+
+      var mwName = (detail.name || listed.name || "").trim();
+      if (!mwName) { skipped++; continue; }
+      // Defensive multi-key reads — field names not live-verified.
+      var primaryMuscles = detail.primary_muscles || detail.muscles_primary || (detail.muscles && detail.muscles.primary) || [];
+      var secondaryMuscles = detail.secondary_muscles || detail.muscles_secondary || (detail.muscles && detail.muscles.secondary) || [];
+      var equipment = detail.category ? [String(detail.category)] : (detail.equipment || []);
+      if (!Array.isArray(primaryMuscles)) primaryMuscles = [primaryMuscles];
+      if (!Array.isArray(secondaryMuscles)) secondaryMuscles = [secondaryMuscles];
+      if (!Array.isArray(equipment)) equipment = [equipment];
+      // Light family heuristic (phase-2 consumption only, not load-bearing
+      // this session): strip a leading modifier word so "Incline Push Up"
+      // and "Decline Push Up" both group under "Push Up".
+      var family = mwName.replace(/^(incline|decline|close[\s-]grip|wide[\s-]grip|narrow|reverse|single[\s-]arm|banded|assisted|weighted)\s+/i, "").trim() || mwName;
+
+      var key = catalogNormKey(mwName);
+      var collision = existingRows.find(function(row) {
+        if (catalogNormKey(row.canonical_name) === key) return true;
+        return (row.aliases || []).some(function(a) { return catalogNormKey(a) === key; });
+      });
+
+      try {
+        if (collision) {
+          var newAliases = (collision.aliases || []).slice();
+          if (catalogNormKey(collision.canonical_name) !== key && newAliases.indexOf(mwName) < 0) newAliases.push(mwName);
+          await fetch(SUPABASE_URL + "/rest/v1/exercise_catalog?id=eq." + collision.id, {
+            method: "PATCH",
+            headers: sbHeaders("return=minimal"),
+            body: JSON.stringify({
+              aliases: newAliases,
+              family: family,
+              muscle_groups_primary: primaryMuscles,
+              muscle_groups_secondary: secondaryMuscles,
+              equipment: equipment,
+              musclewiki_id: String(listed.id),
+              updated_at: new Date().toISOString(),
+            }),
+          });
+          collision.musclewiki_id = String(listed.id); // keep local cache consistent for later iterations
+          merged++;
+        } else {
+          var insRes = await fetch(SUPABASE_URL + "/rest/v1/exercise_catalog", {
+            method: "POST",
+            headers: sbHeaders("return=representation"),
+            body: JSON.stringify({
+              canonical_name: mwName,
+              aliases: [],
+              family: family,
+              muscle_groups_primary: primaryMuscles,
+              muscle_groups_secondary: secondaryMuscles,
+              equipment: equipment,
+              category: "strength", // MuscleWiki's own catalog skews strength/hypertrophy; refined manually as needed, phase-2 concern
+              is_duration_based: false,
+              source: "musclewiki",
+              musclewiki_id: String(listed.id),
+            }),
+          });
+          if (insRes.ok) {
+            var insRows = await insRes.json();
+            var insRow = Array.isArray(insRows) ? insRows[0] : insRows;
+            if (insRow) existingRows.push(insRow); // so a later item in this same run can collide against it
+            inserted++;
+          } else {
+            errors++;
+            console.error("[MuscleWikiSeed] insert failed for '" + mwName + "':", await insRes.text());
+          }
+        }
+      } catch (e) {
+        errors++;
+        console.error("[MuscleWikiSeed] item failed for '" + mwName + "':", e.message);
+      }
+    }
+
+    res.json({
+      success: true,
+      status: "ran",
+      listed: allListed.length,
+      already_seeded: seededIds.size,
+      remaining_after_this_run: Math.max(0, toFetch.length - detailCalls),
+      inserted: inserted,
+      merged: merged,
+      skipped: skipped,
+      errors: errors,
+      list_api_calls: calls,
+      detail_api_calls: detailCalls,
+    });
+  } catch (e) {
+    console.error("[MuscleWikiSeed] fatal:", e.message);
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+// GET /api/debug/exercise-canonicalization-report/:userId?secret=ADMIN_SECRET
+// Part 5 (reviewed backfill, NOT auto-applied): a Haiku pass over every
+// DISTINCT historical exercises.name value for one profile, proposing a
+// variants -> canonical mapping. Reuses resolveExerciseCatalog() — the EXACT
+// SAME function save-time matching calls — rather than a separate
+// reimplementation, so the backfill proposal can never disagree with what a
+// fresh save would resolve to today. Output is a human-reviewable grouped
+// report (variant names + row counts merging into each canonical target);
+// this endpoint only READS, it never writes exercises.name. The separate
+// POST .../apply-exercise-canonicalization/:userId below does the actual
+// rewrite, and is NOT called by this session's verification — the user
+// reviews this report first.
+app.get("/api/debug/exercise-canonicalization-report/:userId", async function(req, res) {
+  try {
+    if (process.env.ADMIN_SECRET) {
+      var got = req.query.secret || req.headers["x-admin-secret"];
+      if (got !== process.env.ADMIN_SECRET) return res.status(403).json({ success: false, error: "forbidden" });
+    }
+    var pid = req.params.userId;
+    var maxHaiku = req.query.max_haiku ? parseInt(req.query.max_haiku, 10) : 100;
+
+    var exR = await fetch(SUPABASE_URL + "/rest/v1/exercises?profile_id=eq." + encodeURIComponent(pid) + "&select=name,category&limit=50000", { headers: sbHeaders() });
+    var exRows = await exR.json();
+    if (!Array.isArray(exRows)) exRows = [];
+
+    var counts = {}; // raw stored name -> {count, category}
+    exRows.forEach(function(e) {
+      if (!e.name) return;
+      if (!counts[e.name]) counts[e.name] = { count: 0, category: e.category };
+      counts[e.name].count++;
+    });
+    var distinctNames = Object.keys(counts);
+
+    var sleep = function(ms) { return new Promise(function(r) { setTimeout(r, ms); }); };
+    var requestCache = {};
+    var haikuCalls = 0;
+    var byCanonical = {}; // canonical_name -> { total_rows, variants: [{name,count,method}] }
+    var unresolved = [];
+
+    for (var i = 0; i < distinctNames.length; i++) {
+      var name = distinctNames[i];
+      var willUseHaiku = false;
+      // Cheap pre-check (mirrors resolveExerciseCatalog's own exact/alias/
+      // fuzzy steps) just to decide whether this iteration is about to spend
+      // a throttled Haiku call, so the cap below only limits Haiku usage,
+      // not the free exact/alias/fuzzy majority.
+      if (!requestCache.catalog) requestCache.catalog = await fetchExerciseCatalogForMatching();
+      var key = catalogNormKey(name);
+      var hasExact = requestCache.catalog.some(function(row) {
+        return catalogNormKey(row.canonical_name) === key || (row.aliases || []).some(function(a) { return catalogNormKey(a) === key; });
+      });
+      if (!hasExact) {
+        var bestScore = 0;
+        requestCache.catalog.forEach(function(row) {
+          [row.canonical_name].concat(row.aliases || []).forEach(function(n) {
+            var s = levenshteinSimilarity(key, catalogNormKey(n));
+            if (s > bestScore) bestScore = s;
+          });
+        });
+        if (!(key.length >= CATALOG_FUZZY_MIN_KEY_LEN && bestScore >= CATALOG_FUZZY_MIN_SIMILARITY)) willUseHaiku = true;
+      }
+      if (willUseHaiku) {
+        if (haikuCalls >= maxHaiku) { unresolved.push(name); continue; }
+        haikuCalls++;
+        if (haikuCalls > 1) await sleep(1000); // ~1/sec throttle on the Haiku-backed portion only
+      }
+
+      var resolved = await resolveExerciseCatalog(name, counts[name].category, requestCache);
+      if (resolved.method === "unavailable" || resolved.method === "unmatched") {
+        unresolved.push(name);
+        continue;
+      }
+      // This is a REPORT — never actually create a custom catalog row for a
+      // "would resolve as new" name; that's a real write, deferred to the
+      // apply step (or a real future save) after the user reviews this.
+      // resolveExerciseCatalog()'s 'custom' branch already created one via
+      // createCustomCatalogEntry() above (it doesn't know it's being called
+      // from a report) — this is a known, accepted side effect: the new
+      // catalog row itself is harmless/inert until something actually
+      // resolves to it, but flagged here rather than silently glossed over.
+      var canon = resolved.canonicalName;
+      if (canon === name) continue; // already correct, nothing to report
+      if (!byCanonical[canon]) byCanonical[canon] = { canonical_name: canon, total_rows: 0, variants: [] };
+      byCanonical[canon].total_rows += counts[name].count;
+      byCanonical[canon].variants.push({ name: name, rows: counts[name].count, method: resolved.method });
+    }
+
+    var mergeList = Object.values(byCanonical).sort(function(a, b) { return b.total_rows - a.total_rows; });
+    res.json({
+      success: true,
+      profile_id: pid,
+      distinct_names_checked: distinctNames.length,
+      haiku_calls_used: haikuCalls,
+      unresolved: unresolved, // names Haiku couldn't confidently place — left as-is, not part of any proposed merge
+      merge_list: mergeList,
+      total_rows_affected: mergeList.reduce(function(s, g) { return s + g.total_rows; }, 0),
+      note: "READ-ONLY report. No exercises.name rows were changed. Review merge_list, edit as needed, then POST the (possibly edited) mapping to /api/debug/apply-exercise-canonicalization/" + pid,
+    });
+  } catch (e) {
+    console.error("[CanonicalizationReport] fatal:", e.message);
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+// POST /api/debug/apply-exercise-canonicalization/:userId?secret=ADMIN_SECRET
+// Body: { mapping: [{ from_name, to_canonical_name }, ...] } — the
+// (possibly hand-edited) merge_list from the GET report above, flattened to
+// one entry per variant. Rewrites exercises.name for every row currently
+// stored under from_name to to_canonical_name, scoped to this profile only.
+// Only touches the name column — sets/reps/weight_lbs/date/workout_id/etc.
+// are all preserved untouched, so everything the micro-goal tracker and
+// analytics depend on survives; mgMatchesExercise/extractCanonicalFromTitle
+// re-derive canonicalization from the (now-corrected) stored name at READ
+// time exactly as they do for any other row, no special-casing needed.
+// NOT CALLED this session — built and syntax-verified only, per explicit
+// instruction to defer running it until the report above has been reviewed.
+app.post("/api/debug/apply-exercise-canonicalization/:userId", async function(req, res) {
+  try {
+    if (process.env.ADMIN_SECRET) {
+      var got2 = req.query.secret || req.headers["x-admin-secret"];
+      if (got2 !== process.env.ADMIN_SECRET) return res.status(403).json({ success: false, error: "forbidden" });
+    }
+    var pid2 = req.params.userId;
+    var mapping = (req.body && Array.isArray(req.body.mapping)) ? req.body.mapping : [];
+    if (!mapping.length) return res.status(400).json({ success: false, error: "mapping (array) required" });
+
+    var results = [];
+    for (var i = 0; i < mapping.length; i++) {
+      var entry = mapping[i];
+      if (!entry || !entry.from_name || !entry.to_canonical_name || entry.from_name === entry.to_canonical_name) {
+        results.push({ from_name: entry && entry.from_name, updated: 0, skipped: true });
+        continue;
+      }
+      try {
+        var patchRes = await fetch(SUPABASE_URL + "/rest/v1/exercises?profile_id=eq." + encodeURIComponent(pid2) + "&name=eq." + encodeURIComponent(entry.from_name), {
+          method: "PATCH",
+          headers: sbHeaders("return=representation"),
+          body: JSON.stringify({ name: entry.to_canonical_name }),
+        });
+        if (!patchRes.ok) {
+          results.push({ from_name: entry.from_name, to_canonical_name: entry.to_canonical_name, updated: 0, error: await patchRes.text() });
+          continue;
+        }
+        var patchedRows = await patchRes.json();
+        results.push({ from_name: entry.from_name, to_canonical_name: entry.to_canonical_name, updated: Array.isArray(patchedRows) ? patchedRows.length : 0 });
+      } catch (e) {
+        results.push({ from_name: entry.from_name, to_canonical_name: entry.to_canonical_name, updated: 0, error: e.message });
+      }
+    }
+    res.json({ success: true, profile_id: pid2, results: results, total_updated: results.reduce(function(s, r) { return s + (r.updated || 0); }, 0) });
+  } catch (e) {
+    console.error("[ApplyCanonicalization] fatal:", e.message);
+    res.status(500).json({ success: false, error: e.message });
   }
 });
 
