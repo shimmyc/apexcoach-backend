@@ -2442,6 +2442,7 @@ var CALL_TYPE_MODEL = {
   history_search:    MODEL_SONNET,
   goal_roadmap_generate: MODEL_SONNET,
   macro_roadmap_generate: MODEL_SONNET,
+  coach_chat:        MODEL_SONNET,
   // Cheap tasks — Haiku
   format_notes:      MODEL_HAIKU,
   goal_intake_questions: MODEL_HAIKU,
@@ -2455,13 +2456,38 @@ var CALL_TYPE_MODEL = {
   goal_estimate:     MODEL_HAIKU,
   schedule_builder:  MODEL_HAIKU,
   schedule_preview:  MODEL_HAIKU,
+  chat_summarize:    MODEL_HAIKU,
 };
 
 function modelForCallType(callType) {
   if (callType && CALL_TYPE_MODEL[callType]) return CALL_TYPE_MODEL[callType];
   // Default to Sonnet if callType is missing or unknown — preserves existing
-  // behavior for any unmigrated caller, without letting the client pick.
+  // behavior for any unmigrated caller, without letting the client pick, but
+  // warn loudly since this silently bills at Sonnet rates for a typo'd/new
+  // callType that was never added to the map above.
+  console.warn("[AI] Unknown callType '" + callType + "' — defaulting to Sonnet. Add it to CALL_TYPE_MODEL if this is intentional.");
   return MODEL_SONNET;
+}
+
+// Shared cache_control wrapping — used by the /api/ai proxy (client-sent
+// system prompts) AND server-assembled prompts like coach chat. daily_recs
+// and coach_chat get the 1h TTL (checked repeatedly within a session/day);
+// everything else gets the 5-minute default. See /api/ai for the TTL economics
+// comment.
+function wrapSystemWithCache(system, callType) {
+  var useLongTtl = callType === "daily_recs" || callType === "coach_chat";
+  var cacheControl = useLongTtl ? { type: "ephemeral", ttl: "1h" } : { type: "ephemeral" };
+  if (typeof system === "string" && system.length > 0) {
+    return [{ type: "text", text: system, cache_control: cacheControl }];
+  } else if (Array.isArray(system) && system.length > 0) {
+    var hasCache = system.some(function(b) { return b && b.cache_control; });
+    if (!hasCache) {
+      var last = system[system.length - 1];
+      if (last && typeof last === "object") last.cache_control = cacheControl;
+    }
+    return system;
+  }
+  return system;
 }
 
 async function callAI(prompt, maxTokens, model) {
@@ -4866,7 +4892,8 @@ app.get("/api/profiles/:id/goals/:goalId", async function(req, res) {
 // needed on the frontend. Forwarding bytes as they arrive keeps the connection
 // alive past Render's ~25-30s idle-close window (Sonnet's daily_recs can take
 // >25s). A per-chunk idle timeout aborts a hung upstream. See shared/streaming.
-async function pipeAnthropicStream(upstream, controller, res) {
+async function pipeAnthropicStream(upstream, controller, res, label) {
+  label = label || "daily_recs";
   res.set({
     "Content-Type": "text/plain; charset=utf-8",
     "Cache-Control": "no-cache, no-transform",
@@ -4878,6 +4905,7 @@ async function pipeAnthropicStream(upstream, controller, res) {
   let usage = null;
   let wroteAny = false;
   let idleTimer = null;
+  let fullText = ""; // accumulated for callers that need to persist the full reply (e.g. chat)
   const armIdle = function() {
     if (idleTimer) clearTimeout(idleTimer);
     idleTimer = setTimeout(function() {
@@ -4903,6 +4931,7 @@ async function pipeAnthropicStream(upstream, controller, res) {
         try { evt = JSON.parse(payload); } catch (e) { continue; }
         if (evt.type === "content_block_delta" && evt.delta && evt.delta.type === "text_delta") {
           res.write(evt.delta.text);
+          fullText += evt.delta.text;
           wroteAny = true;
         } else if (evt.type === "message_start" && evt.message && evt.message.usage) {
           usage = evt.message.usage;
@@ -4914,7 +4943,7 @@ async function pipeAnthropicStream(upstream, controller, res) {
       }
     }
   } catch (err) {
-    console.error("[AI] daily_recs stream read error:", err && err.message);
+    console.error("[AI] " + label + " stream read error:", err && err.message);
   } finally {
     if (idleTimer) clearTimeout(idleTimer);
   }
@@ -4925,8 +4954,9 @@ async function pipeAnthropicStream(upstream, controller, res) {
       " cache_write=" + (usage.cache_creation_input_tokens || 0) +
       " cache_read=" + (usage.cache_read_input_tokens || 0));
   }
-  console.log("[AI] daily_recs stream complete, wroteAny=" + wroteAny);
+  console.log("[AI] " + label + " stream complete, wroteAny=" + wroteAny);
   res.end();
+  return fullText;
 }
 
 // ── AI PROXY ──────────────────────────────────────────────────────────────
@@ -4963,26 +4993,13 @@ app.post("/api/ai", async function(req, res) {
     // If client already sent a structured array, only add cache_control to the
     // last block if none of the blocks already have one (don't clobber).
     //
-    // TTL: daily_recs uses 1-hour TTL because users check the app several
-    // times a day and the system prompt is stable across sessions. 1h writes
-    // cost 2× (vs 1.25× for 5m) but pay off after ~3 reads, which is typical.
-    // All other callers get the 5-minute default.
-    const cacheControl = callType === "daily_recs"
-      ? { type: "ephemeral", ttl: "1h" }
-      : { type: "ephemeral" };
-    if (typeof forwarded.system === "string" && forwarded.system.length > 0) {
-      forwarded.system = [{
-        type: "text",
-        text: forwarded.system,
-        cache_control: cacheControl,
-      }];
-    } else if (Array.isArray(forwarded.system) && forwarded.system.length > 0) {
-      const hasCache = forwarded.system.some(function(b) { return b && b.cache_control; });
-      if (!hasCache) {
-        const last = forwarded.system[forwarded.system.length - 1];
-        if (last && typeof last === "object") last.cache_control = cacheControl;
-      }
-    }
+    // TTL: daily_recs (and coach_chat) use 1-hour TTL because users check in
+    // several times a day/session and the prompt is stable across those calls.
+    // 1h writes cost 2× (vs 1.25× for 5m) but pay off after ~3 reads, which is
+    // typical. All other callers get the 5-minute default. See
+    // wrapSystemWithCache() for the shared logic (also used by coach chat,
+    // which assembles its own system prompt server-side, bypassing this proxy).
+    forwarded.system = wrapSystemWithCache(forwarded.system, callType);
 
     // Only daily_recs streams — bytes flow continuously to the client so the
     // request doesn't sit idle long enough for Render to close it.
@@ -5016,7 +5033,7 @@ app.post("/api/ai", async function(req, res) {
         console.error("[AI] daily_recs upstream error status=" + response.status);
         return res.status(response.status).json(errData);
       }
-      return await pipeAnthropicStream(response, controller, res);
+      return await pipeAnthropicStream(response, controller, res, "daily_recs");
     }
 
     clearTimeout(timeoutId);
@@ -5036,6 +5053,423 @@ app.post("/api/ai", async function(req, res) {
       console.error("[AI] Error:", err.message);
       res.status(500).json({ error: { message: err.message } });
     }
+  }
+});
+
+// ── AI COACH CHAT ─────────────────────────────────────────────────────────
+// One persistent thread per profile for open-ended coaching conversation
+// (tweaking workouts/goals/schedule, asking questions) — distinct from the
+// structured daily_recs cards and the one-shot "Ask Your History" search.
+//
+// Unlike daily_recs, whose prompt is assembled CLIENT-side from browser state
+// already loaded by page-load fetches (buildScheduleInstruction() etc. in
+// public/index.html), chat is a server-driven endpoint with no client state to
+// draw on — so buildChatSnapshot() below re-fetches a compact athlete snapshot
+// from Supabase on every send, mirroring the pattern getFullExerciseContext()/
+// getGoalExerciseContext() already use (independent fetch → compact aggregate
+// text), not a duplicate of the client prompt builders.
+//
+// Streaming reuses pipeAnthropicStream() (see daily_recs above) so Sonnet's
+// generation time survives Render's idle-connection window. Because chat
+// streams, it doesn't carry daily_recs' non-streamed 25s-Anthropic-timeout
+// pressure that forced the 6000-char prompt trim in the June reliability
+// pass — CHAT_CHAR_GUARD below is sized for prompt quality/cost, not a race
+// against a timeout.
+var CHAT_SYSTEM_PERSONA = "You are ApexCoach's AI coach, talking directly with the athlete in an ongoing chat. You know their training history, goals, biometrics, and schedule — the ATHLETE SNAPSHOT below is real and current, not hypothetical. Speak like a coach who is paying attention: be specific, reference their actual numbers and recent sessions when it's relevant, and don't force answers into a rigid format — plain conversational text (light markdown for lists/emphasis is fine) is expected here, unlike the structured JSON used elsewhere in the app. You can help them think through workout, goal, schedule, and routine tweaks, but you have no tool to directly edit their data — if they want a change made, tell them where to make it in the app rather than implying you already made it. Keep responses focused; skip disclaimers and padding.";
+
+// Combined system-snapshot + thread-history budget for one chat call. Chat
+// streams (see above), so this is NOT sized against a non-streamed-timeout
+// constraint like daily_recs' 6000-char guard — it's a deliberate cap on
+// prompt size/cost. Tune here if it's too tight/loose in practice.
+var CHAT_CHAR_GUARD = 20000;
+// Athlete snapshot (profile/goals/challenges/schedule/biometrics/recent
+// training) is built to fit within this on its own, leaving the rest of
+// CHAT_CHAR_GUARD for thread history.
+var CHAT_SNAPSHOT_CHAR_CAP = 5000;
+// Once a thread has more than this many messages since the last summary
+// cutoff, fire-and-forget summarization folds the older portion into
+// chat_threads.summary and advances the cutoff, always leaving the most
+// recent CHAT_SUMMARIZE_KEEP_TAIL messages verbatim.
+var CHAT_SUMMARIZE_TRIGGER = 24;
+var CHAT_SUMMARIZE_KEEP_TAIL = 20;
+
+// Compact, provider-agnostic reading of the v2 schedule shape (see "Weekly
+// Schedule (v2)" in CLAUDE.md) into one line — NOT a reimplementation of
+// buildScheduleInstruction()'s anchor-lock/variety-analysis logic, which is
+// client-only and enforces same-day scheduling rules daily_recs needs; chat
+// just needs the athlete's schedule to be visible to the model.
+function formatScheduleForChat(schedule) {
+  if (!schedule) return "";
+  var DAY_LABEL = { mon: "Mon", tue: "Tue", wed: "Wed", thu: "Thu", fri: "Fri", sat: "Sat", sun: "Sun" };
+  var parts = [];
+
+  var anchors = schedule.anchors || {};
+  var anchorBits = [];
+  Object.keys(anchors).forEach(function(day) {
+    var acts = anchors[day];
+    if (!Array.isArray(acts)) return;
+    acts.forEach(function(a) {
+      if (a && a.activity) anchorBits.push((DAY_LABEL[day] || day) + " " + a.activity + (a.duration ? " (" + a.duration + "min)" : ""));
+    });
+  });
+  if (anchorBits.length) parts.push("Fixed: " + anchorBits.join(", "));
+
+  var targets = Array.isArray(schedule.frequency_targets) ? schedule.frequency_targets : [];
+  if (targets.length) {
+    parts.push("Targets: " + targets.map(function(t) {
+      return t.activity + " " + t.times_per_week + "x/week" + (t.suggested_day ? " (suggested " + (DAY_LABEL[t.suggested_day] || t.suggested_day) + ")" : "");
+    }).join(", "));
+  }
+
+  var addons = Array.isArray(schedule.addons) ? schedule.addons : [];
+  if (addons.length) {
+    parts.push("Add-ons: " + addons.map(function(a) {
+      return a.activity + " " + (a.duration || "?") + "min x" + (a.days_per_week || "?") + "/week";
+    }).join(", "));
+  }
+
+  return parts.join(" | ");
+}
+
+// One line per exercise row, newest first — matches the condensed
+// "DATE: EXERCISE (SETS x REPS @ WEIGHT)" format the June daily-recs
+// prompt-trim landed on (see ROADMAP.md 2026-06-18 session), reused here for
+// consistency even though chat isn't under the same size pressure.
+async function buildRecentExerciseLog(profileId, days) {
+  var since = ymdNDaysAgo(days || 7);
+  var r = await fetch(SUPABASE_URL + "/rest/v1/exercises?profile_id=eq." + profileId +
+    "&date=gte." + since +
+    "&select=name,date,sets,reps,weight_lbs,duration_minutes,distance_miles&order=date.desc&limit=200",
+    { headers: sbHeaders() });
+  var rows = await r.json();
+  if (!Array.isArray(rows)) return [];
+  return rows.map(function(e) {
+    var bits = [];
+    if (e.sets != null && e.reps != null) bits.push(e.sets + "x" + e.reps);
+    else if (e.reps != null) bits.push(e.reps + " reps");
+    if (e.weight_lbs != null) bits.push("@ " + e.weight_lbs + "lbs");
+    if (e.duration_minutes != null) bits.push(e.duration_minutes + "min");
+    if (e.distance_miles != null) bits.push(e.distance_miles + "mi");
+    return e.date + ": " + e.name + (bits.length ? " (" + bits.join(" ") + ")" : "");
+  });
+}
+
+// Server-side athlete snapshot for chat — profile/goals/challenges/schedule
+// (from profile_data, one fetch) + latest cached biometrics (daily_sleep/
+// daily_steps/body_metrics — DB-first, same philosophy as the life-os-summary
+// fast path: no live Fitbit/Google Health call, so chat never blocks on or
+// gets taken down by a wearable-API outage) + a condensed 7-day exercise log.
+// NOTE: zone/active-minutes aren't persisted anywhere in the schema (only
+// held transiently in the /daily response as prevZones) — omitted here rather
+// than adding a live wearable call per chat message, which would reintroduce
+// the class of latency/outage risk the June hardening pass fixed. Flagged as
+// a known gap, not silently dropped.
+async function buildChatSnapshot(profileId) {
+  var today = dateStr(0);
+
+  var pr = await fetch(SUPABASE_URL + "/rest/v1/profiles?id=eq." + profileId +
+    "&select=" + PROFILE_SELECT_BASE + ",daily_recommendations_readiness,daily_recommendations_date",
+    { headers: sbHeaders() });
+  var prows = await pr.json();
+  var profile = (Array.isArray(prows) && prows[0]) || {};
+  var pd = profile.profile_data || {};
+  var goals = Array.isArray(pd.goals) ? pd.goals : [];
+
+  var mgPromise = fetch(SUPABASE_URL + "/rest/v1/micro_goals?profile_id=eq." + profileId +
+    "&is_active=eq.true&select=title,type,target_value,target_unit,current_value&order=created_at.desc&limit=10",
+    { headers: sbHeaders() }).then(function(r) { return r.json(); }).catch(function() { return []; });
+  var sleepPromise = fetch(SUPABASE_URL + "/rest/v1/daily_sleep?profile_id=eq." + profileId +
+    "&select=date,hours,score,hrv,rhr&order=date.desc&limit=1",
+    { headers: sbHeaders() }).then(function(r) { return r.json(); }).catch(function() { return []; });
+  var stepsPromise = fetch(SUPABASE_URL + "/rest/v1/daily_steps?profile_id=eq." + profileId +
+    "&select=date,steps&order=date.desc&limit=1",
+    { headers: sbHeaders() }).then(function(r) { return r.json(); }).catch(function() { return []; });
+  var bodyPromise = fetch(SUPABASE_URL + "/rest/v1/body_metrics?profile_id=eq." + profileId +
+    "&select=date,weight_lbs,bmi&order=date.desc&limit=1",
+    { headers: sbHeaders() }).then(function(r) { return r.json(); }).catch(function() { return []; });
+  var exLogPromise = buildRecentExerciseLog(profileId, 7).catch(function() { return []; });
+
+  var microGoals = await mgPromise;
+  if (!Array.isArray(microGoals)) microGoals = [];
+  var sleepRows = await sleepPromise, stepsRows = await stepsPromise, bodyRows = await bodyPromise;
+  var exLines = await exLogPromise;
+  var sleep = (Array.isArray(sleepRows) && sleepRows[0]) || null;
+  var steps = (Array.isArray(stepsRows) && stepsRows[0]) || null;
+  var body = (Array.isArray(bodyRows) && bodyRows[0]) || null;
+
+  var lines = [];
+  lines.push("ATHLETE: " + (profile.name || "Unknown"));
+
+  var ctx = (pd.ai_prompt_context || "").trim();
+  if (ctx) lines.push("PROFILE CONTEXT: " + (ctx.length > 600 ? ctx.slice(0, 600) + "…" : ctx));
+
+  if (goals.length) {
+    lines.push("GOALS (priority order): " + goals.slice(0, 5).map(function(g, i) {
+      return (i + 1) + ") " + (g.title || "Untitled");
+    }).join("; "));
+  }
+
+  if (microGoals.length) {
+    lines.push("ACTIVE CHALLENGES: " + microGoals.map(function(m) {
+      var unit = m.target_unit ? " " + m.target_unit : "";
+      return m.title + " (" + (m.current_value != null ? m.current_value : 0) + "/" + m.target_value + unit + ")";
+    }).join("; "));
+  }
+
+  var schedTxt = formatScheduleForChat(pd.schedule);
+  if (schedTxt) lines.push("SCHEDULE: " + schedTxt);
+
+  if (profile.daily_recommendations_date === today && profile.daily_recommendations_readiness != null) {
+    lines.push("TODAY'S READINESS: " + profile.daily_recommendations_readiness + "/100");
+  }
+
+  if (sleep) {
+    var sd = sleep.date === today ? "today" : sleep.date;
+    var bioBits = [];
+    if (sleep.hrv != null) bioBits.push("HRV " + sleep.hrv + "ms");
+    if (sleep.rhr != null) bioBits.push("RHR " + sleep.rhr + "bpm");
+    if (sleep.hours != null) bioBits.push("Sleep " + sleep.hours + "h (score " + (sleep.score != null ? sleep.score : "n/a") + ")");
+    if (bioBits.length) lines.push("LATEST BIOMETRICS (" + sd + "): " + bioBits.join(", "));
+  }
+  if (steps && steps.steps != null) lines.push("LATEST STEPS (" + steps.date + "): " + steps.steps);
+  if (body && (body.weight_lbs != null || body.bmi != null)) {
+    lines.push("LATEST WEIGHT (" + body.date + "): " +
+      (body.weight_lbs != null ? body.weight_lbs + "lbs" : "n/a") +
+      (body.bmi != null ? " (BMI " + body.bmi + ")" : ""));
+  }
+
+  var header = lines.join("\n");
+  var budgetForLog = Math.max(0, CHAT_SNAPSHOT_CHAR_CAP - header.length - 40);
+  var logBlock = "";
+  if (exLines.length) {
+    var kept = exLines.slice();
+    while (kept.join("\n").length > budgetForLog && kept.length > 1) kept.shift(); // drop oldest lines first (array is newest-first, so shift = drop oldest tail)
+    logBlock = "\nRECENT TRAINING (last 7 days):\n" + kept.join("\n");
+  }
+
+  var snapshot = header + logBlock;
+  if (snapshot.length > CHAT_SNAPSHOT_CHAR_CAP) snapshot = snapshot.slice(0, CHAT_SNAPSHOT_CHAR_CAP) + "…";
+  return snapshot;
+}
+
+function buildChatSystemPrompt(snapshot, summary) {
+  var sys = CHAT_SYSTEM_PERSONA + "\n\nATHLETE SNAPSHOT:\n" + snapshot;
+  if (summary) sys += "\n\nEARLIER IN THIS CONVERSATION (summarized):\n" + summary;
+  return sys;
+}
+
+// Enforces CHAT_CHAR_GUARD by dropping the OLDEST messages first — snapshot
+// (system) is never trimmed here (it's capped independently during
+// construction); this only trims thread history, and always keeps at least
+// the newest (just-sent) message. Drops complete user+assistant turn-pairs
+// together so the Anthropic Messages API's strict alternation stays valid.
+function enforceChatCharGuard(systemText, messages, limit) {
+  limit = limit || CHAT_CHAR_GUARD;
+  var msgs = messages.slice();
+  var totalLen = function() { return systemText.length + JSON.stringify(msgs).length; };
+  while (totalLen() > limit && msgs.length > 1) {
+    if (msgs.length > 2 && msgs[0].role === "user" && msgs[1] && msgs[1].role === "assistant") {
+      msgs.splice(0, 2);
+    } else {
+      msgs.splice(0, 1);
+    }
+  }
+  return { system: systemText, messages: msgs, trimmed: msgs.length < messages.length };
+}
+
+// ── Chat thread/message persistence (Supabase: chat_threads, chat_messages) ─
+// One thread per profile (UNIQUE profile_id) — see the migration SQL
+// delivered separately. Full message history is kept in chat_messages
+// forever; summarization (below) only changes what's SENT to the model on
+// future calls (summary_through_message_id), it never deletes rows.
+
+async function getChatThread(profileId) {
+  var r = await fetch(SUPABASE_URL + "/rest/v1/chat_threads?profile_id=eq." + profileId +
+    "&select=id,summary,summary_through_message_id&limit=1", { headers: sbHeaders() });
+  var rows = await r.json();
+  return (Array.isArray(rows) && rows.length) ? rows[0] : null;
+}
+
+async function getOrCreateChatThread(profileId) {
+  var existing = await getChatThread(profileId);
+  if (existing) return existing;
+  var cr = await fetch(SUPABASE_URL + "/rest/v1/chat_threads", {
+    method: "POST",
+    headers: sbHeaders("return=representation"),
+    body: JSON.stringify({ profile_id: Number(profileId) }),
+  });
+  var created = await cr.json();
+  return Array.isArray(created) ? created[0] : created;
+}
+
+async function insertChatMessage(threadId, role, content) {
+  var r = await fetch(SUPABASE_URL + "/rest/v1/chat_messages", {
+    method: "POST",
+    headers: sbHeaders("return=representation"),
+    body: JSON.stringify({ thread_id: threadId, role: role, content: content }),
+  });
+  var rows = await r.json();
+  return Array.isArray(rows) ? rows[0] : rows;
+}
+
+async function fetchChatMessagesAfter(threadId, afterId) {
+  var q = SUPABASE_URL + "/rest/v1/chat_messages?thread_id=eq." + threadId +
+    (afterId ? "&id=gt." + afterId : "") +
+    "&select=id,role,content,created_at&order=id.asc&limit=200";
+  var r = await fetch(q, { headers: sbHeaders() });
+  var rows = await r.json();
+  return Array.isArray(rows) ? rows : [];
+}
+
+async function fetchAllChatMessages(threadId) {
+  var r = await fetch(SUPABASE_URL + "/rest/v1/chat_messages?thread_id=eq." + threadId +
+    "&select=id,role,content,created_at&order=id.asc&limit=500", { headers: sbHeaders() });
+  var rows = await r.json();
+  return Array.isArray(rows) ? rows : [];
+}
+
+// Fire-and-forget, called after a response finishes streaming (never awaited
+// by the request that triggered it — matches maybeAdaptAllRoadmaps()'s
+// pattern). Folds everything older than the most recent CHAT_SUMMARIZE_KEEP_TAIL
+// messages into chat_threads.summary via Haiku, then advances
+// summary_through_message_id. If a send races ahead of this finishing, the
+// char guard's oldest-first trim in enforceChatCharGuard() is the stopgap —
+// no send ever blocks on summarization.
+async function summarizeChatThreadIfNeeded(threadId) {
+  // getChatThread() looks up by profile_id, so fetch by thread id directly here.
+  var tr = await fetch(SUPABASE_URL + "/rest/v1/chat_threads?id=eq." + threadId +
+    "&select=id,summary,summary_through_message_id", { headers: sbHeaders() });
+  var trows = await tr.json();
+  if (!Array.isArray(trows) || !trows.length) return;
+  var thread = trows[0];
+
+  var pending = await fetchChatMessagesAfter(threadId, thread.summary_through_message_id);
+  if (pending.length <= CHAT_SUMMARIZE_TRIGGER) return;
+
+  var toFold = pending.slice(0, pending.length - CHAT_SUMMARIZE_KEEP_TAIL);
+  if (!toFold.length) return;
+  var newCutoffId = toFold[toFold.length - 1].id;
+
+  var transcript = toFold.map(function(m) { return (m.role === "user" ? "Athlete" : "Coach") + ": " + m.content; }).join("\n");
+  var sys = "Summarize this segment of an ongoing coaching chat in under 150 words. Preserve concrete facts: numbers, decisions, and commitments, and anything the athlete asked to be remembered. Write it as a compact reference note for the coach, not a message to the athlete.";
+  var userMsg = (thread.summary ? "EXISTING SUMMARY (fold this in, don't just append):\n" + thread.summary + "\n\n" : "") +
+    "NEW MESSAGES TO SUMMARIZE:\n" + transcript;
+
+  var newSummary;
+  try {
+    newSummary = await callAISystem(sys, userMsg, 400, MODEL_HAIKU);
+  } catch (e) {
+    console.error("[Chat] summarize call failed:", e && e.message);
+    return;
+  }
+  if (!newSummary || !newSummary.trim()) return;
+
+  await fetch(SUPABASE_URL + "/rest/v1/chat_threads?id=eq." + threadId, {
+    method: "PATCH",
+    headers: sbHeaders("return=minimal"),
+    body: JSON.stringify({ summary: newSummary.trim(), summary_through_message_id: newCutoffId, updated_at: new Date().toISOString() }),
+  });
+  console.log("[Chat] summarized thread " + threadId + " through message " + newCutoffId + " (" + toFold.length + " messages folded)");
+}
+
+// POST a chat message — streams the reply (see pipeAnthropicStream above) and
+// persists both sides of the turn. The athlete snapshot is rebuilt fresh on
+// every call (see buildChatSnapshot) rather than cached, so it's never stale
+// mid-conversation; the resulting system prompt is still cache_control-
+// wrapped (via wrapSystemWithCache), so repeat calls within the TTL window
+// still hit Anthropic's prompt cache as long as the snapshot text is
+// unchanged between them.
+app.post("/api/profiles/:id/chat/message", async function(req, res) {
+  var profileId = req.params.id;
+  var text = ((req.body && req.body.text) || "").trim();
+  if (!text) return res.status(400).json({ error: { message: "text is required" } });
+  if (text.length > 4000) return res.status(400).json({ error: { message: "Message too long (max 4000 characters)" } });
+
+  try {
+    var thread = await getOrCreateChatThread(profileId);
+    var history = await fetchChatMessagesAfter(thread.id, thread.summary_through_message_id);
+
+    var snapshot = await buildChatSnapshot(profileId);
+    var systemText = buildChatSystemPrompt(snapshot, thread.summary);
+
+    var messages = history.map(function(m) { return { role: m.role, content: m.content }; });
+    messages.push({ role: "user", content: text });
+
+    var guarded = enforceChatCharGuard(systemText, messages, CHAT_CHAR_GUARD);
+    var system = wrapSystemWithCache(guarded.system, "coach_chat");
+
+    await insertChatMessage(thread.id, "user", text);
+
+    var forwarded = {
+      model: modelForCallType("coach_chat"),
+      max_tokens: 1500,
+      stream: true,
+      system: system,
+      messages: guarded.messages,
+    };
+
+    var controller = new AbortController();
+    var timeoutId = setTimeout(function() { controller.abort(); }, 25000);
+    var upstream = await fetch("https://api.anthropic.com/v1/messages", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "x-api-key": process.env.ANTHROPIC_KEY,
+        "anthropic-version": "2023-06-01",
+      },
+      body: JSON.stringify(forwarded),
+      signal: controller.signal,
+    });
+    clearTimeout(timeoutId);
+
+    if (!upstream.ok) {
+      var errData = await upstream.json().catch(function() {
+        return { error: { message: "Anthropic error " + upstream.status } };
+      });
+      console.error("[Chat] upstream error status=" + upstream.status);
+      return res.status(upstream.status).json(errData);
+    }
+
+    var fullText = await pipeAnthropicStream(upstream, controller, res, "coach_chat");
+
+    if (fullText && fullText.trim()) {
+      await insertChatMessage(thread.id, "assistant", fullText.trim());
+      summarizeChatThreadIfNeeded(thread.id).catch(function(e) {
+        console.error("[Chat] summarize error:", e && e.message);
+      });
+    }
+  } catch (err) {
+    console.error("[Chat] send error:", err && err.message);
+    if (!res.headersSent) {
+      if (err && err.name === "AbortError") {
+        res.status(504).json({ error: { message: "Chat request timed out" } });
+      } else {
+        res.status(500).json({ error: { message: (err && err.message) || "Chat request failed" } });
+      }
+    } else {
+      try { res.end(); } catch (e) {}
+    }
+  }
+});
+
+// GET full thread history for initial render. Returns ALL messages (not just
+// the post-summary-cutoff tail sent to the model) so the UI can show the
+// complete conversation; summary_through_message_id is included so the client
+// could visually mark the summarized portion later if desired (not done yet).
+app.get("/api/profiles/:id/chat/thread", async function(req, res) {
+  try {
+    var thread = await getChatThread(req.params.id);
+    if (!thread) return res.json({ thread_id: null, summary: null, summary_through_message_id: null, messages: [] });
+    var messages = await fetchAllChatMessages(thread.id);
+    res.json({
+      thread_id: thread.id,
+      summary: thread.summary || null,
+      summary_through_message_id: thread.summary_through_message_id || null,
+      messages: messages.map(function(m) { return { role: m.role, content: m.content, created_at: m.created_at }; }),
+    });
+  } catch (err) {
+    console.error("[Chat] thread fetch error:", err && err.message);
+    res.status(500).json({ error: { message: "Failed to load chat thread" } });
   }
 });
 

@@ -277,6 +277,30 @@ input[type=range]{width:100%;accent-color:var(--accent)}
 #goal-roadmap-view .grv-back{background:transparent;border:none;color:var(--accent-ember);font-size:14px;font-weight:600;cursor:pointer;padding:4px 0;font-family:'Inter',sans-serif;flex-shrink:0}
 #goal-roadmap-view .grv-title{font-size:17px;font-weight:700;color:var(--text-primary);text-align:center;flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 #goal-roadmap-view .grv-content{flex:1;overflow-y:auto;padding:16px 16px 40px;-webkit-overflow-scrolling:touch}
+/* ── COACH CHAT — persistent AI conversation (scoped to #chat-view) ──────── */
+#chat-view{position:fixed;inset:0;z-index:48;background:var(--bg-base);flex-direction:column;overflow:hidden}
+#chat-view.cv-open{animation:cvSlideIn .26s ease}
+#chat-view.cv-closing{animation:cvSlideOut .26s ease}
+@keyframes cvSlideIn{from{transform:translateY(100%)}to{transform:translateY(0)}}
+@keyframes cvSlideOut{from{transform:translateY(0)}to{transform:translateY(100%)}}
+#chat-view .cv-header{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:14px 16px;border-bottom:1px solid var(--border-subtle);flex-shrink:0}
+#chat-view .cv-back{background:transparent;border:none;color:var(--accent-ember);font-size:20px;font-weight:600;cursor:pointer;padding:4px 8px;font-family:'Inter',sans-serif;flex-shrink:0}
+#chat-view .cv-title{font-size:17px;font-weight:700;color:var(--text-primary);text-align:center;flex:1;font-family:'Inter',sans-serif}
+#chat-view .cv-messages{flex:1;overflow-y:auto;padding:16px;display:flex;flex-direction:column;gap:12px;-webkit-overflow-scrolling:touch}
+#chat-view .cv-bubble{max-width:85%;padding:12px 14px;border-radius:14px;font-size:14px;line-height:1.55;font-family:'Inter',sans-serif;white-space:pre-wrap;word-wrap:break-word}
+#chat-view .cv-bubble.cv-user{align-self:flex-end;background:var(--bg-surface-1);border:1px solid var(--border-subtle);color:var(--text-primary);border-bottom-right-radius:4px}
+#chat-view .cv-bubble.cv-ai{align-self:flex-start;background:var(--bg-surface-2);border-left:3px solid var(--accent-cornerman);color:var(--text-primary);border-bottom-left-radius:4px}
+#chat-view .cv-bubble.cv-ai.cv-pending{color:var(--text-muted)}
+#chat-view .cv-bubble.cv-error{align-self:flex-start;background:var(--bg-surface-2);border-left:3px solid var(--color-danger);color:var(--color-danger);font-size:13px}
+#chat-view .cv-retry{background:transparent;border:1px solid var(--color-danger);color:var(--color-danger);border-radius:9999px;padding:3px 10px;font-size:12px;font-weight:600;cursor:pointer;margin-top:6px;font-family:'Inter',sans-serif}
+#chat-view .cv-typing{align-self:flex-start;color:var(--accent-cornerman);font-size:13px;font-family:'Inter',sans-serif;padding:4px 14px}
+#chat-view .cv-empty{color:var(--text-muted);font-size:14px;text-align:center;padding:40px 20px;font-family:'Inter',sans-serif;line-height:1.6}
+#chat-view .cv-inputbar{display:flex;align-items:flex-end;gap:8px;padding:12px 16px;border-top:1px solid var(--border-subtle);flex-shrink:0;background:var(--bg-base)}
+#chat-view .cv-textarea{width:100%;background:var(--bg-surface-2);border:1px solid var(--border-subtle);color:var(--text-primary);border-radius:12px;padding:10px 12px;font-size:14px;font-family:'Inter',sans-serif;resize:none;outline:none;max-height:120px}
+#chat-view .cv-textarea:focus{border-color:var(--accent-cornerman)}
+#chat-view .cv-mic-btn{background:var(--bg-surface-2);border:none;color:var(--text-muted);width:36px;height:36px;border-radius:50%;font-size:15px;cursor:pointer;flex-shrink:0}
+#chat-view .cv-send-btn{background:var(--accent-cornerman);border:none;color:#fff;width:40px;height:40px;border-radius:50%;font-size:16px;cursor:pointer;flex-shrink:0;display:flex;align-items:center;justify-content:center}
+#chat-view .cv-send-btn:disabled{opacity:.5;cursor:default}
 /* ── MACRO ROADMAP (structured roadmap_data) — scoped to #roadmap-data-card ── */
 #roadmap-data-card .rd-head{display:flex;align-items:center;justify-content:space-between;gap:8px}
 #roadmap-data-card .rd-regen{background:transparent;border:none;color:var(--text-muted);font-size:13px;cursor:pointer;padding:4px 0;font-family:'Inter',sans-serif}
@@ -1010,6 +1034,21 @@ input[type=range]{width:100%;accent-color:var(--accent)}
   <div class="settings-body">
     <div class="settings-nav" id="settings-nav"></div>
     <div class="settings-content" id="settings-content"></div>
+  </div>
+</div>
+
+<!-- COACH CHAT (persistent AI conversation, reachable from any tab) -->
+<div id="chat-view" style="display:none">
+  <div class="cv-header">
+    <button onclick="closeChatView()" class="cv-back">&larr;</button>
+    <span class="cv-title">Coach Chat</span>
+    <span style="width:32px;flex-shrink:0"></span>
+  </div>
+  <div id="cv-messages" class="cv-messages"></div>
+  <div class="cv-inputbar">
+    <button type="button" onclick="startVoice(document.getElementById('cv-input'), this)" class="cv-mic-btn">&#127908;</button>
+    <textarea id="cv-input" class="cv-textarea" placeholder="Ask your coach anything…" rows="1" onkeydown="if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();sendChatMessage();}"></textarea>
+    <button id="cv-send" class="cv-send-btn" onclick="sendChatMessage()">&#10148;</button>
   </div>
 </div>
 
@@ -4484,6 +4523,7 @@ function renderAI() {
     }
 
     html += '<button type="button" onclick="rerollAlternativeRecs()" style="width:100%;background:transparent;border:1px solid var(--accent-33);color:var(--accent);padding:11px 16px;font-size:13px;font-weight:600;cursor:pointer;border-radius:8px;font-family:DM Sans,sans-serif;margin-bottom:10px">&#x1F504; Show me different options</button>';
+    html += '<button type="button" onclick="openChatView()" style="width:100%;background:transparent;border:1px solid var(--border-ai);color:var(--accent-cornerman);padding:11px 16px;font-size:13px;font-weight:600;cursor:pointer;border-radius:8px;font-family:\'Inter\',sans-serif;margin-bottom:10px">&#x1F4AC; Talk to your coach</button>';
     html += '<p class="mono" style="font-size:10px;color:var(--text-dim);letter-spacing:2px;margin-bottom:8px;text-align:center">OR — I want to do something else &rarr;</p>';
     html += '<div style="display:flex;flex-wrap:wrap;gap:6px;justify-content:center">';
     var cats = [
@@ -5362,6 +5402,189 @@ function closeGoalRoadmap() {
   el.classList.add('grv-closing');
   grvGoalId = null;
   grvCloseTimer = setTimeout(function() { el.style.display = 'none'; el.classList.remove('grv-closing'); grvCloseTimer = null; }, 260);
+}
+
+// ── COACH CHAT ────────────────────────────────────────────────────────────
+// Persistent one-thread-per-profile conversation with the AI coach. Streaming
+// consumption mirrors fetchAI() (see the daily-recs implementation): a
+// reader-based reassembly loop, an idle-reset abort timer + hard cap, and a
+// bounded 3-attempt retry with 3s backoff. Unlike fetchAI's single global
+// aiRetryTimer/aiPermanentlyFailed flags, retry state here (cvPendingRetry) is
+// scoped to the one in-flight message — a later message the user sends isn't
+// blocked by an earlier message's exhausted retry chain.
+var cvCloseTimer = null;
+var cvLoaded = false;      // thread history has been fetched at least once this session
+var cvSending = false;     // guards double-send while a request is in flight
+var cvPendingRetry = null; // {text, attempt, timer} for the message currently in its backoff wait
+
+function cvEsc(s) { var d = document.createElement('div'); d.textContent = (s == null ? '' : s); return d.innerHTML; }
+
+function openChatView() {
+  if (cvCloseTimer) { clearTimeout(cvCloseTimer); cvCloseTimer = null; }
+  var el = document.getElementById('chat-view');
+  if (!el) return;
+  el.style.display = 'flex';
+  el.classList.remove('cv-closing');
+  el.classList.add('cv-open');
+  if (!cvLoaded) loadChatThread();
+  setTimeout(function() { var ta = document.getElementById('cv-input'); if (ta) ta.focus(); }, 280);
+}
+
+function closeChatView() {
+  var el = document.getElementById('chat-view');
+  if (!el) return;
+  el.classList.remove('cv-open');
+  el.classList.add('cv-closing');
+  cvCloseTimer = setTimeout(function() { el.style.display = 'none'; el.classList.remove('cv-closing'); cvCloseTimer = null; }, 260);
+}
+
+function cvScrollToBottom() {
+  var m = document.getElementById('cv-messages');
+  if (m) m.scrollTop = m.scrollHeight;
+}
+
+function cvAppendBubble(role, text, opts) {
+  opts = opts || {};
+  var m = document.getElementById('cv-messages');
+  if (!m) return null;
+  var empty = m.querySelector('.cv-empty');
+  if (empty) empty.remove();
+  var b = document.createElement('div');
+  b.className = 'cv-bubble ' + (role === 'user' ? 'cv-user' : 'cv-ai') + (opts.pending ? ' cv-pending' : '');
+  b.innerHTML = role === 'user' ? cvEsc(text) : parseMd(text || '');
+  m.appendChild(b);
+  cvScrollToBottom();
+  return b;
+}
+
+function loadChatThread() {
+  var m = document.getElementById('cv-messages');
+  if (m) m.innerHTML = '<p class="cv-empty">Loading…</p>';
+  fetch('/api/profiles/' + currentProfileId + '/chat/thread')
+    .then(function(r) { return r.json(); })
+    .then(function(data) {
+      cvLoaded = true;
+      if (!m) return;
+      m.innerHTML = '';
+      var msgs = (data && data.messages) || [];
+      if (!msgs.length) {
+        m.innerHTML = '<p class="cv-empty">Ask about your training, goals, or schedule — your coach knows your current data.</p>';
+        return;
+      }
+      msgs.forEach(function(msg) { cvAppendBubble(msg.role, msg.content); });
+      cvScrollToBottom();
+    })
+    .catch(function(e) {
+      console.error('[Chat] thread load failed:', e);
+      cvLoaded = false;
+      if (m) m.innerHTML = '<p class="cv-empty">Couldn\'t load your conversation. Try reopening.</p>';
+    });
+}
+
+// retryText/retryAttempt are only set when this call is a retry of a
+// previously-failed send (manual or auto-backoff) — a fresh user-typed
+// message always omits them and starts at attempt 1.
+function sendChatMessage(retryText, retryAttempt) {
+  var ta = document.getElementById('cv-input');
+  var isRetry = retryText != null;
+  var text = isRetry ? retryText : (ta ? ta.value.trim() : '');
+  if (!text || cvSending) return;
+  var attempt = isRetry ? (retryAttempt || 1) : 1;
+  cvSending = true;
+  cvPendingRetry = null;
+
+  if (!isRetry) {
+    cvAppendBubble('user', text);
+    if (ta) { ta.value = ''; ta.style.height = 'auto'; }
+  }
+  var sendBtn = document.getElementById('cv-send');
+  if (sendBtn) sendBtn.disabled = true;
+
+  var mEl = document.getElementById('cv-messages');
+  var typing = document.createElement('div');
+  typing.className = 'cv-typing';
+  typing.textContent = 'Coach is typing…';
+  if (mEl) { mEl.appendChild(typing); cvScrollToBottom(); }
+
+  var controller = new AbortController();
+  var IDLE_MS = 45000, MAX_MS = 90000; // matches fetchAI's idle-reset + hard-cap timers
+  var idleId = setTimeout(function() { controller.abort(); }, IDLE_MS);
+  var capId = setTimeout(function() { controller.abort(); }, MAX_MS);
+  var clearTimers = function() { clearTimeout(idleId); clearTimeout(capId); };
+  var resetIdle = function() { clearTimeout(idleId); idleId = setTimeout(function() { controller.abort(); }, IDLE_MS); };
+
+  var bubble = null, acc = '';
+
+  fetch('/api/profiles/' + currentProfileId + '/chat/message', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ text: text }),
+    signal: controller.signal
+  }).then(function(r) {
+    if (!r.ok) {
+      return r.json().catch(function() { return {}; }).then(function(errData) {
+        throw new Error((errData && errData.error && errData.error.message) || ('Request failed (' + r.status + ')'));
+      });
+    }
+    if (r.body && r.body.getReader) {
+      var reader = r.body.getReader();
+      var decoder = new TextDecoder();
+      var pump = function() {
+        return reader.read().then(function(res) {
+          if (res.done) { clearTimers(); return; }
+          resetIdle();
+          acc += decoder.decode(res.value, { stream: true });
+          if (!bubble) { if (typing.parentNode) typing.remove(); bubble = cvAppendBubble('assistant', '', { pending: true }); }
+          bubble.innerHTML = parseMd(acc);
+          cvScrollToBottom();
+          return pump();
+        });
+      };
+      return pump();
+    }
+    return r.text().then(function(t) { clearTimers(); acc = t; });
+  }).then(function() {
+    clearTimers();
+    if (typing.parentNode) typing.remove();
+    if (!bubble) {
+      if (acc.trim()) bubble = cvAppendBubble('assistant', acc);
+      else cvAppendBubble('assistant', '_(no response — try again)_');
+    } else {
+      bubble.classList.remove('cv-pending');
+      bubble.innerHTML = parseMd(acc);
+    }
+    cvSending = false;
+    if (sendBtn) sendBtn.disabled = false;
+    cvScrollToBottom();
+  }).catch(function(err) {
+    clearTimers();
+    if (typing.parentNode) typing.remove();
+    cvSending = false;
+    if (sendBtn) sendBtn.disabled = false;
+    console.error('[Chat] send failed (attempt ' + attempt + '):', err);
+    if (attempt < 3) {
+      var nextAttempt = attempt + 1;
+      cvPendingRetry = { text: text, attempt: nextAttempt, timer: setTimeout(function() {
+        cvPendingRetry = null;
+        sendChatMessage(text, nextAttempt);
+      }, 3000) };
+    } else {
+      cvPendingRetry = null;
+      var errBubble = document.createElement('div');
+      errBubble.className = 'cv-bubble cv-error';
+      errBubble.innerHTML = 'Couldn\'t reach your coach after 3 tries.<br><button type="button" class="cv-retry" onclick="cvRetryLastMessage(this)">Retry</button>';
+      errBubble.dataset.cvRetryText = text;
+      if (mEl) { mEl.appendChild(errBubble); cvScrollToBottom(); }
+    }
+  });
+}
+
+function cvRetryLastMessage(btn) {
+  var errBubble = btn.closest('.cv-bubble');
+  var text = errBubble ? errBubble.dataset.cvRetryText : null;
+  if (!text) return;
+  errBubble.remove();
+  sendChatMessage(text, 1); // manual retry always starts a fresh 3-attempt chain
 }
 
 function loadGoalRoadmap(goalId) {
