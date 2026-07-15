@@ -318,6 +318,12 @@ input[type=range]{width:100%;accent-color:var(--accent)}
 #chat-view .cv-proposal-status{font-size:12px;font-weight:600;padding:6px 0;font-family:'Inter',sans-serif}
 #chat-view .cv-proposal-status.confirmed{color:var(--color-positive)}
 #chat-view .cv-proposal-status.canceled{color:var(--text-muted)}
+/* Roadmap-regen proposal only: confirm triggers a live Sonnet call (a few
+   seconds, can fail), unlike every other proposal type's fast synchronous
+   write — needs its own loading/error states instead of the plain busy-
+   disable the other types use. */
+#chat-view .cv-proposal-working{font-size:12px;font-weight:600;color:var(--accent-cornerman);padding:6px 0;font-family:'Inter',sans-serif}
+#chat-view .cv-proposal-error{font-size:12px;color:var(--color-danger);margin-bottom:8px;font-family:'Inter',sans-serif}
 /* Desktop: docked bottom-right panel instead of a fullscreen takeover.
    Breakpoint matches the app's existing mobile/desktop nav split (768/769px —
    see "BOTTOM NAV (mobile)" rules above), not the separate 700px breakpoint
@@ -5564,8 +5570,41 @@ function cvProposalButtonsBusy(id, busy) {
   card.querySelectorAll('button').forEach(function(b) { b.disabled = busy; });
 }
 
-function cvConfirmProposal(id) {
-  cvProposalButtonsBusy(id, true);
+// Roadmap-regen confirm is a live Sonnet call (a few seconds, can genuinely
+// fail) — every other proposal type's confirm is a fast synchronous write
+// that basically never fails, so cvProposalButtonsBusy's plain disable is
+// enough for those. Regen gets its own loading label and, after
+// CV_REGEN_MAX_ATTEMPTS bounded automatic retries, an in-card error with a
+// manual "Try again" button — never an unbounded/silent retry loop.
+var CV_REGEN_MAX_ATTEMPTS = 3;
+var CV_REGEN_RETRY_DELAY_MS = 2000;
+
+function cvSetProposalCardWorking(id, label) {
+  var card = document.querySelector('.cv-proposal-card[data-proposal-id="' + id + '"]');
+  if (!card) return;
+  var actionsEl = card.querySelector('.cv-proposal-actions');
+  if (actionsEl) actionsEl.innerHTML = '<div class="cv-proposal-working">' + cvEsc(label) + '</div>';
+}
+
+function cvSetProposalCardError(id, message) {
+  var card = document.querySelector('.cv-proposal-card[data-proposal-id="' + id + '"]');
+  if (!card) return;
+  var actionsEl = card.querySelector('.cv-proposal-actions');
+  if (!actionsEl) return;
+  actionsEl.innerHTML = '<div class="cv-proposal-error">' + cvEsc(message) + '</div>' +
+    '<button type="button" class="cv-proposal-confirm" onclick="cvConfirmProposal(' + id + ')">Try again</button>' +
+    '<button type="button" class="cv-proposal-cancel" onclick="cvCancelProposal(' + id + ')">Cancel</button>';
+}
+
+function cvConfirmProposal(id, attempt) {
+  attempt = attempt || 1;
+  var p = cvProposalsById[id];
+  var isRegen = p && p.type === 'regenerate_goal_roadmap';
+  if (isRegen) {
+    cvSetProposalCardWorking(id, 'Regenerating roadmap' + (attempt > 1 ? ' (attempt ' + attempt + ')' : '') + '…');
+  } else {
+    cvProposalButtonsBusy(id, true);
+  }
   fetch('/api/profiles/' + currentProfileId + '/chat/proposals/' + id + '/confirm', { method: 'POST' })
     .then(function(r) { return r.json().then(function(data) { return { ok: r.ok, data: data }; }); })
     .then(function(res) {
@@ -5575,7 +5614,15 @@ function cvConfirmProposal(id) {
     })
     .catch(function(e) {
       console.error('[Chat] confirm proposal failed:', e);
-      cvProposalButtonsBusy(id, false);
+      if (isRegen && attempt < CV_REGEN_MAX_ATTEMPTS) {
+        setTimeout(function() { cvConfirmProposal(id, attempt + 1); }, CV_REGEN_RETRY_DELAY_MS);
+        return;
+      }
+      if (isRegen) {
+        cvSetProposalCardError(id, "Couldn't regenerate the roadmap (" + (e.message || 'error') + '). The goal update itself is still applied.');
+      } else {
+        cvProposalButtonsBusy(id, false);
+      }
     });
 }
 

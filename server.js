@@ -3159,6 +3159,11 @@ app.get("/api/profiles/:id/exercises/stats", async function(req, res) {
   try {
     var profileId = req.params.id;
 
+    // Profile (timezone only) fetched alongside — anchors the "last 12
+    // weeks" weekly-volume cutoff below via localToday() instead of the
+    // server's own instant.
+    var profilePromise = getProfileTimezone(profileId);
+
     // Fetch all exercises
     var er = await fetch(SUPABASE_URL + "/rest/v1/exercises?profile_id=eq." + profileId + "&select=*&order=date.desc&limit=10000", { headers: sbHeaders() });
     var allEx = await er.json();
@@ -3168,6 +3173,8 @@ app.get("/api/profiles/:id/exercises/stats", async function(req, res) {
     var wr = await fetch(SUPABASE_URL + "/rest/v1/workouts?profile_id=eq." + profileId + "&select=type,date,done&order=date.desc&limit=10000", { headers: sbHeaders() });
     var allWk = await wr.json();
     if (!Array.isArray(allWk)) allWk = [];
+
+    var statsProfile = await profilePromise;
 
     // Workout type frequency
     var typeFreq = {};
@@ -3207,9 +3214,15 @@ app.get("/api/profiles/:id/exercises/stats", async function(req, res) {
       if (ex.distance_miles && (!p.max_distance || ex.distance_miles > p.max_distance)) p.max_distance = ex.distance_miles;
     });
 
-    // Weekly volume (last 12 weeks)
+    // Weekly volume (last 12 weeks). Anchored to the athlete's local "today"
+    // (localToday()), noon-anchored like the exercise-date parse below, so
+    // the 12-week cutoff can't drift a day off from a server-vs-athlete
+    // timezone mismatch. weekStart's key is now read via ymdLocal() (local
+    // Date components) instead of toISOString() (UTC) for consistency with
+    // how weekStart itself was built via local setDate()/getDay() mutation —
+    // previously harmless only because Render's OS timezone happens to be UTC.
     var weeklyVol = {};
-    var now = new Date();
+    var now = new Date(localToday(statsProfile, 0) + "T12:00:00");
     allEx.forEach(function(ex) {
       if (!ex.sets) return;
       var d = new Date(ex.date + "T12:00:00");
@@ -3217,7 +3230,7 @@ app.get("/api/profiles/:id/exercises/stats", async function(req, res) {
       if (weekAgo < 12) {
         var weekStart = new Date(d);
         weekStart.setDate(weekStart.getDate() - weekStart.getDay());
-        var key = weekStart.toISOString().slice(0, 10);
+        var key = ymdLocal(weekStart);
         weeklyVol[key] = (weeklyVol[key] || 0) + (ex.sets || 0);
       }
     });
@@ -4903,46 +4916,80 @@ app.post("/api/profiles/:id/goals/:goalId/intake", async function(req, res) {
   }
 });
 
-// POST generate the initial roadmap (Sonnet). Requires completed intake.
-app.post("/api/profiles/:id/goals/:goalId/roadmap", async function(req, res) {
-  try {
-    var loaded = await loadProfileWithGoals(req.params.id);
-    var found = findGoalById(loaded.profileData, req.params.goalId);
-    var goal = found.goal;
-    if (!goal.intake_completed) return res.status(400).json({ success: false, error: "Intake must be completed before generating a roadmap" });
+// Shared core for building a goal's roadmap via Sonnet, grounded in the
+// athlete's actual logged training. Two callers, two write semantics:
+//   mode:"reset"      — the cold-start POST /roadmap below: version:1,
+//                        adaptation_log:[] (this goal has never had one).
+//   mode:"regenerate" — Coach Chat's post-goal-update regen offer (see
+//                        applyProposal()'s "regenerate_goal_roadmap"
+//                        branch): same generation, but increments the
+//                        EXISTING version and appends to adaptation_log
+//                        instead of wiping it, since the goal already had
+//                        roadmap history worth keeping. Falls back to
+//                        "reset" semantics if the goal has no prior
+//                        roadmap to increment from.
+// Requires intake_completed (always true for a goal that already has a
+// roadmap, since that's the only way one could have been generated).
+// Returns the updated goal; throws (with .status set for the 400 case) on
+// failure — callers decide how to surface it.
+async function generateGoalRoadmapForGoal(profileId, goalId, mode) {
+  var loaded = await loadProfileWithGoals(profileId);
+  var found = findGoalById(loaded.profileData, goalId);
+  var goal = found.goal;
+  if (!goal.intake_completed) {
+    var e0 = new Error("Intake must be completed before generating a roadmap");
+    e0.status = 400;
+    throw e0;
+  }
 
-    var wRes = await fetch(SUPABASE_URL + "/rest/v1/workouts?profile_id=eq." + req.params.id + "&order=date.desc&limit=20&select=date,type", { headers: sbHeaders() });
-    var workouts = await wRes.json();
-    if (!Array.isArray(workouts)) workouts = [];
+  var wRes = await fetch(SUPABASE_URL + "/rest/v1/workouts?profile_id=eq." + profileId + "&order=date.desc&limit=20&select=date,type", { headers: sbHeaders() });
+  var workouts = await wRes.json();
+  if (!Array.isArray(workouts)) workouts = [];
 
-    var today = new Date().toISOString().slice(0, 10);
-    var ctx = (loaded.profileData.ai_prompt_context || "").substring(0, 1200);
-    var brief = (loaded.profile.coaching_brief || "").substring(0, 400);
-    var answersStr = (goal.intake_answers || []).map(function(a) { return a.question + ": " + a.answer; }).join("\n");
-    var workoutsStr = workouts.map(function(w) { return w.date + ": " + (w.type || "Workout"); }).join("\n");
+  var today = new Date().toISOString().slice(0, 10);
+  var ctx = (loaded.profileData.ai_prompt_context || "").substring(0, 1200);
+  var brief = (loaded.profile.coaching_brief || "").substring(0, 400);
+  var answersStr = (goal.intake_answers || []).map(function(a) { return a.question + ": " + a.answer; }).join("\n");
+  var workoutsStr = workouts.map(function(w) { return w.date + ": " + (w.type || "Workout"); }).join("\n");
 
-    // Ground the roadmap in actual logged training: this goal's exercise history
-    // + the overall training picture.
-    var goalExCtx = await getGoalExerciseContext(req.params.id, extractGoalKeywords(goal.title), 90);
-    var fullEx = await getFullExerciseContext(req.params.id, 60);
+  // Ground the roadmap in actual logged training: this goal's exercise history
+  // + the overall training picture.
+  var goalExCtx = await getGoalExerciseContext(profileId, extractGoalKeywords(goal.title), 90);
+  var fullEx = await getFullExerciseContext(profileId, 60);
 
-    var sys = "You are an elite fitness coach building a personalized training roadmap. Return ONLY valid JSON matching this exact shape: { timeline_range: string (e.g. '3-6 months' or '8-15 years'), timeline_note: string (1-2 sentences: realistic range for this goal type based on evidence, narrowed by their specific starting point and training frequency), date_confidence: 'high'|'medium'|'low', phases: [...] }. Use 3 near-term phases (type: 'near_term', 4-6 weeks each) and 2 horizon phases (type: 'horizon', milestone-based). Near-term phases must include weekly_targets (2-3 specific actionable items) and completion_signals (2-3 measurable achievements). Use evidence-based timelines — strength research, weight loss rates, skill acquisition data. Widen the range rather than narrow it when uncertain. Be concise — each phase description maximum 2 sentences. The first near_term phase status is 'current', rest are 'upcoming'.";
-    var userMsg = "GOAL: " + (goal.title || "Untitled") + " (" + (goal.type || "general") + ")\n" +
-      "DESCRIPTION: " + (goal.description || "none") + "\n\n" +
-      "INTAKE ANSWERS:\n" + (answersStr || "none") + "\n\n" +
-      "EXERCISE CONTEXT FOR THIS GOAL:\n" + JSON.stringify(goalExCtx) + "\n\n" +
-      "OVERALL TRAINING PICTURE:\n" + JSON.stringify(fullEx) + "\n\n" +
-      "RECENT WORKOUTS (last 20):\n" + (workoutsStr || "none") + "\n\n" +
-      "ATHLETE PROFILE:\n" + (ctx || "none") + "\n\n" +
-      "COACHING BRIEF:\n" + (brief || "none") + "\n\n" +
-      "Today's date: " + today + "\n\nBuild a realistic, phased roadmap for this specific goal.";
+  var sys = "You are an elite fitness coach building a personalized training roadmap. Return ONLY valid JSON matching this exact shape: { timeline_range: string (e.g. '3-6 months' or '8-15 years'), timeline_note: string (1-2 sentences: realistic range for this goal type based on evidence, narrowed by their specific starting point and training frequency), date_confidence: 'high'|'medium'|'low', phases: [...] }. Use 3 near-term phases (type: 'near_term', 4-6 weeks each) and 2 horizon phases (type: 'horizon', milestone-based). Near-term phases must include weekly_targets (2-3 specific actionable items) and completion_signals (2-3 measurable achievements). Use evidence-based timelines — strength research, weight loss rates, skill acquisition data. Widen the range rather than narrow it when uncertain. Be concise — each phase description maximum 2 sentences. The first near_term phase status is 'current', rest are 'upcoming'.";
+  var userMsg = "GOAL: " + (goal.title || "Untitled") + " (" + (goal.type || "general") + ")\n" +
+    "DESCRIPTION: " + (goal.description || "none") + "\n\n" +
+    "INTAKE ANSWERS:\n" + (answersStr || "none") + "\n\n" +
+    "EXERCISE CONTEXT FOR THIS GOAL:\n" + JSON.stringify(goalExCtx) + "\n\n" +
+    "OVERALL TRAINING PICTURE:\n" + JSON.stringify(fullEx) + "\n\n" +
+    "RECENT WORKOUTS (last 20):\n" + (workoutsStr || "none") + "\n\n" +
+    "ATHLETE PROFILE:\n" + (ctx || "none") + "\n\n" +
+    "COACHING BRIEF:\n" + (brief || "none") + "\n\n" +
+    "Today's date: " + today + "\n\nBuild a realistic, phased roadmap for this specific goal.";
 
-    var text = await callAISystem(sys, userMsg, 2500, MODEL_SONNET);
-    var parsed = parseAIJson(text);
-    if (!parsed || !Array.isArray(parsed.phases)) throw new Error("AI returned an invalid roadmap");
-    assignNearTermDates(parsed.phases, today);
+  var text = await callAISystem(sys, userMsg, 2500, MODEL_SONNET);
+  var parsed = parseAIJson(text);
+  if (!parsed || !Array.isArray(parsed.phases)) throw new Error("AI returned an invalid roadmap");
+  assignNearTermDates(parsed.phases, today);
 
-    var now = new Date().toISOString();
+  var now = new Date().toISOString();
+  var prevRoadmap = goal.roadmap;
+  if (mode === "regenerate" && prevRoadmap) {
+    goal.roadmap = {
+      timeline_range: parsed.timeline_range || null,
+      timeline_note: parsed.timeline_note || null,
+      date_confidence: parsed.date_confidence || null,
+      phases: parsed.phases,
+      generated_at: now,
+      version: (prevRoadmap.version || 1) + 1,
+      adaptation_log: (prevRoadmap.adaptation_log || []).concat([{
+        date: now,
+        summary: "Roadmap regenerated via Coach Chat after a goal update.",
+        trigger: "manual",
+      }]),
+    };
+  } else {
     goal.roadmap = {
       timeline_range: parsed.timeline_range || null,
       timeline_note: parsed.timeline_note || null,
@@ -4952,9 +4999,17 @@ app.post("/api/profiles/:id/goals/:goalId/roadmap", async function(req, res) {
       version: 1,
       adaptation_log: [],
     };
-    goal.last_adapted_at = now;
-    await saveGoalToProfile(req.params.id, loaded.profileData, found.index, goal);
-    recomputeRoadmapProgress(goal.roadmap, goalExCtx);
+  }
+  goal.last_adapted_at = now;
+  await saveGoalToProfile(profileId, loaded.profileData, found.index, goal);
+  recomputeRoadmapProgress(goal.roadmap, goalExCtx);
+  return goal;
+}
+
+// POST generate the initial roadmap (Sonnet). Requires completed intake.
+app.post("/api/profiles/:id/goals/:goalId/roadmap", async function(req, res) {
+  try {
+    var goal = await generateGoalRoadmapForGoal(req.params.id, req.params.goalId, "reset");
     res.json({ success: true, goal: goal });
   } catch (e) {
     console.error("[GoalRoadmap] generate error:", e.message);
@@ -5349,7 +5404,8 @@ var CHAT_SYSTEM_PERSONA =
   "You are ApexCoach's AI coach — the same coaching intelligence that generates this athlete's daily workout recommendations, now available for open-ended conversation. You are not a generic fitness chatbot: you know this specific athlete's real training history, goals, biometrics, and schedule, and every response should read like it comes from someone who has actually been paying attention to their training, not from a template.\n\n" +
   "WHAT YOU KNOW: the ATHLETE SNAPSHOT below (rebuilt fresh for this message, never stale) contains, when present: a TODAY line stating the athlete's current calendar date in their own timezone — when you need to say or reason about \"today\", use that exact date; never assert, compute, or guess a date yourself, and never assume UTC or your own sense of \"now\" — the athlete's actual local day is not something you can infer, only what TODAY states; the athlete's name and profile context (injuries, equipment, training environment); ALL of their long-term goals in priority order — not just the top few, every goal listed is real and current, including ones that might seem minor, like a specific injury or mobility target; their active short-horizon challenges with live progress; a standing Focus Override directive if one is currently active — this is the athlete's own explicit instruction about what to emphasize right now, treat it as a strong signal, not a suggestion you can ignore; their weekly training schedule (fixed sessions, frequency targets, add-ons); today's readiness score if one has been generated yet; their latest cached sleep, HRV, RHR, steps, and weight; and a condensed log of the last 7 days of actual training, INCLUDING anything logged moments ago (this log is rebuilt fresh on every message, not cached). If a section is missing from the snapshot, the athlete genuinely has no data there yet — don't invent it, and don't apologize for its absence, just work with what's actually there. IMPORTANT: only the biometrics (sleep/HRV/RHR/steps/weight) are cache-based, from the last wearable sync — logged workouts are never wearable-synced, they appear the instant they're saved. If the athlete says they just logged something and you don't see it, the honest answer is \"I don't see it yet\" — never guess at a \"sync\" or similar mechanism as the reason; if it's genuinely missing, say so plainly and suggest they check the entry saved correctly, don't fabricate an explanation for why.\n\n" +
   "HOW TO TALK: conversational, direct, and specific — reference real numbers, real exercise names, and real dates when they're relevant to the question. Plain text with light markdown (short lists, bold for emphasis) is fine and usually clearer than dense paragraphs; you are NOT required to return JSON or any fixed structure here, unlike the daily recommendation cards elsewhere in the app. Match the athlete's register — casual questions get casual answers, precise technical questions get precise answers. Never pad a short answer with disclaimers, safety boilerplate, or \"as an AI\" framing — get to the point.\n\n" +
-  "WHAT YOU CAN AND CAN'T DO: you can PROPOSE exactly three kinds of change, each via a tool call, and each requires the athlete's explicit confirmation before anything is actually written — you never apply a change yourself: updating an existing goal's target/timeline/notes/active-paused state (propose_goal_update — this only updates a goal that already exists, it cannot create or delete one), setting/updating/clearing the standing Focus Override (propose_focus_override), and logging a free-text check-in note (propose_checkin_note). When you call one of these, say what you're proposing and why in your reply — the app renders the actual confirm/cancel card, you don't need to ask them to \"confirm in the app\" yourself, just explain the change naturally. Everything else — creating or deleting goals, editing workouts or exercises, changing the weekly schedule, adjusting settings — you have no tool for; tell them exactly where in the app to make that change (for example, \"update that under Profile > Schedule\") and never imply you've already made an edit you haven't made. You also don't have live wearable data beyond what's in the snapshot — no live Fitbit or Google Health call happens per message, only the last cached sync — so if they ask about something more current than the snapshot's timestamp, say so plainly instead of guessing.\n\n" +
+  "WHAT YOU CAN AND CAN'T DO: you can PROPOSE exactly four kinds of change, each via a tool call, and each requires the athlete's explicit confirmation before anything is actually written — you never apply a change yourself: updating an existing goal's target/timeline/notes/active-paused state (propose_goal_update — this only updates a goal that already exists, it cannot create or delete one), setting/updating/clearing the standing Focus Override (propose_focus_override), logging a free-text check-in note (propose_checkin_note), and regenerating an existing goal's roadmap (propose_roadmap_regen — see ROADMAP REGEN OFFER below for exactly when to use this one). When you call one of these, say what you're proposing and why in your reply — the app renders the actual confirm/cancel card, you don't need to ask them to \"confirm in the app\" yourself, just explain the change naturally. Everything else — creating or deleting goals, editing workouts or exercises, changing the weekly schedule, adjusting settings — you have no tool for; tell them exactly where in the app to make that change (for example, \"update that under Profile > Schedule\") and never imply you've already made an edit you haven't made. You also don't have live wearable data beyond what's in the snapshot — no live Fitbit or Google Health call happens per message, only the last cached sync — so if they ask about something more current than the snapshot's timestamp, say so plainly instead of guessing.\n\n" +
+  "ROADMAP REGEN OFFER: thread history may contain a synthetic note like \"[Athlete confirmed the proposed change to '...']\" following a propose_goal_update you made — that's the app's record that the goal was actually updated, not something you wrote. The FIRST time you see one of these confirmation notes for a goal update, check that goal's line in the GOALS section of the snapshot: if it shows \"[has roadmap vN]\", briefly mention that its roadmap may now be out of date given the change and call propose_roadmap_regen once to offer regenerating it — the confirm/cancel card IS the offer, you don't need to ask a follow-up question first. If the goal has no \"[has roadmap vN]\" marker, say nothing about a roadmap — there isn't one, don't offer to regenerate something that doesn't exist. This is a ONE-TIME offer per confirmed change: make it in your very next reply after the confirmation note appears, then never bring it up again for that same change even if the note is still visible further back in history — if the athlete didn't act on it, that's a \"no,\" not a prompt to ask again.\n\n" +
   "COACHING JUDGMENT: weigh advice against injuries and physical limitations mentioned in their profile context — never suggest something that would aggravate a known issue. Treat their active challenges and any standing Focus Override as close to non-negotiable unless the athlete is explicitly asking you to reconsider them. When discussing schedule or workout changes, reason from what's actually in their schedule and recent training log, not generic fitness advice divorced from their real data. If a question falls genuinely outside what the snapshot covers — nutrition specifics, something with zero connection to their logged data — answer as a knowledgeable coach would, but be upfront that you're reasoning generally rather than from their specific numbers.\n\n" +
   EXPERT_REASONING_CORE + "\n\n" +
   "CONVERSATION MEMORY: this is a persistent, ongoing thread, not a one-shot exchange — the athlete may return to it days or weeks apart. Recent turns appear below as normal conversation history; once a thread gets long, its older portion gets folded into a short running summary (you'll see it as \"EARLIER IN THIS CONVERSATION (summarized)\" after the snapshot, when present) rather than kept verbatim — treat that summary as reliable background, not something to re-litigate or ask the athlete to repeat. Don't re-introduce yourself or re-explain what you are partway through an existing thread; pick up naturally from where the conversation left off, the way an actual coach who remembers the last conversation would.\n\n" +
@@ -5433,6 +5489,18 @@ var COACH_CHAT_TOOLS = [
         note: { type: "string", description: "The free-text note to log." }
       },
       required: ["note"]
+    }
+  },
+  {
+    name: "propose_roadmap_regen",
+    description: "Offer to regenerate an existing goal's roadmap (full rebuild via Sonnet, grounded in current training data) after a goal-update proposal for that goal was just confirmed. ONLY offer for a goal that shows '[has roadmap vN]' in the GOALS section of the athlete snapshot — never for a goal with no roadmap, there is nothing to regenerate. Offer this once, right after seeing the athlete's confirmation of a goal change in the thread history — do not repeat the offer on later turns if it wasn't acted on. Not applied immediately — the athlete sees a confirm/cancel card; this can take a few seconds since it's a live generation, not a quick edit.",
+    input_schema: {
+      type: "object",
+      properties: {
+        goal_id: { type: "string", description: "The id of the goal whose roadmap to regenerate — read it from the GOALS section of the athlete snapshot, never guess it." },
+        reason: { type: "string", description: "One plain sentence explaining why now (e.g. the goal's target/timeline just changed) — shown on the confirmation card." }
+      },
+      required: ["goal_id", "reason"]
     }
   }
 ];
@@ -5560,6 +5628,15 @@ function formatGoalLineForChat(g, idx) {
   } else if (g.status) {
     line += " — " + g.status;
   }
+  // has-roadmap marker: lets the model decide whether propose_roadmap_regen
+  // is even offerable for this goal (never offer for a roadmap-less goal).
+  if (g.roadmap) line += " [has roadmap v" + (g.roadmap.version || 1) + "]";
+  // id: was previously MISSING from this line despite propose_goal_update's
+  // tool description telling the model to "read it from the GOALS section
+  // ... never guess it" — a real pre-existing gap (found 2026-07-15 while
+  // wiring up propose_roadmap_regen, which also needs goal_id). Fixed here
+  // since both tools depend on it.
+  line += " (id: " + g.id + ")";
   return line;
 }
 
@@ -5970,6 +6047,35 @@ async function computeFocusOverrideProposal(profileId, input) {
   return { title: "Focus Override", changes: changes, reason: input.reason || "", _fo: next };
 }
 
+// Read-only like the others above: validates the goal exists and actually
+// has a roadmap to regenerate (defensive backstop — CHAT_SYSTEM_PERSONA +
+// the has-roadmap marker in formatGoalLineForChat() should already keep the
+// model from calling this on a roadmap-less goal, but a noop here matches
+// computeFocusOverrideProposal's "clear when nothing active" pattern rather
+// than silently creating a confusing proposal). Does NOT call Sonnet itself —
+// the actual regeneration only happens in applyProposal(), after confirm.
+async function computeRoadmapRegenProposal(profileId, input) {
+  var loaded = await loadProfileWithGoals(profileId);
+  var found = findGoalById(loaded.profileData, input.goal_id);
+  var g = found.goal;
+  if (!g.roadmap) {
+    var noop = new Error("\"" + (g.title || "This goal") + "\" doesn't have a roadmap yet — nothing to regenerate.");
+    noop.noop = true;
+    throw noop;
+  }
+  return {
+    goal_id: g.id,
+    title: "Regenerate roadmap for \"" + (g.title || "Untitled goal") + "\"",
+    changes: [{
+      field: "roadmap",
+      label: "roadmap",
+      before: "v" + (g.roadmap.version || 1) + " (generated " + (g.roadmap.generated_at ? g.roadmap.generated_at.slice(0, 10) : "unknown") + ")",
+      after: "newly generated from your updated goal",
+    }],
+    reason: input.reason || "",
+  };
+}
+
 async function computeCheckinNoteProposal(profileId, input) {
   // Athlete's timezone (2026-07-15) — was dateStr(0) (UTC). Stored on the
   // returned payload as _today so applyProposal() (called later, at confirm
@@ -6034,6 +6140,9 @@ async function executeProposalTool(toolUse, profileId, threadId) {
     } else if (toolUse.name === "propose_checkin_note") {
       type = "log_checkin_note";
       proposal = await computeCheckinNoteProposal(profileId, input);
+    } else if (toolUse.name === "propose_roadmap_regen") {
+      type = "regenerate_goal_roadmap";
+      proposal = await computeRoadmapRegenProposal(profileId, input);
     } else {
       return { resultContent: "Unknown tool '" + toolUse.name + "' — not available.", proposalId: null };
     }
@@ -6090,6 +6199,16 @@ async function applyProposal(proposal, profileId) {
       headers: sbHeaders("return=minimal,resolution=merge-duplicates"),
       body: JSON.stringify(checkinPayload),
     });
+  } else if (proposal.type === "regenerate_goal_roadmap") {
+    // Unlike every other proposal type, this is a live Sonnet call — slow
+    // (a few seconds) and can genuinely fail (Anthropic error, invalid JSON,
+    // etc.). If it throws, the caller (POST .../confirm) returns a 500 and
+    // leaves the proposal status "pending" (the PATCH to "confirmed" below
+    // it never runs) — so a retry is just the athlete confirming the same
+    // card again, not a parallel flow. mode:"regenerate" reuses the full
+    // generation path but increments version/appends adaptation_log instead
+    // of resetting them, since this goal already had roadmap history.
+    await generateGoalRoadmapForGoal(profileId, payload.goal_id, "regenerate");
   }
 }
 
@@ -8006,10 +8125,18 @@ function longestStreakFromDates(dateSet) {
 }
 // Current streak: consecutive done-days ending today (or yesterday if nothing
 // logged yet today). Mirrors the streak math used elsewhere in server.js.
-function currentStreakFromDates(dateSet) {
-  var streak = 0, d = new Date(), check = ymdLocal(d);
-  if (!dateSet.has(check)) { d.setDate(d.getDate() - 1); check = ymdLocal(d); }
-  while (dateSet.has(check)) { streak++; d.setDate(d.getDate() - 1); check = ymdLocal(d); }
+//
+// `profile` (timezone) anchors "today" via localToday() instead of the
+// server's own instant — a positive-UTC-offset athlete (e.g. Sydney) whose
+// morning the server clock hasn't reached yet would otherwise have the
+// "not found -> check yesterday" fallback below skip an extra real day in
+// the wrong direction, undercounting the streak. Passing profile:null (or
+// a profile with timezone unset) falls back to UTC inside localToday(),
+// so behavior is unchanged for any profile that hasn't captured one yet.
+function currentStreakFromDates(dateSet, profile) {
+  var streak = 0, offset = 0, check = localToday(profile, offset);
+  if (!dateSet.has(check)) { offset -= 1; check = localToday(profile, offset); }
+  while (dateSet.has(check)) { streak++; offset -= 1; check = localToday(profile, offset); }
   return streak;
 }
 // up if curr beats prev by >5%, down if below by >5%, else stable. pct is the
@@ -8046,12 +8173,16 @@ app.get("/api/analytics/activity-stats/:userId", async function(req, res) {
 
     // One workouts query covering prev+current (or all-time). wearable_data may
     // not exist if the wearables migration hasn't run — fall back gracefully.
+    // Profile (timezone only) fetched alongside — used for the current-streak
+    // "today" anchor below (localToday()); it doesn't gate anything else here.
     var wBase = SUPABASE_URL + "/rest/v1/workouts?profile_id=eq." + encodeURIComponent(pid) + "&order=date.asc&limit=20000";
     var wRange = allTime ? "" : "&date=gte." + prevStart + "&date=lte." + endDate;
+    var profilePromise = getProfileTimezone(pid);
     var wr = await fetch(wBase + "&select=id,date,type,done,notes,wearable_activity_id,wearable_data" + wRange, { headers: sbHeaders() });
     if (!wr.ok) wr = await fetch(wBase + "&select=id,date,type,done,notes" + wRange, { headers: sbHeaders() });
     var workouts = await wr.json();
     if (!Array.isArray(workouts)) workouts = [];
+    var streakProfile = await profilePromise;
 
     // Diagnostic: how many sessions carry HR and from where. Confirms wearable_data
     // is read correctly (it is) vs. simply being absent. wearable-synced sessions
@@ -8158,7 +8289,7 @@ app.get("/api/analytics/activity-stats/:userId", async function(req, res) {
       peak_hr: cur.peakHrAll,
       peak_hr_est: cur.peakHrAllEst,
       most_active_day_of_week: mostActiveDay,
-      current_streak: currentStreakFromDates(cur.doneDates),
+      current_streak: currentStreakFromDates(cur.doneDates, streakProfile),
       longest_streak: longestStreakFromDates(cur.doneDates),
     };
 
