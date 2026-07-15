@@ -6440,7 +6440,10 @@ async function maybeAutoOfferRoadmapRegen(threadId, profileId, goal) {
     var existing = await fetch(SUPABASE_URL + "/rest/v1/chat_proposals?thread_id=eq." + threadId + "&type=eq.regenerate_goal_roadmap&status=eq.pending&select=id,payload", { headers: sbHeaders() });
     var existingRows = await existing.json();
     var alreadyPending = Array.isArray(existingRows) && existingRows.some(function(r) { return r.payload && r.payload.goal_id === goal.id; });
-    if (alreadyPending) return null;
+    // TEMP DIAGNOSTIC (2026-07-15, remove after live verification): surface
+    // exactly why this returns null instead of a proposal, since Render logs
+    // aren't reachable from this session.
+    if (alreadyPending) return { _diag: "dedup-skip", existingRows: existingRows };
 
     var proposalData = await computeRoadmapRegenProposal(profileId, {
       goal_id: goal.id,
@@ -6459,7 +6462,7 @@ async function maybeAutoOfferRoadmapRegen(threadId, profileId, goal) {
     // keep this fix scoped to the one caller that actually hit it.
     if (!row || !row.id) {
       console.error("[Chat] auto-offer roadmap regen: createChatProposal returned no row for goal " + goal.id + ":", JSON.stringify(row));
-      return null;
+      return { _diag: "createChatProposal-no-row", row: row };
     }
     await insertChatMessage(threadId, "user",
       "[The app automatically offered to regenerate the roadmap for \"" + (goal.title || "this goal") +
@@ -6471,7 +6474,7 @@ async function maybeAutoOfferRoadmapRegen(threadId, profileId, goal) {
     // confirm. computeRoadmapRegenProposal's own noop (no roadmap) lands here
     // too, harmlessly.
     console.error("[Chat] auto-offer roadmap regen failed for goal " + goal.id + ":", e && e.message);
-    return null;
+    return { _diag: "exception", message: e && e.message, noop: !!e.noop };
   }
 }
 
