@@ -10,6 +10,17 @@ const wearables = require("./wearables");
 // close on pooled sockets.
 const fitbitTokenAgent = new https.Agent({ keepAlive: false });
 
+// Same mitigation, applied to Anthropic streaming calls (2026-07 — daily_recs
+// intermittently completed server-side (upstream body finished, res.end()
+// reached) with the client never observing termination, hitting its 90s hard
+// cap instead of a clean close). A pooled/reused keep-alive socket is the
+// same class of Render+node-fetch issue documented above for Fitbit; this is
+// a precedented, low-risk mitigation (a fresh TLS handshake per call is
+// negligible next to multi-second Sonnet generation time). Not proven to be
+// the root cause with certainty — see the "response FINISHED"/"response
+// CLOSED" logs in pipeAnthropicStream() for confirmation if this recurs.
+const anthropicStreamAgent = new https.Agent({ keepAlive: false });
+
 // Retry wrapper for transient network flakiness ("Premature close" /
 // ECONNRESET / ETIMEDOUT / EPIPE) seen intermittently against multiple
 // external hosts (Supabase, Fitbit). GET-ONLY: non-GET requests can have
@@ -4901,6 +4912,23 @@ async function pipeAnthropicStream(upstream, controller, res, label) {
   });
   if (typeof res.flushHeaders === "function") res.flushHeaders();
 
+  // "stream complete" below only means the upstream Anthropic body finished
+  // and res.end() was CALLED — it says nothing about whether the response
+  // actually finished flushing to the socket or the connection actually
+  // closed. Node's 'finish' event fires once all buffered data has been
+  // handed to the OS; 'close' fires once the underlying connection is fully
+  // torn down. Logging both separately from "stream complete" lets a future
+  // incident show whether end() was reached but never actually flushed
+  // (proxy/socket issue) vs never reached at all (a real code bug).
+  var resFinished = false;
+  res.on("finish", function() {
+    resFinished = true;
+    console.log("[AI] " + label + " response FINISHED (fully flushed to socket)");
+  });
+  res.on("close", function() {
+    console.log("[AI] " + label + " response CLOSED (connection torn down), finished=" + resFinished);
+  });
+
   let buffer = "";
   let usage = null;
   let wroteAny = false;
@@ -4954,8 +4982,18 @@ async function pipeAnthropicStream(upstream, controller, res, label) {
       " cache_write=" + (usage.cache_creation_input_tokens || 0) +
       " cache_read=" + (usage.cache_read_input_tokens || 0));
   }
+  // NOTE: this log means "upstream Anthropic body finished and we're about to
+  // call res.end()" — it is NOT proof the client received termination. Watch
+  // for the "response FINISHED"/"response CLOSED" logs above to confirm the
+  // actual HTTP response completed; if "stream complete" appears without a
+  // matching FINISHED/CLOSED shortly after, res.end() itself is the problem
+  // (see the try/catch below — it would show up as a caught error here).
   console.log("[AI] " + label + " stream complete, wroteAny=" + wroteAny);
-  res.end();
+  try {
+    res.end();
+  } catch (endErr) {
+    console.error("[AI] " + label + " res.end() threw:", endErr && endErr.message);
+  }
   return fullText;
 }
 
@@ -5017,6 +5055,7 @@ app.post("/api/ai", async function(req, res) {
       },
       body: JSON.stringify(forwarded),
       signal: controller.signal,
+      agent: anthropicStreamAgent,
     });
     console.log("[AI] Anthropic response status=" + response.status + " model=" + chosenModel + (wantStream ? " (streaming)" : ""));
 
@@ -5075,7 +5114,32 @@ app.post("/api/ai", async function(req, res) {
 // pressure that forced the 6000-char prompt trim in the June reliability
 // pass — CHAT_CHAR_GUARD below is sized for prompt quality/cost, not a race
 // against a timeout.
-var CHAT_SYSTEM_PERSONA = "You are ApexCoach's AI coach, talking directly with the athlete in an ongoing chat. You know their training history, goals, biometrics, and schedule — the ATHLETE SNAPSHOT below is real and current, not hypothetical. Speak like a coach who is paying attention: be specific, reference their actual numbers and recent sessions when it's relevant, and don't force answers into a rigid format — plain conversational text (light markdown for lists/emphasis is fine) is expected here, unlike the structured JSON used elsewhere in the app. You can help them think through workout, goal, schedule, and routine tweaks, but you have no tool to directly edit their data — if they want a change made, tell them where to make it in the app rather than implying you already made it. Keep responses focused; skip disclaimers and padding.";
+// LENGTH IS LOAD-BEARING, not just style. Anthropic will not create/read a
+// prompt cache entry for a system block under its per-model minimum cacheable
+// length — 1024 tokens for Sonnet (the model coach_chat uses), 2048 for
+// Haiku (per Anthropic's prompt-caching docs). Fixed 2026-07-15: coach_chat
+// was logging cache_write=0/cache_read=0 on every call — not a bug in
+// wrapSystemWithCache() (verified structurally identical to daily_recs' path)
+// but because CHAT_SYSTEM_PERSONA + a deliberately condensed athlete snapshot
+// (Part A's fix) was landing well under 1024 tokens for a typical athlete
+// (~270 tokens measured against a realistic 8-goal test profile). The fix
+// belongs in this STABLE, athlete-independent block, not in snapshot
+// padding — padding the snapshot would make caching depend on how much data
+// a given athlete happens to have, which is exactly the kind of unreliable
+// lever this avoids. Currently ~4950 characters (~1200+ tokens by a
+// conservative 4 chars/token estimate) — comfortably over the 1024-token
+// floor with margin for tokenizer variance. Keep it above ~4500 characters;
+// if you trim this content, re-check the threshold isn't broken again
+// (usage log's cache_write/cache_read on a first vs. repeat message is the
+// real test — see "Verifying prompt caching" in CLAUDE.md).
+var CHAT_SYSTEM_PERSONA =
+  "You are ApexCoach's AI coach — the same coaching intelligence that generates this athlete's daily workout recommendations, now available for open-ended conversation. You are not a generic fitness chatbot: you know this specific athlete's real training history, goals, biometrics, and schedule, and every response should read like it comes from someone who has actually been paying attention to their training, not from a template.\n\n" +
+  "WHAT YOU KNOW: the ATHLETE SNAPSHOT below (rebuilt fresh for this message, never stale) contains, when present: the athlete's name and profile context (injuries, equipment, training environment); ALL of their long-term goals in priority order — not just the top few, every goal listed is real and current, including ones that might seem minor, like a specific injury or mobility target; their active short-horizon challenges with live progress; a standing Focus Override directive if one is currently active — this is the athlete's own explicit instruction about what to emphasize right now, treat it as a strong signal, not a suggestion you can ignore; their weekly training schedule (fixed sessions, frequency targets, add-ons); today's readiness score if one has been generated yet; their latest cached sleep, HRV, RHR, steps, and weight; and a condensed log of the last 7 days of actual training. If a section is missing from the snapshot, the athlete genuinely has no data there yet — don't invent it, and don't apologize for its absence, just work with what's actually there.\n\n" +
+  "HOW TO TALK: conversational, direct, and specific — reference real numbers, real exercise names, and real dates when they're relevant to the question. Plain text with light markdown (short lists, bold for emphasis) is fine and usually clearer than dense paragraphs; you are NOT required to return JSON or any fixed structure here, unlike the daily recommendation cards elsewhere in the app. Match the athlete's register — casual questions get casual answers, precise technical questions get precise answers. Never pad a short answer with disclaimers, safety boilerplate, or \"as an AI\" framing — get to the point.\n\n" +
+  "WHAT YOU CAN'T DO: you have no tool to directly edit the athlete's goals, schedule, challenges, or logged workouts from this chat. If they ask you to change something, tell them exactly where in the app to make that change (for example, \"update that under Profile > Schedule\") — never imply you've already made an edit you haven't made. You also don't have live wearable data beyond what's in the snapshot — no live Fitbit or Google Health call happens per message, only the last cached sync — so if they ask about something more current than the snapshot's timestamp, say so plainly instead of guessing.\n\n" +
+  "COACHING JUDGMENT: weigh advice against injuries and physical limitations mentioned in their profile context — never suggest something that would aggravate a known issue. Treat their active challenges and any standing Focus Override as close to non-negotiable unless the athlete is explicitly asking you to reconsider them. When discussing schedule or workout changes, reason from what's actually in their schedule and recent training log, not generic fitness advice divorced from their real data. If a question falls genuinely outside what the snapshot covers — nutrition specifics, something with zero connection to their logged data — answer as a knowledgeable coach would, but be upfront that you're reasoning generally rather than from their specific numbers.\n\n" +
+  "CONVERSATION MEMORY: this is a persistent, ongoing thread, not a one-shot exchange — the athlete may return to it days or weeks apart. Recent turns appear below as normal conversation history; once a thread gets long, its older portion gets folded into a short running summary (you'll see it as \"EARLIER IN THIS CONVERSATION (summarized)\" after the snapshot, when present) rather than kept verbatim — treat that summary as reliable background, not something to re-litigate or ask the athlete to repeat. Don't re-introduce yourself or re-explain what you are partway through an existing thread; pick up naturally from where the conversation left off, the way an actual coach who remembers the last conversation would.\n\n" +
+  "VOICE CALIBRATION, concretely: if asked \"should I train today?\" a bad answer is a generic essay on recovery science; a good answer opens with a direct read of their actual readiness/sleep/HRV from the snapshot and what it means for THEM today, in a sentence or two, before any elaboration they didn't ask for. If asked about a specific goal, name it and its current status rather than describing goals in the abstract. If they vent about a bad session or an injury flare-up, acknowledge it briefly like a person would, then move to something useful — don't clinically dissect their feelings. You're a knowledgeable training partner who happens to have their full history in front of them, not a customer-support agent working from a script.";
 
 // Combined system-snapshot + thread-history budget for one chat call. Chat
 // streams (see above), so this is NOT sized against a non-streamed-timeout
@@ -5520,23 +5584,29 @@ app.post("/api/profiles/:id/chat/message", async function(req, res) {
     messages.push({ role: "user", content: text });
 
     var guarded = enforceChatCharGuard(systemText, messages, CHAT_CHAR_GUARD);
+    var system = wrapSystemWithCache(guarded.system, "coach_chat");
 
     if (debug) {
+      // Return the ACTUAL wrapped structure (post cache_control), not the
+      // pre-wrap string — this must be exactly what gets sent to Anthropic,
+      // or the debug endpoint is useless for diagnosing caching issues like
+      // the 2026-07-15 cache_write=0 bug this endpoint helped confirm.
+      var systemCharsRaw = guarded.system.length; // for the ~1024-token cache-minimum estimate
       return res.json({
         debug: true,
         snapshot: snapshot,
         snapshot_chars: snapshot.length,
-        system: guarded.system,
-        system_chars: guarded.system.length,
+        system: system,
+        system_chars_raw: systemCharsRaw,
+        system_est_tokens: Math.round(systemCharsRaw / 4),
+        cache_control_present: Array.isArray(system) && system.some(function(b) { return b && b.cache_control; }),
         messages: guarded.messages,
         messages_chars: JSON.stringify(guarded.messages).length,
-        combined_chars: guarded.system.length + JSON.stringify(guarded.messages).length,
+        combined_chars: systemCharsRaw + JSON.stringify(guarded.messages).length,
         char_guard: CHAT_CHAR_GUARD,
         trimmed_history: guarded.trimmed,
       });
     }
-
-    var system = wrapSystemWithCache(guarded.system, "coach_chat");
 
     await insertChatMessage(thread.id, "user", text);
 
@@ -5559,6 +5629,7 @@ app.post("/api/profiles/:id/chat/message", async function(req, res) {
       },
       body: JSON.stringify(forwarded),
       signal: controller.signal,
+      agent: anthropicStreamAgent,
     });
     clearTimeout(timeoutId);
 
@@ -7546,6 +7617,16 @@ app.get("/api/analytics/exercise-stats/:userId/:exerciseName", async function(re
   }
 });
 
-app.listen(PORT, function() {
+const httpServer = app.listen(PORT, function() {
   console.log("ApexCoach running on port " + PORT);
 });
+// Standard mitigation for Node apps behind a reverse proxy (Render): the
+// proxy's own idle-connection timeout is commonly ~60s. If Node's keep-alive
+// timeout is shorter (default 5s) or close to the proxy's, the proxy can race
+// a new request onto a connection Node is already closing, or hold a
+// keep-alive connection whose eventual teardown looks like exactly the kind
+// of "response completed server-side but the client never saw termination"
+// symptom investigated in the 2026-07-15 daily_recs streaming bug (see
+// ROADMAP.md). headersTimeout must exceed keepAliveTimeout (Node requirement).
+httpServer.keepAliveTimeout = 65000;
+httpServer.headersTimeout = 66000;
