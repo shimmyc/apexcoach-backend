@@ -6440,10 +6440,7 @@ async function maybeAutoOfferRoadmapRegen(threadId, profileId, goal) {
     var existing = await fetch(SUPABASE_URL + "/rest/v1/chat_proposals?thread_id=eq." + threadId + "&type=eq.regenerate_goal_roadmap&status=eq.pending&select=id,payload", { headers: sbHeaders() });
     var existingRows = await existing.json();
     var alreadyPending = Array.isArray(existingRows) && existingRows.some(function(r) { return r.payload && r.payload.goal_id === goal.id; });
-    // TEMP DIAGNOSTIC (2026-07-15, remove after live verification): surface
-    // exactly why this returns null instead of a proposal, since Render logs
-    // aren't reachable from this session.
-    if (alreadyPending) return { _diag: "dedup-skip", existingRows: existingRows };
+    if (alreadyPending) return null;
 
     var proposalData = await computeRoadmapRegenProposal(profileId, {
       goal_id: goal.id,
@@ -6453,16 +6450,18 @@ async function maybeAutoOfferRoadmapRegen(threadId, profileId, goal) {
     // — it was designed assuming every proposal originates from a model tool
     // call. This one doesn't, so a synthetic sentinel stands in; caught live
     // (2026-07-15) as a real 23502 not-null-constraint error on the first
-    // attempt, not by reading the schema.
+    // attempt, not by reading the schema. Also needed migrations/2026-07-15_
+    // chat_proposals_regen_type.sql — the type CHECK constraint didn't allow
+    // this value either (a second real error caught live, run manually).
     var row = await createChatProposal(threadId, "server:auto-offer-roadmap-regen", "regenerate_goal_roadmap", proposalData);
     // createChatProposal() doesn't check r.ok — a Supabase insert error comes
     // back as an error object, not an array, so `row` would be that object
-    // rather than a real proposal row (caught live, see the tool_use_id note
-    // above). Guard here rather than fixing createChatProposal() globally, to
-    // keep this fix scoped to the one caller that actually hit it.
+    // rather than a real proposal row (caught live, see the notes above).
+    // Guard here rather than fixing createChatProposal() globally, to keep
+    // this fix scoped to the one caller that actually hit it.
     if (!row || !row.id) {
       console.error("[Chat] auto-offer roadmap regen: createChatProposal returned no row for goal " + goal.id + ":", JSON.stringify(row));
-      return { _diag: "createChatProposal-no-row", row: row };
+      return null;
     }
     await insertChatMessage(threadId, "user",
       "[The app automatically offered to regenerate the roadmap for \"" + (goal.title || "this goal") +
@@ -6474,7 +6473,7 @@ async function maybeAutoOfferRoadmapRegen(threadId, profileId, goal) {
     // confirm. computeRoadmapRegenProposal's own noop (no roadmap) lands here
     // too, harmlessly.
     console.error("[Chat] auto-offer roadmap regen failed for goal " + goal.id + ":", e && e.message);
-    return { _diag: "exception", message: e && e.message, noop: !!e.noop };
+    return null;
   }
 }
 
