@@ -301,6 +301,23 @@ input[type=range]{width:100%;accent-color:var(--accent)}
 #chat-view .cv-mic-btn{background:var(--bg-surface-2);border:none;color:var(--text-muted);width:36px;height:36px;border-radius:50%;font-size:15px;cursor:pointer;flex-shrink:0}
 #chat-view .cv-send-btn{background:var(--accent-cornerman);border:none;color:#fff;width:40px;height:40px;border-radius:50%;font-size:16px;cursor:pointer;flex-shrink:0;display:flex;align-items:center;justify-content:center}
 #chat-view .cv-send-btn:disabled{opacity:.5;cursor:default}
+/* Tool-use confirmation cards (2026-07-15) — Cornerman-accented, matching the
+   AI-attribution border-ai/accent-cornerman convention used elsewhere; Ember
+   Confirm as the primary CTA per spec. */
+#chat-view .cv-proposal-card{background:var(--bg-surface-2);border:1px solid var(--border-ai);border-radius:12px;padding:14px;margin-top:8px;max-width:85%;align-self:flex-start}
+#chat-view .cv-proposal-title{font-size:13px;font-weight:700;color:var(--accent-cornerman);margin-bottom:6px;font-family:'Inter',sans-serif}
+#chat-view .cv-proposal-reason{font-size:12px;color:var(--text-muted);margin-bottom:8px;font-style:italic;line-height:1.4}
+#chat-view .cv-proposal-changes{font-size:13px;color:var(--text-primary);margin-bottom:10px;display:flex;flex-direction:column;gap:4px;font-family:'Inter',sans-serif}
+#chat-view .cv-proposal-change-label{color:var(--text-muted);font-size:11px;text-transform:uppercase;letter-spacing:.04em;margin-right:6px}
+#chat-view .cv-proposal-arrow{color:var(--accent-cornerman);margin:0 4px}
+#chat-view .cv-proposal-actions{display:flex;gap:8px}
+#chat-view .cv-proposal-confirm{flex:1;background:var(--accent-ember);border:none;color:#fff;padding:9px 12px;border-radius:9999px;font-size:13px;font-weight:600;cursor:pointer;font-family:'Inter',sans-serif}
+#chat-view .cv-proposal-confirm:disabled{opacity:.5;cursor:default}
+#chat-view .cv-proposal-cancel{flex:1;background:transparent;border:1px solid var(--border-subtle);color:var(--text-muted);padding:9px 12px;border-radius:9999px;font-size:13px;font-weight:600;cursor:pointer;font-family:'Inter',sans-serif}
+#chat-view .cv-proposal-cancel:disabled{opacity:.5;cursor:default}
+#chat-view .cv-proposal-status{font-size:12px;font-weight:600;padding:6px 0;font-family:'Inter',sans-serif}
+#chat-view .cv-proposal-status.confirmed{color:var(--color-positive)}
+#chat-view .cv-proposal-status.canceled{color:var(--text-muted)}
 /* Desktop: docked bottom-right panel instead of a fullscreen takeover.
    Breakpoint matches the app's existing mobile/desktop nav split (768/769px —
    see "BOTTOM NAV (mobile)" rules above), not the separate 700px breakpoint
@@ -5430,8 +5447,139 @@ var cvCloseTimer = null;
 var cvLoaded = false;      // thread history has been fetched at least once this session
 var cvSending = false;     // guards double-send while a request is in flight
 var cvPendingRetry = null; // {text, attempt, timer} for the message currently in its backoff wait
+var cvProposalsById = {};  // {id: {id,type,status,payload}} — always the source of truth for a card's
+                            // status; populated from GET /chat/thread's `proposals` array on load and
+                            // merged with freshly-created ones parsed off a live streamed reply. A
+                            // stored message's embedded [[APEXCOACH_PROPOSALS]] marker may have a
+                            // stale/frozen status baked in from when it streamed — this map always wins.
 
 function cvEsc(s) { var d = document.createElement('div'); d.textContent = (s == null ? '' : s); return d.innerHTML; }
+
+// Strips the server-authored (never model-generated) [[APEXCOACH_PROPOSALS]]
+// marker block off the end of a message's text, returning the clean text to
+// render as the bubble plus the parsed proposals array (or null if none/parse
+// failed). Applied on every render — including mid-stream — so a chunk that
+// only partially contains the marker just renders as normal growing text
+// until the closing tag has fully arrived.
+function cvStripProposalMarker(text) {
+  var re = /\n\n\[\[APEXCOACH_PROPOSALS\]\]\n([\s\S]*?)\n\[\[\/APEXCOACH_PROPOSALS\]\]/;
+  var m = text.match(re);
+  if (!m) return { cleanText: text, proposals: null };
+  var proposals = null;
+  try { proposals = JSON.parse(m[1]); } catch (e) {}
+  return { cleanText: text.slice(0, m.index), proposals: proposals };
+}
+
+function cvFormatProposalValue(v) {
+  if (v === null || v === undefined || v === '') return '(none)';
+  if (typeof v === 'boolean') return v ? 'on' : 'off';
+  return String(v);
+}
+
+function cvProposalStatusHtml(status) {
+  if (status === 'confirmed') return '<div class="cv-proposal-status confirmed">&#10003; Applied</div>';
+  if (status === 'canceled') return '<div class="cv-proposal-status canceled">Canceled</div>';
+  return '';
+}
+
+function cvRenderProposalCardHtml(p) {
+  var payload = p.payload || {};
+  var changesHtml = (payload.changes || []).map(function(c) {
+    return '<div><span class="cv-proposal-change-label">' + cvEsc(c.label || c.field) + '</span>' +
+      cvEsc(cvFormatProposalValue(c.before)) + '<span class="cv-proposal-arrow">&rarr;</span>' + cvEsc(cvFormatProposalValue(c.after)) + '</div>';
+  }).join('');
+  var actionsHtml = p.status === 'pending'
+    ? '<div class="cv-proposal-actions"><button type="button" class="cv-proposal-confirm" onclick="cvConfirmProposal(' + p.id + ')">Confirm</button><button type="button" class="cv-proposal-cancel" onclick="cvCancelProposal(' + p.id + ')">Cancel</button></div>'
+    : cvProposalStatusHtml(p.status);
+  return '<div class="cv-proposal-card" data-proposal-id="' + p.id + '">' +
+    '<div class="cv-proposal-title">' + cvEsc(payload.title || 'Proposed change') + '</div>' +
+    (payload.reason ? '<div class="cv-proposal-reason">' + cvEsc(payload.reason) + '</div>' : '') +
+    '<div class="cv-proposal-changes">' + changesHtml + '</div>' +
+    actionsHtml + '</div>';
+}
+
+// Appends one card per id (skipping any id not found in cvProposalsById —
+// shouldn't happen, but a missing card is safer than a broken one) after the
+// current last child of #cv-messages.
+function cvAppendProposalCards(proposalIds) {
+  var m = document.getElementById('cv-messages');
+  if (!m) return;
+  (proposalIds || []).forEach(function(id) {
+    var p = cvProposalsById[id];
+    if (!p) return;
+    var wrap = document.createElement('div');
+    wrap.innerHTML = cvRenderProposalCardHtml(p);
+    m.appendChild(wrap.firstChild);
+  });
+  cvScrollToBottom();
+}
+
+function cvSetProposalCardStatus(id, status) {
+  if (!cvProposalsById[id]) return;
+  cvProposalsById[id].status = status;
+  var card = document.querySelector('.cv-proposal-card[data-proposal-id="' + id + '"]');
+  if (!card) return;
+  var actionsEl = card.querySelector('.cv-proposal-actions');
+  if (actionsEl) {
+    var replacement = document.createElement('div');
+    replacement.innerHTML = cvProposalStatusHtml(status);
+    actionsEl.replaceWith(replacement.firstChild);
+  }
+}
+
+function cvProposalButtonsBusy(id, busy) {
+  var card = document.querySelector('.cv-proposal-card[data-proposal-id="' + id + '"]');
+  if (!card) return;
+  card.querySelectorAll('button').forEach(function(b) { b.disabled = busy; });
+}
+
+function cvConfirmProposal(id) {
+  cvProposalButtonsBusy(id, true);
+  fetch('/api/profiles/' + currentProfileId + '/chat/proposals/' + id + '/confirm', { method: 'POST' })
+    .then(function(r) { return r.json().then(function(data) { return { ok: r.ok, data: data }; }); })
+    .then(function(res) {
+      if (!res.ok || !res.data.success) throw new Error((res.data.error && res.data.error.message) || 'Confirm failed');
+      cvSetProposalCardStatus(id, 'confirmed');
+      cvRefreshProfileAfterApply();
+    })
+    .catch(function(e) {
+      console.error('[Chat] confirm proposal failed:', e);
+      cvProposalButtonsBusy(id, false);
+    });
+}
+
+function cvCancelProposal(id) {
+  cvProposalButtonsBusy(id, true);
+  fetch('/api/profiles/' + currentProfileId + '/chat/proposals/' + id + '/cancel', { method: 'POST' })
+    .then(function(r) { return r.json().then(function(data) { return { ok: r.ok, data: data }; }); })
+    .then(function(res) {
+      if (!res.ok || !res.data.success) throw new Error((res.data.error && res.data.error.message) || 'Cancel failed');
+      cvSetProposalCardStatus(id, 'canceled');
+    })
+    .catch(function(e) {
+      console.error('[Chat] cancel proposal failed:', e);
+      cvProposalButtonsBusy(id, false);
+    });
+}
+
+// Applied goal/focus-override changes happen server-side via the chat
+// endpoint, not through any client mutation the page already knows about —
+// so re-fetch the profile and refresh the same caches/renders the app's own
+// goal-edit and focus-override-save flows update, rather than a full reload.
+function cvRefreshProfileAfterApply() {
+  if (!currentProfileId) return;
+  fetch('/api/profiles/' + currentProfileId)
+    .then(function(r) { return r.json(); })
+    .then(function(data) {
+      if (!data || !data.success || !data.profile) return;
+      currentProfileData = data.profile.profile_data;
+      try { localStorage.setItem('ac_profile_data', JSON.stringify(currentProfileData)); } catch (e) {}
+      localStorage.removeItem('ac_goal_progress');
+      try { if (typeof renderProfileGoals === 'function') renderProfileGoals(); } catch (e) {}
+      try { if (typeof renderFocusOverrideCard === 'function') renderFocusOverrideCard(); } catch (e) {}
+    })
+    .catch(function(e) { console.error('[Chat] profile refresh after apply failed:', e); });
+}
 
 function openChatView() {
   if (cvCloseTimer) { clearTimeout(cvCloseTimer); cvCloseTimer = null; }
@@ -5480,12 +5628,22 @@ function loadChatThread() {
       cvLoaded = true;
       if (!m) return;
       m.innerHTML = '';
+      cvProposalsById = {};
+      ((data && data.proposals) || []).forEach(function(p) { cvProposalsById[p.id] = p; });
       var msgs = (data && data.messages) || [];
       if (!msgs.length) {
         m.innerHTML = '<p class="cv-empty">Ask about your training, goals, or schedule — your coach knows your current data.</p>';
         return;
       }
-      msgs.forEach(function(msg) { cvAppendBubble(msg.role, msg.content); });
+      msgs.forEach(function(msg) {
+        var stripped = cvStripProposalMarker(msg.content);
+        cvAppendBubble(msg.role, stripped.cleanText);
+        // Trust cvProposalsById's live status, not the (possibly stale)
+        // status frozen inside this stored message's marker.
+        if (stripped.proposals && stripped.proposals.length) {
+          cvAppendProposalCards(stripped.proposals.map(function(p) { return p.id; }));
+        }
+      });
       cvScrollToBottom();
     })
     .catch(function(e) {
@@ -5549,7 +5707,12 @@ function sendChatMessage(retryText, retryAttempt) {
           resetIdle();
           acc += decoder.decode(res.value, { stream: true });
           if (!bubble) { if (typing.parentNode) typing.remove(); bubble = cvAppendBubble('assistant', '', { pending: true }); }
-          bubble.innerHTML = parseMd(acc);
+          // Strip the proposal marker on every render, not just at the end —
+          // until the closing tag has fully arrived this is a no-op and the
+          // bubble just grows normally; once it arrives, the raw
+          // [[APEXCOACH_PROPOSALS]] JSON never flashes into view even for a
+          // frame, since it's already stripped from what parseMd sees.
+          bubble.innerHTML = parseMd(cvStripProposalMarker(acc).cleanText);
           cvScrollToBottom();
           return pump();
         });
@@ -5560,12 +5723,17 @@ function sendChatMessage(retryText, retryAttempt) {
   }).then(function() {
     clearTimers();
     if (typing.parentNode) typing.remove();
+    var stripped = cvStripProposalMarker(acc);
     if (!bubble) {
-      if (acc.trim()) bubble = cvAppendBubble('assistant', acc);
+      if (stripped.cleanText.trim()) bubble = cvAppendBubble('assistant', stripped.cleanText);
       else cvAppendBubble('assistant', '_(no response — try again)_');
     } else {
       bubble.classList.remove('cv-pending');
-      bubble.innerHTML = parseMd(acc);
+      bubble.innerHTML = parseMd(stripped.cleanText);
+    }
+    if (stripped.proposals && stripped.proposals.length) {
+      stripped.proposals.forEach(function(p) { cvProposalsById[p.id] = p; });
+      cvAppendProposalCards(stripped.proposals.map(function(p) { return p.id; }));
     }
     cvSending = false;
     if (sendBtn) sendBtn.disabled = false;
@@ -8047,6 +8215,17 @@ function buildResponseShapeSpec(aiNumOpts, aiShowMV) {
     ',"warning":"one specific caution based on the data, or null"}';
 }
 
+// Shared expert-reasoning core (2026-07-15) — same S&C-coach reasoning
+// standard and sports-medicine-informed (non-diagnostic) judgment as
+// server.js's copy (var EXPERT_REASONING_CORE, appended into
+// CHAT_SYSTEM_PERSONA there). No shared module system exists between this
+// static frontend and the Node backend, so this is a deliberate duplicate —
+// KEEP BOTH COPIES IN SYNC, edit both the same way if you change either.
+// Addition to the existing persona/rules text below, not a rewrite of it.
+var EXPERT_REASONING_CORE =
+  'EXPERT REASONING STANDARD: reason like a veteran strength & conditioning coach, not a generic assistant. Manage weekly load and recovery deliberately — weigh advice against actual recent volume and frequency from their real log, not a vague sense they\'ve "been training a lot." Apply progressive overload with real specifics: name the actual increment (+5-10lbs, +1-2 reps, +5-10s hold), not "add more." Know when to hold a load steady (a plateau isn\'t automatically a signal to push harder) versus when to call a deload (accumulated fatigue, declining performance, readiness trending down). Respect interference effects — never stack two high-CNS sessions (heavy strength, hard sparring, max-effort conditioning) back-to-back without a lighter day between. Treat readiness, HRV, and RHR as autoregulation inputs that change the plan — not color commentary you mention then ignore.\n\n' +
+  'Sports-medicine-informed judgment, explicitly NOT diagnosing. Use load-tolerance logic on pain: pain that warms up and eases with movement differs from pain that builds or worsens under load — determine which before suggesting how to train around or rehab an issue. If something suggests more than training management — persistent/worsening pain, anything neurological (numbness, tingling, weakness, radiating pain) — say so plainly, name why, and point to a PT or physician. Never name a specific diagnosis.\n\n';
+
 // Build the full system prompt (persona + rules + format + JSON shape).
 function buildSystemPrompt(opts) {
   opts = opts || {};
@@ -8103,7 +8282,7 @@ function buildSystemPrompt(opts) {
     altInstruction = 'CATEGORY FILTER: The user has manually chosen to do a ' + opts.category + ' workout today instead of their scheduled activity. Generate ' + aiNumOpts + ' ' + opts.category + ' options ONLY — the schedule instruction does NOT apply to this call. If any option slips into a non-' + opts.category + ' category, the response is wrong. Still respect readiness, injuries, equipment, micro-goals, and include the daily-habit micro-goals in every option including Minimum Viable.\n\n';
   }
 
-  return persona + style + rules + altInstruction + buildResponseShapeSpec(aiNumOpts, aiShowMV);
+  return persona + style + rules + EXPERT_REASONING_CORE + altInstruction + buildResponseShapeSpec(aiNumOpts, aiShowMV);
 }
 
 // ─── MICRO-GOAL AI PROMPT BUILDER ──────────────────────────────────────

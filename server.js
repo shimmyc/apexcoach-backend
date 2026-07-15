@@ -4585,6 +4585,25 @@ async function saveGoalToProfile(profileId, profileData, goalIndex, updatedGoal)
   return updatedGoal;
 }
 
+// Generic sibling of saveGoalToProfile for any other top-level profile_data
+// key (used by Coach Chat's focus-override proposal apply). Same safe
+// pattern: profileData must already be a FULL load (e.g. from
+// loadProfileWithGoals), so writing it back whole is correct — writing only
+// {profile_data: {[key]: value}} directly to Supabase here would REPLACE the
+// whole profile_data column and destroy every other key (goals, schedule,
+// ai_prompt_context, ...). This is not a hypothetical: an earlier draft of
+// the focus-override proposal apply logic made exactly that mistake before
+// it was caught in review.
+async function saveProfileDataField(profileId, profileData, key, value) {
+  profileData[key] = value;
+  await fetch(SUPABASE_URL + "/rest/v1/profiles?id=eq." + profileId, {
+    method: "PATCH",
+    headers: sbHeaders("return=minimal"),
+    body: JSON.stringify({ profile_data: cleanProfileData(profileData) }),
+  });
+  return value;
+}
+
 // Direct Anthropic call with a separate system prompt + single user message.
 // Mirrors callAI() but adds the top-level `system` field.
 async function callAISystem(system, userMsg, maxTokens, model) {
@@ -4897,43 +4916,24 @@ app.get("/api/profiles/:id/goals/:goalId", async function(req, res) {
   }
 });
 
-// Pump an Anthropic streaming (SSE) response straight to the client as plain
-// text. We forward ONLY the text deltas, so the client reassembles the exact
-// same string it previously read from data.content[0].text — no SSE parsing
-// needed on the frontend. Forwarding bytes as they arrive keeps the connection
-// alive past Render's ~25-30s idle-close window (Sonnet's daily_recs can take
-// >25s). A per-chunk idle timeout aborts a hung upstream. See shared/streaming.
-async function pipeAnthropicStream(upstream, controller, res, label) {
-  label = label || "daily_recs";
-  res.set({
-    "Content-Type": "text/plain; charset=utf-8",
-    "Cache-Control": "no-cache, no-transform",
-    "X-Accel-Buffering": "no", // don't let a proxy buffer the stream
-  });
-  if (typeof res.flushHeaders === "function") res.flushHeaders();
-
-  // "stream complete" below only means the upstream Anthropic body finished
-  // and res.end() was CALLED — it says nothing about whether the response
-  // actually finished flushing to the socket or the connection actually
-  // closed. Node's 'finish' event fires once all buffered data has been
-  // handed to the OS; 'close' fires once the underlying connection is fully
-  // torn down. Logging both separately from "stream complete" lets a future
-  // incident show whether end() was reached but never actually flushed
-  // (proxy/socket issue) vs never reached at all (a real code bug).
-  var resFinished = false;
-  res.on("finish", function() {
-    resFinished = true;
-    console.log("[AI] " + label + " response FINISHED (fully flushed to socket)");
-  });
-  res.on("close", function() {
-    console.log("[AI] " + label + " response CLOSED (connection torn down), finished=" + resFinished);
-  });
-
+// Pump ONE Anthropic streaming (SSE) response leg, writing text deltas
+// straight to `res` as plain text (forwarding ONLY the text, so the client
+// reassembles the exact string it previously read from data.content[0].text
+// — no SSE parsing needed on the frontend) and collecting any tool_use blocks
+// (their JSON input arrives as incremental input_json_delta events, parsed
+// once the block closes). Does NOT touch response headers and does NOT call
+// res.end() — callers own the response lifecycle so this can run more than
+// once per response (coach_chat's tool loop, see pipeAnthropicToolStream) or
+// exactly once (daily_recs, via pipeAnthropicStream). A per-chunk idle
+// timeout aborts a hung upstream, freshly armed for each leg.
+async function pumpAnthropicLeg(upstream, controller, res, label) {
   let buffer = "";
   let usage = null;
   let wroteAny = false;
   let idleTimer = null;
-  let fullText = ""; // accumulated for callers that need to persist the full reply (e.g. chat)
+  let legText = "";
+  let stopReason = null;
+  let toolBlocks = {}; // content_block index -> {id, name, inputJson, input}
   const armIdle = function() {
     if (idleTimer) clearTimeout(idleTimer);
     idleTimer = setTimeout(function() {
@@ -4957,44 +4957,153 @@ async function pipeAnthropicStream(upstream, controller, res, label) {
         if (!payload) continue;
         let evt;
         try { evt = JSON.parse(payload); } catch (e) { continue; }
-        if (evt.type === "content_block_delta" && evt.delta && evt.delta.type === "text_delta") {
+        if (evt.type === "content_block_start" && evt.content_block && evt.content_block.type === "tool_use") {
+          toolBlocks[evt.index] = { id: evt.content_block.id, name: evt.content_block.name, inputJson: "" };
+        } else if (evt.type === "content_block_delta" && evt.delta && evt.delta.type === "text_delta") {
           res.write(evt.delta.text);
-          fullText += evt.delta.text;
+          legText += evt.delta.text;
           wroteAny = true;
+        } else if (evt.type === "content_block_delta" && evt.delta && evt.delta.type === "input_json_delta" && toolBlocks[evt.index]) {
+          toolBlocks[evt.index].inputJson += (evt.delta.partial_json || "");
+        } else if (evt.type === "content_block_stop" && toolBlocks[evt.index]) {
+          try { toolBlocks[evt.index].input = JSON.parse(toolBlocks[evt.index].inputJson || "{}"); }
+          catch (e) { toolBlocks[evt.index].input = {}; toolBlocks[evt.index].parseError = true; }
         } else if (evt.type === "message_start" && evt.message && evt.message.usage) {
           usage = evt.message.usage;
-        } else if (evt.type === "message_delta" && evt.usage) {
-          usage = Object.assign({}, usage || {}, evt.usage);
+        } else if (evt.type === "message_delta") {
+          if (evt.usage) usage = Object.assign({}, usage || {}, evt.usage);
+          if (evt.delta && evt.delta.stop_reason) stopReason = evt.delta.stop_reason;
         } else if (evt.type === "error") {
           console.error("[AI] stream error event:", JSON.stringify(evt.error || evt));
         }
       }
     }
   } catch (err) {
-    console.error("[AI] " + label + " stream read error:", err && err.message);
+    console.error("[AI] " + label + " leg read error:", err && err.message);
   } finally {
     if (idleTimer) clearTimeout(idleTimer);
   }
 
+  var toolUses = Object.keys(toolBlocks).map(function(k) { return toolBlocks[k]; }).filter(function(t) { return t.id && t.name; });
+  return { legText: legText, usage: usage, wroteAny: wroteAny, stopReason: stopReason, toolUses: toolUses };
+}
+
+// Sets response headers + the finish/close observability logging exactly
+// once per streamed response. "stream complete" (logged in
+// finalizeAnthropicStream below) only means the upstream Anthropic body
+// finished and res.end() was CALLED — it says nothing about whether the
+// response actually finished flushing to the socket or the connection
+// actually closed. Node's 'finish' event fires once all buffered data has
+// been handed to the OS; 'close' fires once the underlying connection is
+// fully torn down. Logging both separately lets a future incident show
+// whether end() was reached but never actually flushed (proxy/socket issue)
+// vs never reached at all (a real code bug) — see the 2026-07-15 daily_recs
+// streaming-termination investigation in ROADMAP.md.
+function startAnthropicStreamResponse(res, label) {
+  res.set({
+    "Content-Type": "text/plain; charset=utf-8",
+    "Cache-Control": "no-cache, no-transform",
+    "X-Accel-Buffering": "no", // don't let a proxy buffer the stream
+  });
+  if (typeof res.flushHeaders === "function") res.flushHeaders();
+  var resFinished = false;
+  res.on("finish", function() {
+    resFinished = true;
+    console.log("[AI] " + label + " response FINISHED (fully flushed to socket)");
+  });
+  res.on("close", function() {
+    console.log("[AI] " + label + " response CLOSED (connection torn down), finished=" + resFinished);
+  });
+}
+
+// Logs the final usage + "stream complete" lines and ends the response — the
+// single finalize point shared by both streaming paths below so the log
+// format (and the finish/close observability) never drifts between them.
+function finalizeAnthropicStream(res, label, usage, wroteAny) {
   if (usage) {
     console.log("[AI] usage (stream): input=" + (usage.input_tokens || 0) +
       " output=" + (usage.output_tokens || 0) +
       " cache_write=" + (usage.cache_creation_input_tokens || 0) +
       " cache_read=" + (usage.cache_read_input_tokens || 0));
   }
-  // NOTE: this log means "upstream Anthropic body finished and we're about to
-  // call res.end()" — it is NOT proof the client received termination. Watch
-  // for the "response FINISHED"/"response CLOSED" logs above to confirm the
-  // actual HTTP response completed; if "stream complete" appears without a
-  // matching FINISHED/CLOSED shortly after, res.end() itself is the problem
-  // (see the try/catch below — it would show up as a caught error here).
   console.log("[AI] " + label + " stream complete, wroteAny=" + wroteAny);
   try {
     res.end();
   } catch (endErr) {
     console.error("[AI] " + label + " res.end() threw:", endErr && endErr.message);
   }
-  return fullText;
+}
+
+// Single-leg streaming path — used by daily_recs, which never sends tools.
+// External behavior is UNCHANGED from before the 2026-07-15 tool-use
+// refactor (same call site, same signature, same return value): sets
+// headers, pumps exactly one Anthropic leg, logs usage + stream-complete,
+// ends the response, returns the accumulated text.
+async function pipeAnthropicStream(upstream, controller, res, label) {
+  label = label || "daily_recs";
+  startAnthropicStreamResponse(res, label);
+  var leg = await pumpAnthropicLeg(upstream, controller, res, label);
+  finalizeAnthropicStream(res, label, leg.usage, leg.wroteAny);
+  return leg.legText;
+}
+
+// Multi-leg streaming path for coach_chat's tool use. Loops: pump a leg; if
+// the model's stop_reason is "tool_use", call loopCtx.onToolUse(toolUses) to
+// execute them (v1: this NEVER writes real data — it only creates pending
+// chat_proposals rows, see executeProposalTool()) and get back tool_result
+// content blocks, then loopCtx.fetchNextLeg(...) to re-POST to Anthropic with
+// those results appended and continue. Capped at CHAT_MAX_TOOL_LEGS. Text
+// from every leg is written to the client and concatenated as it arrives,
+// exactly like the single-leg path — there is no hidden or suppressed model
+// text. loopCtx.onBeforeFinalize (if provided) runs after the loop ends and
+// may return a trailing string (the server-authored proposal marker, never
+// model-generated) appended to the stream before it closes.
+async function pipeAnthropicToolStream(initialUpstream, controller, res, label, loopCtx) {
+  startAnthropicStreamResponse(res, label);
+  var fullText = "";
+  var usage = null;
+  var wroteAny = false;
+  var upstream = initialUpstream;
+  var legCount = 0;
+  var lastLeg = null;
+
+  while (upstream && legCount < CHAT_MAX_TOOL_LEGS) {
+    legCount++;
+    var leg = await pumpAnthropicLeg(upstream, controller, res, label);
+    fullText += leg.legText;
+    if (leg.usage) usage = leg.usage;
+    wroteAny = wroteAny || leg.wroteAny;
+    lastLeg = leg;
+
+    if (leg.stopReason !== "tool_use" || !leg.toolUses.length) break;
+
+    var toolOutcome = await loopCtx.onToolUse(leg.toolUses).catch(function(e) {
+      console.error("[AI] " + label + " onToolUse failed:", e && e.message);
+      return null;
+    });
+    if (!toolOutcome) break;
+
+    upstream = await loopCtx.fetchNextLeg(leg, toolOutcome.toolResultBlocks).catch(function(e) {
+      console.error("[AI] " + label + " fetchNextLeg failed:", e && e.message);
+      return null;
+    });
+    if (!upstream || !upstream.ok) break;
+  }
+
+  if (loopCtx.onBeforeFinalize) {
+    var marker = await loopCtx.onBeforeFinalize().catch(function(e) {
+      console.error("[AI] " + label + " onBeforeFinalize failed:", e && e.message);
+      return "";
+    });
+    if (marker) {
+      res.write(marker);
+      fullText += marker;
+      wroteAny = true;
+    }
+  }
+
+  finalizeAnthropicStream(res, label, usage, wroteAny);
+  return { fullText: fullText, legCount: legCount, finalStopReason: lastLeg && lastLeg.stopReason };
 }
 
 // ── AI PROXY ──────────────────────────────────────────────────────────────
@@ -5114,6 +5223,19 @@ app.post("/api/ai", async function(req, res) {
 // pressure that forced the 6000-char prompt trim in the June reliability
 // pass — CHAT_CHAR_GUARD below is sized for prompt quality/cost, not a race
 // against a timeout.
+// Shared expert-reasoning core (2026-07-15) — the same S&C-coach reasoning
+// standard and sports-medicine-informed (non-diagnostic) judgment injected
+// into BOTH coaching prompts: here (appended into CHAT_SYSTEM_PERSONA below)
+// and client-side in public/index.html's buildSystemPrompt() (its own copy,
+// var EXPERT_REASONING_CORE, defined right before that function — no shared
+// module system exists between this Node backend and the static HTML/JS
+// frontend, so this is a deliberate duplicate, not a bug. KEEP BOTH COPIES IN
+// SYNC — if you edit one, edit the other the same way. This is an ADDITION to
+// each prompt's existing personalization/voice text, not a rewrite of it.
+var EXPERT_REASONING_CORE =
+  "EXPERT REASONING STANDARD: reason like a veteran strength & conditioning coach, not a generic assistant. Manage weekly load and recovery deliberately — weigh advice against actual recent volume and frequency from their real log, not a vague sense they've \"been training a lot.\" Apply progressive overload with real specifics: name the actual increment (+5-10lbs, +1-2 reps, +5-10s hold), not \"add more.\" Know when to hold a load steady (a plateau isn't automatically a signal to push harder) versus when to call a deload (accumulated fatigue, declining performance, readiness trending down). Respect interference effects — never stack two high-CNS sessions (heavy strength, hard sparring, max-effort conditioning) back-to-back without a lighter day between. Treat readiness, HRV, and RHR as autoregulation inputs that change the plan — not color commentary you mention then ignore.\n\n" +
+  "Sports-medicine-informed judgment, explicitly NOT diagnosing. Use load-tolerance logic on pain: pain that warms up and eases with movement differs from pain that builds or worsens under load — determine which before suggesting how to train around or rehab an issue. If something suggests more than training management — persistent/worsening pain, anything neurological (numbness, tingling, weakness, radiating pain) — say so plainly, name why, and point to a PT or physician. Never name a specific diagnosis.";
+
 // LENGTH IS LOAD-BEARING, not just style. Anthropic will not create/read a
 // prompt cache entry for a system block under its per-model minimum cacheable
 // length — 1024 tokens for Sonnet (the model coach_chat uses), 2048 for
@@ -5134,10 +5256,11 @@ app.post("/api/ai", async function(req, res) {
 // real test — see "Verifying prompt caching" in CLAUDE.md).
 var CHAT_SYSTEM_PERSONA =
   "You are ApexCoach's AI coach — the same coaching intelligence that generates this athlete's daily workout recommendations, now available for open-ended conversation. You are not a generic fitness chatbot: you know this specific athlete's real training history, goals, biometrics, and schedule, and every response should read like it comes from someone who has actually been paying attention to their training, not from a template.\n\n" +
-  "WHAT YOU KNOW: the ATHLETE SNAPSHOT below (rebuilt fresh for this message, never stale) contains, when present: the athlete's name and profile context (injuries, equipment, training environment); ALL of their long-term goals in priority order — not just the top few, every goal listed is real and current, including ones that might seem minor, like a specific injury or mobility target; their active short-horizon challenges with live progress; a standing Focus Override directive if one is currently active — this is the athlete's own explicit instruction about what to emphasize right now, treat it as a strong signal, not a suggestion you can ignore; their weekly training schedule (fixed sessions, frequency targets, add-ons); today's readiness score if one has been generated yet; their latest cached sleep, HRV, RHR, steps, and weight; and a condensed log of the last 7 days of actual training. If a section is missing from the snapshot, the athlete genuinely has no data there yet — don't invent it, and don't apologize for its absence, just work with what's actually there.\n\n" +
+  "WHAT YOU KNOW: the ATHLETE SNAPSHOT below (rebuilt fresh for this message, never stale) contains, when present: the athlete's name and profile context (injuries, equipment, training environment); ALL of their long-term goals in priority order — not just the top few, every goal listed is real and current, including ones that might seem minor, like a specific injury or mobility target; their active short-horizon challenges with live progress; a standing Focus Override directive if one is currently active — this is the athlete's own explicit instruction about what to emphasize right now, treat it as a strong signal, not a suggestion you can ignore; their weekly training schedule (fixed sessions, frequency targets, add-ons); today's readiness score if one has been generated yet; their latest cached sleep, HRV, RHR, steps, and weight; and a condensed log of the last 7 days of actual training, INCLUDING anything logged moments ago (this log is rebuilt fresh on every message, not cached). If a section is missing from the snapshot, the athlete genuinely has no data there yet — don't invent it, and don't apologize for its absence, just work with what's actually there. IMPORTANT: only the biometrics (sleep/HRV/RHR/steps/weight) are cache-based, from the last wearable sync — logged workouts are never wearable-synced, they appear the instant they're saved. If the athlete says they just logged something and you don't see it, the honest answer is \"I don't see it yet\" — never guess at a \"sync\" or similar mechanism as the reason; if it's genuinely missing, say so plainly and suggest they check the entry saved correctly, don't fabricate an explanation for why.\n\n" +
   "HOW TO TALK: conversational, direct, and specific — reference real numbers, real exercise names, and real dates when they're relevant to the question. Plain text with light markdown (short lists, bold for emphasis) is fine and usually clearer than dense paragraphs; you are NOT required to return JSON or any fixed structure here, unlike the daily recommendation cards elsewhere in the app. Match the athlete's register — casual questions get casual answers, precise technical questions get precise answers. Never pad a short answer with disclaimers, safety boilerplate, or \"as an AI\" framing — get to the point.\n\n" +
-  "WHAT YOU CAN'T DO: you have no tool to directly edit the athlete's goals, schedule, challenges, or logged workouts from this chat. If they ask you to change something, tell them exactly where in the app to make that change (for example, \"update that under Profile > Schedule\") — never imply you've already made an edit you haven't made. You also don't have live wearable data beyond what's in the snapshot — no live Fitbit or Google Health call happens per message, only the last cached sync — so if they ask about something more current than the snapshot's timestamp, say so plainly instead of guessing.\n\n" +
+  "WHAT YOU CAN AND CAN'T DO: you can PROPOSE exactly three kinds of change, each via a tool call, and each requires the athlete's explicit confirmation before anything is actually written — you never apply a change yourself: updating an existing goal's target/timeline/notes/active-paused state (propose_goal_update — this only updates a goal that already exists, it cannot create or delete one), setting/updating/clearing the standing Focus Override (propose_focus_override), and logging a free-text check-in note (propose_checkin_note). When you call one of these, say what you're proposing and why in your reply — the app renders the actual confirm/cancel card, you don't need to ask them to \"confirm in the app\" yourself, just explain the change naturally. Everything else — creating or deleting goals, editing workouts or exercises, changing the weekly schedule, adjusting settings — you have no tool for; tell them exactly where in the app to make that change (for example, \"update that under Profile > Schedule\") and never imply you've already made an edit you haven't made. You also don't have live wearable data beyond what's in the snapshot — no live Fitbit or Google Health call happens per message, only the last cached sync — so if they ask about something more current than the snapshot's timestamp, say so plainly instead of guessing.\n\n" +
   "COACHING JUDGMENT: weigh advice against injuries and physical limitations mentioned in their profile context — never suggest something that would aggravate a known issue. Treat their active challenges and any standing Focus Override as close to non-negotiable unless the athlete is explicitly asking you to reconsider them. When discussing schedule or workout changes, reason from what's actually in their schedule and recent training log, not generic fitness advice divorced from their real data. If a question falls genuinely outside what the snapshot covers — nutrition specifics, something with zero connection to their logged data — answer as a knowledgeable coach would, but be upfront that you're reasoning generally rather than from their specific numbers.\n\n" +
+  EXPERT_REASONING_CORE + "\n\n" +
   "CONVERSATION MEMORY: this is a persistent, ongoing thread, not a one-shot exchange — the athlete may return to it days or weeks apart. Recent turns appear below as normal conversation history; once a thread gets long, its older portion gets folded into a short running summary (you'll see it as \"EARLIER IN THIS CONVERSATION (summarized)\" after the snapshot, when present) rather than kept verbatim — treat that summary as reliable background, not something to re-litigate or ask the athlete to repeat. Don't re-introduce yourself or re-explain what you are partway through an existing thread; pick up naturally from where the conversation left off, the way an actual coach who remembers the last conversation would.\n\n" +
   "VOICE CALIBRATION, concretely: if asked \"should I train today?\" a bad answer is a generic essay on recovery science; a good answer opens with a direct read of their actual readiness/sleep/HRV from the snapshot and what it means for THEM today, in a sentence or two, before any elaboration they didn't ask for. If asked about a specific goal, name it and its current status rather than describing goals in the abstract. If they vent about a bad session or an injury flare-up, acknowledge it briefly like a person would, then move to something useful — don't clinically dissect their feelings. You're a knowledgeable training partner who happens to have their full history in front of them, not a customer-support agent working from a script.";
 
@@ -5166,6 +5289,67 @@ var CHAT_SNAPSHOT_HARD_CAP = 8000;
 // recent CHAT_SUMMARIZE_KEEP_TAIL messages verbatim.
 var CHAT_SUMMARIZE_TRIGGER = 24;
 var CHAT_SUMMARIZE_KEEP_TAIL = 20;
+
+// ── COACH CHAT TOOL USE (2026-07-15) ─────────────────────────────────────
+// v1 write scope, deliberately narrow: update an EXISTING goal, set/clear the
+// standing Focus Override, log a free-text check-in note. Explicitly NOT
+// supported: creating/deleting goals, editing workouts/exercises, schedule
+// changes — the persona (WHAT YOU CAN AND CAN'T DO, above) tells the model to
+// redirect those to the app. No tool ever writes real data directly — see
+// pipeAnthropicToolStream()/executeProposalTool() below: a tool call only
+// ever creates a PENDING chat_proposals row; the actual write happens later,
+// only after the athlete confirms via a dedicated endpoint.
+var COACH_CHAT_TOOLS = [
+  {
+    name: "propose_goal_update",
+    description: "Propose an update to one of the athlete's EXISTING long-term goals: target value/unit, target date, notes, or active/paused state. Cannot create or delete a goal. Not applied immediately — the athlete sees a confirm/cancel card and must confirm before anything changes.",
+    input_schema: {
+      type: "object",
+      properties: {
+        goal_id: { type: "string", description: "The id of the goal to update — read it from the GOALS section of the athlete snapshot, never guess it." },
+        target_value: { type: "number", description: "New target value, only if changing it." },
+        unit: { type: "string", description: "Unit for target_value (e.g. lbs, miles, reps), only if changing it." },
+        target_date: { type: "string", description: "New target date as YYYY-MM-DD, only if changing it." },
+        notes: { type: "string", description: "New/updated free-text notes (replaces the goal's description), only if changing it." },
+        active: { type: "boolean", description: "true to reactivate the goal, false to pause it, only if changing it." },
+        reason: { type: "string", description: "One plain sentence explaining why this change makes sense right now — shown to the athlete on the confirmation card." }
+      },
+      required: ["goal_id", "reason"]
+    }
+  },
+  {
+    name: "propose_focus_override",
+    description: "Propose setting, updating, or clearing the athlete's standing Focus Override (a time-boxed directive that reshapes daily recommendations). Not applied immediately — the athlete sees a confirm/cancel card.",
+    input_schema: {
+      type: "object",
+      properties: {
+        action: { type: "string", enum: ["set", "clear"], description: "'set' to create or update the override, 'clear' to turn it off entirely." },
+        text: { type: "string", description: "The focus directive text — required when action is 'set'." },
+        mode: { type: "string", enum: ["replace", "boost", "sprinkle", "infuse", "total"], description: "Override mode — required when action is 'set'. See the FOCUS OVERRIDE line in the athlete snapshot for the current mode if updating one already active." },
+        start_date: { type: "string", description: "YYYY-MM-DD, defaults to today if omitted." },
+        end_date: { type: "string", description: "YYYY-MM-DD, defaults to 90 days out if omitted." },
+        reason: { type: "string", description: "One plain sentence explaining why — shown on the confirmation card." }
+      },
+      required: ["action", "reason"]
+    }
+  },
+  {
+    name: "propose_checkin_note",
+    description: "Propose logging a free-text note to today's check-in (how a session felt, a symptom to track, context for tomorrow). Does not touch structured energy/soreness/severity fields — those are only set from the app's check-in form. Not applied immediately — the athlete sees a confirm/cancel card.",
+    input_schema: {
+      type: "object",
+      properties: {
+        note: { type: "string", description: "The free-text note to log." }
+      },
+      required: ["note"]
+    }
+  }
+];
+
+// Hard cap on Anthropic call legs within one coach_chat send (1 initial call +
+// up to N tool-result continuations). Guards against a runaway tool loop —
+// should never be hit in practice with 3 simple, non-chaining write tools.
+var CHAT_MAX_TOOL_LEGS = 4;
 
 // Compact, provider-agnostic reading of the v2 schedule shape (see "Weekly
 // Schedule (v2)" in CLAUDE.md) into one line — NOT a reimplementation of
@@ -5208,16 +5392,20 @@ function formatScheduleForChat(schedule) {
 // One line per exercise row, newest first — matches the condensed
 // "DATE: EXERCISE (SETS x REPS @ WEIGHT)" format the June daily-recs
 // prompt-trim landed on (see ROADMAP.md 2026-06-18 session), reused here for
-// consistency even though chat isn't under the same size pressure.
+// consistency even though chat isn't under the same size pressure. Also
+// returns the distinct workout_ids represented, so buildTodayWorkoutFallback
+// (below) can tell which of today's workouts DON'T have exercise rows yet.
 async function buildRecentExerciseLog(profileId, days) {
   var since = ymdNDaysAgo(days || 7);
   var r = await fetch(SUPABASE_URL + "/rest/v1/exercises?profile_id=eq." + profileId +
     "&date=gte." + since +
-    "&select=name,date,sets,reps,weight_lbs,duration_minutes,distance_miles&order=date.desc&limit=200",
+    "&select=name,date,sets,reps,weight_lbs,duration_minutes,distance_miles,workout_id&order=date.desc&limit=200",
     { headers: sbHeaders() });
   var rows = await r.json();
-  if (!Array.isArray(rows)) return [];
-  return rows.map(function(e) {
+  if (!Array.isArray(rows)) return { lines: [], workoutIds: [] };
+  var workoutIds = [];
+  var lines = rows.map(function(e) {
+    if (e.workout_id != null && workoutIds.indexOf(e.workout_id) === -1) workoutIds.push(e.workout_id);
     var bits = [];
     if (e.sets != null && e.reps != null) bits.push(e.sets + "x" + e.reps);
     else if (e.reps != null) bits.push(e.reps + " reps");
@@ -5226,6 +5414,40 @@ async function buildRecentExerciseLog(profileId, days) {
     if (e.distance_miles != null) bits.push(e.distance_miles + "mi");
     return e.date + ": " + e.name + (bits.length ? " (" + bits.join(" ") + ")" : "");
   });
+  return { lines: lines, workoutIds: workoutIds };
+}
+
+// Fixes a real gap (2026-07-15): exercise rows are extracted ASYNCHRONOUSLY
+// after a workout save completes — the client's saveWorkoutToSupabase() fires
+// POST /api/workouts, then, only once THAT resolves, fires a SEPARATE
+// POST .../extract-exercises call as its own follow-up chain (see
+// public/index.html). That extraction call runs its own Haiku request, so
+// there's a real multi-second window (or longer/never, if extraction fails or
+// the notes don't parse into anything recognizable) where a workout is fully
+// saved in `workouts` but has ZERO rows in `exercises` yet.
+// buildRecentExerciseLog() only reads `exercises`, so during that window a
+// just-logged session is invisible to chat — reproduced 2026-07-15: the model
+// filled the gap with a fabricated "you may need to sync" explanation, which
+// is doubly wrong since workouts are logged directly, never wearable-synced.
+// This reads today's raw `workouts` rows directly and adds a fallback line
+// for any that AREN'T yet represented in the exercises the query above found
+// (cross-referenced by workout_id) — so a just-logged session is visible
+// immediately, and the fallback line naturally stops appearing on the next
+// message once extraction actually completes and its exercises show up.
+async function buildTodayWorkoutFallback(profileId, today, extractedWorkoutIds) {
+  var r = await fetch(SUPABASE_URL + "/rest/v1/workouts?profile_id=eq." + profileId +
+    "&date=eq." + today + "&select=id,type,notes,done&order=ts.desc",
+    { headers: sbHeaders() });
+  var rows = await r.json();
+  if (!Array.isArray(rows)) return [];
+  return rows
+    .filter(function(w) { return w.id != null && extractedWorkoutIds.indexOf(w.id) === -1; })
+    .map(function(w) {
+      var notesSnippet = (w.notes || "").trim();
+      if (notesSnippet.length > 200) notesSnippet = notesSnippet.slice(0, 200) + "…";
+      return today + ": " + (w.type || "Workout") + (w.done === false ? " (not marked done)" : "") +
+        (notesSnippet ? " — " + notesSnippet : "") + " [logged just now, not yet broken into exercise data]";
+    });
 }
 
 // One condensed line per long-term goal (profile_data.goals[]), using only
@@ -5321,12 +5543,18 @@ async function buildChatSnapshot(profileId, opts) {
   var bodyPromise = fetch(SUPABASE_URL + "/rest/v1/body_metrics?profile_id=eq." + profileId +
     "&select=date,weight_lbs,bmi&order=date.desc&limit=1",
     { headers: sbHeaders() }).then(function(r) { return r.json(); }).catch(function() { return []; });
-  var exLogPromise = buildRecentExerciseLog(profileId, 7).catch(function() { return []; });
+  var exLogPromise = buildRecentExerciseLog(profileId, 7).catch(function() { return { lines: [], workoutIds: [] }; });
 
   var microGoals = await mgPromise;
   if (!Array.isArray(microGoals)) microGoals = [];
   var sleepRows = await sleepPromise, stepsRows = await stepsPromise, bodyRows = await bodyPromise;
-  var exLines = await exLogPromise;
+  var exLogResult = await exLogPromise;
+  var exLines = exLogResult.lines;
+  var todayFallbackLines = await buildTodayWorkoutFallback(profileId, today, exLogResult.workoutIds).catch(function() { return []; });
+  // Prepend — exLines is already newest-first (order=date.desc), and "today"
+  // is definitionally the newest possible date, so this preserves that
+  // invariant without needing any change to the trim logic below.
+  exLines = todayFallbackLines.concat(exLines);
   var sleep = (Array.isArray(sleepRows) && sleepRows[0]) || null;
   var steps = (Array.isArray(stepsRows) && stepsRows[0]) || null;
   var body = (Array.isArray(bodyRows) && bodyRows[0]) || null;
@@ -5550,6 +5778,208 @@ async function summarizeChatThreadIfNeeded(threadId) {
   console.log("[Chat] summarized thread " + threadId + " through message " + newCutoffId + " (" + toFold.length + " messages folded)");
 }
 
+// ── COACH CHAT TOOL-USE: proposal compute + apply ────────────────────────
+// v1 write scope, deliberately narrow (see COACH_CHAT_TOOLS above): update an
+// EXISTING goal, set/clear the standing Focus Override, log a free-text
+// check-in note. A tool call NEVER writes real data directly — the compute*
+// functions below only READ current state and describe the proposed change
+// (before/after "changes" list); createChatProposal() persists that as a
+// PENDING row; applyProposal() (called only from POST
+// .../chat/proposals/:id/confirm, after the athlete explicitly confirms)
+// performs the actual write, reusing the same helpers the rest of the app
+// already uses for these fields — loadProfileWithGoals/findGoalById/
+// saveGoalToProfile (the exact helpers the Living Goal Roadmap endpoints
+// use) for goals, saveProfileDataField for focus_override (mirroring the
+// client's own foSave()/foPersist() shape), and a fetch-then-merge upsert for
+// daily_checkins so a note never wipes out today's energy/soreness/severity
+// logged from the app's own check-in form.
+
+// Reads the goal, returns { goal_id, title, changes:[{field,label,before,after}], reason }.
+// Only fields present in `input` and actually different from the current
+// value produce a change entry. Throws (404-tagged) if the goal id is wrong —
+// caught by executeProposalTool() and turned into a plain tool_result, not a
+// crash.
+async function computeGoalUpdateProposal(profileId, input) {
+  var loaded = await loadProfileWithGoals(profileId);
+  var found = findGoalById(loaded.profileData, input.goal_id);
+  var g = found.goal;
+  var changes = [];
+  if (input.target_value !== undefined && input.target_value !== g.target_value) {
+    changes.push({ field: "target_value", label: "target", before: g.target_value != null ? g.target_value : null, after: input.target_value });
+  }
+  if (input.unit !== undefined && input.unit !== g.unit) {
+    changes.push({ field: "unit", label: "unit", before: g.unit || null, after: input.unit });
+  }
+  if (input.target_date !== undefined && input.target_date !== g.target_date) {
+    changes.push({ field: "target_date", label: "target date", before: g.target_date || null, after: input.target_date });
+  }
+  if (input.notes !== undefined && input.notes !== g.description) {
+    changes.push({ field: "description", label: "notes", before: g.description || null, after: input.notes });
+  }
+  if (input.active !== undefined) {
+    var newStatus = input.active ? "IN PROGRESS" : "PAUSED";
+    if (newStatus !== (g.status || "IN PROGRESS")) {
+      changes.push({ field: "status", label: "status", before: g.status || "IN PROGRESS", after: newStatus });
+    }
+  }
+  return { goal_id: g.id, title: g.title || "Untitled goal", changes: changes, reason: input.reason || "" };
+}
+
+async function computeFocusOverrideProposal(profileId, input) {
+  var pr = await fetch(SUPABASE_URL + "/rest/v1/profiles?id=eq." + profileId + "&select=profile_data", { headers: sbHeaders() });
+  var rows = await pr.json();
+  var pd = (Array.isArray(rows) && rows[0] && rows[0].profile_data) || {};
+  var existing = pd.focus_override || null;
+
+  if (input.action === "clear") {
+    if (!existing || !existing.active) {
+      var noop = new Error("No active Focus Override to clear.");
+      noop.noop = true;
+      throw noop;
+    }
+    return {
+      title: "Focus Override",
+      changes: [{ field: "active", label: "active", before: true, after: false }],
+      reason: input.reason || "",
+      _fo: Object.assign({}, existing, { active: false, daily_override_state: null }),
+    };
+  }
+
+  // action === "set"
+  var next = {
+    active: true,
+    text: input.text !== undefined ? input.text : (existing && existing.text) || "",
+    mode: input.mode || (existing && existing.mode) || "infuse",
+    scope: (existing && existing.scope) || "all",
+    start_date: input.start_date || (existing && existing.start_date) || dateStr(0),
+    end_date: input.end_date || (existing && existing.end_date) || dateStr(90),
+    daily_override_state: null,
+  };
+  var changes = [];
+  if (!existing || !existing.active) {
+    changes.push({ field: "active", label: "standing directive", before: "off", after: next.text + " (" + next.mode + ")" });
+  } else {
+    ["text", "mode", "start_date", "end_date"].forEach(function(f) {
+      if (next[f] !== existing[f]) changes.push({ field: f, label: f.replace("_", " "), before: existing[f] || null, after: next[f] });
+    });
+  }
+  return { title: "Focus Override", changes: changes, reason: input.reason || "", _fo: next };
+}
+
+async function computeCheckinNoteProposal(profileId, input) {
+  var today = dateStr(0);
+  var cr = await fetch(SUPABASE_URL + "/rest/v1/daily_checkins?profile_id=eq." + profileId + "&date=eq." + today + "&limit=1", { headers: sbHeaders() });
+  var rows = await cr.json();
+  var existingRow = (Array.isArray(rows) && rows[0]) || null;
+  var existingText = (existingRow && existingRow.checkin_text) || "";
+  var note = (input.note || "").trim();
+  var mergedText = existingText ? (existingText + "\n" + note) : note;
+  return {
+    title: "Today's check-in note",
+    changes: [{ field: "checkin_text", label: "note", before: existingText || null, after: mergedText }],
+    reason: "",
+    _existingRow: existingRow,
+    _mergedText: mergedText,
+  };
+}
+
+// Persists a pending proposal row. message_id is nullable and filled in
+// later — see backfillProposalMessageIds() — because the assistant's
+// chat_messages row (which this proposal is attached to for display) isn't
+// saved until after the whole stream finishes, but the proposal itself is
+// created mid-stream, as soon as the tool call happens.
+async function createChatProposal(threadId, toolUseId, type, payload) {
+  var r = await fetch(SUPABASE_URL + "/rest/v1/chat_proposals", {
+    method: "POST",
+    headers: sbHeaders("return=representation"),
+    body: JSON.stringify({ thread_id: threadId, tool_use_id: toolUseId, type: type, payload: payload, status: "pending" }),
+  });
+  var rows = await r.json();
+  return Array.isArray(rows) ? rows[0] : rows;
+}
+
+async function backfillProposalMessageIds(proposalIds, messageId) {
+  if (!proposalIds.length) return;
+  await fetch(SUPABASE_URL + "/rest/v1/chat_proposals?id=in.(" + proposalIds.join(",") + ")", {
+    method: "PATCH",
+    headers: sbHeaders("return=minimal"),
+    body: JSON.stringify({ message_id: messageId }),
+  });
+}
+
+// Dispatches one tool_use block: computes the proposed change (read-only),
+// creates a pending chat_proposals row, and returns the tool_result content
+// the model needs to finish its turn gracefully. NEVER writes real data.
+async function executeProposalTool(toolUse, profileId, threadId) {
+  var input = toolUse.input || {};
+  try {
+    var proposal, type;
+    if (toolUse.name === "propose_goal_update") {
+      type = "update_goal";
+      proposal = await computeGoalUpdateProposal(profileId, input);
+    } else if (toolUse.name === "propose_focus_override") {
+      type = "set_focus_override";
+      proposal = await computeFocusOverrideProposal(profileId, input);
+    } else if (toolUse.name === "propose_checkin_note") {
+      type = "log_checkin_note";
+      proposal = await computeCheckinNoteProposal(profileId, input);
+    } else {
+      return { resultContent: "Unknown tool '" + toolUse.name + "' — not available.", proposalId: null };
+    }
+
+    if (!proposal.changes.length) {
+      return { resultContent: "No actual change detected (the proposed values match what's already set) — nothing to confirm.", proposalId: null };
+    }
+
+    var row = await createChatProposal(threadId, toolUse.id, type, proposal);
+    var changeSummary = proposal.changes.map(function(c) {
+      return c.label + ": " + (c.before == null ? "(none)" : c.before) + " -> " + c.after;
+    }).join("; ");
+    return {
+      resultContent: "Proposal #" + row.id + " created (" + changeSummary + "). This is PENDING — the athlete will see a confirm/cancel card and must confirm before it's applied. Do not say it's been done.",
+      proposalId: row.id,
+    };
+  } catch (e) {
+    if (e.noop) {
+      return { resultContent: e.message, proposalId: null };
+    }
+    console.error("[Chat] executeProposalTool failed for " + toolUse.name + ":", e && e.message);
+    return { resultContent: "Couldn't prepare that change: " + (e.message || "unknown error") + ". Tell the athlete plainly and suggest they try again or use the app directly.", proposalId: null };
+  }
+}
+
+// Applies a CONFIRMED proposal — the only place in this whole tool-use
+// feature that writes real data. Called only from
+// POST .../chat/proposals/:id/confirm, after the athlete has explicitly
+// confirmed via the in-thread card.
+async function applyProposal(proposal, profileId) {
+  var payload = proposal.payload;
+  if (proposal.type === "update_goal") {
+    var loaded = await loadProfileWithGoals(profileId);
+    var found = findGoalById(loaded.profileData, payload.goal_id);
+    var g = found.goal;
+    payload.changes.forEach(function(c) { g[c.field] = c.after; });
+    await saveGoalToProfile(profileId, loaded.profileData, found.index, g);
+  } else if (proposal.type === "set_focus_override") {
+    var loaded2 = await loadProfileWithGoals(profileId); // full profile_data load, any key
+    await saveProfileDataField(profileId, loaded2.profileData, "focus_override", payload._fo);
+  } else if (proposal.type === "log_checkin_note") {
+    var checkinPayload = {
+      profile_id: profileId,
+      date: dateStr(0),
+      energy: (payload._existingRow && payload._existingRow.energy) || null,
+      soreness: (payload._existingRow && payload._existingRow.soreness) || [],
+      severity: (payload._existingRow && payload._existingRow.severity) || null,
+      checkin_text: payload._mergedText,
+    };
+    await fetch(SUPABASE_URL + "/rest/v1/daily_checkins?on_conflict=profile_id,date", {
+      method: "POST",
+      headers: sbHeaders("return=minimal,resolution=merge-duplicates"),
+      body: JSON.stringify(checkinPayload),
+    });
+  }
+}
+
 // POST a chat message — streams the reply (see pipeAnthropicStream above) and
 // persists both sides of the turn. The athlete snapshot is rebuilt fresh on
 // every call (see buildChatSnapshot) rather than cached, so it's never stale
@@ -5610,27 +6040,25 @@ app.post("/api/profiles/:id/chat/message", async function(req, res) {
 
     await insertChatMessage(thread.id, "user", text);
 
-    var forwarded = {
-      model: modelForCallType("coach_chat"),
-      max_tokens: 1500,
-      stream: true,
-      system: system,
-      messages: guarded.messages,
+    var model = modelForCallType("coach_chat");
+    var anthropicHeaders = {
+      "Content-Type": "application/json",
+      "x-api-key": process.env.ANTHROPIC_KEY,
+      "anthropic-version": "2023-06-01",
+    };
+    var postToAnthropic = function(msgs, signal) {
+      return fetch("https://api.anthropic.com/v1/messages", {
+        method: "POST",
+        headers: anthropicHeaders,
+        body: JSON.stringify({ model: model, max_tokens: 1500, stream: true, system: system, messages: msgs, tools: COACH_CHAT_TOOLS }),
+        signal: signal,
+        agent: anthropicStreamAgent,
+      });
     };
 
     var controller = new AbortController();
     var timeoutId = setTimeout(function() { controller.abort(); }, 25000);
-    var upstream = await fetch("https://api.anthropic.com/v1/messages", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "x-api-key": process.env.ANTHROPIC_KEY,
-        "anthropic-version": "2023-06-01",
-      },
-      body: JSON.stringify(forwarded),
-      signal: controller.signal,
-      agent: anthropicStreamAgent,
-    });
+    var upstream = await postToAnthropic(guarded.messages, controller.signal);
     clearTimeout(timeoutId);
 
     if (!upstream.ok) {
@@ -5641,10 +6069,54 @@ app.post("/api/profiles/:id/chat/message", async function(req, res) {
       return res.status(upstream.status).json(errData);
     }
 
-    var fullText = await pipeAnthropicStream(upstream, controller, res, "coach_chat");
+    // Running message history for this call — grows as tool legs happen.
+    // Each leg that calls a tool appends the assistant's own turn (its text +
+    // tool_use blocks, reconstructed from what pumpAnthropicLeg captured —
+    // this must accurately reflect what was actually generated, since
+    // Anthropic requires the tool_result turn to follow the exact tool_use
+    // turn it responds to) followed by our tool_result turn, before the next
+    // leg is fetched.
+    var runningMessages = guarded.messages.slice();
+    var proposalIdsThisCall = [];
 
+    var result = await pipeAnthropicToolStream(upstream, controller, res, "coach_chat", {
+      onToolUse: async function(toolUses) {
+        var toolResultBlocks = [];
+        for (var i = 0; i < toolUses.length; i++) {
+          var outcome = await executeProposalTool(toolUses[i], profileId, thread.id);
+          if (outcome.proposalId) proposalIdsThisCall.push(outcome.proposalId);
+          toolResultBlocks.push({ type: "tool_result", tool_use_id: toolUses[i].id, content: outcome.resultContent });
+        }
+        return { toolResultBlocks: toolResultBlocks };
+      },
+      fetchNextLeg: async function(leg, toolResultBlocks) {
+        var assistantContent = [];
+        if (leg.legText) assistantContent.push({ type: "text", text: leg.legText });
+        leg.toolUses.forEach(function(t) {
+          assistantContent.push({ type: "tool_use", id: t.id, name: t.name, input: t.input || {} });
+        });
+        runningMessages.push({ role: "assistant", content: assistantContent });
+        runningMessages.push({ role: "user", content: toolResultBlocks });
+        var nextController = new AbortController();
+        return postToAnthropic(runningMessages, nextController.signal);
+      },
+      onBeforeFinalize: async function() {
+        if (!proposalIdsThisCall.length) return "";
+        var pr = await fetch(SUPABASE_URL + "/rest/v1/chat_proposals?id=in.(" + proposalIdsThisCall.join(",") + ")&select=id,type,status,payload", { headers: sbHeaders() });
+        var proposals = await pr.json();
+        if (!Array.isArray(proposals) || !proposals.length) return "";
+        return "\n\n[[APEXCOACH_PROPOSALS]]\n" + JSON.stringify(proposals) + "\n[[/APEXCOACH_PROPOSALS]]";
+      },
+    });
+
+    var fullText = result.fullText;
     if (fullText && fullText.trim()) {
-      await insertChatMessage(thread.id, "assistant", fullText.trim());
+      var savedMsg = await insertChatMessage(thread.id, "assistant", fullText.trim());
+      if (proposalIdsThisCall.length && savedMsg && savedMsg.id) {
+        backfillProposalMessageIds(proposalIdsThisCall, savedMsg.id).catch(function(e) {
+          console.error("[Chat] backfillProposalMessageIds failed:", e && e.message);
+        });
+      }
       summarizeChatThreadIfNeeded(thread.id).catch(function(e) {
         console.error("[Chat] summarize error:", e && e.message);
       });
@@ -5667,20 +6139,92 @@ app.post("/api/profiles/:id/chat/message", async function(req, res) {
 // the post-summary-cutoff tail sent to the model) so the UI can show the
 // complete conversation; summary_through_message_id is included so the client
 // could visually mark the summarized portion later if desired (not done yet).
+// Also returns ALL proposals for the thread (any status) — a stored assistant
+// message may contain a frozen [[APEXCOACH_PROPOSALS]] marker with
+// status:"pending" baked in from when it streamed, but the CURRENT status
+// (confirmed/canceled since then) only lives here. The client must always
+// prefer this array's status over whatever's embedded in the marker text —
+// this is what keeps a confirm/cancel card correct across a page refresh.
 app.get("/api/profiles/:id/chat/thread", async function(req, res) {
   try {
     var thread = await getChatThread(req.params.id);
-    if (!thread) return res.json({ thread_id: null, summary: null, summary_through_message_id: null, messages: [] });
+    if (!thread) return res.json({ thread_id: null, summary: null, summary_through_message_id: null, messages: [], proposals: [] });
     var messages = await fetchAllChatMessages(thread.id);
+    var pr = await fetch(SUPABASE_URL + "/rest/v1/chat_proposals?thread_id=eq." + thread.id + "&select=id,type,status,payload,created_at&order=id.asc", { headers: sbHeaders() });
+    var proposals = await pr.json();
     res.json({
       thread_id: thread.id,
       summary: thread.summary || null,
       summary_through_message_id: thread.summary_through_message_id || null,
       messages: messages.map(function(m) { return { role: m.role, content: m.content, created_at: m.created_at }; }),
+      proposals: Array.isArray(proposals) ? proposals : [],
     });
   } catch (err) {
     console.error("[Chat] thread fetch error:", err && err.message);
     res.status(500).json({ error: { message: "Failed to load chat thread" } });
+  }
+});
+
+// Confirm/cancel a pending proposal. Both are simple, fast, synchronous
+// endpoints — NEITHER makes a live Anthropic call. Confirm executes the
+// actual write (applyProposal) and marks the proposal confirmed; cancel just
+// marks it canceled. Both insert a short synthetic note into chat_messages
+// (role:"user") so the thread history stays coherent — the model's "graceful
+// acknowledgment" of a confirm/cancel happens naturally on the athlete's next
+// real message, which now has that note in context, rather than triggering a
+// second live model turn from a button click (extra latency/cost for a
+// deterministic, unambiguous outcome). This is a deliberate design choice,
+// not an oversight — see the Part B design note in CLAUDE.md.
+async function loadProposalForProfile(profileId, proposalId) {
+  var pr = await fetch(SUPABASE_URL + "/rest/v1/chat_proposals?id=eq." + proposalId + "&select=id,thread_id,type,status,payload", { headers: sbHeaders() });
+  var rows = await pr.json();
+  var proposal = Array.isArray(rows) && rows[0];
+  if (!proposal) { var e = new Error("Proposal not found"); e.status = 404; throw e; }
+  var thread = await getChatThread(profileId);
+  if (!thread || thread.id !== proposal.thread_id) { var e2 = new Error("Proposal does not belong to this profile"); e2.status = 403; throw e2; }
+  return proposal;
+}
+
+app.post("/api/profiles/:id/chat/proposals/:proposalId/confirm", async function(req, res) {
+  var profileId = req.params.id;
+  try {
+    var proposal = await loadProposalForProfile(profileId, req.params.proposalId);
+    if (proposal.status !== "pending") {
+      return res.status(409).json({ error: { message: "Proposal is already " + proposal.status + "." } });
+    }
+    await applyProposal(proposal, profileId);
+    await fetch(SUPABASE_URL + "/rest/v1/chat_proposals?id=eq." + proposal.id, {
+      method: "PATCH",
+      headers: sbHeaders("return=minimal"),
+      body: JSON.stringify({ status: "confirmed", resolved_at: new Date().toISOString() }),
+    });
+    var summary = proposal.payload && proposal.payload.title;
+    await insertChatMessage(proposal.thread_id, "user", "[Athlete confirmed the proposed change" + (summary ? " to \"" + summary + "\"" : "") + ".]");
+    res.json({ success: true, status: "confirmed" });
+  } catch (err) {
+    console.error("[Chat] proposal confirm error:", err && err.message);
+    res.status(err.status || 500).json({ error: { message: err.message || "Failed to confirm proposal" } });
+  }
+});
+
+app.post("/api/profiles/:id/chat/proposals/:proposalId/cancel", async function(req, res) {
+  var profileId = req.params.id;
+  try {
+    var proposal = await loadProposalForProfile(profileId, req.params.proposalId);
+    if (proposal.status !== "pending") {
+      return res.status(409).json({ error: { message: "Proposal is already " + proposal.status + "." } });
+    }
+    await fetch(SUPABASE_URL + "/rest/v1/chat_proposals?id=eq." + proposal.id, {
+      method: "PATCH",
+      headers: sbHeaders("return=minimal"),
+      body: JSON.stringify({ status: "canceled", resolved_at: new Date().toISOString() }),
+    });
+    var summary = proposal.payload && proposal.payload.title;
+    await insertChatMessage(proposal.thread_id, "user", "[Athlete declined the proposed change" + (summary ? " to \"" + summary + "\"" : "") + ".]");
+    res.json({ success: true, status: "canceled" });
+  } catch (err) {
+    console.error("[Chat] proposal cancel error:", err && err.message);
+    res.status(err.status || 500).json({ error: { message: err.message || "Failed to cancel proposal" } });
   }
 });
 
