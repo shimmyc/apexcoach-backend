@@ -3349,6 +3349,48 @@ app.get("/api/exercise-catalog", async function(req, res) {
   }
 });
 
+// POST /api/exercise-catalog/confirm-alias
+// Body: { canonical_name, typed_name }. Fired by the Part 4 confirm chip
+// (ecDismissChip(), public/index.html) when the athlete confirms — tap or
+// 8s auto-dismiss, treated identically — an alias/fuzzy/haiku/custom match.
+// Persists what they actually typed as an alias on the resolved catalog row
+// so the SAME typed variant hits the free exact/alias path next time instead
+// of repeating fuzzy/Haiku resolution. Not admin-gated (a normal user-flow
+// side effect, not a curation tool). Idempotent, silent-fail, never blocks
+// the chip UI: no-op if the row doesn't exist, if typed_name normalizes
+// identically to canonical_name (nothing to add — covers the 'alias' method,
+// which is already an alias by construction), or if it's already present.
+app.post("/api/exercise-catalog/confirm-alias", async function(req, res) {
+  try {
+    var b = req.body || {};
+    var canonicalName = b.canonical_name;
+    var typedName = b.typed_name;
+    if (!canonicalName || !typedName) return res.json({ success: true, action: "skipped" });
+    var key = catalogNormKey(typedName);
+    if (!key || key === catalogNormKey(canonicalName)) return res.json({ success: true, action: "skipped" });
+
+    var r = await fetch(SUPABASE_URL + "/rest/v1/exercise_catalog?canonical_name=eq." + encodeURIComponent(canonicalName) + "&select=id,aliases", { headers: sbHeaders() });
+    var rows = await r.json();
+    var row = Array.isArray(rows) && rows[0];
+    if (!row) return res.json({ success: true, action: "skipped" });
+
+    var aliases = row.aliases || [];
+    var already = aliases.some(function(a) { return catalogNormKey(a) === key; });
+    if (already) return res.json({ success: true, action: "already_present" });
+
+    var patchRes = await fetch(SUPABASE_URL + "/rest/v1/exercise_catalog?id=eq." + row.id, {
+      method: "PATCH",
+      headers: sbHeaders("return=minimal"),
+      body: JSON.stringify({ aliases: aliases.concat([typedName]), updated_at: new Date().toISOString() }),
+    });
+    if (!patchRes.ok) return res.json({ success: true, action: "failed" });
+    res.json({ success: true, action: "added", canonical_name: canonicalName, alias: typedName });
+  } catch (e) {
+    console.error("[ConfirmAlias] failed:", e.message);
+    res.json({ success: true, action: "failed" }); // never surfaces as an error to the confirm-chip UI
+  }
+});
+
 // PATCH /api/profiles/:id/exercises/:exerciseId — the Part 4 "change" action
 // on an already-saved exercise row. Two modes via body:
 //   { canonical_name }        -> rename the row to an EXISTING catalog entry

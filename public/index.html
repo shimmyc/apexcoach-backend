@@ -1422,9 +1422,29 @@ function ecShowConfirmChip(exercise) {
 
 function ecDismissChip() {
   if (ecDismissTimer) { clearTimeout(ecDismissTimer); ecDismissTimer = null; }
+  ecPersistConfirmedAlias(ecPendingExercise);
   var chip = document.getElementById('ec-chip');
   if (chip) chip.remove();
   ecPendingExercise = null;
+}
+
+// Confirming a chip (tap ✓ or the 8s auto-dismiss, treated identically)
+// means the athlete accepted the resolved canonical name for whatever they
+// typed — persist that typed variant as an alias so the exact same wording
+// resolves via the free exact/alias path next time instead of repeating
+// fuzzy/Haiku resolution. Fire-and-forget: never blocks dismissing the chip,
+// and a failure here is invisible to the athlete (the exercise is already
+// correctly saved either way).
+function ecPersistConfirmedAlias(exercise) {
+  if (!exercise) return;
+  var m = exercise.catalog_match || {};
+  if (['alias', 'fuzzy', 'haiku', 'custom'].indexOf(m.method) < 0) return;
+  if (!m.typed_name || m.typed_name === exercise.name) return;
+  fetch('/api/exercise-catalog/confirm-alias', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ canonical_name: exercise.name, typed_name: m.typed_name }),
+  }).catch(function() {});
 }
 
 // "change" -> catalog search + "keep as typed" picker, expanded in place
