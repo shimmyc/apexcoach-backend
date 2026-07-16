@@ -34,8 +34,16 @@
 > - **Verified live** (profile 4, throwaway workout): logged a workout, ran `/extract-exercises`,
 >   confirmed the exercises row existed with the correct `workout_id`; deleted the workout via
 >   `DELETE /api/workouts/:id`; confirmed both the workout row AND its exercises row were gone
->   (`GET /api/profiles/4/exercises?name=...` → 0 rows). The orphan report on profile 1 was
->   handed to the user to run and review before any cleanup delete executes.
+>   (`GET /api/profiles/4/exercises?name=...` → 0 rows).
+> - **Profile-1 cleanup run for real, reviewed and approved by the user.** The report found 27
+>   orphaned rows across 5 dead workout ids — 101/102 (same-day leftover test artifacts) and
+>   17/19/20 (real 2026-04-15/16 workouts). Reviewed before approving: no false positives; one
+>   side-finding not chased — workout 17's 8 exercises each had exactly 2 copies under that one
+>   `workout_id`, pointing at a separate, pre-existing `/extract-exercises` double-call from some
+>   earlier session, unrelated to this bug. `POST /api/debug/delete-orphaned-exercises/1` with all
+>   27 ids → `{deleted:27, skipped:0}`. **Confirmed as a real correction**: `Dead Hang` dropped
+>   48→46 rows (exactly the predicted 2), `Bench Press` went to 0 (the test artifacts had no real
+>   rows behind them) — these orphans had been silently inflating live counts/PRs until now.
 >
 > **2026-07-16 session #10** (Exercise Guide, per-exercise muscle diagram, heatmap tap-through,
 > History-card exercise chips — builds on session #9's Phase 2 data):
