@@ -261,6 +261,10 @@ input[type=range]{width:100%;accent-color:var(--accent)}
 /* "Ask Your History" is an AI feature → cornerman focus; Library search → ember */
 #tab-history #history-query:focus{border-color:var(--accent-cornerman);outline:none}
 #tab-library input[type=text]:focus,#tab-library select:focus{border-color:var(--accent-ember);outline:none}
+/* Exercise Catalog phase 2 (2026-07-16): family rollup card + muscle heatmap hover affordance */
+#tab-library .lib-family-card>div:first-child:hover{background:var(--bg-surface-2)}
+#tab-library #lib-heatmap-body svg path[data-muscle]{transition:filter .1s ease}
+#tab-library #lib-heatmap-body svg path[data-muscle]:hover{filter:brightness(1.3)}
 /* ── AGENT 5/5: PROFILE TAB + SETTINGS CONTENT ────────────────────────────
    Scoped to #tab-profile / #settings-overlay. Global .card/.clabel/.mg-*/
    .navBtn/.theme-swatch and the THEMES object + applyTheme() are untouched. */
@@ -11115,6 +11119,12 @@ var LIB_COLORS = { 'Strength':'#4488bb','Cardio':'#f5a623','Martial Arts':'#e845
 var CAT_COLORS = { strength:'#4488bb', cardio:'#f5a623', martial_arts:'#e84545', sports:'#22c97a', mind_body:'#9966cc', rehab:'#f07020', mixed:'#22c97a', rest:'#555', other:'#888', combat:'#e84545', core:'#ff6b35', mobility:'#9966cc' };
 var libMainFilter = 'all';
 var libSubFilter = 'all';
+// Exercise Catalog phase 2 (2026-07-16): muscle-group filter + family rollups.
+var libMuscleFilter = null; // one of MUSCLE_FILTER_GROUPS, or null
+var libMuscleMode = 'both'; // 'both' (Primary + Secondary, default) | 'primary'
+var libFamilyExpanded = {}; // family name -> bool, session-only, default collapsed
+var MUSCLE_FILTER_GROUPS = ['chest','back','shoulders','biceps','triceps','core','glutes','quads','hamstrings','calves','grip_forearms'];
+var MUSCLE_FILTER_LABELS = { chest:'Chest', back:'Back', shoulders:'Shoulders', biceps:'Biceps', triceps:'Triceps', core:'Core', glutes:'Glutes', quads:'Quads', hamstrings:'Hamstrings', calves:'Calves', grip_forearms:'Grip/Forearms' };
 var LIB_SORTS = ['most_logged', 'least_logged', 'az', 'za', 'recent', 'least_recent'];
 var LIB_SORT_LABEL = { most_logged: 'Most Logged', least_logged: 'Least Logged', az: 'A→Z', za: 'Z→A', recent: 'Most Recent', least_recent: 'Least Recent' };
 var libSort = (function() { try { var s = localStorage.getItem('ac_lib_sort'); return LIB_SORTS.indexOf(s) >= 0 ? s : 'most_logged'; } catch (e) { return 'most_logged'; } })();
@@ -11725,6 +11735,16 @@ function renderLibDashboard() {
     html += '</div>';
   }
 
+  // MUSCLE HEAT (Exercise Catalog phase 2, 2026-07-16) — original geometric
+  // SVG artwork, not sourced from MuscleWiki/wger (see ROADMAP.md §7).
+  html += '<div class="card" style="margin-bottom:16px" id="lib-heatmap-card">' +
+    '<div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;margin-bottom:10px">' +
+      '<p class="clabel" style="margin:0">muscle heat</p>' +
+      '<div id="lib-heatmap-pills"></div>' +
+    '</div>' +
+    '<div id="lib-heatmap-body"></div>' +
+  '</div>';
+
   // Top exercises grid
   var topEx = (libStats.top_exercises || []).slice(0, 6);
   if (topEx.length) {
@@ -11755,6 +11775,152 @@ function renderLibDashboard() {
     renderVolumeChart();
     renderStepsChart();
   }, 50);
+
+  renderMuscleHeatmapSection();
+  ensureMuscleHeatmapLoaded();
+}
+
+// ── MUSCLE HEATMAP (Exercise Catalog phase 2, 2026-07-16) ─────────────────
+// Original geometric SVG artwork — two simple humanoid outlines (front/back)
+// built from rounded-rect <path> regions, NOT traced or sourced from
+// MuscleWiki/wger/any third party (licensing note, see ROADMAP.md §7).
+// Stylized/geometric by design, not anatomically realistic.
+var libHeatmapDays = 30;
+var libHeatmapGroups = null; // {chest:{weighted_sets,intensity}, ...} once loaded
+var libHeatmapState = 'idle'; // idle | loading | loaded | error
+var libHeatmapLoadedKey = null; // "profileId:days" already fetched, avoids refetch spam
+
+function svgRoundRectPath(x, y, w, h, r) {
+  r = Math.min(r, w / 2, h / 2);
+  return 'M' + (x + r) + ',' + y +
+    ' L' + (x + w - r) + ',' + y +
+    ' Q' + (x + w) + ',' + y + ' ' + (x + w) + ',' + (y + r) +
+    ' L' + (x + w) + ',' + (y + h - r) +
+    ' Q' + (x + w) + ',' + (y + h) + ' ' + (x + w - r) + ',' + (y + h) +
+    ' L' + (x + r) + ',' + (y + h) +
+    ' Q' + x + ',' + (y + h) + ' ' + x + ',' + (y + h - r) +
+    ' L' + x + ',' + (y + r) +
+    ' Q' + x + ',' + y + ' ' + (x + r) + ',' + y +
+    ' Z';
+}
+// Simple geometric layout, viewBox 0 0 100 200. Shoulders + calves appear on
+// both figures (visible from front and back); each shape's data-muscle
+// matches a MUSCLE_HEATMAP_GROUPS key exactly (server.js), so a group with no
+// logged volume just never gets an intensity above 0 — no special-casing.
+var HEATMAP_FRONT_SHAPES = [
+  { muscle: 'shoulders', x: 14, y: 32, w: 16, h: 14, r: 6 },
+  { muscle: 'shoulders', x: 70, y: 32, w: 16, h: 14, r: 6 },
+  { muscle: 'chest', x: 32, y: 42, w: 36, h: 22, r: 8 },
+  { muscle: 'core', x: 36, y: 66, w: 28, h: 30, r: 6 },
+  { muscle: 'biceps', x: 6, y: 44, w: 12, h: 26, r: 6 },
+  { muscle: 'biceps', x: 82, y: 44, w: 12, h: 26, r: 6 },
+  { muscle: 'grip_forearms', x: 4, y: 72, w: 11, h: 28, r: 5 },
+  { muscle: 'grip_forearms', x: 85, y: 72, w: 11, h: 28, r: 5 },
+  { muscle: 'quads', x: 29, y: 100, w: 18, h: 44, r: 8 },
+  { muscle: 'quads', x: 53, y: 100, w: 18, h: 44, r: 8 },
+  { muscle: 'calves', x: 30, y: 150, w: 15, h: 38, r: 6 },
+  { muscle: 'calves', x: 55, y: 150, w: 15, h: 38, r: 6 },
+];
+var HEATMAP_BACK_SHAPES = [
+  { muscle: 'shoulders', x: 14, y: 32, w: 16, h: 14, r: 6 },
+  { muscle: 'shoulders', x: 70, y: 32, w: 16, h: 14, r: 6 },
+  { muscle: 'back', x: 28, y: 42, w: 44, h: 46, r: 10 },
+  { muscle: 'triceps', x: 6, y: 44, w: 12, h: 26, r: 6 },
+  { muscle: 'triceps', x: 82, y: 44, w: 12, h: 26, r: 6 },
+  { muscle: 'glutes', x: 32, y: 92, w: 36, h: 20, r: 8 },
+  { muscle: 'hamstrings', x: 29, y: 114, w: 18, h: 34, r: 8 },
+  { muscle: 'hamstrings', x: 53, y: 114, w: 18, h: 34, r: 8 },
+  { muscle: 'calves', x: 30, y: 150, w: 15, h: 38, r: 6 },
+  { muscle: 'calves', x: 55, y: 150, w: 15, h: 38, r: 6 },
+];
+
+function ensureMuscleHeatmapLoaded() {
+  if (!currentProfileId) return;
+  var key = currentProfileId + ':' + libHeatmapDays;
+  if (libHeatmapLoadedKey === key) return; // already have this exact window cached
+  libHeatmapState = 'loading';
+  renderMuscleHeatmapSection();
+  fetch('/api/analytics/muscle-volume/' + currentProfileId + '?days=' + libHeatmapDays)
+    .then(function(r) { return r.json(); })
+    .then(function(data) {
+      if (data && data.success) {
+        libHeatmapGroups = data.groups;
+        libHeatmapState = 'loaded';
+        libHeatmapLoadedKey = key;
+      } else {
+        libHeatmapState = 'error';
+      }
+      renderMuscleHeatmapSection();
+    })
+    .catch(function(e) {
+      console.error('[Library] muscle heatmap load error:', e);
+      libHeatmapState = 'error';
+      renderMuscleHeatmapSection();
+    });
+}
+
+function setLibHeatmapDays(days) {
+  libHeatmapDays = days;
+  ensureMuscleHeatmapLoaded();
+}
+
+function renderMuscleHeatmapSection() {
+  var pillsEl = document.getElementById('lib-heatmap-pills');
+  var bodyEl = document.getElementById('lib-heatmap-body');
+  if (!pillsEl || !bodyEl) return;
+
+  var pillsHtml = '<div style="display:flex;gap:6px">';
+  [7, 30, 90].forEach(function(d) {
+    var active = libHeatmapDays === d;
+    pillsHtml += '<button onclick="setLibHeatmapDays(' + d + ')" style="font-size:11px;font-weight:600;padding:4px 10px;border-radius:9999px;border:1px solid ' + (active ? 'var(--accent-ember)' : 'transparent') + ';background:var(--bg-surface-2);color:' + (active ? 'var(--accent-ember)' : 'var(--text-muted)') + ';cursor:pointer;font-family:Inter,sans-serif">' + d + 'D</button>';
+  });
+  pillsHtml += '</div>';
+  pillsEl.innerHTML = pillsHtml;
+
+  if (libHeatmapState === 'loading') {
+    bodyEl.innerHTML = '<p class="font-mono" style="font-size:11px;color:var(--text-muted);letter-spacing:2px;text-align:center;padding:24px 0;animation:pulse 1.6s infinite">LOADING...</p>';
+    return;
+  }
+  if (libHeatmapState === 'error' || !libHeatmapGroups) {
+    bodyEl.innerHTML = '<p style="font-size:13px;color:var(--text-dim);font-style:italic;text-align:center;padding:24px 0">Muscle heat unavailable right now.</p>';
+    return;
+  }
+  bodyEl.innerHTML = renderMuscleHeatmapBody(libHeatmapGroups);
+}
+
+function renderMuscleHeatmapBody(groups) {
+  var html = '<div style="display:flex;gap:16px;flex-wrap:wrap;justify-content:center">' +
+    renderHeatmapFigure('front', HEATMAP_FRONT_SHAPES, groups) +
+    renderHeatmapFigure('back', HEATMAP_BACK_SHAPES, groups) +
+  '</div>';
+  html += '<p id="lib-heatmap-readout" class="font-mono" style="font-size:12px;color:var(--text-muted);text-align:center;margin-top:10px;min-height:16px">Tap a muscle region</p>';
+  html += '<div style="display:flex;align-items:center;justify-content:center;gap:8px;margin-top:8px">' +
+    '<span style="font-size:10px;color:var(--text-muted)">LOW</span>' +
+    '<div style="width:120px;height:8px;border-radius:9999px;background:linear-gradient(90deg, rgba(255,74,28,0.08), rgba(255,74,28,0.8))"></div>' +
+    '<span style="font-size:10px;color:var(--text-muted)">HIGH</span>' +
+  '</div>';
+  return html;
+}
+
+function renderHeatmapFigure(side, shapes, groups) {
+  var paths = shapes.map(function(s) {
+    var g = groups[s.muscle] || { weighted_sets: 0, intensity: 0 };
+    var d = svgRoundRectPath(s.x, s.y, s.w, s.h, s.r);
+    var fill = g.intensity > 0 ? 'rgba(255,74,28,' + (0.08 + 0.72 * g.intensity).toFixed(2) + ')' : 'var(--bg-surface-2)';
+    var stroke = g.intensity > 0 ? 'none' : 'var(--border-subtle)';
+    return '<path data-muscle="' + s.muscle + '" d="' + d + '" fill="' + fill + '" stroke="' + stroke + '" stroke-width="1" onclick="showHeatmapReadout(\'' + s.muscle + '\')" onmouseenter="showHeatmapReadout(\'' + s.muscle + '\')"></path>';
+  }).join('');
+  // Decorative head + neck outline — no data-muscle, purely visual context.
+  var outline = '<circle cx="50" cy="16" r="11" fill="none" stroke="var(--border-subtle)" stroke-width="1.5"></circle>' +
+    '<path d="M42,26 L42,34 M58,26 L58,34" stroke="var(--border-subtle)" stroke-width="1.5" fill="none"></path>';
+  return '<svg viewBox="0 0 100 200" style="width:130px;height:260px;flex-shrink:0" aria-label="' + side + ' body muscle heat">' + outline + paths + '</svg>';
+}
+
+function showHeatmapReadout(muscle) {
+  var el = document.getElementById('lib-heatmap-readout');
+  if (!el || !libHeatmapGroups) return;
+  var g = libHeatmapGroups[muscle] || { weighted_sets: 0 };
+  el.textContent = (MUSCLE_FILTER_LABELS[muscle] || muscle) + ': ' + g.weighted_sets + ' weighted sets (' + libHeatmapDays + 'D)';
 }
 
 // Build the Steps card HTML (30-day bar chart + summary stats).
@@ -12037,6 +12203,22 @@ function renderLibExercises() {
     }
     html += '</div>';
   }
+  // Muscle-group filter pills (Exercise Catalog phase 2, 2026-07-16) — below
+  // category/subcategory. Data comes from GET /exercises' catalog attach
+  // (Feature 1); exercises with no catalog match simply never appear here.
+  html += '<div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:6px">';
+  for (var mi = 0; mi < MUSCLE_FILTER_GROUPS.length; mi++) {
+    var mg = MUSCLE_FILTER_GROUPS[mi];
+    var mgActive = libMuscleFilter === mg;
+    html += '<button onclick="setLibMuscleFilter(\'' + mg + '\')" style="font-size:11px;font-weight:600;padding:5px 12px;border-radius:9999px;border:1px solid ' + (mgActive ? 'var(--accent-ember)' : 'transparent') + ';background:var(--bg-surface-2);color:' + (mgActive ? 'var(--accent-ember)' : 'var(--text-muted)') + ';cursor:pointer;font-family:Inter,sans-serif">' + MUSCLE_FILTER_LABELS[mg] + '</button>';
+  }
+  html += '</div>';
+  if (libMuscleFilter) {
+    html += '<div style="display:flex;gap:6px;align-items:center;padding-left:8px;margin-bottom:6px">';
+    html += '<span style="font-size:10px;color:var(--text-muted);letter-spacing:0.06em">MATCH</span>';
+    html += '<button onclick="toggleLibMuscleMode()" style="font-size:10px;font-weight:600;padding:4px 10px;border-radius:9999px;border:1px solid var(--accent-ember);background:rgba(255,74,28,0.12);color:var(--accent-ember);cursor:pointer;font-family:Inter,sans-serif">' + (libMuscleMode === 'both' ? 'Primary + Secondary' : 'Primary Only') + '</button>';
+    html += '</div>';
+  }
   html += '</div>';
   var sortOpts = LIB_SORTS.map(function(k) { return '<option value="' + k + '"' + (libSort === k ? ' selected' : '') + '>' + LIB_SORT_LABEL[k] + '</option>'; }).join('');
   html += '<div style="display:flex;justify-content:flex-end;align-items:center;gap:6px;margin-bottom:8px"><span style="font-size:10px;color:var(--text-muted);letter-spacing:0.06em">SORT</span><select onchange="setLibSort(this.value)" style="background:var(--bg-surface-2);border:1px solid var(--border-subtle);color:var(--text-primary);padding:5px 12px;border-radius:9999px;cursor:pointer;font-size:12px;font-family:Inter,sans-serif">' + sortOpts + '</select></div>';
@@ -12056,42 +12238,153 @@ function setLibSubFilter(sub) {
   renderLibExercises();
 }
 
+// Exercise Catalog phase 2 (2026-07-16). Tap the same muscle again to clear
+// (parity with category pills — no persistence, single-select).
+function setLibMuscleFilter(m) {
+  libMuscleFilter = (libMuscleFilter === m) ? null : m;
+  renderLibExercises();
+}
+function toggleLibMuscleMode() {
+  libMuscleMode = (libMuscleMode === 'both') ? 'primary' : 'both';
+  renderLibExercises();
+}
+// Exercises with no catalog match (muscle_groups_primary null) are excluded
+// while a filter is active — they simply never satisfy either branch below.
+function exerciseMatchesMuscleFilter(ex) {
+  if (!libMuscleFilter) return true;
+  var primary = ex.muscle_groups_primary || [];
+  if (primary.indexOf(libMuscleFilter) >= 0) return true;
+  if (libMuscleMode === 'both') {
+    var secondary = ex.muscle_groups_secondary || [];
+    if (secondary.indexOf(libMuscleFilter) >= 0) return true;
+  }
+  return false;
+}
+
+// Extracted verbatim from the old inline loop so the flat list AND the
+// expanded per-variant list inside a family card (Feature 2) render the
+// EXACT same card markup — "unchanged inside," per spec.
+function libExerciseCardHtml(ex) {
+  var mc = ex.main_category || ex.category || 'other';
+  var sc = ex.subcategory || '';
+  var cc = CAT_COLORS[mc] || '#888';
+  var bestStr = '';
+  if (ex.best_weight) bestStr = ex.best_weight + ' lbs';
+  else if (ex.best_reps) bestStr = ex.best_reps + ' reps';
+  else if (ex.best_duration_seconds) bestStr = fmtMMSS(ex.best_duration_seconds);
+  return '<div onclick="showExerciseDetail(\'' + escAttr(ex.name) + '\')" style="display:flex;align-items:center;justify-content:space-between;padding:14px 16px;background:var(--bg-surface-1);border:1px solid var(--border-subtle);border-radius:16px;margin-bottom:8px;cursor:pointer">' +
+    '<div style="min-width:0"><div style="font-size:15px;color:var(--text-primary);font-weight:600">' + escHtml(ex.name) + '</div>' +
+    '<div style="display:flex;gap:6px;align-items:center;margin-top:4px;flex-wrap:wrap"><span style="font-size:9px;color:' + cc + ';letter-spacing:1px;text-transform:uppercase;background:' + cc + '18;padding:1px 6px;border-radius:9999px">' + mc.replace('_', ' ') + '</span>' +
+    (sc && sc !== 'general' ? '<span style="font-size:9px;color:var(--text-muted);background:var(--bg-surface-2);padding:1px 6px;border-radius:9999px">' + sc + '</span>' : '') +
+    '<span style="font-size:11px;color:var(--text-muted)">' + ex.count + 'x</span>' +
+    (ex.last_date ? '<span class="font-mono" style="font-size:10px;color:var(--text-muted)">last ' + ex.last_date + '</span>' : '') + '</div></div>' +
+    (bestStr ? '<div style="font-size:14px;font-weight:600;color:var(--text-primary);white-space:nowrap;margin-left:8px">' + bestStr + '</div>' : '') + '</div>';
+}
+
 function filterLibExercises() {
   var search = (document.getElementById('lib-search') || {}).value || '';
   search = search.toLowerCase();
+  var list = document.getElementById('lib-exercise-list');
+  if (!list) return;
+
+  // Family grouping (Feature 2) applies ONLY in the fully unfiltered state —
+  // any active search/category/subcategory/muscle filter falls through to
+  // today's flat list, deliberately (avoids partial-family edge cases; see
+  // CLAUDE.md "Exercise Canonicalization" phase 2).
+  var isUnfiltered = !search && libMainFilter === 'all' && libSubFilter === 'all' && !libMuscleFilter;
+  if (isUnfiltered) { renderLibExercisesGrouped(list); return; }
+
   var filtered = libExercises.filter(function(ex) {
     var mc = ex.main_category || ex.category || 'other';
     var sc = ex.subcategory || 'general';
     if (libMainFilter !== 'all' && mc !== libMainFilter) return false;
     if (libSubFilter !== 'all' && sc !== libSubFilter) return false;
     if (search && ex.name.toLowerCase().indexOf(search) < 0) return false;
+    if (!exerciseMatchesMuscleFilter(ex)) return false;
     return true;
   });
   filtered = applyLibSort(filtered);
 
-  var list = document.getElementById('lib-exercise-list');
-  if (!list) return;
   if (!filtered.length) { list.innerHTML = '<p style="font-size:14px;color:var(--text-dim);text-align:center;padding:20px">No exercises found.</p>'; return; }
 
   var html = '';
-  for (var i = 0; i < filtered.length; i++) {
-    var ex = filtered[i];
-    var mc = ex.main_category || ex.category || 'other';
-    var sc = ex.subcategory || '';
-    var cc = CAT_COLORS[mc] || '#888';
-    var bestStr = '';
-    if (ex.best_weight) bestStr = ex.best_weight + ' lbs';
-    else if (ex.best_reps) bestStr = ex.best_reps + ' reps';
-    else if (ex.best_duration_seconds) bestStr = fmtMMSS(ex.best_duration_seconds);
-    html += '<div onclick="showExerciseDetail(\'' + escAttr(ex.name) + '\')" style="display:flex;align-items:center;justify-content:space-between;padding:14px 16px;background:var(--bg-surface-1);border:1px solid var(--border-subtle);border-radius:16px;margin-bottom:8px;cursor:pointer">' +
-      '<div style="min-width:0"><div style="font-size:15px;color:var(--text-primary);font-weight:600">' + escHtml(ex.name) + '</div>' +
-      '<div style="display:flex;gap:6px;align-items:center;margin-top:4px;flex-wrap:wrap"><span style="font-size:9px;color:' + cc + ';letter-spacing:1px;text-transform:uppercase;background:' + cc + '18;padding:1px 6px;border-radius:9999px">' + mc.replace('_', ' ') + '</span>' +
-      (sc && sc !== 'general' ? '<span style="font-size:9px;color:var(--text-muted);background:var(--bg-surface-2);padding:1px 6px;border-radius:9999px">' + sc + '</span>' : '') +
-      '<span style="font-size:11px;color:var(--text-muted)">' + ex.count + 'x</span>' +
-      (ex.last_date ? '<span class="font-mono" style="font-size:10px;color:var(--text-muted)">last ' + ex.last_date + '</span>' : '') + '</div></div>' +
-      (bestStr ? '<div style="font-size:14px;font-weight:600;color:var(--text-primary);white-space:nowrap;margin-left:8px">' + bestStr + '</div>' : '') + '</div>';
-  }
+  for (var i = 0; i < filtered.length; i++) html += libExerciseCardHtml(filtered[i]);
   list.innerHTML = html;
+}
+
+// Family rollups (Feature 2) — grouped-by-family view for the default
+// unfiltered state. A family with 2+ variants renders one collapsed family
+// card; single-variant families and family:null exercises render as plain
+// cards (single-variant "families" are never wrapped — nothing to roll up).
+// family:null lands in its own bottom "Uncategorized" section, never grouped.
+function renderLibExercisesGrouped(list) {
+  var families = {};
+  var uncategorized = [];
+  libExercises.forEach(function(ex) {
+    if (ex.family) {
+      if (!families[ex.family]) families[ex.family] = [];
+      families[ex.family].push(ex);
+    } else {
+      uncategorized.push(ex);
+    }
+  });
+
+  // Top-level items carry .name/.count/.last_date so the EXISTING
+  // applyLibSort() can sort families and singles together with zero new sort
+  // logic — "family aggregates" are just count=totalCount, last_date=most
+  // recent variant date, per spec.
+  var topLevel = [];
+  Object.keys(families).forEach(function(fname) {
+    var variants = applyLibSort(families[fname]);
+    if (variants.length >= 2) {
+      var totalCount = variants.reduce(function(s, v) { return s + (v.count || 0); }, 0);
+      var mostRecent = variants.reduce(function(m, v) { return (v.last_date && (!m || v.last_date > m)) ? v.last_date : m; }, null);
+      topLevel.push({ kind: 'family', name: fname, count: totalCount, last_date: mostRecent, variants: variants });
+    } else {
+      topLevel.push({ kind: 'single', name: variants[0].name, count: variants[0].count, last_date: variants[0].last_date, ex: variants[0] });
+    }
+  });
+  topLevel = applyLibSort(topLevel);
+  uncategorized = applyLibSort(uncategorized);
+
+  var html = '';
+  topLevel.forEach(function(item) {
+    html += item.kind === 'family' ? libFamilyCardHtml(item) : libExerciseCardHtml(item.ex);
+  });
+  if (uncategorized.length) {
+    html += '<p class="clabel" style="margin:20px 0 8px">uncategorized</p>';
+    uncategorized.forEach(function(ex) { html += libExerciseCardHtml(ex); });
+  }
+  list.innerHTML = html || '<p style="font-size:14px;color:var(--text-dim);text-align:center;padding:20px">No exercises found.</p>';
+}
+
+function libFamilyCardHtml(fam) {
+  var expanded = !!libFamilyExpanded[fam.name];
+  var chevron = expanded ? '&#9660;' : '&#9654;';
+  var html = '<div class="lib-family-card" style="margin-bottom:8px">' +
+    '<div onclick="toggleLibFamily(\'' + escAttr(fam.name) + '\')" style="display:flex;align-items:center;gap:10px;padding:14px 16px;background:var(--bg-surface-1);border:1px solid var(--border-subtle);border-radius:16px;cursor:pointer">' +
+      '<span class="font-mono" style="font-size:10px;color:var(--accent-ember);flex-shrink:0">' + chevron + '</span>' +
+      '<div style="min-width:0;flex:1">' +
+        '<div style="font-size:15px;color:var(--text-primary);font-weight:600">' + escHtml(fam.name) + '</div>' +
+        '<div style="display:flex;gap:6px;align-items:center;margin-top:4px;flex-wrap:wrap">' +
+          '<span style="font-size:9px;color:var(--accent-ember);letter-spacing:1px;text-transform:uppercase;background:rgba(255,74,28,0.12);padding:1px 6px;border-radius:9999px">' + fam.variants.length + ' variants</span>' +
+          '<span style="font-size:11px;color:var(--text-muted)">' + fam.count + 'x total</span>' +
+          (fam.last_date ? '<span class="font-mono" style="font-size:10px;color:var(--text-muted)">last ' + fam.last_date + '</span>' : '') +
+        '</div>' +
+      '</div>' +
+    '</div>';
+  if (expanded) {
+    html += '<div style="padding-left:20px;margin-top:8px">';
+    fam.variants.forEach(function(v) { html += libExerciseCardHtml(v); });
+    html += '</div>';
+  }
+  html += '</div>';
+  return html;
+}
+
+function toggleLibFamily(name) {
+  libFamilyExpanded[name] = !libFamilyExpanded[name];
+  filterLibExercises();
 }
 
 var libDetailFrom = 'exercises';
