@@ -8852,9 +8852,11 @@ app.get("/api/debug/exercise-catalog-dupes", async function(req, res) {
       var got = req.query.secret || req.headers["x-admin-secret"];
       if (got !== process.env.ADMIN_SECRET) return res.status(403).json({ success: false, error: "forbidden" });
     }
-    var r = await fetch(SUPABASE_URL + "/rest/v1/exercise_catalog?select=id,canonical_name,aliases,source,created_at&order=id.asc&limit=10000", { headers: sbHeaders() });
+    var r = await fetch(SUPABASE_URL + "/rest/v1/exercise_catalog?select=id,canonical_name,aliases,source,family,muscle_groups_primary,muscle_groups_secondary,equipment,wger_id,musclewiki_id,created_at&order=id.asc&limit=10000", { headers: sbHeaders() });
     var rows = await r.json();
     if (!Array.isArray(rows)) return res.status(500).json({ success: false, error: "exercise_catalog table not reachable" });
+    var rowById = {};
+    rows.forEach(function(row) { rowById[row.id] = row; });
 
     var byKey = {};
     rows.forEach(function(row) {
@@ -8877,8 +8879,22 @@ app.get("/api/debug/exercise-catalog-dupes", async function(req, res) {
     });
     // Oldest row first within a cluster is usually the "original" (lowest
     // id = created earliest) — a hint for review, not an automatic verdict;
-    // the caller decides which row actually wins.
-    clusters.forEach(function(c) { c.rows.sort(function(a, b) { return a.id - b.id; }); });
+    // the caller decides which row actually wins. Each row is enriched with
+    // its FULL current data (not just the one colliding alias) so a merge
+    // decision can be acted on directly via exercise-catalog-upsert without
+    // a second round-trip to look up what would otherwise get clobbered.
+    clusters.forEach(function(c) {
+      c.rows.sort(function(a, b) { return a.id - b.id; });
+      c.rows.forEach(function(entry) {
+        var full = rowById[entry.id];
+        entry.all_aliases = (full && full.aliases) || [];
+        entry.family = full && full.family;
+        entry.muscle_groups_primary = (full && full.muscle_groups_primary) || [];
+        entry.muscle_groups_secondary = (full && full.muscle_groups_secondary) || [];
+        entry.equipment = (full && full.equipment) || [];
+        entry.wger_id = full && full.wger_id;
+      });
+    });
 
     res.json({ success: true, total_rows: rows.length, cluster_count: clusters.length, clusters: clusters });
   } catch (e) {
