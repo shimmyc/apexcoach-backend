@@ -8,6 +8,19 @@
 > `wearables/`, and `migrations/` rather than transcribed. Where the original brief differed
 > from the live code, the doc follows the code and flags it with **⚠ Correction**.
 >
+> **2026-07-16 doc-sync audit** (no feature work — CLAUDE.md + ROADMAP.md re-verified line-by-line
+> against live `server.js`/`public/index.html`/`wearables/`/`migrations/`, not against memory of
+> past sessions). Found and fixed: §4 listed 3 admin endpoints (`dead-hang`, `missing-dates`,
+> `dead-hang-backfill`) that no longer exist in code at all (removed); §4 was missing 2 real,
+> live endpoints (`POST /api/exercise-catalog/confirm-alias`, `GET .../life-os-summary`); §10 was
+> missing 2 real env vars actually read via `process.env.*` (`LIFE_OS_API_KEY`, `RENDER_URL`); §2's
+> "Other tables" list omitted `daily_sleep` even though its migration is tracked in the same
+> section. New finding, not previously tracked: `daily_sleep`'s RLS status is undocumented (see §6).
+> Everything else audited — model strings/`CALL_TYPE_MODEL` routing, the full endpoint inventory,
+> `exercise_catalog`'s schema, the athlete-timezone system, Coach Chat tool-use + the roadmap-regen
+> auto-offer, exercise canonicalization end-to-end, and the `.env.claude.txt` convention — matched
+> the live code exactly, no further corrections needed.
+>
 > **✅ 2026-06-18 CRITICAL ISSUE — ROOT-CAUSED & MOSTLY RESOLVED (2026-06-19).** The "every Supabase/PostgREST query returns **'Premature close'**" outage is understood and largely fixed. **Real root cause (NOT Supabase throttling alone):** Supabase support confirmed the `apexcoach` project's **compute was sized at Nano (free-tier sizing) despite being on the Pro plan** — paid projects do **not** auto-upgrade their compute. The daily-recs **retry storm** (frontend stream-parse failure re-firing `fetchAI` with no cap — fixed this session, see the 2026-06-18 stream-parse item below) drove connection volume into **Nano's memory ceiling**, which made PostgREST's **Warp HTTP server kill in-flight request threads under timeout pressure** — surfacing client-side as **"Premature close"** on every query. The "EXCEEDING USAGE LIMITS" dashboard banner was a symptom of the same undersized compute, not a separate billing limit. **Primary fix:** upgraded Supabase compute **Nano → Micro** (free on the Pro plan, ~2 min downtime). This resolved the **majority** of failures.
 >
 > **Residual bug found after the upgrade (2026-06-19).** Intermittent "Premature close" still hit a subset of requests — Supabase `workouts`, and separately **Fitbit's `oauth2/token`** endpoint — traced to **node-fetch's stream sometimes dying mid-body-read**. Because that failure happens **after `fetch()` has already resolved** (during `res.json()`/`res.text()`), a naive retry wrapper around the `fetch()` call alone never caught it. **Fixes shipped (all `server.js`):**
@@ -240,6 +253,7 @@ Remembers a user's "these are separate sessions" decision so a rejected pairing 
 ### Other tables
 - **`daily_steps`** — id, profile_id, date, steps, calories, distance_miles, floors, source, created_at. UNIQUE(profile_id, date). Nightly Fitbit upsert.
 - **`body_metrics`** — id, profile_id, date, weight_lbs, body_fat_pct, bmi, source, created_at. UNIQUE(profile_id, date).
+- **`daily_sleep`** *(Life OS fast-path, added 2026-05-24)* — id, profile_id, date, hours, score (the COMPUTED personal sleep score, not Fitbit's), deep_minutes/rem_minutes/light_minutes/wake_minutes, hrv, rhr, source, created_at. UNIQUE(profile_id, date). Migration `2026-05-24_daily_sleep.sql` — **⚠ Correction: no RLS/policy statements in that migration**, and it's absent from the RLS enumeration in `CLAUDE.md` (§ Row Level Security lists 11+3+1=15 tables by name; `daily_sleep` isn't among them). Flagged in §6 Known Limitations — status unverified, not confirmed missing (may have been added ad-hoc outside a committed migration), but currently undocumented either way.
 - **`daily_checkins`** — id, profile_id, date, energy, soreness (text[]), severity, checkin_text, created_at. UNIQUE(profile_id, date).
 - **`workout_templates`** — id, profile_id, name, type, notes_template, exercises (jsonb), use_count, created_at. Saved routines (▶ Use buttons).
 - **`tokens`** *(legacy)* — pre-multi-profile single-user Fitbit token store; still read as a fallback in `/callback` and `/api/token-info`. Superseded by `profiles.fitbit_*` + `wearable_connections`.
@@ -432,6 +446,7 @@ All verified present in `server.js`. `:id`/`:userId` = profile id.
 | GET | `/api/profiles/:id/exercises` · `/exercises/stats` · `/exercises/:name` · `/exercises/audit` |
 | GET | `/api/exercise-catalog?q=` — search the shared catalog (not profile-scoped), for the confirm-chip "change" picker |
 | PATCH | `/api/profiles/:id/exercises/:exerciseId` — body `{canonical_name}` or `{keep_as_typed:true, typed_name}`, the confirm-chip "change" action |
+| POST | `/api/exercise-catalog/confirm-alias` — body `{canonical_name, typed_name}`, not admin-gated; fired by the confirm chip's "✓" to persist the typed variant as an alias (see "Exercise Canonicalization" in `CLAUDE.md`) |
 | DELETE | `/api/profiles/:id/exercises/:exerciseId` |
 | GET | `/api/meditations` |
 
@@ -442,6 +457,7 @@ All verified present in `server.js`. `:id`/`:userId` = profile id.
 | GET/POST | `/api/profiles/:id/brief` · `/generate-brief` |
 | POST | `/api/profiles/:id/search-history` |
 | GET/POST | `/api/profiles/:id/daily-recs` · `/progress-brief` · `/roadmap` (legacy text) · `/roadmap-data` (structured macro, Sonnet) |
+| GET | `/api/profiles/:id/life-os-summary` — read-only aggregated daily summary for the external Life OS app; auth `X-Life-OS-Key` (or admin secret); DB-first sleep/HRV/RHR (see `CLAUDE.md` for full field shape) |
 | POST | `/api/profiles/:id/goal-progress` · `/generate-goal-description` |
 | POST | `/api/profiles/:id/week-preview` — 7-Day Smart Schedule Preview (`schedule_preview` → Haiku); body `{schedule, readiness}` → rolling-7-day rule-engine skeleton + per-day Haiku coaching notes; non-fatal (6s cap), returns `{week, week_note, generated_at}` |
 | GET/POST | `/api/profiles/:id/checkin` |
@@ -485,8 +501,6 @@ All verified present in `server.js`. `:id`/`:userId` = profile id.
 ### Debug / admin (gated by `ADMIN_SECRET` where applicable)
 | Method | Path |
 |--------|------|
-| GET | `/api/debug/dead-hang/:userId` · `/missing-dates/:userId` |
-| POST | `/api/debug/dead-hang-backfill/:userId` |
 | POST | `/api/debug/backfill-wearable-hr/:userId` (`?provider=fitbit&max_intraday=N`) |
 | POST | `/api/debug/seed-exercise-catalog` (`?max_calls=N`) — wger.de bulk-seed (no key needed; replaces the never-run MuscleWiki seed), resumable/idempotent, merge-safe against existing rows |
 | GET | `/api/debug/exercise-canonicalization-report/:userId` (`?max_haiku=N`) — read-only backfill merge-list report |
@@ -525,6 +539,7 @@ All verified present in `server.js`. `:id`/`:userId` = profile id.
 - **Legacy text roadmap is now orphaned** — the Profile tab renders the structured `/roadmap-data` card (2026-05-29), so the client no longer reads or writes the legacy `profiles.roadmap` text via `POST /api/profiles/:id/roadmap`. That endpoint + column are still defined (and `renderRoadmapContent()` is kept) but dead-code; safe to retire (§9). Any pre-existing `profiles.roadmap` text is simply ignored.
 - **Horizon-phase `progress_pct` is always 0** — by design: horizon phases have no `start_date`, so `computePhaseProgress()` returns null and the macro/per-goal roadmap UI shows no progress bar for them (only `milestone` + `estimated_range`).
 - **`wearables/fitbit.js`'s `adapter.refreshToken()` lacks the retry / `invalid_grant` guard `refreshProfileToken()` has.** Confirmed by direct code comparison (2026-07-15): `refreshProfileToken()` (`server.js`) retries transient failures and stops cleanly on a `400 invalid_grant` (logging instead of looping on a dead token); `wearables/fitbit.js`'s own `refreshToken()` just throws on any non-ok response. This path is only reached for wearable-only Fitbit connections that never populated `profiles.fitbit_*`. **Pre-existing, low priority** — confirm whether any active profile actually hits that fallback path before patching.
+- **`daily_sleep` table's RLS status is undocumented — found during a 2026-07-16 doc-sync audit, not fixed.** The table's migration (`migrations/2026-05-24_daily_sleep.sql`) contains no `ALTER TABLE ... ENABLE ROW LEVEL SECURITY` / `CREATE POLICY` statements, and the table is conspicuously absent from `CLAUDE.md`'s otherwise-careful RLS enumeration (11 original tables + 3 Coach Chat + 1 exercise_catalog = 15 named tables — `daily_sleep`, created 2 days before the 2026-05-26 "enable RLS on all 11 tables" session, isn't among any of the three groups). Not confirmed broken — Supabase RLS could have been added ad-hoc via the SQL editor without a committed migration, matching how several other tables/columns in this project were created (see §2's note) — but currently unverified either way, and low-impact regardless since the backend only ever queries with the service-role key (RLS-transparent). Should be checked directly in the Supabase dashboard and given a `service_role_bypass` policy (matching the other 15 tables' convention) if actually missing.
 - **`exercises.duration_minutes` silently fails to insert for non-integer values — found live 2026-07-16, NOT fixed (out of scope for the exercise-canonicalization session that discovered it).** Reproduced directly: logging a Dead Hang or Plank with a whole-number duration (e.g. "1 minute") inserts fine; the identical save with a fractional duration (0.75 for "45 seconds", 0.5 for "30 seconds") returns `count:0` from `POST /api/profiles/:id/extract-exercises` — the row is silently never written, no error surfaced to the client or logged distinctly from a normal skip. This is unrelated to the exercise-catalog work (catalog resolution never touches `duration_minutes`) but directly contradicts the extraction prompt's own hardcoded Dead Hang rule, which explicitly instructs fractional-minute values ("45 seconds → 0.75"). Almost certainly explains the pre-existing `CLAUDE.md` caveat that `strength_milestone`'s time-based tracking "prefers `parseDurationToSeconds(raw_text||notes)` over the often-mis-populated `duration_minutes` column" — that workaround was likely built around this exact bug without ever finding the root cause. **Likely root cause** (not confirmed — would need direct schema access to verify): `exercises.duration_minutes` is probably typed as an integer column in the live database, despite the app-level code and multiple docs treating it as free-precision numeric. **Fix, not attempted this session**: either a migration to widen the column to `numeric`, or have `extract-exercises` round to the nearest whole minute before insert (lossy — would break sub-minute hold tracking, the opposite of what the Dead Hang PR feature needs) — a real design decision, not a one-line patch, and out of scope for the session that found it.
 
 ### Coach Chat / Timezone — Known Issues & Deferred (2026-07-15)
@@ -550,11 +565,11 @@ Each item below is self-contained — no other doc/session context should be nee
 2. ~~Roadmap-regenerate offer after applied goal changes~~ — **✅ done (session #6)**. See §6 item 7.
 3. ~~wger bulk-seed~~ — **✅ done (session #8)**, replacing the MuscleWiki seed that was built but never run (paid key never obtained). 842 exercises fetched, catalog now **879 rows**. See §3 → Exercise Canonicalization / `CLAUDE.md`.
 4. **Exercise Canonicalization phase 2 — family/muscle-group rollups + an original anatomy-SVG muscle heatmap.** `exercise_catalog.family`/`muscle_groups_primary`/`muscle_groups_secondary`/`equipment` are now populated for ~880 rows (wger-seeded) but nothing reads them yet. Queued follow-up: Library tab "similar exercises" / muscle-group filtering, folding `family` into variant-grouped cards, **and a body-map muscle heatmap built on `muscle_groups_primary`/`secondary`** — own original SVG artwork (front/back body outline, muscle regions filled/highlighted by recent training volume), explicitly **not sourced from MuscleWiki or wger** (avoids any licensing question — this is presentation of our own aggregated data, not a redistribution of either source's assets).
-5. **MuscleWiki video-streaming layer — paid-user/beta stage, not started.** Distinct from data seeding (which wger now covers): subscribing to MuscleWiki's video API ($10/mo TESTING plan minimum) and doing a **one-time exercise-ID mapping pass** onto the existing catalog via the `musclewiki_id` column (kept on the schema for exactly this) — matching wger-seeded `canonical_name`s against MuscleWiki's own names, filling `musclewiki_id` where found. **In-app streaming only, through a server proxy — no stored media**, per MuscleWiki's API ToS. Gated behind a paid-user/beta flag, not a v1 feature. See the Exercise Video / Demonstration Database plan below, updated to reflect this split.
-6. **Optional: Free Exercise DB top-up import**, if wger coverage gaps keep surfacing in practice. A concrete gap already found live (session #8): wger seeded plenty of *variant-qualified* lat pulldown names (Wide-Grip, Neutral-Grip, Single-Arm, …) but no bare "Lat Pulldown" — today that correctly falls through to Haiku and creates a `source:'custom'` row with a confirm chip (working as designed, not broken), but a free, keyless top-up source (e.g. `github.com/yuhonas/free-exercise-db`, public domain JSON) could close gaps like this proactively instead of relying on Haiku to backfill them one save at a time. Not started — only worth building if this keeps happening after wger's ~880 rows are in real use.
-7. Today-tab declutter (below).
-8. Wearable Sync bulk-review modal — Google Health provider picker (below).
-9. Apple HealthKit / iOS integration — long-term (below).
+5. **Full frontend declutter pass** (co-next with #4, below) — Today tab (above the fold: readiness + sleep score + feeling check-in + rec only; body metrics moves to Profile, Recent Workouts removed) and Profile tab (too cluttered, needs breathing room/reorganization). See "Next up" below for both.
+6. Wearable Sync bulk-review modal — Google Health provider picker (below).
+7. Apple HealthKit / iOS integration — long-term (below).
+8. **Optional: Free Exercise DB top-up import**, if wger coverage gaps keep surfacing in practice. A concrete gap already found live (session #8): wger seeded plenty of *variant-qualified* lat pulldown names (Wide-Grip, Neutral-Grip, Single-Arm, …) but no bare "Lat Pulldown" — today that correctly falls through to Haiku and creates a `source:'custom'` row with a confirm chip (working as designed, not broken), but a free, keyless top-up source (e.g. `github.com/yuhonas/free-exercise-db`, public domain JSON) could close gaps like this proactively instead of relying on Haiku to backfill them one save at a time. Not started — only worth building if this keeps happening after wger's ~880 rows are in real use.
+9. **MuscleWiki video-streaming layer — paid-user/beta stage, not started.** Distinct from data seeding (which wger now covers): subscribing to MuscleWiki's video API ($10/mo TESTING plan minimum) and doing a **one-time exercise-ID mapping pass** onto the existing catalog via the `musclewiki_id` column (kept on the schema for exactly this) — matching wger-seeded `canonical_name`s against MuscleWiki's own names, filling `musclewiki_id` where found. **In-app streaming only, through a server proxy — no stored media**, per MuscleWiki's API ToS. Gated behind a paid-user/beta flag, not a v1 feature. See the Exercise Video / Demonstration Database plan below, updated to reflect this split.
 
 ### Near term
 
@@ -707,7 +722,9 @@ All read via `process.env.*` in `server.js`. No values here — set them in the 
 | `FITBIT_CLIENT_SECRET` | ✅ | Fitbit OAuth app client secret |
 | `GOOGLE_HEALTH_CLIENT_ID` | ✅ Required | Google Cloud OAuth 2.0 client id (Google Health API v4) |
 | `GOOGLE_HEALTH_CLIENT_SECRET` | ✅ Required | Google Cloud OAuth 2.0 client secret (Google Health API v4) |
-| `ADMIN_SECRET` | ⚠ Recommended | Gates `/api/debug/*` admin endpoints when set |
+| `ADMIN_SECRET` | ⚠ Recommended | Gates `/api/debug/*` admin endpoints when set; also accepted as a fallback for `LIFE_OS_API_KEY` |
+| `LIFE_OS_API_KEY` | ⚠ Recommended | Shared secret for `GET /api/profiles/:id/life-os-summary` (`X-Life-OS-Key` header). Endpoint fails closed (503) if neither this nor `ADMIN_SECRET` is set |
+| `RENDER_URL` | optional | Overrides the OAuth redirect base for `/callback/google_health`; falls back to `https://apexcoach-backend.onrender.com` |
 | `PORT` | optional | Server port (Render injects this) |
 | `FITBIT_ACCESS_TOKEN` | legacy | Single-user fallback token (pre-multi-profile) |
 | `FITBIT_REFRESH_TOKEN` | legacy | Single-user fallback refresh token |
