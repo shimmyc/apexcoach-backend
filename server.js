@@ -8628,6 +8628,34 @@ app.post("/api/debug/exercise-catalog-upsert", async function(req, res) {
   }
 });
 
+// DELETE /api/debug/exercise-catalog/:id?secret=ADMIN_SECRET
+// Removes one catalog row by id — for cleaning up a bad/test entry (e.g. a
+// made-up exercise name that shouldn't live in the shared catalog). No
+// cascade needed: exercises.name is a plain text column, not a foreign key
+// into exercise_catalog, so deleting a catalog row never touches any
+// already-saved exercise row (it just stops being a match target for
+// future saves).
+app.delete("/api/debug/exercise-catalog/:id", async function(req, res) {
+  try {
+    if (process.env.ADMIN_SECRET) {
+      var got = req.query.secret || req.headers["x-admin-secret"];
+      if (got !== process.env.ADMIN_SECRET) return res.status(403).json({ success: false, error: "forbidden" });
+    }
+    var id = req.params.id;
+    var check = await fetch(SUPABASE_URL + "/rest/v1/exercise_catalog?id=eq." + encodeURIComponent(id) + "&select=id,canonical_name", { headers: sbHeaders() });
+    var rows = await check.json();
+    if (!Array.isArray(rows) || !rows.length) return res.status(404).json({ success: false, error: "Not found" });
+    var del = await fetch(SUPABASE_URL + "/rest/v1/exercise_catalog?id=eq." + encodeURIComponent(id), {
+      method: "DELETE",
+      headers: sbHeaders("return=minimal"),
+    });
+    if (!del.ok) return res.status(del.status).json({ success: false, error: await del.text() });
+    res.json({ success: true, deleted: rows[0].canonical_name });
+  } catch (e) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
 // POST /api/wearables/bulk-action/:userId
 // body: {
 //   action: "match_all" | "import_all" | "skip_all",
