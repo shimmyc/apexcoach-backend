@@ -8903,6 +8903,122 @@ app.get("/api/debug/exercise-catalog-dupes", async function(req, res) {
   }
 });
 
+// POST /api/debug/exercise-catalog-merge?secret=ADMIN_SECRET
+// Body: { winner_id, loser_id, retitle_canonical_name? }. Merges loser INTO
+// winner for a confirmed exercise-catalog-dupes cluster. Fetches BOTH rows
+// fresh from the DB rather than trusting anything the caller supplies about
+// their current content — a merge command only needs to name the two rows,
+// so it can never accidentally clobber data the caller didn't know about
+// (the exact gap a hand-built PATCH would risk: exercise-catalog-upsert
+// REPLACES the aliases array wholesale, so it needs the winner's full
+// current list to union into, not overwrite).
+//   - aliases: union of winner's current aliases + loser's canonical_name +
+//     loser's aliases, deduped via catalogNormKey, excluding anything that
+//     already matches the winner's own canonical key.
+//   - family/muscle_groups_primary/secondary/equipment/wger_id: fill-EMPTY-
+//     only from the loser — winner's existing data always wins on conflict.
+//   - optional retitle_canonical_name renames the winner in the same call
+//     (e.g. "Side bend" -> "Side Bend").
+//   - loser row is deleted after the winner is successfully patched (no
+//     cascade concern — exercises.name is plain text, not an FK).
+// General-purpose, not a one-off — built for the wger near-dupe cleanup
+// (2026-07-16) but the same shape any future duplicate cluster needs.
+app.post("/api/debug/exercise-catalog-merge", async function(req, res) {
+  try {
+    if (process.env.ADMIN_SECRET) {
+      var got = req.query.secret || req.headers["x-admin-secret"];
+      if (got !== process.env.ADMIN_SECRET) return res.status(403).json({ success: false, error: "forbidden" });
+    }
+    var b = req.body || {};
+    var winnerId = b.winner_id, loserId = b.loser_id;
+    if (!winnerId || !loserId || winnerId === loserId) return res.status(400).json({ success: false, error: "winner_id and loser_id (distinct) required" });
+
+    var wr = await fetch(SUPABASE_URL + "/rest/v1/exercise_catalog?id=eq." + encodeURIComponent(winnerId) + "&select=*", { headers: sbHeaders() });
+    var winnerRows = await wr.json();
+    var winner = Array.isArray(winnerRows) && winnerRows[0];
+    var lr = await fetch(SUPABASE_URL + "/rest/v1/exercise_catalog?id=eq." + encodeURIComponent(loserId) + "&select=*", { headers: sbHeaders() });
+    var loserRows = await lr.json();
+    var loser = Array.isArray(loserRows) && loserRows[0];
+    if (!winner || !loser) return res.status(404).json({ success: false, error: "winner or loser row not found" });
+
+    var winnerKey = catalogNormKey(winner.canonical_name);
+    var newAliases = (winner.aliases || []).slice();
+    function addAlias(text) {
+      var k = catalogNormKey(text);
+      if (!k || k === winnerKey) return;
+      if (newAliases.some(function(a) { return catalogNormKey(a) === k; })) return;
+      newAliases.push(text);
+    }
+    addAlias(loser.canonical_name);
+    (loser.aliases || []).forEach(addAlias);
+
+    var patch = { aliases: newAliases, updated_at: new Date().toISOString() };
+    if (!winner.family && loser.family) patch.family = loser.family;
+    if ((!winner.muscle_groups_primary || !winner.muscle_groups_primary.length) && loser.muscle_groups_primary && loser.muscle_groups_primary.length) patch.muscle_groups_primary = loser.muscle_groups_primary;
+    if ((!winner.muscle_groups_secondary || !winner.muscle_groups_secondary.length) && loser.muscle_groups_secondary && loser.muscle_groups_secondary.length) patch.muscle_groups_secondary = loser.muscle_groups_secondary;
+    if ((!winner.equipment || !winner.equipment.length) && loser.equipment && loser.equipment.length) patch.equipment = loser.equipment;
+    if (!winner.wger_id && loser.wger_id) patch.wger_id = loser.wger_id;
+    if (b.retitle_canonical_name && b.retitle_canonical_name !== winner.canonical_name) patch.canonical_name = b.retitle_canonical_name;
+
+    var patchRes = await fetch(SUPABASE_URL + "/rest/v1/exercise_catalog?id=eq." + winner.id, {
+      method: "PATCH",
+      headers: sbHeaders("return=representation"),
+      body: JSON.stringify(patch),
+    });
+    if (!patchRes.ok) return res.status(patchRes.status).json({ success: false, error: await patchRes.text() });
+    var patchedRows = await patchRes.json();
+
+    var delRes = await fetch(SUPABASE_URL + "/rest/v1/exercise_catalog?id=eq." + loser.id, {
+      method: "DELETE",
+      headers: sbHeaders("return=minimal"),
+    });
+    if (!delRes.ok) return res.status(delRes.status).json({ success: false, error: "winner updated but loser delete failed: " + await delRes.text() });
+
+    res.json({ success: true, winner: Array.isArray(patchedRows) ? patchedRows[0] : patchedRows, deleted_loser: { id: loser.id, canonical_name: loser.canonical_name } });
+  } catch (e) {
+    console.error("[CatalogMerge] fatal:", e.message);
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+// POST /api/debug/exercise-catalog-remove-alias?secret=ADMIN_SECRET
+// Body: { id, alias }. Removes ONE alias (matched via catalogNormKey, so
+// case/hyphen/space variants of the same text all match) from a row without
+// touching anything else on it. The fix for a cluster that should NOT
+// merge — two genuinely different exercises that happen to share an
+// upstream-sourced alias, e.g. a generic movement-pattern name ("Hip
+// Hinge") wrongly aliased onto one specific loaded exercise ("Good
+// Morning") — same safety class as "hang clean" never silently absorbing
+// into "Dead Hang" (see CLAUDE.md "Exercise Canonicalization"). No-op
+// (not an error) if the alias isn't present, so it's safe to call twice.
+app.post("/api/debug/exercise-catalog-remove-alias", async function(req, res) {
+  try {
+    if (process.env.ADMIN_SECRET) {
+      var got = req.query.secret || req.headers["x-admin-secret"];
+      if (got !== process.env.ADMIN_SECRET) return res.status(403).json({ success: false, error: "forbidden" });
+    }
+    var b = req.body || {};
+    if (!b.id || !b.alias) return res.status(400).json({ success: false, error: "id and alias required" });
+    var r = await fetch(SUPABASE_URL + "/rest/v1/exercise_catalog?id=eq." + encodeURIComponent(b.id) + "&select=id,canonical_name,aliases", { headers: sbHeaders() });
+    var rows = await r.json();
+    var row = Array.isArray(rows) && rows[0];
+    if (!row) return res.status(404).json({ success: false, error: "row not found" });
+    var targetKey = catalogNormKey(b.alias);
+    var remaining = (row.aliases || []).filter(function(a) { return catalogNormKey(a) !== targetKey; });
+    if (remaining.length === (row.aliases || []).length) return res.json({ success: true, action: "not_present", canonical_name: row.canonical_name, aliases: row.aliases });
+    var patchRes = await fetch(SUPABASE_URL + "/rest/v1/exercise_catalog?id=eq." + row.id, {
+      method: "PATCH",
+      headers: sbHeaders("return=representation"),
+      body: JSON.stringify({ aliases: remaining, updated_at: new Date().toISOString() }),
+    });
+    if (!patchRes.ok) return res.status(patchRes.status).json({ success: false, error: await patchRes.text() });
+    var patched = await patchRes.json();
+    res.json({ success: true, action: "removed", row: Array.isArray(patched) ? patched[0] : patched });
+  } catch (e) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
 // POST /api/wearables/bulk-action/:userId
 // body: {
 //   action: "match_all" | "import_all" | "skip_all",
