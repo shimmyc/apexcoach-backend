@@ -2370,6 +2370,19 @@ app.delete("/api/workouts/:id", async function(req, res) {
   try {
     var id = req.params.id;
     var pid = await getWorkoutProfileId(id);
+    // Delete child exercises rows FIRST (same profile-ownership guard the
+    // single-exercise DELETE endpoint already uses) so a deleted workout
+    // never leaves orphaned exercises rows behind — real bug found live
+    // 2026-07-16, see CLAUDE.md/ROADMAP.md. No FK/cascade migration added;
+    // an explicit delete here is simpler and the guardrail for this fix was
+    // no schema changes (an ON DELETE CASCADE FK is flagged as a future
+    // hardening option, not applied).
+    if (pid) {
+      await fetch(SUPABASE_URL + "/rest/v1/exercises?workout_id=eq." + id + "&profile_id=eq." + pid, {
+        method: "DELETE",
+        headers: sbHeaders("return=minimal"),
+      });
+    }
     await fetch(SUPABASE_URL + "/rest/v1/workouts?id=eq." + id, {
       method: "DELETE",
       headers: sbHeaders("return=minimal"),
@@ -8815,6 +8828,103 @@ app.post("/api/debug/apply-exercise-canonicalization/:userId", async function(re
     res.json({ success: true, profile_id: pid2, results: results, total_updated: results.reduce(function(s, r) { return s + (r.updated || 0); }, 0) });
   } catch (e) {
     console.error("[ApplyCanonicalization] fatal:", e.message);
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+// GET /api/debug/orphaned-exercises/:userId?secret=ADMIN_SECRET
+// Read-only report: exercises rows for this profile whose workout_id no
+// longer references an existing workouts row — the signature of the
+// pre-fix DELETE /api/workouts/:id bug (deleted the workout, left its
+// exercises rows behind). Report-first, delete-second — same pattern as
+// the exercise-canonicalization backfill (GET report -> human review ->
+// POST the reviewed ids to the cleanup endpoint below). Never writes.
+app.get("/api/debug/orphaned-exercises/:userId", async function(req, res) {
+  try {
+    if (process.env.ADMIN_SECRET) {
+      var got = req.query.secret || req.headers["x-admin-secret"];
+      if (got !== process.env.ADMIN_SECRET) return res.status(403).json({ success: false, error: "forbidden" });
+    }
+    var pid = req.params.userId;
+
+    var exR = await fetch(SUPABASE_URL + "/rest/v1/exercises?profile_id=eq." + encodeURIComponent(pid) + "&select=id,name,date,workout_id&order=date.desc&limit=50000", { headers: sbHeaders() });
+    var exercises = await exR.json();
+    if (!Array.isArray(exercises)) exercises = [];
+
+    var wR = await fetch(SUPABASE_URL + "/rest/v1/workouts?profile_id=eq." + encodeURIComponent(pid) + "&select=id&limit=50000", { headers: sbHeaders() });
+    var workouts = await wR.json();
+    var validIds = {};
+    (Array.isArray(workouts) ? workouts : []).forEach(function(w) { validIds[w.id] = true; });
+
+    // Only rows with a non-null workout_id are ever flagged — a null
+    // workout_id predates that column's use, not this bug's signature, so
+    // it's left alone rather than guessed at.
+    var orphaned = exercises.filter(function(ex) { return ex.workout_id != null && !validIds[ex.workout_id]; });
+
+    var groups = {};
+    orphaned.forEach(function(ex) {
+      var key = ex.name + "|" + ex.date;
+      if (!groups[key]) groups[key] = { name: ex.name, date: ex.date, workout_id: ex.workout_id, count: 0, ids: [] };
+      groups[key].count++;
+      groups[key].ids.push(ex.id);
+    });
+
+    var groupList = Object.values(groups).sort(function(a, b) { return a.date < b.date ? 1 : -1; });
+    res.json({
+      success: true,
+      profile_id: pid,
+      orphaned_count: orphaned.length,
+      groups: groupList,
+      note: "READ-ONLY report. No rows deleted. Review groups (drop any ids you want to keep), then POST {ids:[...]} to /api/debug/delete-orphaned-exercises/" + pid,
+    });
+  } catch (e) {
+    console.error("[OrphanedExercises] fatal:", e.message);
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+// POST /api/debug/delete-orphaned-exercises/:userId?secret=ADMIN_SECRET
+// Body: { ids: [...] } — the (possibly hand-edited) id list from the GET
+// report above. Re-verifies each id fresh server-side (belongs to this
+// profile AND its workout_id still doesn't exist) before deleting, rather
+// than trusting the caller's list blindly — same "fetch fresh, never trust
+// the caller" discipline as /api/debug/exercise-catalog-merge.
+app.post("/api/debug/delete-orphaned-exercises/:userId", async function(req, res) {
+  try {
+    if (process.env.ADMIN_SECRET) {
+      var got = req.query.secret || req.headers["x-admin-secret"];
+      if (got !== process.env.ADMIN_SECRET) return res.status(403).json({ success: false, error: "forbidden" });
+    }
+    var pid = req.params.userId;
+    var ids = (req.body && Array.isArray(req.body.ids))
+      ? req.body.ids.map(function(x) { return parseInt(x, 10); }).filter(function(x) { return !isNaN(x); })
+      : [];
+    if (!ids.length) return res.status(400).json({ success: false, error: "ids (array) required" });
+
+    var exR = await fetch(SUPABASE_URL + "/rest/v1/exercises?profile_id=eq." + encodeURIComponent(pid) + "&id=in.(" + ids.join(",") + ")&select=id,workout_id", { headers: sbHeaders() });
+    var rows = await exR.json();
+    if (!Array.isArray(rows)) rows = [];
+
+    var wR = await fetch(SUPABASE_URL + "/rest/v1/workouts?profile_id=eq." + encodeURIComponent(pid) + "&select=id&limit=50000", { headers: sbHeaders() });
+    var workouts = await wR.json();
+    var validIds = {};
+    (Array.isArray(workouts) ? workouts : []).forEach(function(w) { validIds[w.id] = true; });
+
+    var toDelete = rows.filter(function(ex) { return ex.workout_id != null && !validIds[ex.workout_id]; }).map(function(ex) { return ex.id; });
+    var skipped = ids.length - toDelete.length;
+    if (!toDelete.length) return res.json({ success: true, deleted: 0, skipped: skipped });
+
+    var del = await fetch(SUPABASE_URL + "/rest/v1/exercises?id=in.(" + toDelete.join(",") + ")", {
+      method: "DELETE",
+      headers: sbHeaders("return=minimal"),
+    });
+    if (!del.ok) {
+      var t = await del.text();
+      return res.status(del.status).json({ success: false, error: t });
+    }
+    res.json({ success: true, deleted: toDelete.length, skipped: skipped });
+  } catch (e) {
+    console.error("[DeleteOrphanedExercises] fatal:", e.message);
     res.status(500).json({ success: false, error: e.message });
   }
 });
