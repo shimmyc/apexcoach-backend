@@ -8568,6 +8568,66 @@ app.post("/api/debug/apply-exercise-canonicalization/:userId", async function(re
   }
 });
 
+// POST /api/debug/exercise-catalog-upsert?secret=ADMIN_SECRET
+// Body: { canonical_name (required), family, category, aliases, muscle_groups_primary,
+//         muscle_groups_secondary, equipment, is_duration_based, source }
+// Manual catalog curation utility — upserts by canonical_name (creates if
+// missing, updates only the fields provided if it already exists). Added
+// for the 2026-07-15 backfill review: "Dumbbell Curl" was explicitly kept
+// OUT of the Bicep Curl merge (a real distinct exercise) but still needed
+// its own catalog row with family:'Bicep Curl' so phase 2's rollups group
+// it correctly — no existing endpoint could set `family` on a catalog row
+// (createCustomCatalogEntry(), the Haiku-fallback path's own writer,
+// deliberately doesn't take one — it's a save-time helper, not a curation
+// tool). General-purpose enough to reuse for any future manual catalog fix,
+// not a one-off script, since family/muscle-group heuristics (see the
+// MuscleWiki seed's modifier-stripping guess) will predictably need
+// occasional manual correction.
+app.post("/api/debug/exercise-catalog-upsert", async function(req, res) {
+  try {
+    if (process.env.ADMIN_SECRET) {
+      var got = req.query.secret || req.headers["x-admin-secret"];
+      if (got !== process.env.ADMIN_SECRET) return res.status(403).json({ success: false, error: "forbidden" });
+    }
+    var b = req.body || {};
+    if (!b.canonical_name) return res.status(400).json({ success: false, error: "canonical_name required" });
+
+    var existingR = await fetch(SUPABASE_URL + "/rest/v1/exercise_catalog?canonical_name=eq." + encodeURIComponent(b.canonical_name) + "&select=id", { headers: sbHeaders() });
+    var existingRows = await existingR.json();
+    var existing = Array.isArray(existingRows) && existingRows[0];
+
+    var fields = {};
+    ["family", "category", "aliases", "muscle_groups_primary", "muscle_groups_secondary", "equipment", "is_duration_based", "source", "musclewiki_id"].forEach(function(k) {
+      if (Object.prototype.hasOwnProperty.call(b, k)) fields[k] = b[k];
+    });
+
+    if (existing) {
+      fields.updated_at = new Date().toISOString();
+      var patchRes = await fetch(SUPABASE_URL + "/rest/v1/exercise_catalog?id=eq." + existing.id, {
+        method: "PATCH",
+        headers: sbHeaders("return=representation"),
+        body: JSON.stringify(fields),
+      });
+      if (!patchRes.ok) return res.status(patchRes.status).json({ success: false, error: await patchRes.text() });
+      var patched = await patchRes.json();
+      return res.json({ success: true, action: "updated", row: Array.isArray(patched) ? patched[0] : patched });
+    } else {
+      fields.canonical_name = b.canonical_name;
+      var insRes = await fetch(SUPABASE_URL + "/rest/v1/exercise_catalog", {
+        method: "POST",
+        headers: sbHeaders("return=representation"),
+        body: JSON.stringify(fields),
+      });
+      if (!insRes.ok) return res.status(insRes.status).json({ success: false, error: await insRes.text() });
+      var inserted = await insRes.json();
+      return res.json({ success: true, action: "created", row: Array.isArray(inserted) ? inserted[0] : inserted });
+    }
+  } catch (e) {
+    console.error("[CatalogUpsert] fatal:", e.message);
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
 // POST /api/wearables/bulk-action/:userId
 // body: {
 //   action: "match_all" | "import_all" | "skip_all",
