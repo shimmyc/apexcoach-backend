@@ -868,11 +868,13 @@ input[type=range]{width:100%;accent-color:var(--accent)}
       <button class="navBtn active" id="lib-btn-dashboard" onclick="showLibView('dashboard')">Dashboard</button>
       <button class="navBtn" id="lib-btn-exercises" onclick="showLibView('exercises')">Exercises</button>
       <button class="navBtn" id="lib-btn-records" onclick="showLibView('records')">Records</button>
+      <button class="navBtn" id="lib-btn-guide" onclick="showLibView('guide')">Guide</button>
     </div>
     <div id="lib-import-banner" style="display:none"></div>
     <div id="lib-dashboard"></div>
     <div id="lib-exercises" style="display:none"></div>
     <div id="lib-records" style="display:none"></div>
+    <div id="lib-guide" style="display:none"></div>
     <div id="lib-detail" style="display:none"></div>
   </div>
 
@@ -1566,6 +1568,14 @@ var readiness = null;
 var aiRec = null;
 var progressRec = null;
 var workoutLog = [];
+// History-card exercise chips (Feature 4, 2026-07-16) — workout_id -> array
+// of distinct canonical exercise names, built from ONE bulk fetch of this
+// profile's exercises rows (reusing GET /api/profiles/:id/exercises, the
+// same endpoint Library already uses — its `raw` field already carries
+// id/workout_id/name per row, just discarded by loadLibrary() today).
+// Cached for the session so switching History<->other tabs doesn't refetch.
+var historyChipsByWorkoutId = null; // null = not loaded yet
+var historyChipsLoading = false;
 var medLog = [];
 var dailyStepsLog = [];
 var dailyStepsByDate = {};
@@ -11155,7 +11165,7 @@ var SUBCATEGORY_PILLS = {
 
 function showLibView(view) {
   libView = view;
-  ['dashboard','exercises','records'].forEach(function(v) {
+  ['dashboard','exercises','records','guide'].forEach(function(v) {
     var el = document.getElementById('lib-' + v);
     var btn = document.getElementById('lib-btn-' + v);
     if (el) el.style.display = v === view ? 'block' : 'none';
@@ -11166,6 +11176,7 @@ function showLibView(view) {
   if (view === 'dashboard') renderLibDashboard();
   else if (view === 'exercises') renderLibExercises();
   else if (view === 'records') renderLibRecords();
+  else if (view === 'guide') renderLibGuide();
 }
 
 function loadLibrary() {
@@ -11902,25 +11913,93 @@ function renderMuscleHeatmapBody(groups) {
   return html;
 }
 
-function renderHeatmapFigure(side, shapes, groups) {
+// Shared SVG body-figure renderer (factored out 2026-07-16 so the Dashboard
+// heatmap AND the per-exercise muscle diagram — Feature 2 — draw the exact
+// same regions, never copy-pasted paths). `styleForMuscle(muscle)` returns
+// {fill, stroke, onclick, onmouseenter} for that region; this function only
+// lays out the shapes + decorative head/neck outline.
+function renderBodyFigureSvg(side, shapes, styleForMuscle) {
   var paths = shapes.map(function(s) {
-    var g = groups[s.muscle] || { weighted_sets: 0, intensity: 0 };
+    var style = styleForMuscle(s.muscle) || {};
     var d = svgRoundRectPath(s.x, s.y, s.w, s.h, s.r);
-    var fill = g.intensity > 0 ? 'rgba(255,74,28,' + (0.08 + 0.72 * g.intensity).toFixed(2) + ')' : 'var(--bg-surface-2)';
-    var stroke = g.intensity > 0 ? 'none' : 'var(--border-subtle)';
-    return '<path data-muscle="' + s.muscle + '" d="' + d + '" fill="' + fill + '" stroke="' + stroke + '" stroke-width="1" onclick="showHeatmapReadout(\'' + s.muscle + '\')" onmouseenter="showHeatmapReadout(\'' + s.muscle + '\')"></path>';
+    var attrs = '';
+    if (style.onclick) attrs += ' onclick="' + style.onclick + '"';
+    if (style.onmouseenter) attrs += ' onmouseenter="' + style.onmouseenter + '"';
+    return '<path data-muscle="' + s.muscle + '" d="' + d + '" fill="' + (style.fill || 'var(--bg-surface-2)') + '" stroke="' + (style.stroke || 'var(--border-subtle)') + '" stroke-width="1"' + attrs + '></path>';
   }).join('');
   // Decorative head + neck outline — no data-muscle, purely visual context.
   var outline = '<circle cx="50" cy="16" r="11" fill="none" stroke="var(--border-subtle)" stroke-width="1.5"></circle>' +
     '<path d="M42,26 L42,34 M58,26 L58,34" stroke="var(--border-subtle)" stroke-width="1.5" fill="none"></path>';
-  return '<svg viewBox="0 0 100 200" style="width:130px;height:260px;flex-shrink:0" aria-label="' + side + ' body muscle heat">' + outline + paths + '</svg>';
+  return '<svg viewBox="0 0 100 200" style="width:130px;height:260px;flex-shrink:0" aria-label="' + side + ' body muscle diagram">' + outline + paths + '</svg>';
 }
 
+function renderHeatmapFigure(side, shapes, groups) {
+  return renderBodyFigureSvg(side, shapes, function(muscle) {
+    var g = groups[muscle] || { weighted_sets: 0, intensity: 0 };
+    var fill = g.intensity > 0 ? 'rgba(255,74,28,' + (0.08 + 0.72 * g.intensity).toFixed(2) + ')' : 'var(--bg-surface-2)';
+    var stroke = g.intensity > 0 ? 'none' : 'var(--border-subtle)';
+    return { fill: fill, stroke: stroke, onclick: "showHeatmapReadout('" + muscle + "')", onmouseenter: "showHeatmapReadout('" + muscle + "')" };
+  });
+}
+
+// Feature 3 (2026-07-16): the readout line and the region's onclick/
+// onmouseenter were already the same handler — mobile tap has no separate
+// hover stage to consume, so a genuine "first tap reveals, second tap
+// navigates" split isn't there to build on. Cleanest resolution: keep the
+// existing hover/tap readout exactly as-is, and grow it into an explicit
+// "View Exercises" affordance once a region has been selected — works
+// identically on hover (desktop) and tap (mobile), no double-tap detection.
+var libHeatmapSelectedMuscle = null;
 function showHeatmapReadout(muscle) {
   var el = document.getElementById('lib-heatmap-readout');
   if (!el || !libHeatmapGroups) return;
+  libHeatmapSelectedMuscle = muscle;
   var g = libHeatmapGroups[muscle] || { weighted_sets: 0 };
-  el.textContent = (MUSCLE_FILTER_LABELS[muscle] || muscle) + ': ' + g.weighted_sets + ' weighted sets (' + libHeatmapDays + 'D)';
+  el.innerHTML = (MUSCLE_FILTER_LABELS[muscle] || muscle) + ': ' + g.weighted_sets + ' weighted sets (' + libHeatmapDays + 'D) &nbsp;' +
+    '<a href="javascript:void(0)" onclick="event.stopPropagation();navigateToMuscleFilter(\'' + muscle + '\')" style="color:var(--accent-ember);font-weight:600;text-decoration:none">View Exercises &rarr;</a>';
+}
+
+// Navigates from the Dashboard heatmap to the Exercises sub-view with that
+// muscle filter pre-applied in Primary+Secondary mode (Feature 3).
+function navigateToMuscleFilter(muscle) {
+  libMuscleFilter = muscle;
+  libMuscleMode = 'both';
+  showTab('library');
+  showLibView('exercises');
+}
+
+// Per-exercise muscle diagram (Feature 2, 2026-07-16) — reuses the exact same
+// shapes/renderer as the Dashboard heatmap, just with a static primary/
+// secondary fill instead of live intensity data. No interactivity (the
+// Dashboard heatmap already owns the tap-through-to-filter behavior).
+function renderExerciseMuscleFigure(side, shapes, primary, secondary) {
+  return renderBodyFigureSvg(side, shapes, function(muscle) {
+    var isPrimary = primary.indexOf(muscle) >= 0;
+    var isSecondary = !isPrimary && secondary.indexOf(muscle) >= 0;
+    var intensity = isPrimary ? 1 : (isSecondary ? 0.4 : 0);
+    var fill = intensity > 0 ? 'rgba(255,74,28,' + (0.08 + 0.72 * intensity).toFixed(2) + ')' : 'var(--bg-surface-2)';
+    var stroke = intensity > 0 ? 'none' : 'var(--border-subtle)';
+    return { fill: fill, stroke: stroke };
+  });
+}
+
+// Skips entirely (no empty figure, no error) when the exercise has no
+// catalog muscle data at all — custom BJJ/MMA entries etc.
+function renderExerciseMuscleDiagramHtml(primary, secondary) {
+  primary = primary || []; secondary = secondary || [];
+  if (!primary.length && !secondary.length) return '';
+  var html = '<div style="margin-top:16px;border-top:1px solid var(--border-subtle);padding-top:12px">';
+  html += '<p class="clabel">muscles worked</p>';
+  html += '<div style="display:flex;gap:16px;flex-wrap:wrap;justify-content:center">' +
+    renderExerciseMuscleFigure('front', HEATMAP_FRONT_SHAPES, primary, secondary) +
+    renderExerciseMuscleFigure('back', HEATMAP_BACK_SHAPES, primary, secondary) +
+  '</div>';
+  html += '<div style="display:flex;align-items:center;justify-content:center;gap:16px;margin-top:8px;font-size:11px;color:var(--text-muted)">' +
+    '<span><span style="display:inline-block;width:10px;height:10px;border-radius:3px;background:rgba(255,74,28,0.8);margin-right:4px;vertical-align:middle"></span>Primary</span>' +
+    '<span><span style="display:inline-block;width:10px;height:10px;border-radius:3px;background:rgba(255,74,28,0.36);margin-right:4px;vertical-align:middle"></span>Secondary</span>' +
+  '</div>';
+  html += '</div>';
+  return html;
 }
 
 // Build the Steps card HTML (30-day bar chart + summary stats).
@@ -12387,13 +12466,183 @@ function toggleLibFamily(name) {
   filterLibExercises();
 }
 
+// ── EXERCISE GUIDE (4th Library sub-nav, 2026-07-16) ───────────────────────
+// Browses the full shared exercise_catalog (~880 rows), independent of this
+// profile's own history. Read-only, display-only for exercises never logged.
+// Loaded lazily on first Guide open, cached in libGuideCatalog for the
+// session (cleared only on profile switch, see switchProfile-adjacent reset
+// below is not needed since a full page reload happens on profile switch).
+var libGuideCatalog = null; // full catalog rows once loaded, or null
+var libGuideState = 'idle'; // idle | loading | loaded | error
+var libGuideMuscleFilter = null; // one of MUSCLE_FILTER_GROUPS, or null — independent of libMuscleFilter
+var libGuideMuscleMode = 'both'; // 'both' | 'primary' — independent of libMuscleMode
+var libGuideEquipment = 'all';
+
+// Client mirror of the server's catalogNormKey() (server.js) — lowercase,
+// strip hyphens/spaces, per-word singularize. Used ONLY to cross-reference
+// Guide's catalog rows against this profile's already-resolved libExercises
+// names for the "logged Nx" badge — a display convenience, never touches
+// resolveExerciseCatalog()/extract-exercises/the confirm chip.
+function catalogNormKeyClient(name) {
+  if (!name) return '';
+  var words = String(name).toLowerCase().split(/[-\s]+/).filter(Boolean);
+  var stemmed = words.map(function(w) {
+    if (w.length > 2 && w.charAt(w.length - 1) === 's' && w.slice(-2) !== 'ss') return w.slice(0, -1);
+    return w;
+  });
+  return stemmed.join('');
+}
+
+function loadLibGuide() {
+  if (libGuideCatalog || libGuideState === 'loading') return;
+  libGuideState = 'loading';
+  renderLibGuide();
+  fetch('/api/exercise-catalog?all=1')
+    .then(function(r) { return r.json(); })
+    .then(function(data) {
+      if (data && data.success) {
+        libGuideCatalog = Array.isArray(data.results) ? data.results : [];
+        libGuideState = 'loaded';
+      } else {
+        libGuideState = 'error';
+      }
+      renderLibGuide();
+    })
+    .catch(function(e) {
+      console.error('[Library] Guide catalog load error:', e);
+      libGuideState = 'error';
+      renderLibGuide();
+    });
+}
+
+// Maps every logged exercise name (from libExercises, already loaded/loading
+// alongside the rest of the Library tab) to its count, keyed by the same
+// normalization the catalog itself uses — so "Bicep Curl" (catalog) matches
+// however this profile's history actually spelled it.
+function buildLoggedCountIndex() {
+  var index = {};
+  (libExercises || []).forEach(function(ex) {
+    var key = catalogNormKeyClient(ex.name);
+    if (key) index[key] = (index[key] || 0) + ex.count;
+  });
+  return index;
+}
+
+function guideEquipmentList() {
+  var set = {};
+  (libGuideCatalog || []).forEach(function(row) {
+    (row.equipment || []).forEach(function(e) { if (e) set[e] = true; });
+  });
+  return Object.keys(set).sort();
+}
+
+function renderLibGuide() {
+  var el = document.getElementById('lib-guide');
+  if (!el) return;
+  if (!libGuideCatalog && libGuideState !== 'loading' && libGuideState !== 'error') { loadLibGuide(); return; }
+
+  if (libGuideState === 'loading') {
+    el.innerHTML = '<p class="font-mono" style="font-size:11px;color:var(--text-muted);letter-spacing:2px;text-align:center;padding:24px 0;animation:pulse 1.6s infinite">LOADING CATALOG...</p>';
+    return;
+  }
+  if (libGuideState === 'error' || !libGuideCatalog) {
+    el.innerHTML = '<p style="font-size:13px;color:var(--text-dim);font-style:italic;text-align:center;padding:24px 0">Exercise guide unavailable right now.</p>';
+    return;
+  }
+
+  var html = '<div style="margin-bottom:12px"><input type="text" id="lib-guide-search" placeholder="Search all exercises..." oninput="filterLibGuide()" style="width:100%;background:var(--bg-surface-2);border:1px solid var(--border-subtle);color:var(--text-primary);padding:10px 14px;border-radius:12px;font-size:14px;outline:none;font-family:Inter,sans-serif;margin-bottom:8px">';
+
+  // Same 11-muscle-group pill row + Primary/Both toggle as the Exercises
+  // view, reusing MUSCLE_FILTER_GROUPS/MUSCLE_FILTER_LABELS — independent
+  // filter state (libGuideMuscleFilter), not shared with the Exercises tab.
+  html += '<div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:6px">';
+  for (var mi = 0; mi < MUSCLE_FILTER_GROUPS.length; mi++) {
+    var mg = MUSCLE_FILTER_GROUPS[mi];
+    var mgActive = libGuideMuscleFilter === mg;
+    html += '<button onclick="setLibGuideMuscleFilter(\'' + mg + '\')" style="font-size:11px;font-weight:600;padding:5px 12px;border-radius:9999px;border:1px solid ' + (mgActive ? 'var(--accent-ember)' : 'transparent') + ';background:var(--bg-surface-2);color:' + (mgActive ? 'var(--accent-ember)' : 'var(--text-muted)') + ';cursor:pointer;font-family:Inter,sans-serif">' + MUSCLE_FILTER_LABELS[mg] + '</button>';
+  }
+  html += '</div>';
+  if (libGuideMuscleFilter) {
+    html += '<div style="display:flex;gap:6px;align-items:center;padding-left:8px;margin-bottom:6px">';
+    html += '<span style="font-size:10px;color:var(--text-muted);letter-spacing:0.06em">MATCH</span>';
+    html += '<button onclick="toggleLibGuideMuscleMode()" style="font-size:10px;font-weight:600;padding:4px 10px;border-radius:9999px;border:1px solid var(--accent-ember);background:rgba(255,74,28,0.12);color:var(--accent-ember);cursor:pointer;font-family:Inter,sans-serif">' + (libGuideMuscleMode === 'both' ? 'Primary + Secondary' : 'Primary Only') + '</button>';
+    html += '</div>';
+  }
+
+  // Equipment filter dropdown — matches the existing Library sort-dropdown
+  // convention (setLibSort) rather than another pill row.
+  var equipOpts = guideEquipmentList();
+  html += '<div style="display:flex;justify-content:flex-end;align-items:center;gap:6px;margin-bottom:10px"><span style="font-size:10px;color:var(--text-muted);letter-spacing:0.06em">EQUIPMENT</span><select onchange="setLibGuideEquipment(this.value)" style="background:var(--bg-surface-2);border:1px solid var(--border-subtle);color:var(--text-primary);padding:5px 12px;border-radius:9999px;cursor:pointer;font-size:12px;font-family:Inter,sans-serif">';
+  html += '<option value="all"' + (libGuideEquipment === 'all' ? ' selected' : '') + '>All Equipment</option>';
+  equipOpts.forEach(function(e) { html += '<option value="' + escAttr(e) + '"' + (libGuideEquipment === e ? ' selected' : '') + '>' + escHtml(e) + '</option>'; });
+  html += '</select></div>';
+
+  html += '<div id="lib-guide-list"></div>';
+  el.innerHTML = html;
+  filterLibGuide();
+}
+
+function setLibGuideMuscleFilter(m) {
+  libGuideMuscleFilter = (libGuideMuscleFilter === m) ? null : m;
+  renderLibGuide();
+}
+function toggleLibGuideMuscleMode() {
+  libGuideMuscleMode = (libGuideMuscleMode === 'both') ? 'primary' : 'both';
+  renderLibGuide();
+}
+function setLibGuideEquipment(e) {
+  libGuideEquipment = e;
+  filterLibGuide();
+}
+
+function guideRowMatchesMuscleFilter(row) {
+  if (!libGuideMuscleFilter) return true;
+  var primary = row.muscle_groups_primary || [];
+  if (primary.indexOf(libGuideMuscleFilter) >= 0) return true;
+  if (libGuideMuscleMode === 'both') {
+    var secondary = row.muscle_groups_secondary || [];
+    if (secondary.indexOf(libGuideMuscleFilter) >= 0) return true;
+  }
+  return false;
+}
+
+function filterLibGuide() {
+  var list = document.getElementById('lib-guide-list');
+  if (!list) return;
+  var search = ((document.getElementById('lib-guide-search') || {}).value || '').toLowerCase();
+  var loggedIndex = buildLoggedCountIndex();
+
+  var filtered = (libGuideCatalog || []).filter(function(row) {
+    if (search && row.canonical_name.toLowerCase().indexOf(search) < 0) return false;
+    if (!guideRowMatchesMuscleFilter(row)) return false;
+    if (libGuideEquipment !== 'all' && (row.equipment || []).indexOf(libGuideEquipment) < 0) return false;
+    return true;
+  }).sort(function(a, b) { return a.canonical_name.localeCompare(b.canonical_name); });
+
+  if (!filtered.length) { list.innerHTML = '<p style="font-size:14px;color:var(--text-dim);text-align:center;padding:20px">No exercises found.</p>'; return; }
+
+  var html = '';
+  filtered.forEach(function(row) {
+    var loggedCount = loggedIndex[catalogNormKeyClient(row.canonical_name)] || 0;
+    var isLogged = loggedCount > 0;
+    var tags = (row.muscle_groups_primary || []).concat(row.muscle_groups_secondary || []);
+    var tagsHtml = tags.map(function(t) { return '<span style="font-size:9px;color:var(--text-muted);background:var(--bg-surface-2);padding:1px 6px;border-radius:9999px">' + (MUSCLE_FILTER_LABELS[t] || t) + '</span>'; }).join('');
+    var equipHtml = (row.equipment || []).map(function(e) { return '<span style="font-size:9px;color:var(--accent-cornerman);background:rgba(139,92,246,0.1);padding:1px 6px;border-radius:9999px">' + escHtml(e) + '</span>'; }).join('');
+    html += '<div' + (isLogged ? ' onclick="showExerciseDetail(\'' + escAttr(row.canonical_name) + '\')"' : '') + ' style="display:flex;align-items:center;justify-content:space-between;padding:14px 16px;background:var(--bg-surface-1);border:1px solid var(--border-subtle);border-radius:16px;margin-bottom:8px' + (isLogged ? ';cursor:pointer' : '') + '">';
+    html += '<div style="min-width:0"><div style="font-size:15px;color:var(--text-primary);font-weight:600">' + escHtml(row.canonical_name) + '</div>';
+    html += '<div style="display:flex;gap:6px;align-items:center;margin-top:4px;flex-wrap:wrap">' + tagsHtml + equipHtml + '</div></div>';
+    html += (isLogged ? '<span style="font-size:10px;color:var(--color-positive);background:rgba(61,220,151,0.12);padding:2px 8px;border-radius:9999px;white-space:nowrap;margin-left:8px">logged ' + loggedCount + 'x</span>' : '') + '</div>';
+  });
+  list.innerHTML = html;
+}
+
 var libDetailFrom = 'exercises';
 
 function showExerciseDetail(name) {
   if (!currentProfileId) return;
   // Remember which view we came from
   libDetailFrom = libView;
-  var views = ['dashboard','exercises','records'];
+  var views = ['dashboard','exercises','records','guide'];
   views.forEach(function(v) { var el = document.getElementById('lib-' + v); if (el) el.style.display = 'none'; });
   var det = document.getElementById('lib-detail');
   if (!det) return;
@@ -12408,7 +12657,7 @@ function showExerciseDetail(name) {
       var pr = data.pr || {};
       var cat = hist.length ? hist[0].category : 'other';
       var cc = CAT_COLORS[cat] || '#888';
-      var backLabel = libDetailFrom === 'dashboard' ? 'Dashboard' : libDetailFrom === 'records' ? 'Records' : 'All Exercises';
+      var backLabel = libDetailFrom === 'dashboard' ? 'Dashboard' : libDetailFrom === 'records' ? 'Records' : libDetailFrom === 'guide' ? 'Guide' : 'All Exercises';
 
       var html = '<button onclick="backToLibList()" style="background:transparent;border:none;color:var(--accent-ember);cursor:pointer;font-size:14px;font-weight:600;padding:0;margin-bottom:12px;font-family:Inter,sans-serif">&larr; ' + backLabel + '</button>';
       html += '<div class="card" style="border-color:var(--border-subtle)">';
@@ -12430,6 +12679,11 @@ function showExerciseDetail(name) {
         html += '<p class="mono" style="font-size:11px;color:var(--text-dim);text-align:center;margin-top:8px">Log this exercise again to see your progression</p>';
       }
       html += '</div>';
+
+      // Per-exercise muscle diagram (Feature 2, 2026-07-16) — skips entirely
+      // (no empty figure, no error) when the catalog has no muscle data for
+      // this exercise, e.g. a custom BJJ/MMA entry.
+      html += renderExerciseMuscleDiagramHtml(data.muscle_groups_primary, data.muscle_groups_secondary);
 
       // Performance analytics (date-filtered Best Set + Volume charts, stats)
       html += '<div id="lib-ex-analytics" style="margin-top:16px;border-top:1px solid var(--border);padding-top:12px"></div>';
@@ -13123,6 +13377,49 @@ function renderWearableStatsGrid(wd) {
   return '<div style="display:flex;gap:6px;flex-wrap:wrap;margin:8px 0 10px">' + cells + '</div>';
 }
 
+// Lazy, cached, one-shot bulk fetch — no N+1 per History card. Re-renders
+// History once loaded; a no-op if already loaded/loading for this profile
+// (keyed by profileId, mirroring libHeatmapLoadedKey's convention, so
+// switching profiles via switchProfile() — which doesn't reset this cache —
+// still refetches instead of showing a stale profile's chips).
+var historyChipsLoadedForProfile = null;
+function ensureHistoryChipsLoaded() {
+  if (!currentProfileId) return;
+  if (historyChipsLoadedForProfile === currentProfileId || historyChipsLoading) return;
+  historyChipsLoading = true;
+  fetch('/api/profiles/' + currentProfileId + '/exercises')
+    .then(function(r) { return r.json(); })
+    .then(function(data) {
+      var map = {};
+      if (data && data.success && Array.isArray(data.raw)) {
+        data.raw.forEach(function(ex) {
+          if (!ex.workout_id || !ex.name) return;
+          var arr = map[ex.workout_id] || (map[ex.workout_id] = []);
+          if (arr.indexOf(ex.name) < 0) arr.push(ex.name);
+        });
+      }
+      historyChipsByWorkoutId = map;
+      historyChipsLoadedForProfile = currentProfileId;
+      historyChipsLoading = false;
+      renderLog();
+    })
+    .catch(function(e) {
+      console.error('[History] chip data load error:', e);
+      historyChipsLoading = false;
+    });
+}
+
+// Opens a chip's exercise in the Library detail view (Feature 4). Switches
+// tabs cleanly via the existing showTab/showExerciseDetail machinery — the
+// existing "&larr; All Exercises" back button on the detail view (via
+// libDetailFrom) still works, it just won't point back at History since
+// that's Library-internal state; landing on the Library tab itself is
+// sane "back" behavior for a cross-tab jump.
+function openChipExercise(name) {
+  showTab('library');
+  showExerciseDetail(name);
+}
+
 function renderLog() {
   var now = new Date();
   var todayStr = ds(0);
@@ -13213,6 +13510,17 @@ function renderLog() {
     }
     // Notes
     if (w.notes) html += notesHTML;
+    // Exercise chips (Feature 4, 2026-07-16) — the canonical layer on top of
+    // the verbatim notes above, never a replacement. Zero-extraction
+    // workouts (most Rest Days, unparsed notes) render no chip row at all.
+    var chipNames = (historyChipsByWorkoutId && w.id) ? (historyChipsByWorkoutId[w.id] || []) : [];
+    if (chipNames.length) {
+      html += '<div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:8px">';
+      chipNames.forEach(function(n) {
+        html += '<span onclick="event.stopPropagation();openChipExercise(\'' + escAttr(n) + '\')" style="font-size:11px;font-weight:600;color:var(--accent-ember);background:rgba(255,74,28,0.1);padding:3px 10px;border-radius:9999px;cursor:pointer">' + escHtml(n) + '</span>';
+      });
+      html += '</div>';
+    }
     // Edit + Re-log actions
     html += '<div style="margin-top:10px;display:flex;gap:8px;flex-wrap:wrap">';
     html += '<button onclick="event.stopPropagation();editWorkoutById(\'' + editId + '\')" style="background:transparent;border:none;color:var(--accent-ember);padding:10px 14px;border-radius:8px;cursor:pointer;font-size:12px;font-weight:600;font-family:Inter,sans-serif;min-height:44px">Edit</button>';
@@ -14173,7 +14481,7 @@ function showTab(name, btn) {
   document.querySelectorAll('.bnav-item[data-tab="' + name + '"]').forEach(function(b) { b.classList.add('active'); });
 
   if (name === 'library') loadLibrary();
-  if (name === 'history') { renderCalendar(); renderLog(); }
+  if (name === 'history') { renderCalendar(); renderLog(); ensureHistoryChipsLoaded(); }
   if (name === 'today') {
     if (typeof renderBodyTodayCard === 'function') renderBodyTodayCard();
     if (typeof renderRecentAndTemplates === 'function') renderRecentAndTemplates();

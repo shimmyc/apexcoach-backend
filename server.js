@@ -3395,7 +3395,18 @@ app.delete("/api/profiles/:id/exercises/:exerciseId", async function(req, res) {
 app.get("/api/exercise-catalog", async function(req, res) {
   try {
     var q = (req.query.q || "").trim();
-    var url = SUPABASE_URL + "/rest/v1/exercise_catalog?select=id,canonical_name,category,is_duration_based&order=canonical_name.asc&limit=50";
+    // Extended for the Library "Guide" browse view (Exercise Canonicalization
+    // phase 2 continuation, 2026-07-16): family/muscle_groups_primary/
+    // secondary/equipment added, additive/read-only, no schema change. The
+    // original confirm-chip search (?q=, capped 50, sans these fields being
+    // load-bearing there) is unchanged in shape/behavior — it just gets a few
+    // extra harmless fields now too. ?all=1 bypasses the 50 cap for Guide's
+    // one bulk load of the whole ~880-row catalog (still capped at 2000 as a
+    // sane ceiling, comfortably above current catalog size).
+    var all = req.query.all === "1";
+    var limit = all ? 2000 : (parseInt(req.query.limit, 10) || 50);
+    var offset = parseInt(req.query.offset, 10) || 0;
+    var url = SUPABASE_URL + "/rest/v1/exercise_catalog?select=id,canonical_name,category,is_duration_based,family,muscle_groups_primary,muscle_groups_secondary,equipment&order=canonical_name.asc&limit=" + limit + "&offset=" + offset;
     if (q) url += "&canonical_name=ilike." + encodeURIComponent("*" + q + "*");
     var r = await fetch(url, { headers: sbHeaders() });
     var rows = await r.json();
@@ -3702,7 +3713,21 @@ app.get("/api/profiles/:id/exercises/:name", async function(req, res) {
       if (ex.sets && (!pr.max_sets || ex.sets > pr.max_sets)) pr.max_sets = ex.sets;
     });
 
-    res.json({ success: true, exercise: name, history: history, pr: pr });
+    // Catalog attach (Feature 2, 2026-07-16 continuation) — powers the
+    // per-exercise muscle diagram on the Library detail view. Same non-fatal
+    // degrade philosophy as the grouped /exercises endpoint's own attach:
+    // any failure just leaves these null, never blocks the response.
+    var family = null, muscleP = null, muscleS = null;
+    try {
+      var catalogRows = await fetchExerciseCatalogWithMuscleData();
+      var catalogIndex = buildCatalogMuscleIndex(catalogRows);
+      var match = catalogIndex[catalogNormKey(name)];
+      if (match) { family = match.family; muscleP = match.muscle_groups_primary; muscleS = match.muscle_groups_secondary; }
+    } catch (e) {
+      console.error("[ExerciseDetail] catalog attach failed (non-fatal):", e.message);
+    }
+
+    res.json({ success: true, exercise: name, history: history, pr: pr, family: family, muscle_groups_primary: muscleP, muscle_groups_secondary: muscleS });
   } catch (e) {
     res.status(500).json({ success: false, error: e.message });
   }
