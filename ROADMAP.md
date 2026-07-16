@@ -2,7 +2,7 @@
 
 > Single reference for anyone joining the project or picking it back up after a break.
 > Pairs with `CLAUDE.md` (deep implementation notes) and `FORMULAS.md` (readiness/sleep math).
-> Last updated: 2026-07-15.
+> Last updated: 2026-07-16.
 >
 > **Doc accuracy notes:** Sections 2, 4, and 10 were verified directly against `server.js`,
 > `wearables/`, and `migrations/` rather than transcribed. Where the original brief differed
@@ -19,6 +19,15 @@
 > **⚠ STILL OPEN at session end (2026-06-19) — Fitbit token refresh failing 100%.** Even *after* the retry + `invalid_grant` guard, the Fitbit refresh fails **every time** with the same **"Premature close"** message — and **none of the new retry/guard log lines fire**. **Leading theory:** the original retry storm fired the refresh endpoint so many times concurrently that **one attempt succeeded and rotated the refresh token server-side before its response was lost client-side**; every attempt since has been using a **now-dead token**, which Fitbit may be rejecting in a way that **looks like a connection drop rather than a clean `invalid_grant` JSON body** (hence no guard log). **Next step:** direct **`curl` test from the Render Shell** against `api.fitbit.com/oauth2/token` with the actual stored refresh token to confirm. **If the token is dead, the fix is reconnecting via the existing Fitbit reconsent banner — not more retry code.**
 >
 > **Adapter parity gap (noted, not yet fixed).** `wearables/fitbit.js`'s own **`adapter.refreshToken()`** — reached **only** for wearable-only Fitbit connections that **never populated `profiles.fitbit_*`** — does **not** have the same retry / `invalid_grant` handling as `refreshProfileToken()`. **Low priority:** confirm whether any active profile actually hits that fallback path before patching. (Also tracked in §6.)
+>
+> **2026-07-15/16 session #7** (exercise canonicalization — a catalog-backed system generalizing the CANONICAL_NAMES/Dead Hang hand-fix so every logged exercise resolves to one identity, not just the ~19 hand-picked ones):
+> - **New `exercise_catalog` table** (migration `migrations/2026-07-15_exercise_catalog.sql`, RLS + `service_role_bypass`, **applied**) — seeded directly FROM the existing `CANONICAL_NAMES` map (18 canonical rows, alias groups transcribed verbatim) rather than a parallel reimplementation, so the very first save after migration exact-matches everything the app already knew how to canonicalize. `family`/`muscle_groups_primary`/`muscle_groups_secondary`/`equipment` columns baked in now, consumed starting phase 2 (Library rollups/muscle filtering) — see §7.
+> - **`resolveExerciseCatalog()`** (`server.js`) — layered on top of, never replacing, `normalizeExerciseName()`/`CANONICAL_NAMES` (which still run first and stay authoritative for everything they cover, audited before writing any code): exact/alias match (`catalogNormKey()` — lowercase/strip hyphens+spaces/singularize; cosmetic variants collapse into the SAME key as the canonical name and hit `'exact'`, so every genuine `'alias'` hit is, by construction, a real variant-vs-generic merge, never a spelling nit) → fuzzy match (Levenshtein, no new npm dep — audited first, no existing fuzzy utility in the codebase) → Haiku fallback (a **separate small call**, deliberately not folded into the main extraction prompt — that runs on every save regardless of ambiguity, a 1900-entry catalog doesn't belong in it) → creates a `source:'custom'` row if genuinely new. Never blocks a save — any internal failure degrades to today's pre-catalog behavior.
+> - **Confirm chip, standing rule set mid-review (2026-07-16): ask whenever there's ambiguity, never silently guess.** Originally only `fuzzy`/`haiku`/`custom` triggered the post-save chip; live review of the backfill data (below) surfaced that `'alias'` hits needed the same treatment — an alias match in this system is *always* a real variant-vs-generic decision (e.g. "Curl"→Bicep Curl, "Tricep Extension"→Overhead Tricep Extension), never cosmetic, so it must be confirmed too. Only `'exact'` (and the silent `'unavailable'` fallback) now save with no chip. One-line frontend fix — the server was already returning the correct `method`, just not being asked to chip on `'alias'`.
+> - **MuscleWiki bulk-seed** (`POST /api/debug/seed-exercise-catalog`) — built against MuscleWiki's documented API shape (paginated list + per-id detail, `X-API-Key` auth, ~1/sec throttle, capped retries, dedup-aware upsert against the CANONICAL_NAMES-seeded rows) but **NOT live-verified** — `MUSCLEWIKI_API_KEY` was never available this session, so it's only ever reported `status:'pending'`. **Outstanding action item**: set the key and run it (resumable via `?max_calls=N`, safe to re-run).
+> - **Reviewed backfill, run for real (2026-07-16).** `GET /api/debug/exercise-canonicalization-report/:userId` reuses `resolveExerciseCatalog()` itself (not a separate implementation) so the proposal can't disagree with live save-time matching. Profile 1's report (69 distinct historical names, 9 Haiku calls) proposed 14 rows across 9 merge groups; user-reviewed and edited before applying — excluded `"Dumbbell Curl"→"Bicep Curl"` (a real distinct exercise, not a spelling variant) and approved the remaining 13 via `POST /api/debug/apply-exercise-canonicalization/1`. **Verified post-apply**: exactly 13 rows updated, "Curl" (bare) dropped to 0 remaining rows, "Bicep Curl" analytics correctly aggregated all 4 sessions (including the merged row) with sane weight/rep data, "Dumbbell Curl" confirmed untouched. New `POST /api/debug/exercise-catalog-upsert` (create-or-update by `canonical_name`, needed because no existing endpoint could set `family` — used to give "Dumbbell Curl" its own row with `family:'Bicep Curl'` so phase 2 still groups it) and `DELETE /api/debug/exercise-catalog/:id` (removes a bad/test row, no cascade concern) shipped alongside as general-purpose admin curation tools.
+> - **Verified live end-to-end**, not by reading code, on a scratch test profile: 3 spelling variants of "push ups" all resolved to "Push-Up" via `'exact'`; a genuinely made-up exercise name correctly created a new `'custom'` catalog entry with a chip; **the critical safety case — "hang clean" — correctly stayed its own distinct exercise, never silently absorbed into "Dead Hang"**; the Dead Hang micro-goal auto-tracker incremented 0→1 on a canonicalized save; a regression test with the catalog table not yet migrated still saved successfully via the silent `'unavailable'` fallback.
+> - **Real pre-existing bug found incidentally, NOT fixed (out of scope this session):** `exercises.duration_minutes` silently fails to insert for any non-integer value (0.75, 0.5 — confirmed reproducible, unrelated to this session's changes since catalog resolution never touches this column) even though the extraction prompt's own Dead Hang rule explicitly instructs fractional-minute values ("45 seconds → 0.75"). Whole-number durations insert fine. Explains the pre-existing "often mis-populated `duration_minutes` column" caveat already in `CLAUDE.md`'s `strength_milestone` docs. See §6.
 >
 > **2026-07-15 session #6** (closed §6's two top-priority known issues — analytics timezone fix + roadmap-regen offer — both audited-then-built-then-verified live against real production data, not just code review):
 > - **Analytics streaks/bucketing timezone fix — ✅ shipped.** `currentStreakFromDates(dateSet, profile)` and the `/exercises/stats` weekly-volume cutoff now anchor "today" via `localToday()` instead of `ymdLocal(new Date())`/raw `new Date()` — both endpoints previously did no profile fetch at all, both now do (reusing `getProfileTimezone()`, no new helper). Audited first, not assumed: `longestStreakFromDates()` and both most-active-day bucketers do only self-consistent noon-anchored parsing of stored date strings with zero "now" dependency, confirmed and left untouched. **Verified with a mocked clock**: booted the real pre-fix and post-fix `server.js` at the same instant against a mock Supabase — a `timezone:null` profile's full response is byte-identical pre/post-fix on both endpoints (the regression check); a real positive-UTC-offset (Sydney) profile with a genuine 3-day streak gets `current_streak:2` (wrong) pre-fix vs. the correct `3` post-fix, matching `longest_streak` — direct proof of the bug the audit predicted (the "check yesterday" fallback in the old code goes the wrong direction for a server-behind-athlete timezone offset). See §6 item 1.
@@ -221,7 +230,8 @@ Remembers a user's "these are separate sessions" decision so a rejected pairing 
 - **`tokens`** *(legacy)* — pre-multi-profile single-user Fitbit token store; still read as a fallback in `/callback` and `/api/token-info`. Superseded by `profiles.fitbit_*` + `wearable_connections`.
 - **`chat_threads`** *(Coach Chat, added 2026-07-15)* — id, profile_id (FK, UNIQUE — one thread per profile), summary (text, nullable), summary_through_message_id (bigint, nullable), created_at, updated_at.
 - **`chat_messages`** *(Coach Chat, added 2026-07-15)* — id, thread_id (FK), role (user|assistant), content (text), created_at. Full history kept forever; summarization only updates `chat_threads.summary`, never deletes rows.
-- **`chat_proposals`** *(Coach Chat tool use, added 2026-07-15)* — id, thread_id (FK), message_id (FK, nullable, backfilled post-stream), tool_use_id, type (update_goal|set_focus_override|log_checkin_note), payload (jsonb), status (pending|confirmed|canceled), created_at, resolved_at.
+- **`chat_proposals`** *(Coach Chat tool use, added 2026-07-15)* — id, thread_id (FK), message_id (FK, nullable, backfilled post-stream), tool_use_id, type (update_goal|set_focus_override|log_checkin_note|regenerate_goal_roadmap), payload (jsonb), status (pending|confirmed|canceled), created_at, resolved_at.
+- **`exercise_catalog`** *(exercise canonicalization, added 2026-07-15)* — id, canonical_name (UNIQUE), aliases (text[]), family (text, phase-2), muscle_groups_primary/secondary (text[], phase-2), equipment (text[], phase-2), category (matches exercises.main_category), is_duration_based (bool), source (musclewiki|custom), musclewiki_id (nullable), timestamps. Not per-profile — one shared catalog.
 
 ### Migrations
 - `migrations/2026-05-19_wearables.sql` — adds `workouts.wearable_data` + `wearable_activity_id`, creates `wearable_connections` + `rejected_wearable_matches`, backfills Fitbit tokens from `profiles.fitbit_*`.
@@ -233,6 +243,7 @@ Remembers a user's "these are separate sessions" decision so a rejected pairing 
 - `migrations/2026-07-15_chat_proposals.sql` — adds `chat_proposals` (Coach Chat tool-use write proposals), RLS + `service_role_bypass`. **✅ Applied to production.**
 - `migrations/2026-07-15_profile_timezone.sql` — adds `profiles.timezone` (text, IANA identifier, nullable, no default — fixes the UTC-vs-athlete-timezone bug class, see session #5 changelog above). **✅ Applied to production.**
 - `migrations/2026-07-15_chat_proposals_regen_type.sql` — adds `'regenerate_goal_roadmap'` to `chat_proposals.type`'s CHECK constraint (the original migration only allowed the first 3 proposal types; found live via a real `23514` constraint violation while verifying the roadmap-regen auto-offer — see session #6 changelog above). **✅ Applied to production.**
+- `migrations/2026-07-15_exercise_catalog.sql` — creates `exercise_catalog`, RLS + `service_role_bypass`, seeded from the existing `CANONICAL_NAMES` map (18 rows). **✅ Applied to production.**
 
 > Most other tables/columns were created ad-hoc via the Supabase SQL editor (the `CREATE TABLE`/`ALTER TABLE` snippets are documented inline in `CLAUDE.md`). Only the wearables + the 2026-05-22 / 2026-05-24 / 2026-05-26 migrations are committed as files.
 
@@ -263,6 +274,15 @@ Commit hashes attached where known (from `git log`). Areas without a hash predat
 - **Debug endpoints** — `dead-hang`, `missing-dates`, `dead-hang-backfill` (`f4e51b9`, `af37519`, `3585...`)
 - **Past-date logging + goal check-in modal** (`4c5674c`)
 - **Duration-based exercise support** throughout (reps→seconds where appropriate)
+
+### Exercise Canonicalization (2026-07-15/16 session)
+Generalizes the Dead Hang hand-fix (CANONICAL_NAMES, 18 exercises) into a catalog-backed system covering every logged exercise. Full detail in `CLAUDE.md` → "Exercise Canonicalization".
+- **`exercise_catalog` table** — seeded from CANONICAL_NAMES; `family`/muscle-group/equipment columns baked in for phase 2, not yet consumed.
+- **`resolveExerciseCatalog()`** — exact/alias (instant) → fuzzy (Levenshtein) → Haiku fallback (separate call, not folded into the main extraction prompt) → new `source:'custom'` row if genuinely new. Layered on top of the existing `normalizeExerciseName()` pass, never disagrees with it.
+- **Confirm chip** — only `'exact'` matches save silently; alias/fuzzy/Haiku/custom all confirm (standing rule set mid-session after live review showed alias hits are always a real merge decision here, never cosmetic).
+- **MuscleWiki bulk-seed** — built, **not run** (no API key this session).
+- **Reviewed backfill** — run for real against profile 1: 13 of 14 proposed merge rows applied (1 excluded on review — "Dumbbell Curl" kept distinct).
+- Found live (not fixed, out of scope): `exercises.duration_minutes` silently fails to insert for non-integer values. See §6.
 
 ### Goals & Milestones
 - **6 goal types** — strength, distance, consistency, habit, skill, general
@@ -393,8 +413,10 @@ All verified present in `server.js`. `:id`/`:userId` = profile id.
 | POST | `/api/workouts` · PATCH `/api/workouts/:id` · DELETE `/api/workouts/:id` |
 | POST | `/api/profiles/:id/reformat-titles` · `/api/profiles/:id/dedupe-workouts` |
 | GET/POST | `/api/profiles/:id/templates` · PATCH/DELETE `/api/templates/:id` |
-| POST | `/api/profiles/:id/extract-exercises` |
+| POST | `/api/profiles/:id/extract-exercises` — now also resolves each name against `exercise_catalog` (see "Exercise Canonicalization" in `CLAUDE.md`); response's `exercises[]` includes `catalog_match:{method,typed_name}` per row for the frontend confirm chip |
 | GET | `/api/profiles/:id/exercises` · `/exercises/stats` · `/exercises/:name` · `/exercises/audit` |
+| GET | `/api/exercise-catalog?q=` — search the shared catalog (not profile-scoped), for the confirm-chip "change" picker |
+| PATCH | `/api/profiles/:id/exercises/:exerciseId` — body `{canonical_name}` or `{keep_as_typed:true, typed_name}`, the confirm-chip "change" action |
 | DELETE | `/api/profiles/:id/exercises/:exerciseId` |
 | GET | `/api/meditations` |
 
@@ -451,6 +473,11 @@ All verified present in `server.js`. `:id`/`:userId` = profile id.
 | GET | `/api/debug/dead-hang/:userId` · `/missing-dates/:userId` |
 | POST | `/api/debug/dead-hang-backfill/:userId` |
 | POST | `/api/debug/backfill-wearable-hr/:userId` (`?provider=fitbit&max_intraday=N`) |
+| POST | `/api/debug/seed-exercise-catalog` (`?max_calls=N`) — MuscleWiki bulk-seed, **not yet run** (no `MUSCLEWIKI_API_KEY`), resumable/idempotent |
+| GET | `/api/debug/exercise-canonicalization-report/:userId` (`?max_haiku=N`) — read-only backfill merge-list report |
+| POST | `/api/debug/apply-exercise-canonicalization/:userId` — body `{mapping:[{from_name,to_canonical_name}]}`, rewrites `exercises.name` only |
+| POST | `/api/debug/exercise-catalog-upsert` — create/update one catalog row by `canonical_name` (sets `family`/muscle-groups/etc. that save-time matching doesn't) |
+| DELETE | `/api/debug/exercise-catalog/:id` — removes a catalog row (no cascade — `exercises.name` is plain text, not an FK) |
 
 ---
 
@@ -479,7 +506,8 @@ All verified present in `server.js`. `:id`/`:userId` = profile id.
 - **`wearable_connections` redundant double-write** on the OAuth callback (`/callback` calls both `saveProfileTokens` and `saveWearableTokens`) — cosmetic, idempotent, low priority (see §9).
 - **Legacy text roadmap is now orphaned** — the Profile tab renders the structured `/roadmap-data` card (2026-05-29), so the client no longer reads or writes the legacy `profiles.roadmap` text via `POST /api/profiles/:id/roadmap`. That endpoint + column are still defined (and `renderRoadmapContent()` is kept) but dead-code; safe to retire (§9). Any pre-existing `profiles.roadmap` text is simply ignored.
 - **Horizon-phase `progress_pct` is always 0** — by design: horizon phases have no `start_date`, so `computePhaseProgress()` returns null and the macro/per-goal roadmap UI shows no progress bar for them (only `milestone` + `estimated_range`).
-- **`wearables/fitbit.js`'s `adapter.refreshToken()` lacks the retry / `invalid_grant` guard `refreshProfileToken()` has.** Confirmed by direct code comparison (2026-07-15): `refreshProfileToken()` (`server.js`) retries transient failures and stops cleanly on a `400 invalid_grant` (logging instead of looping on a dead token); `wearables/fitbit.js`'s own `refreshToken()` just throws on any non-ok response. This path is only reached for wearable-only Fitbit connections that never populated `profiles.fitbit_*`. **Pre-existing, low priority** — confirm whether any active profile actually hits this fallback path before patching.
+- **`wearables/fitbit.js`'s `adapter.refreshToken()` lacks the retry / `invalid_grant` guard `refreshProfileToken()` has.** Confirmed by direct code comparison (2026-07-15): `refreshProfileToken()` (`server.js`) retries transient failures and stops cleanly on a `400 invalid_grant` (logging instead of looping on a dead token); `wearables/fitbit.js`'s own `refreshToken()` just throws on any non-ok response. This path is only reached for wearable-only Fitbit connections that never populated `profiles.fitbit_*`. **Pre-existing, low priority** — confirm whether any active profile actually hits that fallback path before patching.
+- **`exercises.duration_minutes` silently fails to insert for non-integer values — found live 2026-07-16, NOT fixed (out of scope for the exercise-canonicalization session that discovered it).** Reproduced directly: logging a Dead Hang or Plank with a whole-number duration (e.g. "1 minute") inserts fine; the identical save with a fractional duration (0.75 for "45 seconds", 0.5 for "30 seconds") returns `count:0` from `POST /api/profiles/:id/extract-exercises` — the row is silently never written, no error surfaced to the client or logged distinctly from a normal skip. This is unrelated to the exercise-catalog work (catalog resolution never touches `duration_minutes`) but directly contradicts the extraction prompt's own hardcoded Dead Hang rule, which explicitly instructs fractional-minute values ("45 seconds → 0.75"). Almost certainly explains the pre-existing `CLAUDE.md` caveat that `strength_milestone`'s time-based tracking "prefers `parseDurationToSeconds(raw_text||notes)` over the often-mis-populated `duration_minutes` column" — that workaround was likely built around this exact bug without ever finding the root cause. **Likely root cause** (not confirmed — would need direct schema access to verify): `exercises.duration_minutes` is probably typed as an integer column in the live database, despite the app-level code and multiple docs treating it as free-precision numeric. **Fix, not attempted this session**: either a migration to widen the column to `numeric`, or have `extract-exercises` round to the nearest whole minute before insert (lossy — would break sub-minute hold tracking, the opposite of what the Dead Hang PR feature needs) — a real design decision, not a one-line patch, and out of scope for the session that found it.
 
 ### Coach Chat / Timezone — Known Issues & Deferred (2026-07-15)
 
@@ -499,13 +527,15 @@ Each item below is self-contained — no other doc/session context should be nee
 
 ## 7. Roadmap — Features To Build
 
-**Priority order (2026-07-15):**
+**Priority order (2026-07-16):**
 1. ~~Analytics streaks/bucketing timezone fix~~ — **✅ done (session #6)**. See §6 item 1.
 2. ~~Roadmap-regenerate offer after applied goal changes~~ — **✅ done (session #6)**. See §6 item 7.
-3. Exercise Video Database (below).
-4. Today-tab declutter (below).
-5. Wearable Sync bulk-review modal — Google Health provider picker (below).
-6. Apple HealthKit / iOS integration — long-term (below).
+3. **MuscleWiki bulk-seed — set `MUSCLEWIKI_API_KEY` and run `POST /api/debug/seed-exercise-catalog`.** Built and ready (session #7), never actually called this session (no key available) — the shared `exercise_catalog` currently only has the 18 CANONICAL_NAMES-seeded rows + whatever custom entries have accreted from real saves/backfill. Until this runs, fuzzy/Haiku fallback carries more of the matching load than intended.
+4. **Exercise Canonicalization phase 2 — family/muscle-group rollups.** `exercise_catalog.family`/`muscle_groups_primary`/`muscle_groups_secondary`/`equipment` columns exist and are populated (from the CANONICAL_NAMES seed now, from MuscleWiki once #3 runs) but nothing reads them yet. Queued follow-up: Library tab "similar exercises" / muscle-group filtering, and folding `family` into the existing Exercise Video Database plan below (a `family`-grouped catalog is a natural fit for that work rather than a separate name-matching pass).
+5. Exercise Video Database (below).
+6. Today-tab declutter (below).
+7. Wearable Sync bulk-review modal — Google Health provider picker (below).
+8. Apple HealthKit / iOS integration — long-term (below).
 
 ### Near term
 
