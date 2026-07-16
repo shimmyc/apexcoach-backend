@@ -2998,16 +2998,40 @@ function getSubcategory(name, aiCategory, mainCategory) {
 // when it matches what normalizeExerciseName() would have produced, a pure
 // improvement when it resolves a variant CANONICAL_NAMES doesn't know.
 
-// lowercase, strip hyphens/spaces, singularize (trailing 's' unless 'ss') —
-// the exact normalization Part 3 of the design spec calls for. Used for both
-// save-time exact/alias matching and the MuscleWiki seed's dedup-on-insert
-// check, so the two paths can never disagree about what counts as "the same
-// name" already covered by an existing catalog row.
+// lowercase, singularize EACH WORD (trailing 's' unless 'ss'), then strip
+// hyphens/spaces — the exact normalization Part 3 of the design spec calls
+// for. Used for both save-time exact/alias matching and the wger seed's
+// dedup-on-insert check, so the two paths can never disagree about what
+// counts as "the same name" already covered by an existing catalog row.
+//
+// Real bug fixed 2026-07-16, found live post-wger-seed: this used to
+// lowercase+strip FIRST, then strip a trailing 's' off the whole
+// concatenated string — so it only ever caught a plural on the LAST word
+// ("push ups" -> "pushup", matching "Push-Up", only because "ups" happens
+// to be last). A plural on any OTHER word was invisible: "Biceps Curl" ->
+// "bicepscurl" vs "Bicep Curl" -> "bicepcurl" never collided, since the
+// combined string's last character ('l') was never 's' regardless of the
+// FIRST word's plural. Fixed by stemming per-word before joining. Verified
+// against the existing behavior this must not regress (all still match):
+// "push ups"/"pushups"/"Push-Up", "Jumping Jack"/"Jumping Jacks", "Sit-Up"/
+// "Sit-Ups", "Dead Hang"/"Dead Hangs", "Hang Clean"/"Hang Cleans" — plus the
+// new case this exists for: "Bicep Curl"/"Biceps Curl", "Tricep Extension"/
+// "Triceps Extension", "Glute Bridge"/"Glutes Bridge". Known remaining gap,
+// not chased (would need real English stemming, e.g. a Porter stemmer, for
+// one extra word — out of proportion to the risk): "-es" plurals on
+// sibilant-ending words ("Press" -> "Presses") still produce different keys
+// ("benchpress" vs "benchpresse") — but that pair is still caught by the
+// FUZZY layer (similarity 0.91, well over the 0.82 threshold), so it costs
+// one confirm-chip tap instead of being silently exact, never a silent
+// merge failure.
 function catalogNormKey(name) {
   if (!name) return '';
-  var s = String(name).toLowerCase().replace(/[-\s]+/g, '');
-  if (s.length > 3 && s.endsWith('s') && !s.endsWith('ss')) s = s.slice(0, -1);
-  return s;
+  var words = String(name).toLowerCase().split(/[-\s]+/).filter(Boolean);
+  var stemmed = words.map(function(w) {
+    if (w.length > 2 && w.endsWith('s') && !w.endsWith('ss')) return w.slice(0, -1);
+    return w;
+  });
+  return stemmed.join('');
 }
 
 // Levenshtein edit distance (no npm dependency — the codebase has no
@@ -8802,6 +8826,63 @@ app.delete("/api/debug/exercise-catalog/:id", async function(req, res) {
     if (!del.ok) return res.status(del.status).json({ success: false, error: await del.text() });
     res.json({ success: true, deleted: rows[0].canonical_name });
   } catch (e) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+// GET /api/debug/exercise-catalog-dupes?secret=ADMIN_SECRET
+// Read-only near-duplicate audit, built in direct response to the real bug
+// found live post-wger-seed (see catalogNormKey()'s comment): a mid-string
+// plural could let two rows both claim to be "the same exercise" without
+// actually colliding under the (now-fixed) normalization. Reusable, not a
+// one-off — any future seed/backfill could reintroduce fragmentation the
+// same way, so this stays as a general-purpose admin tool alongside
+// exercise-catalog-upsert/DELETE (which are what you'd use to actually
+// resolve a cluster this reports: PATCH the winning row's aliases to
+// include the loser's canonical_name + aliases, DELETE the loser).
+//
+// For every row, indexes BOTH its canonical_name and each of its aliases
+// under catalogNormKey() into one shared map; any key that ends up
+// referencing 2+ DISTINCT row ids is a cluster — same logic save-time
+// matching itself uses to decide "is this the same exercise", just run
+// once across the whole table instead of per-save.
+app.get("/api/debug/exercise-catalog-dupes", async function(req, res) {
+  try {
+    if (process.env.ADMIN_SECRET) {
+      var got = req.query.secret || req.headers["x-admin-secret"];
+      if (got !== process.env.ADMIN_SECRET) return res.status(403).json({ success: false, error: "forbidden" });
+    }
+    var r = await fetch(SUPABASE_URL + "/rest/v1/exercise_catalog?select=id,canonical_name,aliases,source,created_at&order=id.asc&limit=10000", { headers: sbHeaders() });
+    var rows = await r.json();
+    if (!Array.isArray(rows)) return res.status(500).json({ success: false, error: "exercise_catalog table not reachable" });
+
+    var byKey = {};
+    rows.forEach(function(row) {
+      var ck = catalogNormKey(row.canonical_name);
+      if (!byKey[ck]) byKey[ck] = [];
+      byKey[ck].push({ id: row.id, canonical_name: row.canonical_name, source: row.source, via: "canonical_name", text: row.canonical_name });
+      (row.aliases || []).forEach(function(a) {
+        var ak = catalogNormKey(a);
+        if (!ak || ak === ck) return; // an alias identical to its own row's key isn't interesting
+        if (!byKey[ak]) byKey[ak] = [];
+        byKey[ak].push({ id: row.id, canonical_name: row.canonical_name, source: row.source, via: "alias", text: a });
+      });
+    });
+
+    var clusters = [];
+    Object.keys(byKey).forEach(function(k) {
+      var entries = byKey[k];
+      var distinct = entries.filter(function(e, i, arr) { return arr.findIndex(function(x) { return x.id === e.id; }) === i; });
+      if (distinct.length > 1) clusters.push({ key: k, rows: distinct });
+    });
+    // Oldest row first within a cluster is usually the "original" (lowest
+    // id = created earliest) — a hint for review, not an automatic verdict;
+    // the caller decides which row actually wins.
+    clusters.forEach(function(c) { c.rows.sort(function(a, b) { return a.id - b.id; }); });
+
+    res.json({ success: true, total_rows: rows.length, cluster_count: clusters.length, clusters: clusters });
+  } catch (e) {
+    console.error("[CatalogDupeScan] fatal:", e.message);
     res.status(500).json({ success: false, error: e.message });
   }
 });
