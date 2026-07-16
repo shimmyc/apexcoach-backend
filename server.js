@@ -8425,7 +8425,31 @@ app.get("/api/debug/exercise-canonicalization-report/:userId", async function(re
   try {
     if (process.env.ADMIN_SECRET) {
       var got = req.query.secret || req.headers["x-admin-secret"];
-      if (got !== process.env.ADMIN_SECRET) return res.status(403).json({ success: false, error: "forbidden" });
+      if (got !== process.env.ADMIN_SECRET) {
+        // TEMP DIAGNOSTIC (2026-07-16, remove after live verification):
+        // never exposes either actual value — only lengths/trim-equality/
+        // char-code deltas, enough to tell a whitespace/env-name/query-key
+        // mismatch from a genuinely wrong secret without leaking the secret
+        // itself in the response.
+        if (req.query.diag === "1") {
+          var expected = process.env.ADMIN_SECRET || "";
+          var receivedRaw = got || "";
+          return res.status(403).json({
+            success: false, error: "forbidden",
+            diag: {
+              expected_len: expected.length,
+              received_len: receivedRaw.length,
+              received_source: req.query.secret ? "query" : (req.headers["x-admin-secret"] ? "header" : "none"),
+              trimmed_equal: expected.trim() === receivedRaw.trim(),
+              expected_first3: expected.slice(0, 3),
+              received_first3: receivedRaw.slice(0, 3),
+              expected_last3: expected.slice(-3),
+              received_last3: receivedRaw.slice(-3),
+            },
+          });
+        }
+        return res.status(403).json({ success: false, error: "forbidden" });
+      }
     }
     var pid = req.params.userId;
     var maxHaiku = req.query.max_haiku ? parseInt(req.query.max_haiku, 10) : 100;
