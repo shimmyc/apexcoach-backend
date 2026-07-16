@@ -8960,19 +8960,27 @@ app.post("/api/debug/exercise-catalog-merge", async function(req, res) {
     if (!winner.wger_id && loser.wger_id) patch.wger_id = loser.wger_id;
     if (b.retitle_canonical_name && b.retitle_canonical_name !== winner.canonical_name) patch.canonical_name = b.retitle_canonical_name;
 
+    // Delete the loser BEFORE patching the winner — real bug found live
+    // (2026-07-16): patching first meant that whenever the winner had no
+    // wger_id of its own (a pre-existing custom row) and was taking over
+    // the loser's, BOTH rows briefly held the same wger_id at once, tripping
+    // idx_exercise_catalog_wger_id's unique constraint. Deleting first frees
+    // the wger_id before the winner claims it. If the winner patch then
+    // fails, the loser's full pre-delete data is still in `loser` above —
+    // returned in the error so nothing already deleted is silently lost.
+    var delRes = await fetch(SUPABASE_URL + "/rest/v1/exercise_catalog?id=eq." + loser.id, {
+      method: "DELETE",
+      headers: sbHeaders("return=minimal"),
+    });
+    if (!delRes.ok) return res.status(delRes.status).json({ success: false, error: "loser delete failed, winner untouched: " + await delRes.text() });
+
     var patchRes = await fetch(SUPABASE_URL + "/rest/v1/exercise_catalog?id=eq." + winner.id, {
       method: "PATCH",
       headers: sbHeaders("return=representation"),
       body: JSON.stringify(patch),
     });
-    if (!patchRes.ok) return res.status(patchRes.status).json({ success: false, error: await patchRes.text() });
+    if (!patchRes.ok) return res.status(patchRes.status).json({ success: false, error: "loser " + loser.id + " already deleted but winner patch failed — reconstruct from this loser snapshot if needed: " + JSON.stringify(loser) + " | patch error: " + await patchRes.text() });
     var patchedRows = await patchRes.json();
-
-    var delRes = await fetch(SUPABASE_URL + "/rest/v1/exercise_catalog?id=eq." + loser.id, {
-      method: "DELETE",
-      headers: sbHeaders("return=minimal"),
-    });
-    if (!delRes.ok) return res.status(delRes.status).json({ success: false, error: "winner updated but loser delete failed: " + await delRes.text() });
 
     res.json({ success: true, winner: Array.isArray(patchedRows) ? patchedRows[0] : patchedRows, deleted_loser: { id: loser.id, canonical_name: loser.canonical_name } });
   } catch (e) {
