@@ -3233,10 +3233,13 @@ app.post("/api/profiles/:id/extract-exercises", async function(req, res) {
       ex.name = catalogMatch.canonicalName;
       // Surfaced in the response (not persisted as a column) so Part 4's
       // frontend chip can decide, per exercise, whether to show a confirm
-      // chip — exact/alias are confident (no chip); fuzzy/haiku/custom are
-      // uncertain (chip); unavailable is a silent fallback (no chip, would
-      // otherwise spam a chip on every save whenever the catalog table is
-      // briefly unreachable).
+      // chip. Standing rule (2026-07-16): only 'exact' saves silently —
+      // 'alias' hits are a genuine variant-vs-generic merge decision (e.g.
+      // "Curl" -> Bicep Curl), not a cosmetic normalization, and must always
+      // be confirmed, same as fuzzy/haiku/custom. 'unavailable' is the one
+      // other silent case (the catalog itself failed/is empty — showing a
+      // chip on every save because the table's briefly unreachable would be
+      // worse than the fragmentation problem this feature fixes).
       ex.catalog_match = { method: catalogMatch.method, typed_name: catalogMatch.typedName };
 
       var insertBody = {

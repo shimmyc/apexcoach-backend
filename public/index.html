@@ -10694,7 +10694,19 @@ function saveWorkoutToSupabase(entry) {
         // Haiku/custom-matched name; exact/alias matches never show one.
         if (exData.success && Array.isArray(exData.exercises)) {
           var ecNeedsChip = exData.exercises.find(function(ex) {
-            return ex.id && ex.catalog_match && ['fuzzy', 'haiku', 'custom'].indexOf(ex.catalog_match.method) >= 0;
+            // Standing rule (2026-07-16): only 'exact' saves silently now.
+            // 'alias' used to be silent too, but an alias hit is, by
+            // construction, always a case where the typed text normalizes
+            // DIFFERENTLY from the canonical name (see resolveExerciseCatalog
+            // in server.js — anything that's merely a plural/hyphen/case
+            // variant of the canonical name itself hits 'exact', not
+            // 'alias', since catalogNormKey collapses those differences
+            // before the alias array is even consulted). So every real
+            // 'alias' hit is inherently a variant-vs-generic merge decision
+            // (e.g. "Curl" -> Bicep Curl, "hang" -> Dead Hang) — exactly the
+            // case the standing rule says must always be confirmed, never
+            // silently applied.
+            return ex.id && ex.catalog_match && ['alias', 'fuzzy', 'haiku', 'custom'].indexOf(ex.catalog_match.method) >= 0;
           });
           if (ecNeedsChip) ecShowConfirmChip(ecNeedsChip);
         }
