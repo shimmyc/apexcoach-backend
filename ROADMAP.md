@@ -8,6 +8,72 @@
 > `wearables/`, and `migrations/` rather than transcribed. Where the original brief differed
 > from the live code, the doc follows the code and flags it with **⚠ Correction**.
 >
+> **2026-07-16 session #11** (bug fix — `DELETE /api/workouts/:id` orphaned its `exercises` rows):
+> - **Root cause, confirmed by reading the code, not assumed:** the delete handler only ever
+>   removed the `workouts` row itself — it never touched `exercises` rows scoped to that
+>   `workout_id`, so every workout delete silently left its extracted exercises behind. The same
+>   gap exists on `DELETE /api/profiles/:id` (deletes `workouts`, never `exercises`) — noted but
+>   out of scope for this session (narrower blast radius fix requested).
+> - **Fix**: `DELETE /api/workouts/:id` now also deletes `exercises WHERE workout_id=:id AND
+>   profile_id=:pid` (the same profile-ownership guard `DELETE /api/profiles/:id/exercises/:exerciseId`
+>   already uses) before deleting the workout row. No schema change — an `ON DELETE CASCADE` FK
+>   would be more robust long-term but was explicitly deferred (see §9) in favor of the narrower,
+>   no-migration fix.
+> - **PATCH /api/workouts/:id audited for the "does an edit stack duplicate exercises" question
+>   — it doesn't, because it never re-extracts at all.** Editing a workout's notes only
+>   regenerates the AI-generated title (`saveWorkout`→`updateWorkoutInSupabase`, `public/index.html`);
+>   `/extract-exercises` is never called again on edit. So there's no duplication risk, but a
+>   related, unfixed gap: editing notes to change the actual exercises leaves the ORIGINAL
+>   extraction's `exercises` rows stale (not updated, not duplicated). Flagged, not fixed — see §6.
+> - **New report-first admin cleanup pair**, mirroring the exercise-canonicalization backfill
+>   pattern exactly (GET report → human review → POST the reviewed ids): `GET
+>   /api/debug/orphaned-exercises/:userId` (read-only, groups pre-existing orphaned rows by
+>   name/date) and `POST /api/debug/delete-orphaned-exercises/:userId` (body `{ids:[...]}`,
+>   re-verifies each id is still orphaned server-side before deleting — never trusts the caller's
+>   list blindly).
+> - **Verified live** (profile 4, throwaway workout): logged a workout, ran `/extract-exercises`,
+>   confirmed the exercises row existed with the correct `workout_id`; deleted the workout via
+>   `DELETE /api/workouts/:id`; confirmed both the workout row AND its exercises row were gone
+>   (`GET /api/profiles/4/exercises?name=...` → 0 rows). The orphan report on profile 1 was
+>   handed to the user to run and review before any cleanup delete executes.
+>
+> **2026-07-16 session #10** (Exercise Guide, per-exercise muscle diagram, heatmap tap-through,
+> History-card exercise chips — builds on session #9's Phase 2 data):
+> - **Guide (4th Library sub-nav)**: browses the full shared `exercise_catalog` (~880 rows)
+>   independent of personal history — search, the same 11-muscle-group pill row + Primary/Both
+>   toggle as Exercises (independent filter state), an equipment dropdown, a "logged Nx" badge +
+>   tap-through for rows already in this profile's history, display-only for the rest. `GET
+>   /api/exercise-catalog` extended additively (`family`/`muscle_groups_primary/secondary`/
+>   `equipment`, plus `?all=1`/`?limit`/`?offset`) — the existing `?q=` confirm-chip search is
+>   unchanged in shape/behavior. Loaded lazily on first Guide open, cached client-side for the
+>   session.
+> - **Per-exercise muscle diagram** on the Library detail view: front/back SVG figures (primary
+>   muscles full ember, secondary ~40%, others neutral), reusing the Dashboard heatmap's exact
+>   region paths via a newly-factored `renderBodyFigureSvg()` shared helper (no copy-pasted
+>   paths). `GET /api/profiles/:id/exercises/:name` now attaches catalog muscle data (non-fatal,
+>   same degrade pattern as the grouped endpoint's own attach) so this works regardless of entry
+>   path — Guide only ever opens the detail view for exercises already in history, so no separate
+>   "catalog row" plumbing was needed. Exercises with no catalog muscle data skip the diagram
+>   entirely (no empty figure, no error).
+> - **Heatmap tap-through**: tapping/hovering a MUSCLE HEAT region already showed the same
+>   readout on both hover and tap (no separate hover-then-tap stage to build a second interaction
+>   on) — resolved by growing the existing readout into a "View Exercises →" affordance that
+>   navigates to the Exercises sub-view with that muscle filter pre-applied (Primary+Secondary).
+> - **History-card exercise chips**: workout cards show tappable, deduped canonical-exercise
+>   chips below the notes (never altering the notes themselves), tapping opens the Library detail
+>   view. Sourced from a single lazy, session-cached bulk fetch of `GET
+>   /api/profiles/:id/exercises`'s `raw` field (already carried `workout_id`/`name` per row, just
+>   discarded by `loadLibrary()` until now) — no per-card fetch, no server change needed. Cache is
+>   keyed by profileId (mirroring the heatmap's own `libHeatmapLoadedKey` convention) so
+>   `switchProfile()` — which doesn't reset this cache — still refetches instead of showing a
+>   stale profile's chips.
+> - **Verified live** (profile 1): catalog search "curl" returns 73 catalog-wide results; `?all=1`
+>   returns the full 881-row catalog; `GET .../exercises/Bench%20Press` correctly attaches
+>   `primary:["chest"], secondary:["shoulders","triceps"]`; a custom entry (`MMA Class`) attaches
+>   empty muscle arrays, correctly skipping the diagram; the grouped `raw` exercises response
+>   correctly carries `workout_id` per row for the chip mapping. UI click-through (search/filter
+>   interactions, diagram rendering, heatmap tap navigation, chip tap) handed to the user to spot-check manually since this session's browser tool couldn't reach a visible display.
+>
 > **2026-07-16 doc-sync audit** (no feature work — CLAUDE.md + ROADMAP.md re-verified line-by-line
 > against live `server.js`/`public/index.html`/`wearables/`/`migrations/`, not against memory of
 > past sessions). Found and fixed: §4 listed 3 admin endpoints (`dead-hang`, `missing-dates`,
@@ -548,6 +614,8 @@ All verified present in `server.js`. `:id`/`:userId` = profile id.
 - **Horizon-phase `progress_pct` is always 0** — by design: horizon phases have no `start_date`, so `computePhaseProgress()` returns null and the macro/per-goal roadmap UI shows no progress bar for them (only `milestone` + `estimated_range`).
 - **`wearables/fitbit.js`'s `adapter.refreshToken()` lacks the retry / `invalid_grant` guard `refreshProfileToken()` has.** Confirmed by direct code comparison (2026-07-15): `refreshProfileToken()` (`server.js`) retries transient failures and stops cleanly on a `400 invalid_grant` (logging instead of looping on a dead token); `wearables/fitbit.js`'s own `refreshToken()` just throws on any non-ok response. This path is only reached for wearable-only Fitbit connections that never populated `profiles.fitbit_*`. **Pre-existing, low priority** — confirm whether any active profile actually hits that fallback path before patching.
 - **`daily_sleep` table's RLS status is undocumented — found during a 2026-07-16 doc-sync audit, not fixed.** The table's migration (`migrations/2026-05-24_daily_sleep.sql`) contains no `ALTER TABLE ... ENABLE ROW LEVEL SECURITY` / `CREATE POLICY` statements, and the table is conspicuously absent from `CLAUDE.md`'s otherwise-careful RLS enumeration (11 original tables + 3 Coach Chat + 1 exercise_catalog = 15 named tables — `daily_sleep`, created 2 days before the 2026-05-26 "enable RLS on all 11 tables" session, isn't among any of the three groups). Not confirmed broken — Supabase RLS could have been added ad-hoc via the SQL editor without a committed migration, matching how several other tables/columns in this project were created (see §2's note) — but currently unverified either way, and low-impact regardless since the backend only ever queries with the service-role key (RLS-transparent). Should be checked directly in the Supabase dashboard and given a `service_role_bypass` policy (matching the other 15 tables' convention) if actually missing.
+- **`DELETE /api/profiles/:id` still orphans `exercises` rows — same root cause as the now-fixed `DELETE /api/workouts/:id` bug (session #11), narrower fix scope meant this wasn't included.** Deleting a profile deletes its `workouts` rows but never its `exercises` rows (nor `daily_checkins`/`micro_goals`/`daily_steps`/`body_metrics`/etc. — profile deletion was never audited beyond `workouts`). Low real-world impact (profile deletion is rare, and the orphaned rows are simply unreachable dead data, not a correctness bug for any live feature) but the same fix pattern (explicit child-table delete before the parent, no schema change) would close it.
+- **Editing a workout's notes doesn't refresh its extracted `exercises` rows — found live during the session #11 orphaned-exercises audit, not fixed.** `PATCH /api/workouts/:id` never re-runs extraction (confirmed by tracing `saveWorkout`→`updateWorkoutInSupabase` in `public/index.html` — an edit only regenerates the AI title when notes change, nothing calls `/extract-exercises` again). So there's no duplicate-row risk from editing, but the original exercises rows go stale if the edited notes actually change which exercises were done (e.g. correcting a typo'd exercise name, or removing/adding a set). A fix would need to decide replace-vs-diff semantics for the stale rows — a real design decision, not a one-line patch.
 - **`exercises.duration_minutes` silently fails to insert for non-integer values — found live 2026-07-16, NOT fixed (out of scope for the exercise-canonicalization session that discovered it).** Reproduced directly: logging a Dead Hang or Plank with a whole-number duration (e.g. "1 minute") inserts fine; the identical save with a fractional duration (0.75 for "45 seconds", 0.5 for "30 seconds") returns `count:0` from `POST /api/profiles/:id/extract-exercises` — the row is silently never written, no error surfaced to the client or logged distinctly from a normal skip. This is unrelated to the exercise-catalog work (catalog resolution never touches `duration_minutes`) but directly contradicts the extraction prompt's own hardcoded Dead Hang rule, which explicitly instructs fractional-minute values ("45 seconds → 0.75"). Almost certainly explains the pre-existing `CLAUDE.md` caveat that `strength_milestone`'s time-based tracking "prefers `parseDurationToSeconds(raw_text||notes)` over the often-mis-populated `duration_minutes` column" — that workaround was likely built around this exact bug without ever finding the root cause. **Likely root cause** (not confirmed — would need direct schema access to verify): `exercises.duration_minutes` is probably typed as an integer column in the live database, despite the app-level code and multiple docs treating it as free-precision numeric. **Fix, not attempted this session**: either a migration to widen the column to `numeric`, or have `extract-exercises` round to the nearest whole minute before insert (lossy — would break sub-minute hold tracking, the opposite of what the Dead Hang PR feature needs) — a real design decision, not a one-line patch, and out of scope for the session that found it.
 
 ### Coach Chat / Timezone — Known Issues & Deferred (2026-07-15)
@@ -714,6 +782,9 @@ Macro roadmap shape (stored on `profiles.roadmap_data`):
 - [ ] **Drop the Fitbit adapter + legacy Fitbit paths after September 2026** once all active profiles have migrated to Google Health: remove the `profiles.fitbit_*` columns, the legacy `/auth` + `/callback` routes, `buildDailyData` / `runFitbitBackfill`, the `getValidProfileToken` Fitbit special-case inside `getValidWearableToken`, the Fitbit-first preference logic in `findWearableMatchOnSave` + the `unmatched-fitbit` endpoint, and the `wearables/fitbit.js` adapter.
 - [ ] **Timezone verification — Google Health daily fetch.** The local-date fix (inline IIFE using `getFullYear`/`getMonth`/`getDate` instead of UTC `dateStr()`) appears to work, but logs still occasionally show a UTC date. Verify it applies correctly across timezone edge cases, particularly around midnight in negative-offset timezones.
 - [ ] **Google Health weight returns null** in testing — verify once a user logs weight in the Fitbit/Google Health app. The `weightGrams / 453.592` lb conversion is implemented in `fetchDailyData`.
+- [ ] **`ON DELETE CASCADE` FK from `exercises.workout_id` → `workouts.id`** — future hardening flagged during the session #11 orphaned-exercises fix. The explicit `DELETE .../exercises?workout_id=eq...` in `DELETE /api/workouts/:id` closes the bug without a schema change, but a real FK would make it structurally impossible to reintroduce (e.g. if a future endpoint deletes a workout some other way). Not applied this session — no-schema-change was an explicit guardrail.
+- [ ] **Extend the same orphan-prevention fix to `DELETE /api/profiles/:id`** (deletes `workouts`, never `exercises` — see §6).
+- [ ] **`PATCH /api/workouts/:id` doesn't refresh stale `exercises` rows on a notes edit** — see §6 for the full gap; needs a replace-vs-diff design decision, not a one-line patch.
 
 ---
 
