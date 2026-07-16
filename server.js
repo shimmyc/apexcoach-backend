@@ -3080,6 +3080,38 @@ async function fetchExerciseCatalogForMatching() {
   return Array.isArray(rows) ? rows : [];
 }
 
+// ── EXERCISE CATALOG PHASE 2 (Library rollups / muscle filter / heatmap) ──
+// Separate fetch from fetchExerciseCatalogForMatching() above — that one
+// deliberately excludes family/muscle-group columns to stay lean on the hot
+// save-time path (see its own comment); this one is read-only, called only
+// from GET /api/profiles/:id/exercises and GET /api/analytics/muscle-volume,
+// neither of which is in that hot path.
+async function fetchExerciseCatalogWithMuscleData() {
+  var r = await fetch(SUPABASE_URL + "/rest/v1/exercise_catalog?select=id,canonical_name,aliases,family,muscle_groups_primary,muscle_groups_secondary&limit=10000", { headers: sbHeaders() });
+  var rows = await r.json();
+  return Array.isArray(rows) ? rows : [];
+}
+
+// Indexes catalog rows by catalogNormKey() over canonical_name AND every
+// alias — the SAME normalization save-time matching uses (reused, never
+// reimplemented), so a lookup here can never disagree with what
+// resolveExerciseCatalog() would say. This is a plain O(1) index lookup over
+// ALREADY-CANONICAL stored exercises.name values, not fuzzy/Haiku resolution
+// — every name reaching this index was already fully resolved at save time.
+function buildCatalogMuscleIndex(catalogRows) {
+  var index = {};
+  catalogRows.forEach(function(row) {
+    var entry = { family: row.family || null, muscle_groups_primary: row.muscle_groups_primary || [], muscle_groups_secondary: row.muscle_groups_secondary || [] };
+    var ck = catalogNormKey(row.canonical_name);
+    if (ck) index[ck] = entry;
+    (row.aliases || []).forEach(function(a) {
+      var ak = catalogNormKey(a);
+      if (ak && !index[ak]) index[ak] = entry; // canonical_name wins on a collision
+    });
+  });
+  return index;
+}
+
 // Creates a new source:'custom' catalog row for a genuinely new exercise.
 // Read-only callers (fuzzy/exact matching) never call this — only the Haiku
 // "declare it new" branch and the Part 4 "keep as typed" picker action do.
@@ -3506,6 +3538,26 @@ app.get("/api/profiles/:id/exercises", async function(req, res) {
     }
 
     var summary = Object.values(grouped).sort(function(a, b) { return b.count - a.count; });
+
+    // Phase-2 catalog attach (family/muscle groups) for Library rollups,
+    // muscle-group filtering, and the muscle heatmap — see "Exercise
+    // Canonicalization" phase 2 in CLAUDE.md. Never blocks the response: any
+    // failure just leaves these null on every row, the same 'unavailable'
+    // degrade philosophy resolveExerciseCatalog() itself uses.
+    try {
+      var catalogRows = await fetchExerciseCatalogWithMuscleData();
+      var catalogIndex = buildCatalogMuscleIndex(catalogRows);
+      summary.forEach(function(g) {
+        var match = catalogIndex[catalogNormKey(g.name)];
+        g.family = match ? match.family : null;
+        g.muscle_groups_primary = match ? match.muscle_groups_primary : null;
+        g.muscle_groups_secondary = match ? match.muscle_groups_secondary : null;
+      });
+    } catch (e) {
+      console.error("[Library] catalog attach failed (non-fatal):", e.message);
+      summary.forEach(function(g) { g.family = null; g.muscle_groups_primary = null; g.muscle_groups_secondary = null; });
+    }
+
     res.json({ success: true, exercises: summary, raw: exercises });
   } catch (e) {
     res.status(500).json({ success: false, error: e.message });
@@ -9567,6 +9619,60 @@ app.get("/api/analytics/exercise-stats/:userId/:exerciseName", async function(re
     });
   } catch (e) {
     res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+// GET /api/analytics/muscle-volume/:userId?days=7|30|90
+// Weighted per-muscle-group training volume over a rolling window, for the
+// Library Dashboard muscle heatmap (Exercise Canonicalization phase 2).
+// Read-only, non-fatal: ANY failure (profile fetch, exercises fetch, catalog
+// fetch) degrades to all-zero groups with a 200, matching the analytics
+// endpoints' own graceful-degrade convention — never a 500 for this card.
+var MUSCLE_HEATMAP_GROUPS = ["chest", "back", "shoulders", "biceps", "triceps", "core", "glutes", "quads", "hamstrings", "calves", "grip_forearms"];
+app.get("/api/analytics/muscle-volume/:userId", async function(req, res) {
+  var pid = req.params.userId;
+  var reqDays = parseInt(req.query.days, 10);
+  var windowDays = [7, 30, 90].indexOf(reqDays) >= 0 ? reqDays : 30;
+  var zeroGroups = function() {
+    var g = {};
+    MUSCLE_HEATMAP_GROUPS.forEach(function(k) { g[k] = { weighted_sets: 0, intensity: 0 }; });
+    return g;
+  };
+  try {
+    var profile = await getProfileTimezone(pid);
+    var startDate = localToday(profile, -windowDays);
+
+    var er = await fetch(SUPABASE_URL + "/rest/v1/exercises?profile_id=eq." + encodeURIComponent(pid) +
+      "&date=gte." + startDate + "&select=name,sets,date&limit=20000", { headers: sbHeaders() });
+    var exRows = await er.json();
+    if (!Array.isArray(exRows)) exRows = [];
+
+    var catalogRows = await fetchExerciseCatalogWithMuscleData();
+    var catalogIndex = buildCatalogMuscleIndex(catalogRows);
+
+    var weighted = {};
+    MUSCLE_HEATMAP_GROUPS.forEach(function(k) { weighted[k] = 0; });
+    exRows.forEach(function(ex) {
+      var match = catalogIndex[catalogNormKey(ex.name || "")];
+      if (!match) return; // no catalog data for this name — contributes nothing, not an error
+      var setCount = numOrNull(ex.sets) || 1;
+      (match.muscle_groups_primary || []).forEach(function(g) { if (weighted.hasOwnProperty(g)) weighted[g] += setCount * 1.0; });
+      (match.muscle_groups_secondary || []).forEach(function(g) { if (weighted.hasOwnProperty(g)) weighted[g] += setCount * 0.5; });
+    });
+
+    var maxWeighted = Math.max.apply(null, MUSCLE_HEATMAP_GROUPS.map(function(k) { return weighted[k]; }));
+    var groups = {};
+    MUSCLE_HEATMAP_GROUPS.forEach(function(k) {
+      groups[k] = {
+        weighted_sets: Math.round(weighted[k] * 10) / 10,
+        intensity: maxWeighted > 0 ? Math.round((weighted[k] / maxWeighted) * 100) / 100 : 0,
+      };
+    });
+
+    res.json({ success: true, window_days: windowDays, groups: groups });
+  } catch (e) {
+    console.error("[MuscleVolume] failed (non-fatal):", e.message);
+    res.json({ success: true, window_days: windowDays, groups: zeroGroups() });
   }
 });
 
