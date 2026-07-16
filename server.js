@@ -8260,67 +8260,137 @@ app.post("/api/debug/backfill-wearable-hr/:userId", async function(req, res) {
   }
 });
 
+// ── WGER EXERCISE CATALOG SEED (2026-07-16) ───────────────────────────────
+// wger.de is a free, keyless, open (CC-BY-SA 4.0) exercise database — see
+// https://wger.de/api/v2/. Replaces the MuscleWiki seed below, which was
+// built across two sessions but never actually run (its API requires a paid
+// $10/mo key that was never obtained) — retired rather than kept dormant,
+// per audit. musclewiki_id is kept on the table as a future MuscleWiki
+// VIDEO-streaming layer (paid-user/beta stage, see ROADMAP.md §7) is a
+// separate concern from data seeding. wger's CC-BY-SA license requires
+// attribution — see public/index.html Profile tab footer.
+//
+// Confirmed live before writing this (not from memory/docs): the
+// `exerciseinfo` endpoint (NOT the bare `exercise` list, which omits names
+// entirely) returns each exercise base FULLY denormalized in one call —
+// category, muscles, muscles_secondary, equipment, and a translations[]
+// array (one entry per language, each with its own name + aliases[]) — so,
+// unlike MuscleWiki's list-then-per-item-detail split, no separate throttled
+// detail fetch is needed here. 842 total exercises as of this session.
+//
+// wger's reference vocab (category/muscle/equipment) is small (8/15/11
+// entries) and stable by id — confirmed live via GET /api/v2/exercisecategory,
+// /muscle, /equipment and hardcoded here rather than re-fetched every run.
+// Mapped onto THIS APP'S existing conventions (not wger's raw vocab) so
+// seeded rows integrate with what's already there:
+//   category -> exercise_catalog.category's real enum. wger is a pure
+//   gym-exercise database (no martial_arts/sports/mind_body/rehab) — every
+//   category maps to 'strength' except Cardio.
+var WGER_CATEGORY_MAP = {
+  10: "strength", // Abs
+  8: "strength",  // Arms
+  12: "strength", // Back
+  14: "strength", // Calves
+  15: "cardio",   // Cardio
+  11: "strength", // Chest
+  9: "strength",  // Legs
+  13: "strength", // Shoulders
+};
+//   muscle -> the SAME muscle-group vocabulary MUSCLE_GROUP_MAP already uses
+//   (chest/back/shoulders/biceps/triceps/core/glutes/quads/hamstrings/
+//   calves/grip_forearms) — required so wger-seeded rows work with the
+//   existing week-preview recovery scorer and phase-2 rollups identically to
+//   every other row. wger has no dedicated grip/forearm muscle, so that
+//   group is never populated from this map — accurate, not a gap.
+var WGER_MUSCLE_MAP = {
+  1: "biceps",      // Biceps brachii
+  2: "shoulders",   // Anterior deltoid
+  3: "chest",       // Serratus anterior (closest major group; approximation)
+  4: "chest",       // Pectoralis major
+  5: "triceps",     // Triceps brachii
+  6: "core",        // Rectus abdominis
+  7: "calves",      // Gastrocnemius
+  8: "glutes",      // Gluteus maximus
+  9: "back",        // Trapezius (grouped with back; approximation)
+  10: "quads",      // Quadriceps femoris
+  11: "hamstrings", // Biceps femoris
+  12: "back",       // Latissimus dorsi
+  13: "biceps",     // Brachialis (elbow flexor, grouped with biceps)
+  14: "core",       // Obliquus externus abdominis
+  15: "calves",     // Soleus
+};
+//   equipment -> light label cleanup only (not a controlled vocabulary
+//   elsewhere in the app, so this is cosmetic, not semantic mapping).
+var WGER_EQUIPMENT_MAP = {
+  1: "Barbell", 2: "EZ-Bar", 3: "Dumbbell", 4: "Mat", 5: "Swiss Ball",
+  6: "Pull-Up Bar", 7: "Bodyweight", 8: "Bench", 9: "Incline Bench",
+  10: "Kettlebell", 11: "Resistance Band",
+};
+function wgerMapMuscles(list) {
+  return (Array.isArray(list) ? list : [])
+    .map(function(m) { return WGER_MUSCLE_MAP[m.id]; })
+    .filter(function(g, i, arr) { return g && arr.indexOf(g) === i; }); // dedup
+}
+function wgerMapEquipment(list) {
+  return (Array.isArray(list) ? list : [])
+    .map(function(e) { return WGER_EQUIPMENT_MAP[e.id] || e.name; })
+    .filter(function(g, i, arr) { return g && arr.indexOf(g) === i; });
+}
+
 // POST /api/debug/seed-exercise-catalog?secret=ADMIN_SECRET&max_calls=N
-// One-time (re-runnable) bulk seed of exercise_catalog from the MuscleWiki
-// API (api.musclewiki.com — 1,900+ exercises, X-API-Key auth). This is a
-// BULK SEED: after this runs, save-time matching (resolveExerciseCatalog)
-// never calls MuscleWiki live — it only reads the already-seeded table.
+// One-time (re-runnable), idempotent bulk seed of exercise_catalog from
+// wger.de — no key required. `max_calls` caps how many exercises are
+// actually WRITTEN this run (default 1000, comfortably covers the full
+// ~842) — not pages, so a small value (`?max_calls=10`) is a safe dry run
+// without needing partial-run bookkeeping (a re-run just refreshes already-
+// written rows via wger_id and continues, see below).
 //
-// Not live-tested against the real MuscleWiki API this session (no
-// MUSCLEWIKI_API_KEY available) — built against their documented API shape
-// (GET /exercises?limit=&offset= -> {total,limit,offset,count,results:[{id,
-// name}]}; GET /exercises/:id -> {id,name,primary_muscles,category
-// (equipment type, e.g. "barbell"),force,mechanic,difficulty,...}, header
-// X-API-Key). Field-reads below are defensive (try a couple of plausible
-// key names) since this hasn't been verified against a live response.
-//
-// Idempotent / resumable: always re-lists from offset 0 (cheap — list calls
-// return lightweight {id,name} pairs, ~19 calls for the full catalog at
-// limit=100) but SKIPS the detail fetch (the expensive, throttled call) for
-// any musclewiki_id already present in exercise_catalog — so re-running
-// after a partial run (or a max_calls cutoff) only spends its throttled
-// budget on genuinely new items. Dedup-on-insert: before creating a new row,
-// checks whether the MuscleWiki name collides (via catalogNormKey, the SAME
-// normalization save-time matching uses) with an existing canonical_name or
-// alias — if so, MERGES (adds the MuscleWiki name as an alias, backfills
-// family/muscle_groups/equipment/musclewiki_id onto the existing row)
-// instead of creating a duplicate/conflicting row with a different spelling
-// (e.g. MuscleWiki's "Push Up" colliding with this app's established
-// "Push-Up" from the CANONICAL_NAMES-seeded migration row).
+// MERGE-SAFE against everything already in the catalog (critical — these
+// rows are already referenced by real exercises.name history, e.g. "Bicep
+// Curl", "Dumbbell Curl", "Close Grip Push-Up", "Hang Clean" all predate
+// this seed). For each wger exercise, checked in this order:
+//   1. An existing row already has this EXACT wger_id (a re-run) -> REFRESH
+//      that row's muscle/equipment/family data only where currently empty,
+//      union any new aliases. canonical_name untouched.
+//   2. Else the wger name or any of its aliases normalizes (catalogNormKey —
+//      the SAME normalization save-time matching uses) to an EXISTING row's
+//      canonical_name or an existing alias -> MERGE: fill only EMPTY fields
+//      (family, muscle_groups_primary/secondary, equipment), union aliases
+//      (deduped), set wger_id. The existing canonical_name and its current
+//      aliases WIN — never overwritten. Only rows that don't already have
+//      their OWN wger_id are eligible merge targets (keeps wger_id 1:1).
+//   3. Else INSERT a new source:'wger' row.
+// Every merge decision (case 2) is returned in full in `merges` — the
+// case that actually needs a human to be able to check it; inserts/
+// refreshes are summarized by count only (up to ~800 of them, and low-risk
+// by construction — a fresh row, never overwriting anything).
 app.post("/api/debug/seed-exercise-catalog", async function(req, res) {
   try {
     if (process.env.ADMIN_SECRET) {
       var got = req.query.secret || req.headers["x-admin-secret"];
       if (got !== process.env.ADMIN_SECRET) return res.status(403).json({ success: false, error: "forbidden" });
     }
-    var apiKey = process.env.MUSCLEWIKI_API_KEY;
-    if (!apiKey) {
-      return res.json({ success: true, status: "pending", reason: "MUSCLEWIKI_API_KEY not set — seed built but not run. Set the env var and re-call this endpoint." });
-    }
-
-    var maxCalls = req.query.max_calls ? parseInt(req.query.max_calls, 10) : 200;
+    var maxCalls = req.query.max_calls ? parseInt(req.query.max_calls, 10) : 1000;
     var sleep = function(ms) { return new Promise(function(r) { setTimeout(r, ms); }); };
-    var mwHeaders = { "X-API-Key": apiKey };
 
-    // Capped-retry-with-backoff wrapper for one MuscleWiki call. The global
-    // fetch() override (top of this file) already retries bare transient
-    // network errors for GETs; this adds a higher-level retry for non-2xx
-    // responses (rate limits, 5xx) that wrapper doesn't cover, non-fatal —
-    // returns null after exhausting attempts rather than throwing, so one
-    // bad item never aborts the whole run.
-    async function mwGet(url) {
+    // Capped-retry-with-backoff for non-2xx responses (rate limits, 5xx) —
+    // the global fetch() override (top of this file) already retries bare
+    // transient network errors for GETs; this adds the higher-level layer
+    // that wrapper doesn't cover. Non-fatal: returns null after exhausting
+    // attempts so one bad page never aborts the whole run.
+    async function wgerGet(url) {
       var delays = [500, 1000, 2000];
       for (var attempt = 0; attempt <= delays.length; attempt++) {
         try {
-          var r = await fetch(url, { headers: mwHeaders });
+          var r = await fetch(url);
           if (r.ok) return await r.json();
           if (attempt === delays.length) {
-            console.error("[MuscleWikiSeed] " + url + " failed after retries: " + r.status);
+            console.error("[WgerSeed] " + url + " failed after retries: " + r.status);
             return null;
           }
         } catch (e) {
           if (attempt === delays.length) {
-            console.error("[MuscleWikiSeed] " + url + " threw after retries:", e.message);
+            console.error("[WgerSeed] " + url + " threw after retries:", e.message);
             return null;
           }
         }
@@ -8329,127 +8399,165 @@ app.post("/api/debug/seed-exercise-catalog", async function(req, res) {
       return null;
     }
 
-    // Load current catalog once for dedup-on-insert checks (same shape/logic
-    // as fetchExerciseCatalogForMatching, plus musclewiki_id to skip
-    // already-seeded items).
-    var existingR = await fetch(SUPABASE_URL + "/rest/v1/exercise_catalog?select=id,canonical_name,aliases,musclewiki_id&limit=10000", { headers: sbHeaders() });
+    // Load current catalog once — same shape fetchExerciseCatalogForMatching
+    // uses, plus wger_id for the re-run refresh path.
+    var existingR = await fetch(SUPABASE_URL + "/rest/v1/exercise_catalog?select=id,canonical_name,aliases,family,muscle_groups_primary,muscle_groups_secondary,equipment,wger_id&limit=10000", { headers: sbHeaders() });
     var existingRows = await existingR.json();
     if (!Array.isArray(existingRows)) {
       return res.status(500).json({ success: false, error: "exercise_catalog table not reachable — has migrations/2026-07-15_exercise_catalog.sql been run?" });
     }
-    var seededIds = new Set(existingRows.filter(function(r) { return r.musclewiki_id; }).map(function(r) { return String(r.musclewiki_id); }));
+    var byWgerId = {};
+    existingRows.forEach(function(r) { if (r.wger_id) byWgerId[r.wger_id] = r; });
 
-    // Phase 1: list ALL exercises (id+name only, cheap).
-    var allListed = [];
-    var offset = 0, limit = 100, calls = 0;
+    // Phase 1: fetch every exercise, paginated, ~1/sec between PAGE fetches
+    // (the only throttled network call — each page is already fully
+    // detailed, no separate per-item fetch, unlike the old MuscleWiki seed).
+    var allItems = [];
+    var offset = 0, limit = 100, pageCalls = 0;
     while (true) {
-      var page = await mwGet("https://api.musclewiki.com/exercises?limit=" + limit + "&offset=" + offset);
-      calls++;
+      var page = await wgerGet("https://wger.de/api/v2/exerciseinfo/?format=json&language=2&limit=" + limit + "&offset=" + offset);
+      pageCalls++;
       if (!page || !Array.isArray(page.results)) break;
-      allListed = allListed.concat(page.results);
-      if (page.results.length < limit || allListed.length >= (page.total || allListed.length)) break;
+      allItems = allItems.concat(page.results);
+      if (!page.next) break;
       offset += limit;
-      await sleep(1000); // ~1/sec throttle
+      await sleep(1000); // ~1/sec throttle, be a good citizen to a free public API
     }
 
-    var toFetch = allListed.filter(function(x) { return x && x.id != null && !seededIds.has(String(x.id)); });
+    var fetched = 0, inserted = 0, refreshed = 0, mergedCount = 0, skipped = 0, errors = 0;
+    var merges = [];
+    var i = 0;
 
-    var inserted = 0, merged = 0, skipped = 0, errors = 0, detailCalls = 0;
-    for (var i = 0; i < toFetch.length && detailCalls < maxCalls; i++) {
-      var listed = toFetch[i];
-      detailCalls++;
-      if (detailCalls > 1) await sleep(1000); // ~1/sec throttle across detail calls
-
-      var detail = await mwGet("https://api.musclewiki.com/exercises/" + listed.id);
-      if (!detail) { errors++; continue; }
-
-      var mwName = (detail.name || listed.name || "").trim();
-      if (!mwName) { skipped++; continue; }
-      // Defensive multi-key reads — field names not live-verified.
-      var primaryMuscles = detail.primary_muscles || detail.muscles_primary || (detail.muscles && detail.muscles.primary) || [];
-      var secondaryMuscles = detail.secondary_muscles || detail.muscles_secondary || (detail.muscles && detail.muscles.secondary) || [];
-      var equipment = detail.category ? [String(detail.category)] : (detail.equipment || []);
-      if (!Array.isArray(primaryMuscles)) primaryMuscles = [primaryMuscles];
-      if (!Array.isArray(secondaryMuscles)) secondaryMuscles = [secondaryMuscles];
-      if (!Array.isArray(equipment)) equipment = [equipment];
-      // Light family heuristic (phase-2 consumption only, not load-bearing
-      // this session): strip a leading modifier word so "Incline Push Up"
-      // and "Decline Push Up" both group under "Push Up".
-      var family = mwName.replace(/^(incline|decline|close[\s-]grip|wide[\s-]grip|narrow|reverse|single[\s-]arm|banded|assisted|weighted)\s+/i, "").trim() || mwName;
-
-      var key = catalogNormKey(mwName);
-      var collision = existingRows.find(function(row) {
-        if (catalogNormKey(row.canonical_name) === key) return true;
-        return (row.aliases || []).some(function(a) { return catalogNormKey(a) === key; });
-      });
-
+    for (; i < allItems.length && (inserted + refreshed + mergedCount) < maxCalls; i++) {
+      var item = allItems[i];
       try {
-        if (collision) {
-          var newAliases = (collision.aliases || []).slice();
-          if (catalogNormKey(collision.canonical_name) !== key && newAliases.indexOf(mwName) < 0) newAliases.push(mwName);
-          await fetch(SUPABASE_URL + "/rest/v1/exercise_catalog?id=eq." + collision.id, {
+        var translations = Array.isArray(item.translations) ? item.translations : [];
+        var en = translations.find(function(t) { return t.language === 2; });
+        if (!en || !en.name) { skipped++; continue; } // no English translation — nothing to seed
+        fetched++;
+
+        var wgerName = en.name.trim();
+        var wgerAliases = (Array.isArray(en.aliases) ? en.aliases : [])
+          .map(function(a) { return a.alias; }).filter(Boolean);
+        var wgerId = String(item.id);
+        var category = WGER_CATEGORY_MAP[item.category && item.category.id] || "strength";
+        var primaryMuscles = wgerMapMuscles(item.muscles);
+        var secondaryMuscles = wgerMapMuscles(item.muscles_secondary);
+        var equipment = wgerMapEquipment(item.equipment);
+        // Same family heuristic the old MuscleWiki seed used: strip a
+        // leading modifier so "Incline Push Up"/"Decline Push Up" group
+        // under "Push Up" (phase-2 consumption only, not load-bearing now).
+        var family = wgerName.replace(/^(incline|decline|close[\s-]grip|wide[\s-]grip|narrow|reverse|single[\s-]arm|banded|assisted|weighted)\s+/i, "").trim() || wgerName;
+
+        // 1. Re-run refresh — this exact wger item already has a row.
+        if (byWgerId[wgerId]) {
+          var existingByWger = byWgerId[wgerId];
+          var refreshAliases = (existingByWger.aliases || []).slice();
+          wgerAliases.concat([wgerName]).forEach(function(a) {
+            var k = catalogNormKey(a);
+            if (k && k !== catalogNormKey(existingByWger.canonical_name) && !refreshAliases.some(function(x) { return catalogNormKey(x) === k; })) refreshAliases.push(a);
+          });
+          await fetch(SUPABASE_URL + "/rest/v1/exercise_catalog?id=eq." + existingByWger.id, {
             method: "PATCH",
             headers: sbHeaders("return=minimal"),
             body: JSON.stringify({
-              aliases: newAliases,
-              family: family,
-              muscle_groups_primary: primaryMuscles,
-              muscle_groups_secondary: secondaryMuscles,
-              equipment: equipment,
-              musclewiki_id: String(listed.id),
+              aliases: refreshAliases,
+              family: existingByWger.family || family,
+              muscle_groups_primary: (existingByWger.muscle_groups_primary && existingByWger.muscle_groups_primary.length) ? existingByWger.muscle_groups_primary : primaryMuscles,
+              muscle_groups_secondary: (existingByWger.muscle_groups_secondary && existingByWger.muscle_groups_secondary.length) ? existingByWger.muscle_groups_secondary : secondaryMuscles,
+              equipment: (existingByWger.equipment && existingByWger.equipment.length) ? existingByWger.equipment : equipment,
               updated_at: new Date().toISOString(),
             }),
           });
-          collision.musclewiki_id = String(listed.id); // keep local cache consistent for later iterations
-          merged++;
+          refreshed++;
+          continue;
+        }
+
+        // 2. Textual collision against an existing (pre-wger, or not-yet-
+        // wger-tagged) row — MERGE, never duplicate. Checks the wger name
+        // AND every wger alias against each candidate row's canonical_name
+        // + aliases. Rows that already have their OWN wger_id are excluded
+        // so wger_id stays 1:1 with a catalog row.
+        var candidateKeys = [catalogNormKey(wgerName)].concat(wgerAliases.map(catalogNormKey));
+        var collision = existingRows.find(function(row) {
+          if (row.wger_id) return false;
+          var rowKeys = [catalogNormKey(row.canonical_name)].concat((row.aliases || []).map(catalogNormKey));
+          return candidateKeys.some(function(k) { return k && rowKeys.indexOf(k) >= 0; });
+        });
+
+        if (collision) {
+          var newAliases = (collision.aliases || []).slice();
+          candidateKeys.forEach(function(k, idx) {
+            var raw = idx === 0 ? wgerName : wgerAliases[idx - 1];
+            if (k && k !== catalogNormKey(collision.canonical_name) && !newAliases.some(function(x) { return catalogNormKey(x) === k; })) newAliases.push(raw);
+          });
+          var mergePatch = { aliases: newAliases, wger_id: wgerId, updated_at: new Date().toISOString() };
+          // Fill-empty-only — existing curated data always wins.
+          if (!collision.family) mergePatch.family = family;
+          if (!collision.muscle_groups_primary || !collision.muscle_groups_primary.length) mergePatch.muscle_groups_primary = primaryMuscles;
+          if (!collision.muscle_groups_secondary || !collision.muscle_groups_secondary.length) mergePatch.muscle_groups_secondary = secondaryMuscles;
+          if (!collision.equipment || !collision.equipment.length) mergePatch.equipment = equipment;
+          await fetch(SUPABASE_URL + "/rest/v1/exercise_catalog?id=eq." + collision.id, {
+            method: "PATCH",
+            headers: sbHeaders("return=minimal"),
+            body: JSON.stringify(mergePatch),
+          });
+          collision.wger_id = wgerId; // keep local cache consistent for later iterations
+          collision.aliases = newAliases;
+          mergedCount++;
+          merges.push({ wger_name: wgerName, matched_canonical_name: collision.canonical_name, decision: "merged" });
         } else {
           var insRes = await fetch(SUPABASE_URL + "/rest/v1/exercise_catalog", {
             method: "POST",
             headers: sbHeaders("return=representation"),
             body: JSON.stringify({
-              canonical_name: mwName,
-              aliases: [],
+              canonical_name: wgerName,
+              aliases: wgerAliases,
               family: family,
               muscle_groups_primary: primaryMuscles,
               muscle_groups_secondary: secondaryMuscles,
               equipment: equipment,
-              category: "strength", // MuscleWiki's own catalog skews strength/hypertrophy; refined manually as needed, phase-2 concern
+              category: category,
               is_duration_based: false,
-              source: "musclewiki",
-              musclewiki_id: String(listed.id),
+              source: "wger",
+              wger_id: wgerId,
             }),
           });
           if (insRes.ok) {
             var insRows = await insRes.json();
             var insRow = Array.isArray(insRows) ? insRows[0] : insRows;
-            if (insRow) existingRows.push(insRow); // so a later item in this same run can collide against it
+            if (insRow) { existingRows.push(insRow); byWgerId[wgerId] = insRow; }
             inserted++;
           } else {
             errors++;
-            console.error("[MuscleWikiSeed] insert failed for '" + mwName + "':", await insRes.text());
+            console.error("[WgerSeed] insert failed for '" + wgerName + "':", await insRes.text());
           }
         }
       } catch (e) {
         errors++;
-        console.error("[MuscleWikiSeed] item failed for '" + mwName + "':", e.message);
+        console.error("[WgerSeed] item failed:", e.message);
       }
     }
 
     res.json({
       success: true,
       status: "ran",
-      listed: allListed.length,
-      already_seeded: seededIds.size,
-      remaining_after_this_run: Math.max(0, toFetch.length - detailCalls),
+      total_listed: allItems.length,
+      fetched: fetched,
       inserted: inserted,
-      merged: merged,
+      merged: mergedCount,
+      refreshed: refreshed,
       skipped: skipped,
       errors: errors,
-      list_api_calls: calls,
-      detail_api_calls: detailCalls,
+      page_api_calls: pageCalls,
+      remaining_after_this_run: Math.max(0, allItems.length - i),
+      merges: merges,
+      category_map: WGER_CATEGORY_MAP,
+      muscle_map: WGER_MUSCLE_MAP,
+      equipment_map: WGER_EQUIPMENT_MAP,
     });
   } catch (e) {
-    console.error("[MuscleWikiSeed] fatal:", e.message);
+    console.error("[WgerSeed] fatal:", e.message);
     res.status(500).json({ success: false, error: e.message });
   }
 });
