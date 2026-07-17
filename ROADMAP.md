@@ -8,6 +8,26 @@
 > `wearables/`, and `migrations/` rather than transcribed. Where the original brief differed
 > from the live code, the doc follows the code and flags it with **⚠ Correction**.
 >
+> **2026-07-17 session #21** (Log past workout panel — expand + pagination + template creation;
+> report-first, audit approved before edits):
+> - **Expand** — each history row lazy-fetches `/api/workouts/:id/full` on first expand into a shared
+>   `fullWorkoutCache` (workoutLog is summary-only, no exercise rows); `reLogWorkout` refactored to
+>   read the same cache (`lpLoadFull`). No eager fetching.
+> - **"See more"** — reveals deeper into the loaded set client-side, then pages older workouts into a
+>   panel-local `logPastExtra` via a new additive `?offset=` on `GET /api/workouts` (absent = 0, no
+>   existing caller affected). `workoutLog` is never mutated. **Confirmed live** profile 1 has 76
+>   workouts vs `loadWorkouts()`'s 60 cap, so pagination is real, not theoretical.
+> - **Template create/append** — three entry points (new blank; save-as from a past workout or an AI
+>   rec option via a 3-headline picker; append a past workout / AI rec option into an existing
+>   template), all via the existing template POST/PATCH. **Writes `notes_template` only** — the
+>   `workout_templates.exercises` jsonb is unread (`useTemplate` drives off `notes_template`), so
+>   writing it would be dead data; flagged as a latent trap in §9.
+> - **AI-rec parseability finding**: AI rec `options[].exercises` are freeform strings, not structured
+>   objects — so save/append into `notes_template` (text) is clean and reuses `prefillLogFromAI`'s
+>   format; no parsing attempted. `aiRec` is read-only, so `renderAI` is untouched.
+> - **Scope**: one additive backend change (`?offset=`); all else frontend, CSS id-scoped, no global
+>   class changes, no new endpoints. **Not yet verified live** at write time (pending deploy).
+>
 > **2026-07-17 session #20** (Log past workout panel — Today tab; frontend-only, report-first,
 > plan approved before edits):
 > - **New `#log-past-card`** after `#ai-card` on Today: a "🔁 Log past workout" button expands an
@@ -821,7 +841,7 @@ All verified present in `server.js`. `:id`/`:userId` = profile id.
 ### Workouts / templates / exercises
 | Method | Path |
 |--------|------|
-| GET | `/api/workouts` · `/api/workouts/:id/full` |
+| GET | `/api/workouts?limit=&offset=` (offset additive 2026-07-17, backward-compatible — pages the Log-past "See more") · `/api/workouts/:id/full` |
 | POST | `/api/workouts` · PATCH `/api/workouts/:id` · DELETE `/api/workouts/:id` |
 | POST | `/api/profiles/:id/reformat-titles` · `/api/profiles/:id/dedupe-workouts` |
 | GET/POST | `/api/profiles/:id/templates` · PATCH/DELETE `/api/templates/:id` |
@@ -1106,6 +1126,7 @@ Macro roadmap shape (stored on `profiles.roadmap_data`):
 - [x] **`ON DELETE CASCADE` FK from `exercises.workout_id` → `workouts.id`.** ✅ **Migration run in production 2026-07-17** (`migrations/2026-07-17_exercises_workout_fk_cascade.sql`) — makes the orphaned-exercises bug class (fixed for `DELETE /api/workouts/:id` in session #11) structurally impossible even if a future endpoint deletes a workout some other way. The orphan report (`GET /api/debug/orphaned-exercises/:userId`) was run for every profile first, since the `ALTER TABLE` fails outright on any pre-existing orphan — profile 1 was cleaned in session #11, and its clean success confirms profiles 4/5/7/8 were orphan-free at run time too.
 - [x] **Extend the same orphan-prevention fix to `DELETE /api/profiles/:id`** — ✅ **done 2026-07-17** (deletes `exercises` for the profile, then `workouts`, then the profile row). Deliberately kept independent of the FK above — see §6.
 - [ ] **`PATCH /api/workouts/:id` doesn't refresh stale `exercises` rows on a notes edit** — see §6 for the full gap; needs a replace-vs-diff design decision, not a one-line patch.
+- [ ] **`workout_templates.exercises` jsonb is unused — latent trap (flagged session #21, do not fix now).** The schema and both write endpoints (`POST /api/profiles/:id/templates`, `PATCH /api/templates/:id`) carry an `exercises` jsonb array, but **nothing reads it**: `useTemplate()` (and the whole Use-template flow) drives the log modal purely off `notes_template` + `type`. It's currently always written `null`. The session #21 "Log past workout" template create/append flows deliberately write `notes_template` only for this reason. The trap: a future contributor may assume `exercises` is authoritative and write structured data there, silently diverging from what the app actually uses. Resolve later by either (a) wiring `useTemplate` to consume `exercises` when present (structured templates), or (b) dropping the column — don't half-populate it in the meantime.
 - [ ] **`runFitbitBackfill()`'s weight fetch uses a `90d` period** (`/body/log/weight/date/today/90d.json`) — not a Fitbit-documented-valid period value for that endpoint (valid periods are `1d/7d/30d/1w/1m/3m/6m/1y`; an arbitrary span requires the by-date-range endpoint instead). Found during the full-history-backfill audit (session #17, 2026-07-17) while verifying every range endpoint's real max span against Fitbit's docs. Flagged only, not fixed — `runFitbitBackfill()` is the legacy 90-day onboarding backfill, already slated for removal post-Fitbit-shutdown (see the item above).
 
 ---

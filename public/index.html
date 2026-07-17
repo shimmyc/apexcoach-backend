@@ -131,6 +131,9 @@ body.compact main{padding:20px 24px 60px}
 /* The reused #recent-workouts-card renders as a full card elsewhere; inside
    this panel strip its card chrome so it reads as a plain nested section. */
 #log-past-panel #recent-workouts-card{background:transparent;border:none;border-radius:0;margin:0;padding:0}
+#log-past-panel .lp-tpl-btn{background:transparent;border:1px solid var(--border-subtle);color:var(--accent-ember);padding:6px 12px;border-radius:10px;cursor:pointer;font-size:12px;font-weight:600;white-space:nowrap}
+#log-past-panel .lp-tpl-btn:hover{border-color:var(--accent-ember)}
+#lp-status{margin-top:10px;font-size:12px;font-weight:600;color:var(--color-positive,#22c97a);background:rgba(34,201,122,0.10);border:1px solid rgba(34,201,122,0.4);border-radius:8px;padding:8px 12px}
 /* Feeling check-in pills (Today-only class). Energy = ember when selected;
    soreness/severity = surface-2 when selected. */
 #feeling-checkin-card .fc-pill{background:var(--bg-base);border:1px solid var(--border-subtle);color:var(--text-muted)}
@@ -795,6 +798,9 @@ input[type=range]{width:100%;accent-color:var(--accent)}
       <div id="log-past-panel" style="display:none">
         <div id="log-past-history"></div>
         <div id="recent-workouts-card"></div>
+        <div id="lp-tpl-actions"></div>
+        <div id="lp-picker" style="display:none"></div>
+        <div id="lp-status" style="display:none"></div>
       </div>
     </div>
     <div id="progress-card" class="card" style="display:none">
@@ -10383,41 +10389,55 @@ function exerciseToNotesLine(ex) {
 
 function reLogWorkout(workoutId) {
   if (!workoutId) return;
-  fetch('/api/workouts/' + workoutId + '/full')
-    .then(function(r) { return r.json(); })
-    .then(function(data) {
-      if (!data.success) { alert('Could not load that workout.'); return; }
-      var w = data.workout || {};
-      var exs = data.exercises || [];
-      var lines = exs.map(exerciseToNotesLine).filter(function(l) { return l; });
-      var notesText = lines.join('\n');
-      // Prepend the original free-text notes if present (avoids losing
-      // descriptions like "felt strong, last set was a grind").
-      if (w.notes && w.notes.trim()) {
-        notesText = w.notes.trim() + (lines.length ? '\n\n' + notesText : '');
-      }
-      openModal();
-      // openModal resets type/notes to defaults, so fill *after* it.
-      document.getElementById('wnotes').value = notesText;
-      document.getElementById('wtype').value = w.type || '';
-      // Re-log always targets today (user can switch via the date picker).
-      var dateEl = document.getElementById('wdate');
-      if (dateEl) { dateEl.value = ds(0); onLogDateChanged(); }
-      var banner = document.getElementById('wlog-banner');
-      if (banner) {
-        banner.innerHTML = '&#128260; Re-logging: <strong>' + (w.type || 'Workout') + '</strong> from ' + (w.date || '?') +
-          (exs.length ? ' &middot; ' + exs.length + ' exercise' + (exs.length === 1 ? '' : 's') : '');
-        banner.style.display = 'block';
-      }
-    })
-    .catch(function(e) { console.error('[ReLog] error:', e); alert('Re-log failed: ' + e.message); });
+  // Uses the shared fullWorkoutCache (also used by the Log-past panel's expand),
+  // so re-logging a row you just expanded doesn't re-hit /full.
+  lpLoadFull(workoutId).then(function(full) {
+    if (!full) { alert('Could not load that workout.'); return; }
+    var w = full.workout || {};
+    var exs = full.exercises || [];
+    var lines = exs.map(exerciseToNotesLine).filter(function(l) { return l; });
+    var notesText = lines.join('\n');
+    // Prepend the original free-text notes if present (avoids losing
+    // descriptions like "felt strong, last set was a grind").
+    if (w.notes && w.notes.trim()) {
+      notesText = w.notes.trim() + (lines.length ? '\n\n' + notesText : '');
+    }
+    openModal();
+    // openModal resets type/notes to defaults, so fill *after* it.
+    document.getElementById('wnotes').value = notesText;
+    document.getElementById('wtype').value = w.type || '';
+    // Re-log always targets today (user can switch via the date picker).
+    var dateEl = document.getElementById('wdate');
+    if (dateEl) { dateEl.value = ds(0); onLogDateChanged(); }
+    var banner = document.getElementById('wlog-banner');
+    if (banner) {
+      banner.innerHTML = '&#128260; Re-logging: <strong>' + (w.type || 'Workout') + '</strong> from ' + (w.date || '?') +
+        (exs.length ? ' &middot; ' + exs.length + ' exercise' + (exs.length === 1 ? '' : 's') : '');
+      banner.style.display = 'block';
+    }
+  });
 }
 
 // ── TODAY TAB: Log past workout panel ─────────────────────────────────────
-// Deeper scrollable history (from workoutLog — existing data, no new query)
-// plus the reused templates render (renderRecentAndTemplates in templates-only
-// mode). Tapping a history row (reLogWorkout) or a template (useTemplate)
-// prefills the existing Log Workout modal; neither logs immediately.
+// Deeper scrollable history (from workoutLog + paged-in older workouts) with
+// per-row expand detail, plus the reused templates render and template
+// create/append actions. Tapping a history row (reLogWorkout) or a template
+// (useTemplate) prefills the existing Log Workout modal; neither logs
+// immediately. No workout_templates.exercises jsonb is written (it's unread —
+// see ROADMAP §9); template writes carry notes_template only.
+
+// Shared full-workout detail cache (workout row + extracted exercises), keyed
+// by workout id. Populated lazily on first expand and reused by reLogWorkout.
+var fullWorkoutCache = {};
+var logPastExtra = [];          // older workouts paged in beyond loadWorkouts()'s 60 (panel-local; never mutates workoutLog)
+var logPastShown = 20;          // how many history rows are currently visible
+var logPastExpanded = {};       // id -> true for expanded rows
+var logPastServerExhausted = false; // a paged fetch returned < a full page → no more on server
+var lpPageLoading = false;
+var lpPickerChoices = [];
+var lpPickerCb = null;
+var lpToastTimer = null;
+
 function updateLogPastCard() {
   var card = document.getElementById('log-past-card');
   if (!card) return;
@@ -10430,41 +10450,340 @@ function toggleLogPastPanel() {
   var panel = document.getElementById('log-past-panel');
   if (!panel) return;
   if (panel.style.display !== 'none') { panel.style.display = 'none'; return; }
+  logPastShown = 20;
+  logPastExpanded = {};
+  lpClosePicker();
   renderLogPastHistory();
   if (typeof renderRecentAndTemplates === 'function') renderRecentAndTemplates(true);
+  if (typeof renderLpTemplateControls === 'function') renderLpTemplateControls();
   panel.style.display = 'block';
+}
+
+// Cache-aware /full loader → resolves {workout, exercises} or null. Shared by
+// expand, reLogWorkout, and the "save/append as template" flows.
+function lpLoadFull(id) {
+  if (fullWorkoutCache[id]) return Promise.resolve(fullWorkoutCache[id]);
+  return fetch('/api/workouts/' + id + '/full')
+    .then(function(r) { return r.json(); })
+    .then(function(data) {
+      if (!data || !data.success) return null;
+      fullWorkoutCache[id] = { workout: data.workout || {}, exercises: data.exercises || [] };
+      return fullWorkoutCache[id];
+    })
+    .catch(function() { return null; });
+}
+
+// workoutLog (newest 60) + any paged-in older workouts, deduped by id, newest
+// first. Panel-local — workoutLog itself is never mutated.
+function lpAllWorkouts() {
+  var seen = {}, all = [];
+  var src = (Array.isArray(workoutLog) ? workoutLog : []).concat(logPastExtra);
+  for (var i = 0; i < src.length; i++) {
+    var w = src[i];
+    if (w && w.id != null && !seen[w.id]) { seen[w.id] = true; all.push(w); }
+  }
+  all.sort(function(a, b) {
+    if (a.date !== b.date) return a.date < b.date ? 1 : -1;
+    return (b.ts || 0) - (a.ts || 0);
+  });
+  return all;
 }
 
 function renderLogPastHistory() {
   var el = document.getElementById('log-past-history');
   if (!el) return;
-  var hasWorkouts = Array.isArray(workoutLog) && workoutLog.length > 0;
-  if (!hasWorkouts) {
+  var all = lpAllWorkouts();
+  if (!all.length) {
     el.innerHTML = '<p class="lp-section-label">past workout history</p>'
       + '<p style="font-size:12px;color:var(--text-dim);font-style:italic;margin:0 0 16px">No past workouts logged yet.</p>';
     return;
   }
-  // Last ~20, newest first (same sort as the recent-workouts block, deeper cap).
-  var recent = workoutLog.slice().sort(function(a, b) {
-    if (a.date !== b.date) return a.date < b.date ? 1 : -1;
-    return (b.ts || 0) - (a.ts || 0);
-  }).slice(0, 20);
+  var visible = all.slice(0, logPastShown);
   var h = '<p class="lp-section-label">past workout history</p>';
   h += '<div id="log-past-history-list">';
-  for (var i = 0; i < recent.length; i++) {
-    var r = recent[i];
-    var rid = r.id || '';
-    var exCount = (typeof exerciseCountByWorkoutId === 'object' && r.id != null && exerciseCountByWorkoutId[r.id]) ? exerciseCountByWorkoutId[r.id] : null;
-    h += '<div style="display:flex;align-items:center;justify-content:space-between;background:var(--bg-base);border:1px solid var(--border-subtle);border-radius:12px;padding:10px 12px">';
-    h += '<div style="flex:1;min-width:0">';
+  for (var i = 0; i < visible.length; i++) {
+    var r = visible[i];
+    var rid = r.id;
+    var exCount = (typeof exerciseCountByWorkoutId === 'object' && rid != null && exerciseCountByWorkoutId[rid]) ? exerciseCountByWorkoutId[rid] : null;
+    var expanded = !!logPastExpanded[rid];
+    h += '<div style="background:var(--bg-base);border:1px solid var(--border-subtle);border-radius:12px;padding:10px 12px">';
+    h += '<div style="display:flex;align-items:center;justify-content:space-between;gap:8px">';
+    h += '<div style="flex:1;min-width:0;display:flex;align-items:center;gap:8px;cursor:pointer" onclick="toggleLogPastRow(\'' + rid + '\')">';
+    h += '<span id="lp-chev-' + rid + '" style="display:inline-block;transition:transform .15s;transform:rotate(' + (expanded ? '90' : '0') + 'deg);color:var(--text-dim);font-size:11px;flex-shrink:0">&#9654;</span>';
+    h += '<div style="min-width:0">';
     h += '<div style="font-size:14px;color:var(--text-bright);font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">' + escHtml(r.type || 'Workout') + '</div>';
     h += '<div class="mono" style="font-size:10px;color:var(--text-dim);margin-top:2px">' + escHtml(r.date || '') + (exCount != null ? ' &middot; ' + exCount + ' exercise' + (exCount === 1 ? '' : 's') : '') + '</div>';
+    h += '</div></div>';
+    h += '<button type="button" onclick="reLogWorkout(\'' + rid + '\')" style="background:transparent;border:1px solid var(--border-subtle);color:var(--accent-ember);padding:6px 12px;border-radius:10px;cursor:pointer;font-size:12px;font-weight:600;white-space:nowrap">&#128260; Re-log</button>';
     h += '</div>';
-    if (rid) h += '<button type="button" onclick="reLogWorkout(\'' + rid + '\')" style="background:transparent;border:1px solid var(--border-subtle);color:var(--accent-ember);padding:6px 12px;border-radius:10px;cursor:pointer;font-size:12px;font-weight:600;margin-left:8px;white-space:nowrap">&#128260; Re-log</button>';
+    var detailInner = '';
+    if (expanded) detailInner = fullWorkoutCache[rid] ? renderLogPastRowDetail(rid) : '<p style="font-size:12px;color:var(--text-dim);margin:0">Loading&hellip;</p>';
+    h += '<div id="lp-detail-' + rid + '" style="display:' + (expanded ? 'block' : 'none') + ';margin-top:8px;padding-top:8px;border-top:1px solid var(--border-subtle)">' + detailInner + '</div>';
     h += '</div>';
   }
   h += '</div>';
+  var canFetch = (Array.isArray(workoutLog) && workoutLog.length >= 60) && !logPastServerExhausted;
+  if (logPastShown < all.length || canFetch) {
+    h += '<button type="button" id="lp-see-more" onclick="logPastSeeMore()" style="width:100%;background:transparent;border:1px dashed var(--border-subtle);color:var(--text-muted);padding:9px 14px;border-radius:10px;cursor:pointer;font-size:12px;font-weight:600;margin-bottom:16px">See more</button>';
+  } else {
+    h += '<div style="height:4px"></div>';
+  }
   el.innerHTML = h;
+}
+
+function renderLogPastRowDetail(id) {
+  var full = fullWorkoutCache[id];
+  if (!full) return '<p style="font-size:12px;color:var(--text-dim);margin:0">Loading&hellip;</p>';
+  var exs = full.exercises || [];
+  var w = full.workout || {};
+  var h = '';
+  if (exs.length) {
+    h += '<div style="display:flex;flex-direction:column;gap:4px">';
+    for (var i = 0; i < exs.length; i++) {
+      h += '<div style="font-size:12px;color:var(--text-muted);line-height:1.5">' + escHtml(exerciseToNotesLine(exs[i]) || (exs[i] && exs[i].name) || '') + '</div>';
+    }
+    h += '</div>';
+  }
+  if (w.notes && String(w.notes).trim()) {
+    h += '<p style="font-size:12px;color:var(--text-dim);white-space:pre-wrap;line-height:1.5;margin:' + (exs.length ? '8px 0 0' : '0') + '">' + escHtml(String(w.notes).trim()) + '</p>';
+  }
+  if (!exs.length && !(w.notes && String(w.notes).trim())) {
+    h += '<p style="font-size:12px;color:var(--text-dim);margin:0">No detail recorded.</p>';
+  }
+  h += '<div style="display:flex;flex-wrap:wrap;gap:6px;margin-top:10px">';
+  h += '<button type="button" onclick="lpSaveWorkoutAsTemplate(\'' + id + '\')" class="lp-tpl-btn">&#43; Save as template</button>';
+  h += '<button type="button" onclick="lpWorkoutAppendPicker(\'' + id + '\')" class="lp-tpl-btn">&#43; Append to template</button>';
+  h += '</div>';
+  return h;
+}
+
+function toggleLogPastRow(id) {
+  var detail = document.getElementById('lp-detail-' + id);
+  var chev = document.getElementById('lp-chev-' + id);
+  if (!detail) return;
+  if (logPastExpanded[id]) {
+    delete logPastExpanded[id];
+    detail.style.display = 'none';
+    if (chev) chev.style.transform = 'rotate(0deg)';
+    return;
+  }
+  logPastExpanded[id] = true;
+  detail.style.display = 'block';
+  if (chev) chev.style.transform = 'rotate(90deg)';
+  if (fullWorkoutCache[id]) { detail.innerHTML = renderLogPastRowDetail(id); return; }
+  detail.innerHTML = '<p style="font-size:12px;color:var(--text-dim);margin:0">Loading&hellip;</p>';
+  lpLoadFull(id).then(function(full) {
+    if (!logPastExpanded[id]) return; // collapsed again while loading
+    detail.innerHTML = full ? renderLogPastRowDetail(id)
+      : '<p style="font-size:12px;color:var(--color-danger,#e5484d);margin:0">Could not load detail.</p>';
+  });
+}
+
+// "See more": reveal deeper into the already-loaded set first; once that runs
+// past what's loaded and the base fetch was capped (60), page in older
+// workouts via the additive ?offset= param.
+function logPastSeeMore() {
+  var all = lpAllWorkouts();
+  var canFetch = (Array.isArray(workoutLog) && workoutLog.length >= 60) && !logPastServerExhausted;
+  if (logPastShown + 20 > all.length && canFetch) { lpFetchNextPage(); return; }
+  logPastShown += 20;
+  renderLogPastHistory();
+}
+
+function lpFetchNextPage() {
+  if (lpPageLoading || !currentProfileId) return;
+  lpPageLoading = true;
+  var btn = document.getElementById('lp-see-more');
+  if (btn) { btn.disabled = true; btn.textContent = 'Loading…'; }
+  var offset = (Array.isArray(workoutLog) ? workoutLog.length : 0) + logPastExtra.length;
+  fetch('/api/workouts?limit=60&offset=' + offset + '&profile_id=' + currentProfileId)
+    .then(function(r) { return r.json(); })
+    .then(function(data) {
+      var rows = (data && data.success && Array.isArray(data.workouts)) ? data.workouts : [];
+      if (rows.length < 60) logPastServerExhausted = true;
+      var have = {};
+      var cur = (Array.isArray(workoutLog) ? workoutLog : []).concat(logPastExtra);
+      for (var i = 0; i < cur.length; i++) { if (cur[i] && cur[i].id != null) have[cur[i].id] = true; }
+      for (var j = 0; j < rows.length; j++) { if (rows[j] && rows[j].id != null && !have[rows[j].id]) logPastExtra.push(rows[j]); }
+      logPastShown += 20;
+      lpPageLoading = false;
+      renderLogPastHistory();
+    })
+    .catch(function() { lpPageLoading = false; renderLogPastHistory(); });
+}
+
+// ── Template create / append (notes_template only) ────────────────────────
+function renderLpTemplateControls() {
+  var el = document.getElementById('lp-tpl-actions');
+  if (!el) return;
+  var hasAi = (typeof aiRec !== 'undefined') && aiRec && Array.isArray(aiRec.options) && aiRec.options.length;
+  var h = '<div style="display:flex;flex-wrap:wrap;gap:8px;margin-top:10px">';
+  h += '<button type="button" onclick="lpNewBlankTemplate()" class="lp-tpl-btn">&#43; New template</button>';
+  if (hasAi) {
+    h += '<button type="button" onclick="lpSaveAiAsTemplate()" class="lp-tpl-btn">&#10024; Save AI rec</button>';
+    h += '<button type="button" onclick="lpAppendAiToTemplate()" class="lp-tpl-btn">&#43; AI rec &rarr; template</button>';
+  }
+  h += '</div>';
+  el.innerHTML = h;
+}
+
+// Lightweight in-panel picker (choices = [{label, value}]).
+function lpOpenPicker(title, choices, cb) {
+  lpPickerChoices = choices || [];
+  lpPickerCb = cb || null;
+  var el = document.getElementById('lp-picker');
+  if (!el) return;
+  var h = '<div style="background:var(--bg-base);border:1px solid var(--border-subtle);border-radius:12px;padding:12px;margin-top:10px">';
+  h += '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px"><span style="font-size:12px;font-weight:600;color:var(--text-bright)">' + escHtml(title) + '</span><button type="button" onclick="lpClosePicker()" style="background:transparent;border:none;color:var(--text-muted);font-size:16px;cursor:pointer;line-height:1">&times;</button></div>';
+  h += '<div style="display:flex;flex-direction:column;gap:6px">';
+  for (var i = 0; i < lpPickerChoices.length; i++) {
+    h += '<button type="button" onclick="lpPickerChoose(' + i + ')" style="text-align:left;background:var(--bg-surface-2);border:1px solid var(--border-subtle);color:var(--text-primary);padding:8px 12px;border-radius:8px;cursor:pointer;font-size:13px">' + escHtml(lpPickerChoices[i].label) + '</button>';
+  }
+  h += '</div></div>';
+  el.innerHTML = h;
+  el.style.display = 'block';
+}
+function lpClosePicker() {
+  var el = document.getElementById('lp-picker');
+  if (el) { el.style.display = 'none'; el.innerHTML = ''; }
+  lpPickerChoices = []; lpPickerCb = null;
+}
+function lpPickerChoose(i) {
+  var c = lpPickerChoices[i];
+  var cb = lpPickerCb;
+  lpClosePicker();
+  if (cb && c) cb(c.value);
+}
+
+function lpToast(msg) {
+  var el = document.getElementById('lp-status');
+  if (!el) return;
+  el.textContent = msg;
+  el.style.display = 'block';
+  clearTimeout(lpToastTimer);
+  lpToastTimer = setTimeout(function() { if (el) el.style.display = 'none'; }, 2200);
+}
+
+// Build modal-notes text from an AI rec option — mirrors prefillLogFromAI's
+// format so a saved template reads like a logged AI workout.
+function lpAiOptionToNotes(o) {
+  var notes = (o.headline || '') + '\n';
+  var exes = o.exercises || [];
+  for (var i = 0; i < exes.length; i++) notes += '- ' + exes[i] + '\n';
+  if (o.mobility) notes += '\nMobility: ' + o.mobility;
+  return notes.trim();
+}
+
+// Build notes text from a past workout (exercises + original free-text),
+// same shape reLogWorkout produces. cb(notesText, workoutRow).
+function lpWorkoutNotes(id, cb) {
+  lpLoadFull(id).then(function(full) {
+    if (!full) { alert('Could not load that workout.'); return; }
+    var w = full.workout || {};
+    var lines = (full.exercises || []).map(exerciseToNotesLine).filter(function(l) { return l; });
+    var notesText = lines.join('\n');
+    if (w.notes && w.notes.trim()) notesText = w.notes.trim() + (lines.length ? '\n\n' + notesText : '');
+    cb(notesText, w);
+  });
+}
+
+function lpCreateTemplate(name, type, notes) {
+  if (!currentProfileId) return;
+  fetch('/api/profiles/' + currentProfileId + '/templates', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name: name, type: type || null, notes_template: notes || null })
+  })
+    .then(function(r) { return r.json(); })
+    .then(function(data) {
+      if (!data.success) { alert('Save failed: ' + (data.error || 'unknown')); return; }
+      if (data.template) workoutTemplates.unshift(data.template);
+      if (typeof renderRecentAndTemplates === 'function') renderRecentAndTemplates(true);
+      if (typeof renderProfileTemplates === 'function') renderProfileTemplates();
+      lpToast('Template saved');
+    })
+    .catch(function() { alert('Save failed.'); });
+}
+
+// Concat notes onto an existing template's notes_template (client read-modify-
+// write; server PATCH is a blind overwrite). exercises jsonb intentionally
+// untouched — it's unread (ROADMAP §9).
+function lpAppendToTemplate(tid, notesToAppend) {
+  var tpl = workoutTemplates.find(function(t) { return String(t.id) === String(tid); });
+  if (!tpl) return;
+  var base = (tpl.notes_template || '').trim();
+  var merged = base ? (base + '\n\n' + notesToAppend) : notesToAppend;
+  fetch('/api/templates/' + tid, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ notes_template: merged })
+  })
+    .then(function(r) { return r.json(); })
+    .then(function(data) {
+      if (!data.success) { alert('Append failed: ' + (data.error || 'unknown')); return; }
+      tpl.notes_template = merged;
+      if (typeof renderRecentAndTemplates === 'function') renderRecentAndTemplates(true);
+      if (typeof renderProfileTemplates === 'function') renderProfileTemplates();
+      lpToast('Added to ' + (tpl.name || 'template'));
+    })
+    .catch(function() { alert('Append failed.'); });
+}
+
+function lpPickTargetTemplate(notesToAppend) {
+  if (!Array.isArray(workoutTemplates) || !workoutTemplates.length) { alert('No templates yet — create one first.'); return; }
+  lpOpenPicker('Append to which template?', workoutTemplates.map(function(t) { return { label: t.name || 'Template', value: t.id }; }), function(tid) {
+    lpAppendToTemplate(tid, notesToAppend);
+  });
+}
+
+// Entry point (a): new blank/manual template.
+function lpNewBlankTemplate() {
+  var name = prompt('New template name:');
+  if (name == null) return;
+  name = name.trim();
+  if (!name) return;
+  var notes = prompt('Template contents (exercises, sets/reps, notes):', '');
+  if (notes == null) notes = '';
+  lpCreateTemplate(name, null, notes.trim() || null);
+}
+
+// Entry point (b): save a past workout as a new template.
+function lpSaveWorkoutAsTemplate(id) {
+  lpWorkoutNotes(id, function(notes, w) {
+    var name = prompt('Template name:', w.type || 'Template');
+    if (name == null) return;
+    name = name.trim();
+    if (!name) return;
+    lpCreateTemplate(name, w.type || null, notes);
+  });
+}
+
+// Entry point (c): append a past workout into an existing template.
+function lpWorkoutAppendPicker(id) {
+  lpWorkoutNotes(id, function(notes) { lpPickTargetTemplate(notes); });
+}
+
+// Entry point (b): save an AI rec option (picker over all 3 headlines).
+function lpSaveAiAsTemplate() {
+  var opts = (typeof aiRec !== 'undefined' && aiRec && Array.isArray(aiRec.options)) ? aiRec.options : [];
+  if (!opts.length) { alert('No AI recommendation available today.'); return; }
+  lpOpenPicker('Save which option as a template?', opts.map(function(o, i) { return { label: o.headline || ('Option ' + (i + 1)), value: i }; }), function(idx) {
+    var o = opts[idx];
+    var name = prompt('Template name:', o.headline || o.type || 'Template');
+    if (name == null) return;
+    name = name.trim();
+    if (!name) return;
+    lpCreateTemplate(name, o.type || null, lpAiOptionToNotes(o));
+  });
+}
+
+// Entry point (c): append an AI rec option into an existing template.
+function lpAppendAiToTemplate() {
+  var opts = (typeof aiRec !== 'undefined' && aiRec && Array.isArray(aiRec.options)) ? aiRec.options : [];
+  if (!opts.length) { alert('No AI recommendation available today.'); return; }
+  lpOpenPicker('Append which option?', opts.map(function(o, i) { return { label: o.headline || ('Option ' + (i + 1)), value: i }; }), function(idx) {
+    lpPickTargetTemplate(lpAiOptionToNotes(opts[idx]));
+  });
 }
 
 // ── TODAY TAB: Recent Workouts + My Templates card ────────────────────────

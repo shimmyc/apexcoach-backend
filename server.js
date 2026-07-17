@@ -1935,6 +1935,11 @@ app.get("/api/workouts", async function(req, res) {
     var limit = req.query.limit || 60;
     var profileId = req.query.profile_id;
     var url = SUPABASE_URL + "/rest/v1/workouts?select=*&order=ts.desc&limit=" + limit;
+    // Optional pagination (2026-07-17): additive + backward-compatible — absent
+    // offset means offset 0, so every existing caller is unaffected. Used by the
+    // Today "Log past workout" panel's "See more" to page past the default 60.
+    var offset = parseInt(req.query.offset, 10);
+    if (!isNaN(offset) && offset > 0) url += "&offset=" + offset;
     if (profileId) url += "&profile_id=eq." + profileId;
     var r = await fetch(url, { headers: sbHeaders() });
     var data = await r.json();
