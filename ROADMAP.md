@@ -8,6 +8,35 @@
 > `wearables/`, and `migrations/` rather than transcribed. Where the original brief differed
 > from the live code, the doc follows the code and flags it with **⚠ Correction**.
 >
+> **2026-07-17 session #18** (Doc sync + roadmap refresh — no feature work):
+> - **Full read-through of `CLAUDE.md` + `ROADMAP.md`, verified against live `server.js`/
+>   `public/index.html`/`migrations/`** for everything shipped since the last full sync: frontend
+>   declutter (§7 priority 5), Wearable Sync provider picker (§7 priority 6), readiness hero/detail
+>   split (§7 priority 10), the tech-debt batch (4 items), Coach Chat sleep-history snapshot, and
+>   the full-history Fitbit backfill. All six were already accurately documented — spot-checked
+>   live (`fitbit_pending_imports`/legacy-roadmap code confirmed gone from `server.js`,
+>   `renderRecentAndTemplates()`'s null-guard confirmed, `?metrics=` gating confirmed in the
+>   backfill endpoint) rather than trusted from the prior session's own claims.
+> - **Real gap found: the tech-debt-batch migrations' RUN status was stale in both docs.** All
+>   three 2026-07-17 migrations (drop `fitbit_pending_imports`, drop legacy roadmap columns,
+>   `exercises.workout_id` FK cascade) had actually been run in production, but `CLAUDE.md` and
+>   `ROADMAP.md` still said "pending manual migration" / "not yet run" in six places across the
+>   Supabase Tables section, the `exercises` schema row, the Migrations list, §6, and §9. Fixed
+>   every instance; also added the new FK's existence to the `exercises.workout_id` schema row in
+>   both docs (previously undocumented even as pending).
+> - **§6 weight/body-fat scope note**: confirmed still accurate — the gap survives the user's
+>   2026-07-14 reconsent, deliberately deprioritized (documented in session #17, unchanged here).
+> - **§7 rewritten for the next work cycle** (report-first, approved before writing): replaced the
+>   old numbered list (6 of 10 items already done, accumulating strikethrough clutter) with a fresh
+>   priority order — (1) second-profile Google Health migration, (2) Google Health historical
+>   backfill mirroring this session's Fitbit work, (3) zone/active-minutes persistence, (4) a
+>   decision gate requiring the next session to actively resolve three real-use-conditional items
+>   (readiness hero compaction, Today template quick-row, Coach Chat monthly aggregates) before
+>   defaulting to (5) the Free Exercise DB top-up — plus an unordered parked backlog and a "still on
+>   the board" list (Apple HealthKit, MuscleWiki video, logo, frontend redesign). Cleaned up three
+>   now-stale live cross-references to the old priority numbering (Exercise Video plan section,
+>   "Next up" subsection) that would otherwise have pointed at numbers that no longer meant anything.
+>
 > **2026-07-17 session #17** (Full-history Fitbit backfill — sleep/HRV/RHR/steps/weight/body-fat
 > into `daily_sleep`/`daily_steps`/`body_metrics`; report-first, audit approved before any edit,
 > see git history for the full audit report):
@@ -865,17 +894,29 @@ Each item below is self-contained — no other doc/session context should be nee
 
 ## 7. Roadmap — Features To Build
 
-**Priority order (2026-07-16):**
-1. ~~Analytics streaks/bucketing timezone fix~~ — **✅ done (session #6)**. See §6 item 1.
-2. ~~Roadmap-regenerate offer after applied goal changes~~ — **✅ done (session #6)**. See §6 item 7.
-3. ~~wger bulk-seed~~ — **✅ done (session #8)**, replacing the MuscleWiki seed that was built but never run (paid key never obtained). 842 exercises fetched, catalog now **879 rows**. See §3 → Exercise Canonicalization / `CLAUDE.md`.
-4. ~~Exercise Canonicalization phase 2 — family rollups, muscle-group filter, muscle heatmap~~ — **✅ done (session #9)**. Library Exercises list groups by `family` (collapsible cards, unfiltered state only — any active search/category/muscle filter falls to the flat list by design); an 11-pill muscle-group filter (Primary / Primary+Secondary toggle) sits below category/subcategory; a new "MUSCLE HEAT" card on the Dashboard renders two original geometric SVG body figures (7D/30D/90D), fed by a new `GET /api/analytics/muscle-volume/:userId`. **Not built**: a dedicated "show me similar exercises" action (the muscle filter partially substitutes but isn't the same UX) — left for a future pass if wanted. See §3 → Exercise Canonicalization Phase 2 / `CLAUDE.md`.
-5. ~~Full frontend declutter pass~~ — **✅ done (2026-07-16)**. Today tab above-the-fold is now exactly readiness + feeling check-in + rec, nothing else between them (streak/progress/unmatched-Fitbit demoted below the rec, Body Metrics moved to Profile, Recent Workouts removed entirely); Profile tab regrouped into identity/body, coaching/AI (Coaching Brief + Macro Roadmap now collapsed by default, visual-only), goals cluster, analytics, templates/settings. Pure render-relocation + CSS, no JS logic/API changes. See `CLAUDE.md` → "Today Tab + Profile Tab Reorganization" for the full before/after and what was audited/deferred.
-6. ~~Wearable Sync bulk-review modal — Google Health provider picker~~ — **✅ done (2026-07-16)**. `wsFetchProviders()` reads the existing `GET /api/wearables/providers/:userId`, offers a pill picker for connected providers only (skipped when ≤1 connected), defaults to Google Health when connected. `sync-backlog` and the merge/reject/import actions were already provider-agnostic — zero changes there. Also fixed a real bug the picker would otherwise have exposed: the reconnect step linked to the legacy Fitbit-only `/auth` route regardless of which provider needed reconnecting — now uses the provider-agnostic `POST /api/wearables/connect/:provider`. Verified live with both providers actually connected on profile 1 (including a real expired-Google-Health-token reconnect case). See `CLAUDE.md` → "Wearable Sync Bulk-Review Modal — Provider Picker".
-7. Apple HealthKit / iOS integration — long-term (below).
-8. **Optional: Free Exercise DB top-up import**, if wger coverage gaps keep surfacing in practice. A concrete gap already found live (session #8): wger seeded plenty of *variant-qualified* lat pulldown names (Wide-Grip, Neutral-Grip, Single-Arm, …) but no bare "Lat Pulldown" — today that correctly falls through to Haiku and creates a `source:'custom'` row with a confirm chip (working as designed, not broken), but a free, keyless top-up source (e.g. `github.com/yuhonas/free-exercise-db`, public domain JSON) could close gaps like this proactively instead of relying on Haiku to backfill them one save at a time. Not started — only worth building if this keeps happening after wger's ~880 rows are in real use.
-9. **MuscleWiki video-streaming layer — paid-user/beta stage, not started.** Distinct from data seeding (which wger now covers): subscribing to MuscleWiki's video API ($10/mo TESTING plan minimum) and doing a **one-time exercise-ID mapping pass** onto the existing catalog via the `musclewiki_id` column (kept on the schema for exactly this) — matching wger-seeded `canonical_name`s against MuscleWiki's own names, filling `musclewiki_id` where found. **In-app streaming only, through a server proxy — no stored media**, per MuscleWiki's API ToS. Gated behind a paid-user/beta flag, not a v1 feature. See the Exercise Video / Demonstration Database plan below, updated to reflect this split.
-10. ~~Readiness card hero/detail split~~ — **✅ done (2026-07-16)**. `renderReadiness()` split into an always-visible hero (ring/score/tier/bar + 2×2 bio-grid, "Sleep" cell now shows the computed sleep SCORE — e.g. "81"/"Good · 5.9h" — not just hours) and a collapsed-by-default detail section (bars/sleep-stages/zones/HRV, all four subsections unchanged), same visual-only toggle pattern as Coaching Brief/Macro Roadmap (item 5). No data computation, fetch paths, or regen triggers touched — verified live pre/post-deploy with identical numbers. **Honest gap**: hero measures ~354px live, not the ~200px target — the ring/grid dimensions are pre-existing and shrinking them was out of scope ("no behavior change other than the collapse"); still cut the full card from ~1084px to ~415px by collapsing the detail. Found and fixed along the way: `ssColor`/`ssTier` were scoped inside a conditional that didn't match `sleepScore`'s own gate, leaving them `undefined` for a light-only-sleep edge case — hoisted to fix, and to make them safely reusable by the new hero cell. Also removed `vitalsHTML`, a fully dead block (computed, never rendered). See `CLAUDE.md` → "Readiness Card Hero/Detail Split".
+**Priority order (2026-07-17, next work cycle):**
+
+1. **Second-profile Google Health migration** — user action + verification, ~zero code. *Value: High — Fitbit's API shuts down Sept 2026; any profile still Fitbit-only loses sync entirely at cutover. Effort: Trivial.* Reconnect via the existing reconsent banner, verify sync-backlog/daily fetch work identically post-migration. Ordered first because it's nearly free and the deadline doesn't move.
+2. **Google Health historical backfill** — mirror `backfill-wearable-history` (§4 / `CLAUDE.md` → "Fitbit History Backfill") for GH's API v4. *Value: High, same Sept deadline — once Fitbit's API is gone, GH is the only remaining source for any further gap-filling, including profiles that migrate late. Effort: Medium.* The chunking/merge/never-overwrite-worse-data design from the Fitbit version transfers directly — the real work is GH's different endpoint shapes (`:reconcile`, `dailyRollUp`, list+`page_size=1`) and confirming GH's own real per-metric range limits against Google's docs rather than assuming they match Fitbit's (the RHR silent-drop quirk found in session #17 is exactly the kind of thing that doesn't transfer safely by assumption).
+3. **Zone/active-minutes persistence** — nightly-sync upsert, new column or extend an existing table. *Value: Medium — closes a named, already-flagged gap (§6): AZM is fetched live into `/daily` but never stored, so Coach Chat and analytics can't see history. Effort: Medium.* Both sync paths (Fitbit + Google Health) already compute AZM transiently — this is "persist what's already being fetched," not new data acquisition. No external deadline; ordered here because it's self-contained and ready to pick up.
+4. **Decision gate — resolve these three conditional verdicts before defaulting to item 5.** The next session should actively check whether each trigger has fired (real-use feedback on the readiness card / template placement / a genuine year-scale Coach Chat question) rather than skipping straight past them:
+   - **Readiness hero compaction** (~354px → ~250px) — only if the current ~415px collapsed card still feels long in daily use. *Effort: Low-Medium — shrinking the ring/grid is a real visual change, needs its own sign-off (same as the split itself did).*
+   - **Today ▶ Use templates quick-row restoration** — only if losing the Today-tab shortcut (templates moved to Profile-only in the declutter pass) turns out to matter in practice. *Effort: Low — `renderRecentAndTemplates()` still exists and works, just needs a new mount point.*
+   - **Coach Chat: monthly sleep aggregates / wider window** — only if a real year-scale question ("how's my sleep trended this year?") comes up and the 30-day window feels shallow. *Effort: Medium — needs a monthly-rollup aggregation query, not just a longer raw-row window, to stay inside the char budget.*
+5. **Free Exercise DB top-up** — unchanged from the previous cycle. *Value: Low-Medium, situational — one concrete gap already found (bare "Lat Pulldown" falls through to Haiku, works but not proactively). Effort: Low (free, keyless JSON source, e.g. `github.com/yuhonas/free-exercise-db`).* Default fallback if none of item 4's conditionals fire — only worth building if Haiku-fallback custom-row creation keeps firing on otherwise-common exercises.
+
+**Parked backlog (unordered, carried forward):**
+- Onboarding §8 TODOs (checklist/progress indicator, guided first workout log, wearable-connect prompt, goal-suggestion flow, welcome email/push).
+- wger catalog noise cleanup (near-duplicate/oddly-worded variant names visible in Exercise Guide).
+- Family-rollup polish (e.g. `exercise_catalog` id 18 Dead Hang's `family:"Deadhang"` typo).
+
+**Still on the board, not part of this cycle's ordering:**
+- Apple HealthKit / iOS integration — long-term, needs an iOS companion app + Apple Developer Account.
+- MuscleWiki video-streaming layer — paid-user/beta stage, gated behind a subscription decision (see the Exercise Video / Demonstration Database plan below).
+- Logo transparent background.
+- Front-end redesign — in progress in a separate chat.
+
+> **Shipped 2026-07-16 → 2026-07-17** (superseded from the priority list above to avoid drift — see §3, session banners at the top of this file, and `CLAUDE.md` for full detail): Exercise Canonicalization phase 2 (family rollups, muscle-group filter, muscle heatmap), full frontend declutter pass, Wearable Sync bulk-review provider picker, Readiness card hero/detail split, tech-debt batch (4 items, all migrations now run in production), Coach Chat sleep-history snapshot, full-history Fitbit backfill (+ RHR chunking fix).
 
 ### Near term
 
@@ -940,21 +981,17 @@ Macro roadmap shape (stored on `profiles.roadmap_data`):
 **Row Level Security** — ✅ **enabled** this session on all 11 Supabase tables with a `service_role_bypass` policy each; public anon access closed.
 
 **Exercise Video / Demonstration Database** — 🔲 **planned 2026-06-18, data half done 2026-07-16, video half NOT started.** A searchable exercise guide with video/GIF demonstrations, surfaced in the Library tab and linked from AI rec cards. **Split into two genuinely separate concerns as of session #8** — the original plan bundled "get the exercise data" with "get the video" under one MuscleWiki integration; those turned out to have very different constraints (data is free and keyless via wger, video streaming genuinely needs a paid MuscleWiki subscription), so they're now tracked separately:
-- **Data — ✅ done, via `exercise_catalog` itself, not a separate `exercises_reference` table.** The originally-planned one-time bulk seed + weekly refresh cron + separate Supabase table is superseded: `exercise_catalog` (already built for canonicalization, see §3) IS the exercise reference data now — wger-seeded, ~880 rows, `family`/`muscle_groups_primary`/`muscle_groups_secondary`/`equipment` all populated. No second table, no separate cron; "Watch this exercise" AI-rec-card matching and equipment/muscle filtering can both read this table directly once the UI is built (§7 priority 4).
-- **Video — 🔲 not started, explicitly paid-user/beta stage (§7 priority 9).** ⚠ Correction (2026-07-16): this previously cross-referenced §7 priority 5, which is now the (completed) frontend declutter pass — corrected to priority 9, the actual MuscleWiki video-streaming item. MuscleWiki remains the only tiered source with a real video library (1,900+ demonstrations) — still requires the **$10/mo TESTING plan minimum**, videos served through **authenticated endpoints** so a **server proxy is required** (never embed the raw URL, and **no stored media** — stream-through only, per their API ToS). When this gets built: a one-time exercise-ID **mapping pass** (not a data seed) matches existing `exercise_catalog.canonical_name`s against MuscleWiki's own names and fills `musclewiki_id` — the column has sat ready for exactly this since the original 2026-07-15 migration.
+- **Data — ✅ done, via `exercise_catalog` itself, not a separate `exercises_reference` table.** The originally-planned one-time bulk seed + weekly refresh cron + separate Supabase table is superseded: `exercise_catalog` (already built for canonicalization, see §3) IS the exercise reference data now — wger-seeded, ~880 rows, `family`/`muscle_groups_primary`/`muscle_groups_secondary`/`equipment` all populated.
+- **Guide UI — ✅ done (session #10, 2026-07-16).** The Library tab's 4th sub-nav "Exercise Guide" browses the full catalog (search, muscle-group filter, equipment dropdown, "logged Nx" badges) — see §3 → Exercise Canonicalization Phase 2 / `CLAUDE.md`. Display-only for now: no video, no "Show me similar exercises" action yet (the muscle filter partially substitutes but isn't the same UX).
+- **Video — 🔲 not started, explicitly paid-user/beta stage** (see §7 → "Still on the board"). MuscleWiki remains the only tiered source with a real video library (1,900+ demonstrations) — still requires the **$10/mo TESTING plan minimum**, videos served through **authenticated endpoints** so a **server proxy is required** (never embed the raw URL, and **no stored media** — stream-through only, per their API ToS). When this gets built: a one-time exercise-ID **mapping pass** (not a data seed) matches existing `exercise_catalog.canonical_name`s against MuscleWiki's own names and fills `musclewiki_id` — the column has sat ready for exactly this since the original 2026-07-15 migration. An AI rec-card **"Watch" CTA** would match the recommended exercise name against `exercise_catalog` and, when `musclewiki_id` is set, open the proxied video.
   - **Secondary — ExerciseDB** (`exercisedb.io` via RapidAPI): ~1,300 exercises, GIF demonstrations, has a free tier — still a viable fallback for the video layer specifically once that's being built.
   - **Tertiary — YouTube** embed links (optional "deep dive" per exercise) — no change from the original plan.
-- **UI (video layer, not yet built)** — Library tab, new **4th sub-nav section "Exercise Guide"**, a **"Show me similar exercises"** action (filter `exercise_catalog` by same `family`/muscle group — data's already there), and an AI rec-card **"Watch" CTA** matching the recommended exercise name against `exercise_catalog` and, when `musclewiki_id` is set, opening the proxied video.
 
 **Front-end redesign** — in progress in a separate chat.
 
 ### Next up
 
-- **Apple HealthKit / iOS integration** — opens the app to all iPhone users. Requires an iOS companion app + an Apple Developer Account ($99/yr). Long-term but high impact.
-- ~~Wearable Sync bulk-review modal — Google Health support~~ — **✅ done (2026-07-16)**, see §7 priority 6 and `CLAUDE.md` → "Wearable Sync Bulk-Review Modal — Provider Picker".
-- ~~Today tab declutter~~ / ~~Profile tab cleanup~~ — **✅ done (2026-07-16)**, see §7 priority 5 and `CLAUDE.md` → "Today Tab + Profile Tab Reorganization".
-- **Logo transparent background** — regenerate `public/logo.png` with a transparent background so the figure floats on the app background instead of sitting in a black box.
-- **Exercise catalog phase 2 / MuscleWiki video layer / Free Exercise DB top-up** — see the Priority order list above (items 4-6) for the current, detailed version of this; not duplicated here to avoid drift.
+- See §7 → "Still on the board" (top of this section) for Apple HealthKit, MuscleWiki video, and the logo transparent-background item — not duplicated here to avoid drift.
 
 > ✅ **Done 2026-05-29:** Macro roadmap UI (structured phase-card card, auto-generating — see Near-term) and the **7-Day Smart Schedule Preview** (§3) both shipped.
 
