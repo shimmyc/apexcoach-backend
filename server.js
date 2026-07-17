@@ -5861,6 +5861,18 @@ async function buildChatSnapshot(profileId, opts) {
   var sleepPromise = fetch(SUPABASE_URL + "/rest/v1/daily_sleep?profile_id=eq." + profileId +
     "&select=date,hours,score,hrv,rhr&order=date.desc&limit=1",
     { headers: sbHeaders() }).then(function(r) { return r.json(); }).catch(function() { return []; });
+  // 30-day sleep trend (2026-07-17) — separate from sleepPromise above (which
+  // stays a lean single-row fetch for the existing "LATEST BIOMETRICS" line).
+  // One query, non-fatal: a failure resolves to [] exactly like every other
+  // promise here, which naturally omits the SLEEP HISTORY block below rather
+  // than blocking the send.
+  var sleepHistoryPromise = fetch(SUPABASE_URL + "/rest/v1/daily_sleep?profile_id=eq." + profileId +
+    "&date=gte." + localToday(profile, -30) +
+    "&select=date,hours,score,deep_minutes,rem_minutes&order=date.asc",
+    { headers: sbHeaders() }).then(function(r) { return r.json(); }).catch(function(e) {
+      console.warn("[Chat] sleep-history fetch failed for profile " + profileId + ": " + e.message);
+      return [];
+    });
   var stepsPromise = fetch(SUPABASE_URL + "/rest/v1/daily_steps?profile_id=eq." + profileId +
     "&select=date,steps&order=date.desc&limit=1",
     { headers: sbHeaders() }).then(function(r) { return r.json(); }).catch(function() { return []; });
@@ -5872,6 +5884,8 @@ async function buildChatSnapshot(profileId, opts) {
   var microGoals = await mgPromise;
   if (!Array.isArray(microGoals)) microGoals = [];
   var sleepRows = await sleepPromise, stepsRows = await stepsPromise, bodyRows = await bodyPromise;
+  var sleepHistoryRows = await sleepHistoryPromise;
+  if (!Array.isArray(sleepHistoryRows)) sleepHistoryRows = [];
   var exLogResult = await exLogPromise;
   var exLines = exLogResult.lines;
   var todayFallbackLines = await buildTodayWorkoutFallback(profileId, today, exLogResult.workoutIds).catch(function() { return []; });
@@ -5913,6 +5927,25 @@ async function buildChatSnapshot(profileId, opts) {
     coreLines.push("LATEST WEIGHT (" + body.date + "): " +
       (body.weight_lbs != null ? body.weight_lbs + "lbs" : "n/a") +
       (body.bmi != null ? " (BMI " + body.bmi + ")" : ""));
+  }
+  // Sleep trend (2026-07-17) — one compact line per day, oldest first (matches
+  // sleepHistoryRows' own date.asc order). Days with a daily_sleep row but
+  // every selected field null (rare) are skipped entirely rather than
+  // emitting an empty "DATE:" line; days with NO row at all (a wearable-sync
+  // gap) are never fabricated as zeros — the header says so explicitly so
+  // the model doesn't misread a gap as "no sleep that night."
+  if (sleepHistoryRows.length) {
+    var shLines = sleepHistoryRows.map(function(r) {
+      var bits = [];
+      if (r.hours != null) bits.push(r.hours + "h");
+      if (r.score != null) bits.push("s" + r.score);
+      if (r.deep_minutes != null) bits.push("d" + r.deep_minutes + "m");
+      if (r.rem_minutes != null) bits.push("r" + r.rem_minutes + "m");
+      return bits.length ? (r.date + " " + bits.join(" ")) : null;
+    }).filter(Boolean);
+    if (shLines.length) {
+      coreLines.push("SLEEP HISTORY (30d, h=hrs s=score d=deep-min r=rem-min; a date not listed = wearable-sync gap, not zero sleep):\n" + shLines.join("\n"));
+    }
   }
 
   var ctxCap = 600; // elastic (tier 2, after the exercise log) — see below
