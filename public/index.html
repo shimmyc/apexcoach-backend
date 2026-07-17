@@ -122,6 +122,15 @@ body.compact main{padding:20px 24px 60px}
 #ai-card,#recent-workouts-card{padding:20px}
 /* The Cornerman (progress brief) card gets the AI purple border. */
 #progress-card{border:1px solid var(--border-ai)}
+/* Log past workout (Today-only) — id-scoped, no global class changes. */
+#log-past-card{background:var(--bg-surface-1);border:1px solid var(--border-subtle);border-radius:20px;margin-bottom:12px;padding:16px 20px}
+#log-past-btn{width:100%;background:transparent;border:1px solid var(--border-subtle);color:var(--accent-ember);padding:11px 14px;border-radius:12px;cursor:pointer;font-size:14px;font-weight:600}
+#log-past-panel{margin-top:14px}
+#log-past-panel .lp-section-label{font-size:10px;text-transform:uppercase;letter-spacing:0.08em;color:var(--text-dim);font-weight:600;margin:0 0 8px}
+#log-past-history-list{max-height:280px;overflow-y:auto;display:flex;flex-direction:column;gap:8px;margin-bottom:16px}
+/* The reused #recent-workouts-card renders as a full card elsewhere; inside
+   this panel strip its card chrome so it reads as a plain nested section. */
+#log-past-panel #recent-workouts-card{background:transparent;border:none;border-radius:0;margin:0;padding:0}
 /* Feeling check-in pills (Today-only class). Energy = ember when selected;
    soreness/severity = surface-2 when selected. */
 #feeling-checkin-card .fc-pill{background:var(--bg-base);border:1px solid var(--border-subtle);color:var(--text-muted)}
@@ -777,6 +786,16 @@ input[type=range]{width:100%;accent-color:var(--accent)}
     <div id="ai-card" class="card" style="display:none">
       <p class="clabel">ai recommendation</p>
       <div id="ai-content"></div>
+    </div>
+    <!-- Log past workout (Today) — deeper scrollable history (from workoutLog,
+         no new query) + reused templates render. Tapping either prefills the
+         existing Log Workout modal; it never logs immediately. -->
+    <div id="log-past-card" class="card" style="display:none">
+      <button id="log-past-btn" type="button" onclick="toggleLogPastPanel()">&#128260; Log past workout</button>
+      <div id="log-past-panel" style="display:none">
+        <div id="log-past-history"></div>
+        <div id="recent-workouts-card"></div>
+      </div>
     </div>
     <div id="progress-card" class="card" style="display:none">
       <p style="font-size:10px;text-transform:uppercase;letter-spacing:0.08em;color:var(--accent-cornerman);font-weight:600;margin-bottom:8px">THE CORNERMAN</p>
@@ -2801,6 +2820,9 @@ function loadWorkouts() {
       calculateStreak();
       renderStreakBadge();
       renderStreakCard();
+      // Keep the Today "Log past workout" card's visibility in sync once
+      // workoutLog is (re)loaded (templates sync via renderRecentAndTemplates).
+      if (typeof updateLogPastCard === 'function') updateLogPastCard();
     });
 }
 
@@ -10391,19 +10413,82 @@ function reLogWorkout(workoutId) {
     .catch(function(e) { console.error('[ReLog] error:', e); alert('Re-log failed: ' + e.message); });
 }
 
-// ── TODAY TAB: Recent Workouts + My Templates card ────────────────────────
-function renderRecentAndTemplates() {
-  var card = document.getElementById('recent-workouts-card');
+// ── TODAY TAB: Log past workout panel ─────────────────────────────────────
+// Deeper scrollable history (from workoutLog — existing data, no new query)
+// plus the reused templates render (renderRecentAndTemplates in templates-only
+// mode). Tapping a history row (reLogWorkout) or a template (useTemplate)
+// prefills the existing Log Workout modal; neither logs immediately.
+function updateLogPastCard() {
+  var card = document.getElementById('log-past-card');
   if (!card) return;
   var hasWorkouts = Array.isArray(workoutLog) && workoutLog.length > 0;
   var hasTemplates = Array.isArray(workoutTemplates) && workoutTemplates.length > 0;
-  if (!hasWorkouts && !hasTemplates) { card.style.display = 'none'; card.innerHTML = ''; return; }
+  card.style.display = (hasWorkouts || hasTemplates) ? 'block' : 'none';
+}
+
+function toggleLogPastPanel() {
+  var panel = document.getElementById('log-past-panel');
+  if (!panel) return;
+  if (panel.style.display !== 'none') { panel.style.display = 'none'; return; }
+  renderLogPastHistory();
+  if (typeof renderRecentAndTemplates === 'function') renderRecentAndTemplates(true);
+  panel.style.display = 'block';
+}
+
+function renderLogPastHistory() {
+  var el = document.getElementById('log-past-history');
+  if (!el) return;
+  var hasWorkouts = Array.isArray(workoutLog) && workoutLog.length > 0;
+  if (!hasWorkouts) {
+    el.innerHTML = '<p class="lp-section-label">past workout history</p>'
+      + '<p style="font-size:12px;color:var(--text-dim);font-style:italic;margin:0 0 16px">No past workouts logged yet.</p>';
+    return;
+  }
+  // Last ~20, newest first (same sort as the recent-workouts block, deeper cap).
+  var recent = workoutLog.slice().sort(function(a, b) {
+    if (a.date !== b.date) return a.date < b.date ? 1 : -1;
+    return (b.ts || 0) - (a.ts || 0);
+  }).slice(0, 20);
+  var h = '<p class="lp-section-label">past workout history</p>';
+  h += '<div id="log-past-history-list">';
+  for (var i = 0; i < recent.length; i++) {
+    var r = recent[i];
+    var rid = r.id || '';
+    var exCount = (typeof exerciseCountByWorkoutId === 'object' && r.id != null && exerciseCountByWorkoutId[r.id]) ? exerciseCountByWorkoutId[r.id] : null;
+    h += '<div style="display:flex;align-items:center;justify-content:space-between;background:var(--bg-base);border:1px solid var(--border-subtle);border-radius:12px;padding:10px 12px">';
+    h += '<div style="flex:1;min-width:0">';
+    h += '<div style="font-size:14px;color:var(--text-bright);font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">' + escHtml(r.type || 'Workout') + '</div>';
+    h += '<div class="mono" style="font-size:10px;color:var(--text-dim);margin-top:2px">' + escHtml(r.date || '') + (exCount != null ? ' &middot; ' + exCount + ' exercise' + (exCount === 1 ? '' : 's') : '') + '</div>';
+    h += '</div>';
+    if (rid) h += '<button type="button" onclick="reLogWorkout(\'' + rid + '\')" style="background:transparent;border:1px solid var(--border-subtle);color:var(--accent-ember);padding:6px 12px;border-radius:10px;cursor:pointer;font-size:12px;font-weight:600;margin-left:8px;white-space:nowrap">&#128260; Re-log</button>';
+    h += '</div>';
+  }
+  h += '</div>';
+  el.innerHTML = h;
+}
+
+// ── TODAY TAB: Recent Workouts + My Templates card ────────────────────────
+function renderRecentAndTemplates(templatesOnly) {
+  // Keep the Today "Log past workout" card's visibility in sync via this
+  // existing render fan-out (fires on every workout/template load/save/delete).
+  if (typeof updateLogPastCard === 'function') updateLogPastCard();
+  var card = document.getElementById('recent-workouts-card');
+  if (!card) return;
+  // When the Log-past panel is open it owns this card as a templates-ONLY
+  // section (its own deeper history list renders above it), so honor that even
+  // for the arg-less data-change callers — a save/delete re-render must not
+  // reintroduce the recent-workouts block above that list.
+  var lpPanel = document.getElementById('log-past-panel');
+  if (lpPanel && lpPanel.style.display !== 'none') templatesOnly = true;
+  var hasWorkouts = Array.isArray(workoutLog) && workoutLog.length > 0;
+  var hasTemplates = Array.isArray(workoutTemplates) && workoutTemplates.length > 0;
+  if (!templatesOnly && !hasWorkouts && !hasTemplates) { card.style.display = 'none'; card.innerHTML = ''; return; }
   card.style.display = 'block';
 
   var h = '';
 
   // Recent Workouts (last 3 distinct workouts, newest first).
-  if (hasWorkouts) {
+  if (hasWorkouts && !templatesOnly) {
     var recent = workoutLog.slice().sort(function(a, b) {
       if (a.date !== b.date) return a.date < b.date ? 1 : -1;
       return (b.ts || 0) - (a.ts || 0);
@@ -10426,7 +10511,7 @@ function renderRecentAndTemplates() {
   }
 
   // My Templates (Agent 3 hooks in here).
-  if (hasTemplates || hasWorkouts) {
+  if (templatesOnly || hasTemplates || hasWorkouts) {
     h += '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">';
     h += '<p class="clabel" style="margin-bottom:0">my templates</p>';
     h += '</div>';

@@ -8,6 +8,24 @@
 > `wearables/`, and `migrations/` rather than transcribed. Where the original brief differed
 > from the live code, the doc follows the code and flags it with **⚠ Correction**.
 >
+> **2026-07-17 session #20** (Log past workout panel — Today tab; frontend-only, report-first,
+> plan approved before edits):
+> - **New `#log-past-card`** after `#ai-card` on Today: a "🔁 Log past workout" button expands an
+>   inline panel with two sections — a **deeper scrollable past-workout history** (last ~20 from the
+>   existing `workoutLog`, **no new query**, `reLogWorkout()` on tap) and the **reused
+>   `renderRecentAndTemplates()`** templates render (`useTemplate()` on tap). Both prefill the
+>   existing Log Workout modal and **never log immediately**; `use_count` behavior unchanged.
+> - **Deviation from the reuse plan, on the user's request**: past history is a deeper list
+>   (~20, scrollable) rather than the reused function's last-3 cap — data-only re-render from
+>   `workoutLog`, still no new query. Templates stay the reused render.
+> - **`renderRecentAndTemplates(templatesOnly)`** gained one optional, backward-compatible param
+>   (all 8 existing call sites are arg-less → identical prior behavior). A panel-open guard forces
+>   templates-only while the panel is open so a background save/delete re-render can't duplicate the
+>   recent-workouts block above the new history list. Closes §7 item 4's "Today ▶ Use quick-row"
+>   conditional (and expands it). See `CLAUDE.md` → "Log Past Workout Panel".
+> - **Scope**: frontend-only, no API calls added/changed; CSS id-scoped, no global class changes.
+>   Deployed; **not yet verified live** at write time (pending deploy).
+>
 > **2026-07-17 session #19** (Wearable connection health — real token status, serialized
 > refresh, Reconnect/Disconnect UI; report-first, audit approved before any edit):
 > - **Root cause of the "connected but no data" audit**: both profile-1 tokens were dead
@@ -941,7 +959,7 @@ Each item below is self-contained — no other doc/session context should be nee
 3. **Zone/active-minutes persistence** — nightly-sync upsert, new column or extend an existing table. *Value: Medium — closes a named, already-flagged gap (§6): AZM is fetched live into `/daily` but never stored, so Coach Chat and analytics can't see history. Effort: Medium.* Both sync paths (Fitbit + Google Health) already compute AZM transiently — this is "persist what's already being fetched," not new data acquisition. No external deadline; ordered here because it's self-contained and ready to pick up.
 4. **Decision gate — resolve these three conditional verdicts before defaulting to item 5.** The next session should actively check whether each trigger has fired (real-use feedback on the readiness card / template placement / a genuine year-scale Coach Chat question) rather than skipping straight past them:
    - **Readiness hero compaction** (~354px → ~250px) — only if the current ~415px collapsed card still feels long in daily use. *Effort: Low-Medium — shrinking the ring/grid is a real visual change, needs its own sign-off (same as the split itself did).*
-   - **Today ▶ Use templates quick-row restoration** — only if losing the Today-tab shortcut (templates moved to Profile-only in the declutter pass) turns out to matter in practice. *Effort: Low — `renderRecentAndTemplates()` still exists and works, just needs a new mount point.*
+   - **~~Today ▶ Use templates quick-row restoration~~ — ✅ DONE (session #20, 2026-07-17), and expanded.** Shipped as the "Log past workout" panel (`#log-past-card` after `#ai-card`): a deeper scrollable past-workout history (last ~20 from `workoutLog`, no new query) alongside the reused `renderRecentAndTemplates()` templates render, both prefilling the Log Workout modal (never logging immediately). See `CLAUDE.md` → "Log Past Workout Panel".
    - **Coach Chat: monthly sleep aggregates / wider window** — only if a real year-scale question ("how's my sleep trended this year?") comes up and the 30-day window feels shallow. *Effort: Medium — needs a monthly-rollup aggregation query, not just a longer raw-row window, to stay inside the char budget.*
 5. **Free Exercise DB top-up** — unchanged from the previous cycle. *Value: Low-Medium, situational — one concrete gap already found (bare "Lat Pulldown" falls through to Haiku, works but not proactively). Effort: Low (free, keyless JSON source, e.g. `github.com/yuhonas/free-exercise-db`).* Default fallback if none of item 4's conditionals fire — only worth building if Haiku-fallback custom-row creation keeps firing on otherwise-common exercises.
 
