@@ -8,6 +8,28 @@
 > `wearables/`, and `migrations/` rather than transcribed. Where the original brief differed
 > from the live code, the doc follows the code and flags it with **⚠ Correction**.
 >
+> **2026-07-17 session #23** (Bugfix — GH sleep not persisting after reconnect; report-first,
+> plan approved before edits):
+> - **Diagnosis**: everything landed except sleep because `ghData.sleep` came back null on morning
+>   opens (GH reconciles last night's wearable sleep session later than daily HRV/RHR/steps), and the
+>   GH `/daily` branch (a) persisted HRV/RHR **only inside `if (ghData.sleep)`** — so a sleep-less
+>   fetch dropped vitals too — and (b) never fell back to Fitbit per-metric. **Not** scope/field/parse
+>   (GH sleep parses fine) and **not** timezone (`profiles.timezone` for profile 1 verified as
+>   `America/Chicago`, so the date-key fix was skipped per plan).
+> - **Fix (GH branch only)**: (1) per-metric Fitbit sleep fallback — when GH sleep is null, fetch
+>   Fitbit sleep for the same date via new `fetchFitbitSleepForDate()`, bounded by `withTimeout(6s)`
+>   inside a try/catch (timeout REJECTS → caught → `/daily` never hangs; verified at runtime) and
+>   fully non-fatal; (2) HRV/RHR decoupled from sleep via new `upsertDailyVitals()` in an `else if`,
+>   so vitals persist even with no sleep.
+> - **Clobber-safety**: `upsertDailyVitals` is **GET-then-PATCH-or-INSERT** (PATCH body only ever
+>   holds hrv/rhr), clobber-safe by construction — chosen over a partial merge-upsert because
+>   ADMIN_SECRET gating blocked running the server-side clobber test from the dev environment. Added
+>   `POST /api/debug/test-vitals-upsert/:userId` (admin-gated, throwaway date `1970-01-01`,
+>   self-cleaning) to confirm the invariant; **run it with the secret before fully trusting the real
+>   path** (the real path is safe regardless).
+> - **Not touched**: scheduler (§9, durable fix), `daily_sleep.source` mislabel (§9). **Not yet
+>   verified live** at write time (pending deploy + the admin-gated clobber test).
+>
 > **2026-07-17 session #22** (Bugfix — Log-past "See more" scroll jump): clicking "See more"
 > re-rendered the whole history list (`el.innerHTML = …`), rebuilding the `#log-past-history-list`
 > scroll container and resetting `scrollTop` to top. Fixed with an **append-only** render path: the
@@ -1135,6 +1157,8 @@ Macro roadmap shape (stored on `profiles.roadmap_data`):
 - [x] **`ON DELETE CASCADE` FK from `exercises.workout_id` → `workouts.id`.** ✅ **Migration run in production 2026-07-17** (`migrations/2026-07-17_exercises_workout_fk_cascade.sql`) — makes the orphaned-exercises bug class (fixed for `DELETE /api/workouts/:id` in session #11) structurally impossible even if a future endpoint deletes a workout some other way. The orphan report (`GET /api/debug/orphaned-exercises/:userId`) was run for every profile first, since the `ALTER TABLE` fails outright on any pre-existing orphan — profile 1 was cleaned in session #11, and its clean success confirms profiles 4/5/7/8 were orphan-free at run time too.
 - [x] **Extend the same orphan-prevention fix to `DELETE /api/profiles/:id`** — ✅ **done 2026-07-17** (deletes `exercises` for the profile, then `workouts`, then the profile row). Deliberately kept independent of the FK above — see §6.
 - [ ] **`PATCH /api/workouts/:id` doesn't refresh stale `exercises` rows on a notes edit** — see §6 for the full gap; needs a replace-vs-diff design decision, not a one-line patch.
+- [ ] **`daily_sleep.source` is hardcoded `"fitbit"` for ALL sleep writes (flagged session #23).** `upsertDailySleep` sets `source:"fitbit"` unconditionally, so Google-Health-sourced sleep is mislabeled as Fitbit in `daily_sleep`. Cosmetic (no consumer branches on `source` for sleep today), low priority — thread the real provider through when convenient. Note the session #23 Fitbit sleep fallback happens to make the label accidentally correct for *that* path only.
+- [ ] **Google Health sleep reconciliation lag has no scheduler backstop (flagged session #23).** GH ingests last night's wearable sleep session later than daily HRV/RHR/steps; session #23 added a per-metric Fitbit sleep fallback + HRV/RHR decoupling so sleep-less morning opens still persist vitals and often backfill sleep from Fitbit, but the durable fix is a periodic re-pull (the tracked-separately scheduler) that re-fetches sleep once GH has it, instead of depending on the user reopening the app.
 - [ ] **`workout_templates.exercises` jsonb is unused — latent trap (flagged session #21, do not fix now).** The schema and both write endpoints (`POST /api/profiles/:id/templates`, `PATCH /api/templates/:id`) carry an `exercises` jsonb array, but **nothing reads it**: `useTemplate()` (and the whole Use-template flow) drives the log modal purely off `notes_template` + `type`. It's currently always written `null`. The session #21 "Log past workout" template create/append flows deliberately write `notes_template` only for this reason. The trap: a future contributor may assume `exercises` is authoritative and write structured data there, silently diverging from what the app actually uses. Resolve later by either (a) wiring `useTemplate` to consume `exercises` when present (structured templates), or (b) dropping the column — don't half-populate it in the meantime.
 - [ ] **`runFitbitBackfill()`'s weight fetch uses a `90d` period** (`/body/log/weight/date/today/90d.json`) — not a Fitbit-documented-valid period value for that endpoint (valid periods are `1d/7d/30d/1w/1m/3m/6m/1y`; an arbitrary span requires the by-date-range endpoint instead). Found during the full-history-backfill audit (session #17, 2026-07-17) while verifying every range endpoint's real max span against Fitbit's docs. Flagged only, not fixed — `runFitbitBackfill()` is the legacy 90-day onboarding backfill, already slated for removal post-Fitbit-shutdown (see the item above).
 

@@ -1278,6 +1278,20 @@ Non-obvious gotchas that cost real debugging time on the Google Health API v4 in
 - **Distance is in millimetres throughout the API** (`distanceMillimeters`).
 - **Use the local date, not UTC.** The daily handler derives "today" with `getFullYear`/`getMonth`/`getDate` (inline IIFE), NOT the module's UTC-based `dateStr()`, which can roll to the wrong day in negative-offset timezones in the evening.
 
+## Google Health Sleep Persistence — Decoupling + Fitbit Fallback (2026-07-17, session #23)
+
+Fixes "everything lands except sleep" after the GH reconnect. Root cause was **not** scope/field/parse (GH sleep parses fine) and **not** timezone (profile 1's `profiles.timezone` is `America/Chicago`, verified — the strict `civil_end_time` window uses the right local date). It was `ghData.sleep` coming back null on morning opens (GH reconciles last night's wearable sleep session later than daily HRV/RHR/steps), combined with two code facts in the GH `/daily` branch:
+
+- **HRV/RHR were persisted ONLY inside `if (ghData.sleep)`** (via `upsertDailySleep`, which writes sleep+hrv+rhr as one row) — so a sleep-less fetch dropped HRV/RHR from `daily_sleep` too, while steps (independent) still landed.
+- **The `hasData` gate served GH wholesale and never fell back to Fitbit per-metric** — a GH-has-everything-but-sleep morning never tried Fitbit, which is often ahead on last night's sleep.
+
+**Fix (GH branch only):**
+1. **Per-metric Fitbit sleep fallback** — when `!ghData.sleep`, fetch `getValidProfileToken()` + `fetchFitbitSleepForDate(token, ghDate)` (a lean one-date Fitbit sleep read returning the GH sleep shape) and, if it yields sleep, assign it to `ghData.sleep` so the existing score/upsert/response all use it with no further changes. **Bounded + non-fatal:** wrapped in `withTimeout(…, 6000)` inside a `try/catch`; `withTimeout` *rejects* on timeout, so a slow Fitbit lands in the catch like any error — `/daily` never hangs. `fetchFitbitSleepForDate` never throws (internal failures → null), so the raced inner promise can't leave an orphan rejection. Only fires when GH sleep is null, so it adds no latency to the common path.
+2. **Decouple HRV/RHR from sleep** — the sleep-upsert `if` now has an `else if (ghData.hrv != null || ghData.rhr != null)` that calls **`upsertDailyVitals`**, persisting vitals even with no sleep. `upsertDailyVitals` is **GET-then-PATCH-or-INSERT**, not a partial merge-upsert — its PATCH body only ever holds `hrv`/`rhr`, so it is **clobber-safe by construction** (can never null an existing sleep row's columns), without depending on PostgREST partial-merge semantics. Verified by `POST /api/debug/test-vitals-upsert/:userId` (admin-gated; seeds a full sleep row on a throwaway date `1970-01-01`, runs `upsertDailyVitals`, asserts sleep columns survive + vitals updated, then deletes the row).
+3. **Timezone date-key fix skipped** — profile 1's timezone is correctly set; the lenient/widened-window change was only warranted if it were null/UTC.
+
+Not touched: the scheduler (the durable fix — periodic re-pull after GH reconciles — tracked separately in ROADMAP §9), and `upsertDailySleep`'s hardcoded `source:"fitbit"` mislabel (even GH sleep is stored as `source:"fitbit"`; flagged in ROADMAP §9, not fixed here).
+
 ## Auto-Import on Workout Save
 
 When a user saves a workout (`POST /api/workouts`), the server immediately checks whether Fitbit recorded a same-day activity that looks like the same session and, if so, returns the single best candidate so the client can **prompt** the user to link it. It never silently auto-attaches — the user always confirms. This is distinct from the daily-sync "Fitbit Workout Auto-Import" (pending-imports queue) and the explicit `sync-backlog` review UI; it's the save-time, one-candidate, prompt-on-the-spot path, and it routes through the same provider-agnostic merge/reject endpoints.

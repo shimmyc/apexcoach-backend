@@ -1263,6 +1263,29 @@ app.get("/api/profiles/:id/daily", async function(req, res) {
               body_fat_pct: ghData.weight.body_fat_pct, source: "google_health",
             }).catch(function(e){ console.error("[google_health] weight upsert:", e.message); });
           }
+          // Per-metric sleep fallback: GH returned other metrics but no sleep
+          // yet (reconciliation lag — GH ingests last night's wearable sleep
+          // session later than daily HRV/RHR/steps). Try Fitbit for the same
+          // date before giving up; profile 1's Fitbit is still connected and is
+          // often ahead of GH on last night's sleep. Bounded (6s) + fully
+          // non-fatal: withTimeout REJECTS on timeout, so a slow Fitbit lands in
+          // this catch exactly like an error — ghData.sleep stays null and
+          // /daily proceeds without hanging (never blocks the response).
+          if (!ghData.sleep) {
+            try {
+              const fbToken = await getValidProfileToken(req.params.id);
+              const fbSleep = await withTimeout(
+                fetchFitbitSleepForDate(fbToken, ghDate), 6000, "fitbit sleep fallback"
+              );
+              if (fbSleep && fbSleep.hours != null) {
+                ghData.sleep = fbSleep;
+                console.log("[google_health] sleep fell back to Fitbit for " + ghDate);
+              }
+            } catch (e) {
+              console.warn("[google_health] Fitbit sleep fallback failed (non-fatal): " + e.message);
+            }
+          }
+
           // estimateSleepScore returns null when stage minutes are absent (CLASSIC sleep).
           const ghSleepScore = ghData.sleep ? estimateSleepScore(
             ghData.sleep.deep_minutes, ghData.sleep.rem_minutes,
@@ -1280,6 +1303,15 @@ app.get("/api/profiles/:id/daily", async function(req, res) {
               hrv: ghData.hrv,
               rhr: ghData.rhr,
             }).catch(function(e){ console.error("[google_health] sleep upsert:", e.message); });
+          } else if (ghData.hrv != null || ghData.rhr != null) {
+            // Decouple HRV/RHR from sleep — persist vitals even when sleep is
+            // still unavailable (GH lag AND no Fitbit fallback), WITHOUT
+            // clobbering any existing sleep row (upsertDailyVitals only writes
+            // hrv/rhr). Previously these were written ONLY inside the sleep
+            // upsert, so a sleep-less morning dropped HRV/RHR too.
+            upsertDailyVitals(req.params.id, {
+              date: ghDate, hrv: ghData.hrv, rhr: ghData.rhr,
+            }).catch(function(e){ console.error("[google_health] vitals upsert:", e.message); });
           }
 
           // Build the response in the shape the client expects (mirrors buildDailyData).
@@ -1459,6 +1491,84 @@ async function upsertDailySleep(profileId, summary) {
     throw new Error("daily_sleep upsert " + r.status + ": " + t);
   }
   console.log("[Sleep] upserted profile=" + profileId + " date=" + summary.date + " score=" + summary.score + " hours=" + summary.hours);
+}
+
+// Persist HRV/RHR into daily_sleep WITHOUT touching sleep columns, so a decoupled
+// vitals write (GH returned HRV/RHR but no sleep) can never clobber an existing
+// sleep row for the day. GET-then-PATCH (or INSERT if absent) rather than a
+// partial merge-upsert, so clobber-safety doesn't depend on PostgREST's
+// partial-merge column semantics — the PATCH body only ever holds hrv/rhr.
+async function upsertDailyVitals(profileId, summary) {
+  var patch = {};
+  if (summary.hrv != null) patch.hrv = summary.hrv;
+  if (summary.rhr != null) patch.rhr = summary.rhr;
+  if (!Object.keys(patch).length) return; // nothing to persist
+  var scope = "profile_id=eq." + profileId + "&date=eq." + encodeURIComponent(summary.date);
+  var gr = await fetch(SUPABASE_URL + "/rest/v1/daily_sleep?" + scope + "&select=id&limit=1", { headers: sbHeaders() });
+  var rows = await gr.json();
+  var exists = Array.isArray(rows) && rows.length > 0;
+  if (exists) {
+    var pr = await fetch(SUPABASE_URL + "/rest/v1/daily_sleep?" + scope, {
+      method: "PATCH",
+      headers: sbHeaders("return=minimal"),
+      body: JSON.stringify(patch),
+    });
+    if (!pr.ok) { var t = await pr.text(); throw new Error("daily_sleep vitals PATCH " + pr.status + ": " + t); }
+  } else {
+    var insert = Object.assign({ profile_id: profileId, date: summary.date }, patch);
+    var ir = await fetch(SUPABASE_URL + "/rest/v1/daily_sleep", {
+      method: "POST",
+      headers: sbHeaders("return=minimal"),
+      body: JSON.stringify(insert),
+    });
+    if (ir.status === 409) {
+      // Lost a race to a concurrent insert of the same (profile_id,date) — the
+      // row now exists, so PATCH only our vitals onto it (still no sleep touch).
+      var pr2 = await fetch(SUPABASE_URL + "/rest/v1/daily_sleep?" + scope, {
+        method: "PATCH", headers: sbHeaders("return=minimal"), body: JSON.stringify(patch),
+      });
+      if (!pr2.ok) { var t2 = await pr2.text(); throw new Error("daily_sleep vitals PATCH(after 409) " + pr2.status + ": " + t2); }
+    } else if (!ir.ok) {
+      var t3 = await ir.text(); throw new Error("daily_sleep vitals INSERT " + ir.status + ": " + t3);
+    }
+  }
+  console.log("[Vitals] upserted profile=" + profileId + " date=" + summary.date + " hrv=" + summary.hrv + " rhr=" + summary.rhr + " (existing=" + exists + ")");
+}
+
+// Lean one-date Fitbit sleep fetch — the per-metric fallback used by the GH
+// /daily branch when Google Health returns other metrics but no sleep yet.
+// Returns the same shape the GH adapter produces ({hours, deep/rem/light/
+// wake_minutes}) or null. NEVER throws: internal failures resolve to null, so an
+// outer withTimeout() race can't leave a rejected orphan promise behind. Fitbit
+// files a sleep log under its wake/end date (matching GH's "sleep that ended
+// today"); we also try date-1 as a safety net.
+async function fetchFitbitSleepForDate(token, date) {
+  function pickMain(resp) {
+    var arr = (resp && resp.sleep) || [];
+    if (!arr.length) return null;
+    return arr.find(function(s){ return s.isMainSleep; }) || arr[0] || null;
+  }
+  function shape(rec) {
+    if (!rec) return null;
+    var lv = rec.levels && rec.levels.summary ? rec.levels.summary : null;
+    var asleepMin = typeof rec.minutesAsleep === "number" ? rec.minutesAsleep : null;
+    if (asleepMin == null) return null;
+    return {
+      hours: +(asleepMin / 60).toFixed(2),
+      deep_minutes:  lv && lv.deep  ? lv.deep.minutes  : null,
+      rem_minutes:   lv && lv.rem   ? lv.rem.minutes   : null,
+      light_minutes: lv && lv.light ? lv.light.minutes : null,
+      wake_minutes:  lv && lv.wake  ? lv.wake.minutes  : null,
+    };
+  }
+  var rec = null;
+  try { rec = pickMain(await fitGet("/1.2/user/-/sleep/date/" + date + ".json", token)); } catch (e) { rec = null; }
+  if (!rec) {
+    var prev = null;
+    try { var d = new Date(date + "T12:00:00Z"); d.setUTCDate(d.getUTCDate() - 1); prev = d.toISOString().slice(0, 10); } catch (e) { prev = null; }
+    if (prev) { try { rec = pickMain(await fitGet("/1.2/user/-/sleep/date/" + prev + ".json", token)); } catch (e) { rec = null; } }
+  }
+  return shape(rec);
 }
 
 // When new step data lands, any active micro_goal that looks like a step/walk
@@ -8050,6 +8160,56 @@ app.post("/api/wearables/import/:userId", async function(req, res) {
 // ?max_intraday=N caps provider calls per run (PATCHes persist as they go, so
 // re-running continues). Returns { checked, updated, skipped, errors,
 // updated_peak_hr, peak_hr_skipped, peak_hr_errors }. Idempotent.
+// POST /api/debug/test-vitals-upsert/:userId?secret=ADMIN_SECRET
+// Verifies the clobber-safety invariant behind the GH sleep-decoupling fix:
+// writing HRV/RHR via upsertDailyVitals must NOT null out an existing sleep row.
+// Uses a throwaway date (1970-01-01, isolated from all real data) and cleans up
+// after itself, so it can be run safely before the real vitals path ever fires.
+// Returns { clobbered, before, after } — clobbered:true means switch to a
+// different write strategy before trusting the real path.
+app.post("/api/debug/test-vitals-upsert/:userId", async function(req, res) {
+  if (process.env.ADMIN_SECRET) {
+    var got = req.query.secret || req.headers["x-admin-secret"];
+    if (got !== process.env.ADMIN_SECRET) return res.status(403).json({ success: false, error: "forbidden" });
+  }
+  var pid = parseInt(req.params.userId, 10);
+  var testDate = "1970-01-01";
+  var scope = "profile_id=eq." + pid + "&date=eq." + testDate;
+  try {
+    // 1. Seed a full sleep row (known sleep + vitals).
+    await upsertDailySleep(pid, {
+      date: testDate, hours: 7.5, score: 88,
+      deep_minutes: 100, rem_minutes: 90, light_minutes: 200, wake_minutes: 20,
+      hrv: 55, rhr: 60,
+    });
+    var b = await (await fetch(SUPABASE_URL + "/rest/v1/daily_sleep?" + scope + "&select=hours,score,deep_minutes,rem_minutes,light_minutes,wake_minutes,hrv,rhr", { headers: sbHeaders() })).json();
+    var before = Array.isArray(b) ? b[0] : null;
+
+    // 2. Vitals-only write with DIFFERENT hrv/rhr — must update vitals, keep sleep.
+    await upsertDailyVitals(pid, { date: testDate, hrv: 99, rhr: 42 });
+    var a = await (await fetch(SUPABASE_URL + "/rest/v1/daily_sleep?" + scope + "&select=hours,score,deep_minutes,rem_minutes,light_minutes,wake_minutes,hrv,rhr", { headers: sbHeaders() })).json();
+    var after = Array.isArray(a) ? a[0] : null;
+
+    // 3. Clean up the throwaway row.
+    await fetch(SUPABASE_URL + "/rest/v1/daily_sleep?" + scope, { method: "DELETE", headers: sbHeaders("return=minimal") });
+
+    var sleepSurvived = !!after && after.hours === 7.5 && after.deep_minutes === 100 &&
+      after.rem_minutes === 90 && after.light_minutes === 200 && after.wake_minutes === 20 && after.score === 88;
+    var vitalsUpdated = !!after && after.hrv === 99 && after.rhr === 42;
+    res.json({
+      success: true,
+      clobbered: !sleepSurvived,
+      sleep_survived: sleepSurvived,
+      vitals_updated: vitalsUpdated,
+      before: before, after: after,
+    });
+  } catch (e) {
+    // Best-effort cleanup even on failure.
+    try { await fetch(SUPABASE_URL + "/rest/v1/daily_sleep?" + scope, { method: "DELETE", headers: sbHeaders("return=minimal") }); } catch (e2) {}
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
 app.post("/api/debug/backfill-wearable-hr/:userId", async function(req, res) {
   var provider = req.query.provider || "fitbit";
   try {
