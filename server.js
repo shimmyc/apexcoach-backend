@@ -8119,8 +8119,23 @@ app.post("/api/debug/backfill-wearable-hr/:userId", async function(req, res) {
 //
 // Max spans below are each individually verified against Fitbit's own docs
 // (not assumed): sleep 100d, HRV 30d, RHR (activities/heart) 365d,
-// steps 1095d, weight 31d, body fat 30d. Chunked one day short of each limit
-// as a safety margin against off-by-one ambiguity in "max span."
+// steps 1095d, weight 31d, body fat 30d. Chunked one day short of each
+// documented limit as a safety margin against off-by-one ambiguity in "max
+// span" — EXCEPT rhr, see below.
+//
+// RHR QUIRK (confirmed live, 2026-07-17): the documented 365d max for
+// activities/heart is real (the range call doesn't error), but Fitbit
+// silently omits value.restingHeartRate from every entry once the queried
+// span gets long — a full 2-year backfill chunked at the (then-)364d max
+// wrote 0 of 677 RHR values, while the exact same merge code, re-run over a
+// 32-day verification window, wrote 25/25. heartRateZones still comes back
+// fine at any span; it's specifically restingHeartRate that's span-limited,
+// and it isn't documented anywhere. Chunked to 29d — same as HRV, which
+// shares a documented 30d limit and was the working hypothesis for why RHR
+// would behave the same — with a permanent per-chunk diagnostic log line
+// (entries returned vs. entries actually carrying restingHeartRate) so any
+// future drift in Fitbit's real limit shows up immediately instead of
+// silently writing zero rows again.
 //
 // Admin-gated exactly like backfill-wearable-hr above. max_calls defaults to
 // 100, NOT Infinity like backfill-wearable-hr — deliberate deviation, an
@@ -8153,7 +8168,7 @@ app.post("/api/debug/backfill-wearable-hr/:userId", async function(req, res) {
 //     upsertBodyMetrics() recomputes bmi from whatever weight_lbs is IN the
 //     payload, and a body-fat-only call with no weight in the payload would
 //     otherwise send bmi:null and clobber an existing BMI (see CLAUDE.md).
-var FITBIT_HISTORY_MAX_SPAN = { sleep: 99, hrv: 29, rhr: 364, steps: 1094, weight: 30, bodyfat: 29 };
+var FITBIT_HISTORY_MAX_SPAN = { sleep: 99, hrv: 29, rhr: 29, steps: 1094, weight: 30, bodyfat: 29 };
 
 function chunkDateRange(startDate, endDate, maxSpanDays) {
   var chunks = [];
@@ -8188,6 +8203,18 @@ app.post("/api/debug/backfill-wearable-history/:userId", async function(req, res
     var apiCalls = 0;
     var budgetHit = false;
     var sleep = function(ms) { return new Promise(function(r) { setTimeout(r, ms); }); };
+
+    // Optional ?metrics=rhr or ?metrics=rhr,hrv — scopes which Fitbit fetch
+    // loops run, for a cheap re-run of just the metric(s) that need it (e.g.
+    // after the RHR chunking fix below). Defaults to all six, unchanged from
+    // a plain call. Only gates the FETCH loops; the merge/write logic below
+    // already no-ops correctly on an empty *ByDate object, so nothing else
+    // needs to change for a scoped run to be safe.
+    var metricsParam = req.query.metrics;
+    var wantMetrics = metricsParam
+      ? metricsParam.split(",").map(function(s) { return s.trim(); }).filter(Boolean)
+      : ["sleep", "hrv", "rhr", "steps", "weight", "bodyfat"];
+    function wantMetric(m) { return wantMetrics.indexOf(m) !== -1; }
 
     var token = await getValidProfileToken(pid);
 
@@ -8230,54 +8257,63 @@ app.post("/api/debug/backfill-wearable-history/:userId", async function(req, res
 
     // ── Fetch: sleep detail ──────────────────────────────────────────────
     var sleepByDate = {};
-    var sleepChunks = chunkDateRange(startDate, endDate, FITBIT_HISTORY_MAX_SPAN.sleep);
     var sleepResumeFrom = null;
-    for (var si = 0; si < sleepChunks.length; si++) {
-      var sc = sleepChunks[si];
-      var sData = await budgetedFitGet("/1.2/user/-/sleep/date/" + sc.start + "/" + sc.end + ".json");
-      if (sData === null && budgetHit) { sleepResumeFrom = sc.start; break; }
-      if (!sData || !Array.isArray(sData.sleep)) continue;
-      sData.sleep.forEach(function(entry) {
-        if (!entry.isMainSleep || !entry.dateOfSleep) return;
-        var summary = entry.levels && entry.levels.summary;
-        sleepByDate[entry.dateOfSleep] = {
-          hours: typeof entry.minutesAsleep === "number" ? +(entry.minutesAsleep / 60).toFixed(2) : null,
-          deep_minutes: summary && summary.deep ? summary.deep.minutes : null,
-          rem_minutes: summary && summary.rem ? summary.rem.minutes : null,
-          light_minutes: summary && summary.light ? summary.light.minutes : null,
-          wake_minutes: summary && summary.wake ? summary.wake.minutes : null,
-        };
-      });
+    if (wantMetric("sleep")) {
+      var sleepChunks = chunkDateRange(startDate, endDate, FITBIT_HISTORY_MAX_SPAN.sleep);
+      for (var si = 0; si < sleepChunks.length; si++) {
+        var sc = sleepChunks[si];
+        var sData = await budgetedFitGet("/1.2/user/-/sleep/date/" + sc.start + "/" + sc.end + ".json");
+        if (sData === null && budgetHit) { sleepResumeFrom = sc.start; break; }
+        if (!sData || !Array.isArray(sData.sleep)) continue;
+        sData.sleep.forEach(function(entry) {
+          if (!entry.isMainSleep || !entry.dateOfSleep) return;
+          var summary = entry.levels && entry.levels.summary;
+          sleepByDate[entry.dateOfSleep] = {
+            hours: typeof entry.minutesAsleep === "number" ? +(entry.minutesAsleep / 60).toFixed(2) : null,
+            deep_minutes: summary && summary.deep ? summary.deep.minutes : null,
+            rem_minutes: summary && summary.rem ? summary.rem.minutes : null,
+            light_minutes: summary && summary.light ? summary.light.minutes : null,
+            wake_minutes: summary && summary.wake ? summary.wake.minutes : null,
+          };
+        });
+      }
     }
 
     // ── Fetch: HRV ───────────────────────────────────────────────────────
     var hrvByDate = {};
-    var hrvChunks = chunkDateRange(startDate, endDate, FITBIT_HISTORY_MAX_SPAN.hrv);
     var hrvResumeFrom = null;
-    for (var hi = 0; hi < hrvChunks.length; hi++) {
-      var hc = hrvChunks[hi];
-      var hData = await budgetedFitGet("/1/user/-/hrv/date/" + hc.start + "/" + hc.end + ".json");
-      if (hData === null && budgetHit) { hrvResumeFrom = hc.start; break; }
-      if (!hData || !Array.isArray(hData.hrv)) continue;
-      hData.hrv.forEach(function(entry) {
-        if (!entry.dateTime || !entry.value) return;
-        hrvByDate[entry.dateTime] = entry.value.dailyRmssd != null ? entry.value.dailyRmssd : null;
-      });
+    if (wantMetric("hrv")) {
+      var hrvChunks = chunkDateRange(startDate, endDate, FITBIT_HISTORY_MAX_SPAN.hrv);
+      for (var hi = 0; hi < hrvChunks.length; hi++) {
+        var hc = hrvChunks[hi];
+        var hData = await budgetedFitGet("/1/user/-/hrv/date/" + hc.start + "/" + hc.end + ".json");
+        if (hData === null && budgetHit) { hrvResumeFrom = hc.start; break; }
+        if (!hData || !Array.isArray(hData.hrv)) continue;
+        hData.hrv.forEach(function(entry) {
+          if (!entry.dateTime || !entry.value) return;
+          hrvByDate[entry.dateTime] = entry.value.dailyRmssd != null ? entry.value.dailyRmssd : null;
+        });
+      }
     }
 
     // ── Fetch: RHR ───────────────────────────────────────────────────────
     var rhrByDate = {};
-    var rhrChunks = chunkDateRange(startDate, endDate, FITBIT_HISTORY_MAX_SPAN.rhr);
     var rhrResumeFrom = null;
-    for (var ri = 0; ri < rhrChunks.length; ri++) {
-      var rc = rhrChunks[ri];
-      var rData = await budgetedFitGet("/1/user/-/activities/heart/date/" + rc.start + "/" + rc.end + ".json");
-      if (rData === null && budgetHit) { rhrResumeFrom = rc.start; break; }
-      var rArr = (rData && rData["activities-heart"]) || [];
-      rArr.forEach(function(entry) {
-        if (!entry.dateTime || !entry.value) return;
-        rhrByDate[entry.dateTime] = entry.value.restingHeartRate != null ? entry.value.restingHeartRate : null;
-      });
+    if (wantMetric("rhr")) {
+      var rhrChunks = chunkDateRange(startDate, endDate, FITBIT_HISTORY_MAX_SPAN.rhr);
+      for (var ri = 0; ri < rhrChunks.length; ri++) {
+        var rc = rhrChunks[ri];
+        var rData = await budgetedFitGet("/1/user/-/activities/heart/date/" + rc.start + "/" + rc.end + ".json");
+        if (rData === null && budgetHit) { rhrResumeFrom = rc.start; break; }
+        var rArr = (rData && rData["activities-heart"]) || [];
+        // Permanent diagnostic — see the RHR QUIRK comment above the endpoint.
+        var rWithRhr = rArr.filter(function(e) { return e.value && e.value.restingHeartRate != null; }).length;
+        console.log("[HistoryBackfill] RHR chunk " + rc.start + ".." + rc.end + ": " + rArr.length + " days returned, " + rWithRhr + " carrying restingHeartRate");
+        rArr.forEach(function(entry) {
+          if (!entry.dateTime || !entry.value) return;
+          rhrByDate[entry.dateTime] = entry.value.restingHeartRate != null ? entry.value.restingHeartRate : null;
+        });
+      }
     }
 
     // ── Merge sleep + HRV + RHR into ONE upsert per date ────────────────
@@ -8340,18 +8376,20 @@ app.post("/api/debug/backfill-wearable-history/:userId", async function(req, res
 
     // ── Steps ────────────────────────────────────────────────────────────
     var stepsByDate = {};
-    var stepsChunks = chunkDateRange(startDate, endDate, FITBIT_HISTORY_MAX_SPAN.steps);
     var stepsResumeFrom = null;
-    for (var pi = 0; pi < stepsChunks.length; pi++) {
-      var pc = stepsChunks[pi];
-      var pData = await budgetedFitGet("/1/user/-/activities/steps/date/" + pc.start + "/" + pc.end + ".json");
-      if (pData === null && budgetHit) { stepsResumeFrom = pc.start; break; }
-      var pArr = (pData && pData["activities-steps"]) || [];
-      pArr.forEach(function(entry) {
-        var n = parseInt(entry.value, 10);
-        if (!entry.dateTime || isNaN(n)) return;
-        stepsByDate[entry.dateTime] = n;
-      });
+    if (wantMetric("steps")) {
+      var stepsChunks = chunkDateRange(startDate, endDate, FITBIT_HISTORY_MAX_SPAN.steps);
+      for (var pi = 0; pi < stepsChunks.length; pi++) {
+        var pc = stepsChunks[pi];
+        var pData = await budgetedFitGet("/1/user/-/activities/steps/date/" + pc.start + "/" + pc.end + ".json");
+        if (pData === null && budgetHit) { stepsResumeFrom = pc.start; break; }
+        var pArr = (pData && pData["activities-steps"]) || [];
+        pArr.forEach(function(entry) {
+          var n = parseInt(entry.value, 10);
+          if (!entry.dateTime || isNaN(n)) return;
+          stepsByDate[entry.dateTime] = n;
+        });
+      }
     }
     var stepsWritten = 0, stepsSkipped = 0, stepsEmpty = 0;
     var stepDates = Object.keys(stepsByDate).sort();
@@ -8381,37 +8419,41 @@ app.post("/api/debug/backfill-wearable-history/:userId", async function(req, res
 
     // ── Weight + body fat → body_metrics ────────────────────────────────
     var weightByDate = {};
-    var weightChunks = chunkDateRange(startDate, endDate, FITBIT_HISTORY_MAX_SPAN.weight);
     var weightResumeFrom = null;
-    for (var wi = 0; wi < weightChunks.length; wi++) {
-      var wc = weightChunks[wi];
-      var wData = await budgetedFitGet("/1/user/-/body/log/weight/date/" + wc.start + "/" + wc.end + ".json");
-      if (wData === null && budgetHit) { weightResumeFrom = wc.start; break; }
-      var wArr = (wData && wData.weight) || [];
-      wArr.forEach(function(entry) {
-        if (!entry.date) return;
-        var raw = typeof entry.weight === "number" ? entry.weight : parseFloat(entry.weight);
-        if (isNaN(raw)) return;
-        // Fitbit returns kg for metric-locale accounts, lbs for US accounts;
-        // anything under 60 can only be kg for an adult bodyweight reading.
-        weightByDate[entry.date] = raw < 60 ? +(raw * 2.20462).toFixed(1) : +raw.toFixed(1);
-      });
+    if (wantMetric("weight")) {
+      var weightChunks = chunkDateRange(startDate, endDate, FITBIT_HISTORY_MAX_SPAN.weight);
+      for (var wi = 0; wi < weightChunks.length; wi++) {
+        var wc = weightChunks[wi];
+        var wData = await budgetedFitGet("/1/user/-/body/log/weight/date/" + wc.start + "/" + wc.end + ".json");
+        if (wData === null && budgetHit) { weightResumeFrom = wc.start; break; }
+        var wArr = (wData && wData.weight) || [];
+        wArr.forEach(function(entry) {
+          if (!entry.date) return;
+          var raw = typeof entry.weight === "number" ? entry.weight : parseFloat(entry.weight);
+          if (isNaN(raw)) return;
+          // Fitbit returns kg for metric-locale accounts, lbs for US accounts;
+          // anything under 60 can only be kg for an adult bodyweight reading.
+          weightByDate[entry.date] = raw < 60 ? +(raw * 2.20462).toFixed(1) : +raw.toFixed(1);
+        });
+      }
     }
 
     var bodyfatByDate = {};
-    var bodyfatChunks = chunkDateRange(startDate, endDate, FITBIT_HISTORY_MAX_SPAN.bodyfat);
     var bodyfatResumeFrom = null;
-    for (var fi = 0; fi < bodyfatChunks.length; fi++) {
-      var fc = bodyfatChunks[fi];
-      var fData = await budgetedFitGet("/1/user/-/body/log/fat/date/" + fc.start + "/" + fc.end + ".json");
-      if (fData === null && budgetHit) { bodyfatResumeFrom = fc.start; break; }
-      var fArr = (fData && fData.fat) || [];
-      fArr.forEach(function(entry) {
-        if (!entry.date) return;
-        var pct = typeof entry.fat === "number" ? entry.fat : parseFloat(entry.fat);
-        if (isNaN(pct)) return;
-        bodyfatByDate[entry.date] = +pct.toFixed(2);
-      });
+    if (wantMetric("bodyfat")) {
+      var bodyfatChunks = chunkDateRange(startDate, endDate, FITBIT_HISTORY_MAX_SPAN.bodyfat);
+      for (var fi = 0; fi < bodyfatChunks.length; fi++) {
+        var fc = bodyfatChunks[fi];
+        var fData = await budgetedFitGet("/1/user/-/body/log/fat/date/" + fc.start + "/" + fc.end + ".json");
+        if (fData === null && budgetHit) { bodyfatResumeFrom = fc.start; break; }
+        var fArr = (fData && fData.fat) || [];
+        fArr.forEach(function(entry) {
+          if (!entry.date) return;
+          var pct = typeof entry.fat === "number" ? entry.fat : parseFloat(entry.fat);
+          if (isNaN(pct)) return;
+          bodyfatByDate[entry.date] = +pct.toFixed(2);
+        });
+      }
     }
 
     var weightWritten = 0, weightSkipped = 0, weightEmpty = 0;
