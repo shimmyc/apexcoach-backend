@@ -8109,6 +8109,376 @@ app.post("/api/debug/backfill-wearable-hr/:userId", async function(req, res) {
   }
 });
 
+// ── FITBIT FULL-HISTORY BACKFILL (2026-07-17) ─────────────────────────────
+// Pulls historical sleep/HRV/RHR/steps/weight/body-fat via Fitbit's RANGE
+// endpoints (never per-day calls) and upserts into daily_sleep/daily_steps/
+// body_metrics. Two purposes, same mechanism: (1) pull ~2 years of pre-app
+// Fitbit history before the Sept 2026 API shutdown makes it unreachable,
+// (2) fill the confirmed mid-June->mid-July 2026 daily_sleep gap (dead
+// tokens during an outage). Just pick start_date/end_date accordingly.
+//
+// Max spans below are each individually verified against Fitbit's own docs
+// (not assumed): sleep 100d, HRV 30d, RHR (activities/heart) 365d,
+// steps 1095d, weight 31d, body fat 30d. Chunked one day short of each limit
+// as a safety margin against off-by-one ambiguity in "max span."
+//
+// Admin-gated exactly like backfill-wearable-hr above. max_calls defaults to
+// 100, NOT Infinity like backfill-wearable-hr — deliberate deviation, an
+// accidental-unbounded-call guard against a slow/large date range eating the
+// whole 150/hr Fitbit budget in one call (a full 2-year pull is ~85 calls
+// total across all six metrics, so 100 covers most single windows anyway).
+// All Fitbit calls (across every metric) share ONE budget + ONE ~1req/sec
+// throttle. One failed chunk logs and continues — never aborts the run.
+//
+// NEVER OVERWRITES BETTER DATA. daily_sleep in particular is fed by three
+// independent Fitbit endpoints (sleep detail, HRV, RHR) but is one row per
+// date — upsertDailySleep() always writes all 8 fields, so it can't safely
+// be called more than once per date. This merges all three sources plus
+// whatever already exists in the row into a single payload before the one
+// upsert call per date. Per-field rules:
+//   - sleep detail (hours/score/deep/rem/light/wake): existing row wins
+//     outright if it already has deep_minutes (real stage data beats
+//     anything a range re-pull could offer); otherwise write the new fetch
+//     and recompute score via estimateSleepScore. Hours-only fallback rows
+//     (older Fitbit devices without stage data) are stored as-is.
+//   - HRV / RHR: independent gap-fill — each only writes when the existing
+//     row has that field null, regardless of what happened to the other.
+//   - steps: existing wins if a steps count is already present (preserves
+//     calories/distance/floors already on that row, which the range steps
+//     endpoint doesn't carry); otherwise write steps and carry over whatever
+//     calories/distance/floors the existing row (if any) already had.
+//   - weight / body fat: independent gap-fill, same shape as HRV/RHR. Every
+//     body_metrics write resolves an "effective weight" (existing-or-new)
+//     before calling upsertBodyMetrics(), even for a body-fat-only write —
+//     upsertBodyMetrics() recomputes bmi from whatever weight_lbs is IN the
+//     payload, and a body-fat-only call with no weight in the payload would
+//     otherwise send bmi:null and clobber an existing BMI (see CLAUDE.md).
+var FITBIT_HISTORY_MAX_SPAN = { sleep: 99, hrv: 29, rhr: 364, steps: 1094, weight: 30, bodyfat: 29 };
+
+function chunkDateRange(startDate, endDate, maxSpanDays) {
+  var chunks = [];
+  var cur = new Date(startDate + "T12:00:00Z");
+  var end = new Date(endDate + "T12:00:00Z");
+  while (cur <= end) {
+    var chunkEnd = new Date(cur);
+    chunkEnd.setUTCDate(chunkEnd.getUTCDate() + maxSpanDays);
+    if (chunkEnd > end) chunkEnd = new Date(end);
+    chunks.push({ start: cur.toISOString().slice(0, 10), end: chunkEnd.toISOString().slice(0, 10) });
+    cur = new Date(chunkEnd);
+    cur.setUTCDate(cur.getUTCDate() + 1);
+  }
+  return chunks;
+}
+
+app.post("/api/debug/backfill-wearable-history/:userId", async function(req, res) {
+  try {
+    if (process.env.ADMIN_SECRET) {
+      var got = req.query.secret || req.headers["x-admin-secret"];
+      if (got !== process.env.ADMIN_SECRET) return res.status(403).json({ success: false, error: "forbidden" });
+    }
+    var pid = req.params.userId;
+    var startDate = req.query.start_date;
+    var endDate = req.query.end_date;
+    if (!startDate || !endDate) {
+      return res.status(400).json({ success: false, error: "start_date and end_date required (YYYY-MM-DD)" });
+    }
+
+    var maxCalls = parseInt(req.query.max_calls, 10);
+    if (!(maxCalls > 0)) maxCalls = 100;
+    var apiCalls = 0;
+    var budgetHit = false;
+    var sleep = function(ms) { return new Promise(function(r) { setTimeout(r, ms); }); };
+
+    var token = await getValidProfileToken(pid);
+
+    // Throttled Fitbit GET counted against the shared budget. Never throws —
+    // logs and returns null on any failure so one bad chunk can't abort the run.
+    async function budgetedFitGet(endpoint) {
+      if (apiCalls >= maxCalls) { budgetHit = true; return null; }
+      if (apiCalls > 0) await sleep(1000);
+      apiCalls++;
+      try {
+        return await fitGet(endpoint, token);
+      } catch (e) {
+        console.warn("[HistoryBackfill] chunk failed for " + endpoint + ": " + e.message);
+        return null;
+      }
+    }
+
+    // ── Bulk-read existing rows once up front (Supabase reads don't count
+    // against the Fitbit budget) — the source of truth for "is this worse?" ──
+    var existingSleepR = await fetch(SUPABASE_URL + "/rest/v1/daily_sleep?profile_id=eq." + pid +
+      "&date=gte." + startDate + "&date=lte." + endDate +
+      "&select=date,hours,score,deep_minutes,rem_minutes,light_minutes,wake_minutes,hrv,rhr", { headers: sbHeaders() });
+    var existingSleepRows = await existingSleepR.json();
+    var existingSleep = {};
+    (Array.isArray(existingSleepRows) ? existingSleepRows : []).forEach(function(r) { existingSleep[r.date] = r; });
+
+    var existingStepsR = await fetch(SUPABASE_URL + "/rest/v1/daily_steps?profile_id=eq." + pid +
+      "&date=gte." + startDate + "&date=lte." + endDate +
+      "&select=date,steps,calories,distance_miles,floors", { headers: sbHeaders() });
+    var existingStepsRows = await existingStepsR.json();
+    var existingSteps = {};
+    (Array.isArray(existingStepsRows) ? existingStepsRows : []).forEach(function(r) { existingSteps[r.date] = r; });
+
+    var existingBodyR = await fetch(SUPABASE_URL + "/rest/v1/body_metrics?profile_id=eq." + pid +
+      "&date=gte." + startDate + "&date=lte." + endDate +
+      "&select=date,weight_lbs,body_fat_pct", { headers: sbHeaders() });
+    var existingBodyRows = await existingBodyR.json();
+    var existingBody = {};
+    (Array.isArray(existingBodyRows) ? existingBodyRows : []).forEach(function(r) { existingBody[r.date] = r; });
+
+    // ── Fetch: sleep detail ──────────────────────────────────────────────
+    var sleepByDate = {};
+    var sleepChunks = chunkDateRange(startDate, endDate, FITBIT_HISTORY_MAX_SPAN.sleep);
+    var sleepResumeFrom = null;
+    for (var si = 0; si < sleepChunks.length; si++) {
+      var sc = sleepChunks[si];
+      var sData = await budgetedFitGet("/1.2/user/-/sleep/date/" + sc.start + "/" + sc.end + ".json");
+      if (sData === null && budgetHit) { sleepResumeFrom = sc.start; break; }
+      if (!sData || !Array.isArray(sData.sleep)) continue;
+      sData.sleep.forEach(function(entry) {
+        if (!entry.isMainSleep || !entry.dateOfSleep) return;
+        var summary = entry.levels && entry.levels.summary;
+        sleepByDate[entry.dateOfSleep] = {
+          hours: typeof entry.minutesAsleep === "number" ? +(entry.minutesAsleep / 60).toFixed(2) : null,
+          deep_minutes: summary && summary.deep ? summary.deep.minutes : null,
+          rem_minutes: summary && summary.rem ? summary.rem.minutes : null,
+          light_minutes: summary && summary.light ? summary.light.minutes : null,
+          wake_minutes: summary && summary.wake ? summary.wake.minutes : null,
+        };
+      });
+    }
+
+    // ── Fetch: HRV ───────────────────────────────────────────────────────
+    var hrvByDate = {};
+    var hrvChunks = chunkDateRange(startDate, endDate, FITBIT_HISTORY_MAX_SPAN.hrv);
+    var hrvResumeFrom = null;
+    for (var hi = 0; hi < hrvChunks.length; hi++) {
+      var hc = hrvChunks[hi];
+      var hData = await budgetedFitGet("/1/user/-/hrv/date/" + hc.start + "/" + hc.end + ".json");
+      if (hData === null && budgetHit) { hrvResumeFrom = hc.start; break; }
+      if (!hData || !Array.isArray(hData.hrv)) continue;
+      hData.hrv.forEach(function(entry) {
+        if (!entry.dateTime || !entry.value) return;
+        hrvByDate[entry.dateTime] = entry.value.dailyRmssd != null ? entry.value.dailyRmssd : null;
+      });
+    }
+
+    // ── Fetch: RHR ───────────────────────────────────────────────────────
+    var rhrByDate = {};
+    var rhrChunks = chunkDateRange(startDate, endDate, FITBIT_HISTORY_MAX_SPAN.rhr);
+    var rhrResumeFrom = null;
+    for (var ri = 0; ri < rhrChunks.length; ri++) {
+      var rc = rhrChunks[ri];
+      var rData = await budgetedFitGet("/1/user/-/activities/heart/date/" + rc.start + "/" + rc.end + ".json");
+      if (rData === null && budgetHit) { rhrResumeFrom = rc.start; break; }
+      var rArr = (rData && rData["activities-heart"]) || [];
+      rArr.forEach(function(entry) {
+        if (!entry.dateTime || !entry.value) return;
+        rhrByDate[entry.dateTime] = entry.value.restingHeartRate != null ? entry.value.restingHeartRate : null;
+      });
+    }
+
+    // ── Merge sleep + HRV + RHR into ONE upsert per date ────────────────
+    var sleepDetailWritten = 0, sleepDetailSkipped = 0, sleepDetailEmpty = 0;
+    var hrvWritten = 0, hrvSkipped = 0, hrvEmpty = 0;
+    var rhrWritten = 0, rhrSkipped = 0, rhrEmpty = 0;
+    var allSleepDates = {};
+    Object.keys(sleepByDate).forEach(function(d) { allSleepDates[d] = true; });
+    Object.keys(hrvByDate).forEach(function(d) { allSleepDates[d] = true; });
+    Object.keys(rhrByDate).forEach(function(d) { allSleepDates[d] = true; });
+    var dateList = Object.keys(allSleepDates).sort();
+    for (var di = 0; di < dateList.length; di++) {
+      var date = dateList[di];
+      var existing = existingSleep[date] || null;
+      var newSleep = sleepByDate[date] || null;
+      var newHrv = hrvByDate.hasOwnProperty(date) ? hrvByDate[date] : null;
+      var newRhr = rhrByDate.hasOwnProperty(date) ? rhrByDate[date] : null;
+
+      var existingHasDetail = !!(existing && existing.deep_minutes != null);
+      var useHours, useScore, useDeep, useRem, useLight, useWake;
+      var sleepGapFilled = false;
+      if (existingHasDetail) {
+        sleepDetailSkipped++;
+        useHours = existing.hours; useDeep = existing.deep_minutes; useRem = existing.rem_minutes;
+        useLight = existing.light_minutes; useWake = existing.wake_minutes; useScore = existing.score;
+      } else if (newSleep) {
+        sleepDetailWritten++; sleepGapFilled = true;
+        useHours = newSleep.hours; useDeep = newSleep.deep_minutes; useRem = newSleep.rem_minutes;
+        useLight = newSleep.light_minutes; useWake = newSleep.wake_minutes;
+        useScore = estimateSleepScore(newSleep.deep_minutes, newSleep.rem_minutes, newSleep.light_minutes, newSleep.wake_minutes);
+      } else {
+        sleepDetailEmpty++;
+        useHours = existing ? existing.hours : null; useDeep = existing ? existing.deep_minutes : null;
+        useRem = existing ? existing.rem_minutes : null; useLight = existing ? existing.light_minutes : null;
+        useWake = existing ? existing.wake_minutes : null; useScore = existing ? existing.score : null;
+      }
+
+      var useHrv, hrvGapFilled = false;
+      if (existing && existing.hrv != null) { hrvSkipped++; useHrv = existing.hrv; }
+      else if (newHrv != null) { hrvWritten++; hrvGapFilled = true; useHrv = newHrv; }
+      else { hrvEmpty++; useHrv = existing ? existing.hrv : null; }
+
+      var useRhr, rhrGapFilled = false;
+      if (existing && existing.rhr != null) { rhrSkipped++; useRhr = existing.rhr; }
+      else if (newRhr != null) { rhrWritten++; rhrGapFilled = true; useRhr = newRhr; }
+      else { rhrEmpty++; useRhr = existing ? existing.rhr : null; }
+
+      if (!sleepGapFilled && !hrvGapFilled && !rhrGapFilled) continue; // nothing new for this date
+
+      try {
+        await upsertDailySleep(pid, {
+          date: date, hours: useHours, score: useScore,
+          deep_minutes: useDeep, rem_minutes: useRem, light_minutes: useLight, wake_minutes: useWake,
+          hrv: useHrv, rhr: useRhr,
+        });
+      } catch (e) {
+        console.error("[HistoryBackfill] daily_sleep upsert failed for " + date + ": " + e.message);
+      }
+    }
+
+    // ── Steps ────────────────────────────────────────────────────────────
+    var stepsByDate = {};
+    var stepsChunks = chunkDateRange(startDate, endDate, FITBIT_HISTORY_MAX_SPAN.steps);
+    var stepsResumeFrom = null;
+    for (var pi = 0; pi < stepsChunks.length; pi++) {
+      var pc = stepsChunks[pi];
+      var pData = await budgetedFitGet("/1/user/-/activities/steps/date/" + pc.start + "/" + pc.end + ".json");
+      if (pData === null && budgetHit) { stepsResumeFrom = pc.start; break; }
+      var pArr = (pData && pData["activities-steps"]) || [];
+      pArr.forEach(function(entry) {
+        var n = parseInt(entry.value, 10);
+        if (!entry.dateTime || isNaN(n)) return;
+        stepsByDate[entry.dateTime] = n;
+      });
+    }
+    var stepsWritten = 0, stepsSkipped = 0, stepsEmpty = 0;
+    var stepDates = Object.keys(stepsByDate).sort();
+    for (var pdi = 0; pdi < stepDates.length; pdi++) {
+      var pdate = stepDates[pdi];
+      var existingStepRow = existingSteps[pdate] || null;
+      if (existingStepRow && existingStepRow.steps != null) { stepsSkipped++; continue; }
+      var newStepCount = stepsByDate[pdate];
+      try {
+        await upsertDailySteps(pid, {
+          date: pdate,
+          steps: newStepCount,
+          calories: existingStepRow ? existingStepRow.calories : null,
+          distance_miles: existingStepRow ? existingStepRow.distance_miles : null,
+          floors: existingStepRow ? existingStepRow.floors : null,
+        });
+        stepsWritten++;
+      } catch (e) {
+        console.error("[HistoryBackfill] daily_steps upsert failed for " + pdate + ": " + e.message);
+      }
+    }
+    // Dates in range with neither an existing row nor a fetched value never
+    // entered stepsByDate/existingSteps at all — not counted as "empty" per
+    // date (would require enumerating every calendar day); the resume_from
+    // + budget_hit fields are what tell you if the range was cut short.
+    stepsEmpty = 0;
+
+    // ── Weight + body fat → body_metrics ────────────────────────────────
+    var weightByDate = {};
+    var weightChunks = chunkDateRange(startDate, endDate, FITBIT_HISTORY_MAX_SPAN.weight);
+    var weightResumeFrom = null;
+    for (var wi = 0; wi < weightChunks.length; wi++) {
+      var wc = weightChunks[wi];
+      var wData = await budgetedFitGet("/1/user/-/body/log/weight/date/" + wc.start + "/" + wc.end + ".json");
+      if (wData === null && budgetHit) { weightResumeFrom = wc.start; break; }
+      var wArr = (wData && wData.weight) || [];
+      wArr.forEach(function(entry) {
+        if (!entry.date) return;
+        var raw = typeof entry.weight === "number" ? entry.weight : parseFloat(entry.weight);
+        if (isNaN(raw)) return;
+        // Fitbit returns kg for metric-locale accounts, lbs for US accounts;
+        // anything under 60 can only be kg for an adult bodyweight reading.
+        weightByDate[entry.date] = raw < 60 ? +(raw * 2.20462).toFixed(1) : +raw.toFixed(1);
+      });
+    }
+
+    var bodyfatByDate = {};
+    var bodyfatChunks = chunkDateRange(startDate, endDate, FITBIT_HISTORY_MAX_SPAN.bodyfat);
+    var bodyfatResumeFrom = null;
+    for (var fi = 0; fi < bodyfatChunks.length; fi++) {
+      var fc = bodyfatChunks[fi];
+      var fData = await budgetedFitGet("/1/user/-/body/log/fat/date/" + fc.start + "/" + fc.end + ".json");
+      if (fData === null && budgetHit) { bodyfatResumeFrom = fc.start; break; }
+      var fArr = (fData && fData.fat) || [];
+      fArr.forEach(function(entry) {
+        if (!entry.date) return;
+        var pct = typeof entry.fat === "number" ? entry.fat : parseFloat(entry.fat);
+        if (isNaN(pct)) return;
+        bodyfatByDate[entry.date] = +pct.toFixed(2);
+      });
+    }
+
+    var weightWritten = 0, weightSkipped = 0, weightEmpty = 0;
+    var bodyfatWritten = 0, bodyfatSkipped = 0, bodyfatEmpty = 0;
+    var allBodyDates = {};
+    Object.keys(weightByDate).forEach(function(d) { allBodyDates[d] = true; });
+    Object.keys(bodyfatByDate).forEach(function(d) { allBodyDates[d] = true; });
+    var bodyDateList = Object.keys(allBodyDates).sort();
+    for (var bdi = 0; bdi < bodyDateList.length; bdi++) {
+      var bdate = bodyDateList[bdi];
+      var existingB = existingBody[bdate] || null;
+      var newWeight = weightByDate.hasOwnProperty(bdate) ? weightByDate[bdate] : null;
+      var newBf = bodyfatByDate.hasOwnProperty(bdate) ? bodyfatByDate[bdate] : null;
+
+      var weightGapFilled = false, bfGapFilled = false;
+      var effectiveWeight;
+      if (existingB && existingB.weight_lbs != null) { weightSkipped++; effectiveWeight = existingB.weight_lbs; }
+      else if (newWeight != null) { weightWritten++; weightGapFilled = true; effectiveWeight = newWeight; }
+      else { weightEmpty++; effectiveWeight = existingB ? existingB.weight_lbs : null; }
+
+      var effectiveBf;
+      if (existingB && existingB.body_fat_pct != null) { bodyfatSkipped++; effectiveBf = existingB.body_fat_pct; }
+      else if (newBf != null) { bodyfatWritten++; bfGapFilled = true; effectiveBf = newBf; }
+      else { bodyfatEmpty++; effectiveBf = existingB ? existingB.body_fat_pct : null; }
+
+      if (!weightGapFilled && !bfGapFilled) continue; // nothing new for this date
+
+      try {
+        // weight_lbs always carries the EFFECTIVE (existing-or-new) value, even
+        // on a body-fat-only write — upsertBodyMetrics() recomputes bmi from
+        // whatever weight_lbs is in the payload, so omitting it here would send
+        // bmi:null and clobber an existing BMI. See the header comment above.
+        await upsertBodyMetrics(pid, { date: bdate, weight_lbs: effectiveWeight, body_fat_pct: effectiveBf, source: "fitbit" });
+      } catch (e) {
+        console.error("[HistoryBackfill] body_metrics upsert failed for " + bdate + ": " + e.message);
+      }
+    }
+
+    var summary = {
+      success: true,
+      profile_id: pid,
+      range: { start_date: startDate, end_date: endDate },
+      api_calls_used: apiCalls,
+      max_calls: maxCalls,
+      budget_hit: budgetHit,
+      sleep: { written: sleepDetailWritten, skipped: sleepDetailSkipped, empty: sleepDetailEmpty, resume_from: sleepResumeFrom },
+      hrv: { written: hrvWritten, skipped: hrvSkipped, empty: hrvEmpty, resume_from: hrvResumeFrom },
+      rhr: { written: rhrWritten, skipped: rhrSkipped, empty: rhrEmpty, resume_from: rhrResumeFrom },
+      steps: { written: stepsWritten, skipped: stepsSkipped, empty: stepsEmpty, resume_from: stepsResumeFrom },
+      weight: { written: weightWritten, skipped: weightSkipped, empty: weightEmpty, resume_from: weightResumeFrom },
+      bodyfat: { written: bodyfatWritten, skipped: bodyfatSkipped, empty: bodyfatEmpty, resume_from: bodyfatResumeFrom },
+    };
+    console.log("[HistoryBackfill] profile=" + pid + " range=" + startDate + ".." + endDate +
+      " apiCalls=" + apiCalls + "/" + maxCalls + " budgetHit=" + budgetHit +
+      " sleep(w/s/e)=" + sleepDetailWritten + "/" + sleepDetailSkipped + "/" + sleepDetailEmpty +
+      " hrv(w/s/e)=" + hrvWritten + "/" + hrvSkipped + "/" + hrvEmpty +
+      " rhr(w/s/e)=" + rhrWritten + "/" + rhrSkipped + "/" + rhrEmpty +
+      " steps(w/s)=" + stepsWritten + "/" + stepsSkipped +
+      " weight(w/s/e)=" + weightWritten + "/" + weightSkipped + "/" + weightEmpty +
+      " bodyfat(w/s/e)=" + bodyfatWritten + "/" + bodyfatSkipped + "/" + bodyfatEmpty);
+    res.json(summary);
+  } catch (e) {
+    console.error("[HistoryBackfill] fatal error:", e.message);
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
 // ── WGER EXERCISE CATALOG SEED (2026-07-16) ───────────────────────────────
 // wger.de is a free, keyless, open (CC-BY-SA 4.0) exercise database — see
 // https://wger.de/api/v2/. Replaces the MuscleWiki seed below, which was
