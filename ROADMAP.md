@@ -29,6 +29,9 @@
 >   same merge code. Rechunked RHR to 29 days (same as HRV) and added a permanent per-chunk
 >   diagnostic log line so this can't silently reoccur. Also added `?metrics=` so a fix like this
 >   can be re-applied to one metric without re-fetching (and discarding) the other five.
+>   **Re-run confirmed the fix** — `?metrics=rhr` over the full 2024-07-17→2026-06-14 range wrote
+>   679 rows / skipped 19 (already had values from normal daily sync) / **0 empty**, 24 calls,
+>   full RHR coverage across the entire 2-year window with no remaining gap.
 > - **Weight/body-fat wrote nothing** — confirmed the 2026-05-17 Fitbit scope gap (§6) is still
 >   present after the user's 2026-07-14 reconsent; deliberately not chased further, since the
 >   account has never logged weight via Fitbit (nothing to backfill either way). §6 updated to
