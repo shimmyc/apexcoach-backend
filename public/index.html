@@ -723,11 +723,7 @@ input[type=range]{width:100%;accent-color:var(--accent)}
         <p style="font-size:12px;color:var(--text-dim)">Connect a fitness tracker for deeper insights &mdash; <a href="javascript:void(0)" onclick="showTab('profile')" style="color:var(--info);text-decoration:none">go to Profile</a></p>
       </div>
     </div>
-    <div id="streak-card" style="display:none"></div>
     <div id="readiness-card" class="card" style="display:none"></div>
-    <div id="body-metrics-card" class="card" style="display:none"></div>
-    <!-- Unmatched wearable activities (last 7 days). One card per activity. -->
-    <div id="unmatched-fitbit-card"></div>
     <div id="feeling-checkin-card" class="card" style="display:none">
       <div id="feeling-checkin-full">
         <p class="clabel">how are you feeling today?</p>
@@ -778,17 +774,17 @@ input[type=range]{width:100%;accent-color:var(--accent)}
         <div style="text-align:right"><button onclick="reopenFeelingCheckin()" style="background:transparent;border:none;color:var(--accent);font-size:13px;cursor:pointer;font-family:DM Sans,sans-serif;padding:4px 8px">Update</button></div>
       </div>
     </div>
-    <div id="progress-card" class="card" style="display:none">
-      <p style="font-size:10px;text-transform:uppercase;letter-spacing:0.08em;color:var(--accent-cornerman);font-weight:600;margin-bottom:8px">THE CORNERMAN</p>
-      <div id="progress-content"></div>
-    </div>
-    <!-- Recent Workouts + My Templates (Agent 2 + Agent 3). Sits just above
-         the AI rec card so re-log / template options are at hand. -->
-    <div id="recent-workouts-card" class="card" style="display:none"></div>
     <div id="ai-card" class="card" style="display:none">
       <p class="clabel">ai recommendation</p>
       <div id="ai-content"></div>
     </div>
+    <div id="progress-card" class="card" style="display:none">
+      <p style="font-size:10px;text-transform:uppercase;letter-spacing:0.08em;color:var(--accent-cornerman);font-weight:600;margin-bottom:8px">THE CORNERMAN</p>
+      <div id="progress-content"></div>
+    </div>
+    <!-- Unmatched wearable activities (last 7 days). One card per activity. -->
+    <div id="unmatched-fitbit-card"></div>
+    <div id="streak-card" style="display:none"></div>
     <div id="log-area"></div>
   </div>
 
@@ -883,26 +879,58 @@ input[type=range]{width:100%;accent-color:var(--accent)}
     <!-- 1. Athlete Header -->
     <div id="profile-dynamic"></div>
 
-    <!-- 2. Weekly Schedule (dynamic v2: anchors / weekly targets / add-ons) -->
+    <!-- 2. Weekly Schedule (dynamic v2: anchors / weekly targets / add-ons) — position UNCHANGED (2026-07-16 declutter pass: audit found no reason to move it). -->
     <div class="card" id="schedule-card">
       <div id="week-preview-section"></div>
       <div id="blueprint-toggle"></div>
       <div id="schedule-grid"></div>
     </div>
 
-    <!-- 3. Belt Journey (rendered dynamically) -->
-    <div id="belt-section"></div>
+    <!-- GROUP (a) — identity / body. Body Metrics relocated here from Today
+         (2026-07-16 declutter pass); single weight surface now, #profile-body's
+         own read-only weight summary was trimmed to avoid duplicating it. -->
+    <div id="body-metrics-card" class="card" style="display:none"></div>
+    <div id="profile-body"></div>
+    <div id="profile-weight-trend"></div>
 
-    <!-- 3.4 Analytics Dashboard -->
-    <div class="card" id="analytics-card">
-      <div onclick="toggleAnalyticsCard()" style="display:flex;justify-content:space-between;align-items:center;cursor:pointer">
-        <p class="clabel" style="margin-bottom:0">&#x1F4CA; analytics</p>
-        <span id="analytics-chevron" style="color:var(--text-dim);font-size:13px;transition:transform .2s;display:inline-block">&#9656;</span>
+    <!-- 3.6 Sync Wearables — moved into group (a) (2026-07-16): stays the
+         insertBefore anchor for #gh-reconsent-banner (_renderGHBanner() only
+         does getElementById('sync-wearables-card'), position-agnostic). -->
+    <div class="card" id="sync-wearables-card" style="display:flex;justify-content:space-between;align-items:center;gap:12px">
+      <div style="flex:1;min-width:0">
+        <p class="clabel" style="margin-bottom:4px">&#x231A; sync wearables</p>
+        <p style="font-size:13px;color:var(--text-muted);line-height:1.5;margin:0">Match recent Fitbit activities to your logged workouts, import anything missing.</p>
       </div>
-      <div id="analytics-body" style="display:none;margin-top:14px"></div>
+      <button onclick="openWearableSync()" id="sync-wearables-btn" style="background:var(--accent-ember);border:none;color:#fff;padding:10px 16px;border-radius:12px;cursor:pointer;font-size:13px;font-weight:600;white-space:nowrap">Sync Wearables</button>
     </div>
 
-    <!-- 3.5 Active Challenges (Micro-Goals) -->
+    <!-- Identity/context block (between groups a and c) -->
+    <div id="profile-injuries"></div>
+    <div id="profile-philosophy"></div>
+    <div id="profile-context"></div>
+
+    <!-- GROUP (b) — coaching / AI. Focus Override moved here (2026-07-16):
+         it's an AI-behavior control, same family as Coaching Brief/Roadmap. -->
+    <div class="card" id="focus-override-card"></div>
+    <div id="coaching-brief-card"></div>
+    <div id="roadmap-card" class="card" style="display:none">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">
+        <p class="clabel" style="margin-bottom:0">&#128506; my road map</p>
+        <button id="roadmap-gen-btn" onclick="generateRoadmap()" style="background:var(--accent-ember);border:none;color:#fff;padding:8px 16px;border-radius:14px;cursor:pointer;font-size:13px;font-weight:600">Generate</button>
+      </div>
+      <div id="roadmap-content"></div>
+      <div id="roadmap-updated" class="mono" style="font-size:10px;color:var(--text-dim);margin-top:10px;display:none"></div>
+    </div>
+
+    <!-- MACRO ROADMAP (structured roadmap_data) — replaces the legacy text card above (kept but no longer shown) -->
+    <div id="roadmap-data-card" class="card" style="display:none">
+      <div id="roadmap-data-body"></div>
+    </div>
+
+    <!-- GROUP (c) — goals cluster. Belt + Active Challenges moved here (2026-07-16)
+         to sit next to Goals & Milestones. -->
+    <div id="belt-section"></div>
+
     <div class="card" id="challenges-card">
       <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">
         <p class="clabel" style="margin-bottom:0">&#x1F3AF; active challenges</p>
@@ -914,19 +942,6 @@ input[type=range]{width:100%;accent-color:var(--accent)}
       <div id="challenges-display"></div>
     </div>
 
-    <!-- 3.6 Sync Wearables -->
-    <div class="card" id="sync-wearables-card" style="display:flex;justify-content:space-between;align-items:center;gap:12px">
-      <div style="flex:1;min-width:0">
-        <p class="clabel" style="margin-bottom:4px">&#x231A; sync wearables</p>
-        <p style="font-size:13px;color:var(--text-muted);line-height:1.5;margin:0">Match recent Fitbit activities to your logged workouts, import anything missing.</p>
-      </div>
-      <button onclick="openWearableSync()" id="sync-wearables-btn" style="background:var(--accent-ember);border:none;color:#fff;padding:10px 16px;border-radius:12px;cursor:pointer;font-size:13px;font-weight:600;white-space:nowrap">Sync Wearables</button>
-    </div>
-
-    <!-- 3.7 Focus Override -->
-    <div class="card" id="focus-override-card"></div>
-
-    <!-- 4. Goals -->
     <div class="card">
       <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">
         <p class="clabel" style="margin-bottom:0">goals &amp; milestones</p>
@@ -964,26 +979,17 @@ input[type=range]{width:100%;accent-color:var(--accent)}
       </div>
     </div>
 
-    <div id="profile-body"></div>
-    <div id="profile-weight-trend"></div>
-    <div id="profile-templates"></div>
-    <div id="profile-injuries"></div>
-    <div id="profile-philosophy"></div>
-    <div id="profile-context"></div>
-    <div id="coaching-brief-card"></div>
-    <div id="roadmap-card" class="card" style="display:none">
-      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">
-        <p class="clabel" style="margin-bottom:0">&#128506; my road map</p>
-        <button id="roadmap-gen-btn" onclick="generateRoadmap()" style="background:var(--accent-ember);border:none;color:#fff;padding:8px 16px;border-radius:14px;cursor:pointer;font-size:13px;font-weight:600">Generate</button>
+    <!-- GROUP (e) — analytics (untouched internals, position moved 2026-07-16) -->
+    <div class="card" id="analytics-card">
+      <div onclick="toggleAnalyticsCard()" style="display:flex;justify-content:space-between;align-items:center;cursor:pointer">
+        <p class="clabel" style="margin-bottom:0">&#x1F4CA; analytics</p>
+        <span id="analytics-chevron" style="color:var(--text-dim);font-size:13px;transition:transform .2s;display:inline-block">&#9656;</span>
       </div>
-      <div id="roadmap-content"></div>
-      <div id="roadmap-updated" class="mono" style="font-size:10px;color:var(--text-dim);margin-top:10px;display:none"></div>
+      <div id="analytics-body" style="display:none;margin-top:14px"></div>
     </div>
 
-    <!-- MACRO ROADMAP (structured roadmap_data) — replaces the legacy text card above (kept but no longer shown) -->
-    <div id="roadmap-data-card" class="card" style="display:none">
-      <div id="roadmap-data-body"></div>
-    </div>
+    <!-- GROUP (f) — templates, then settings/maintenance at bottom -->
+    <div id="profile-templates"></div>
 
     <!-- ACCOUNT (moved to Settings) -->
     <div class="card" style="text-align:center">
@@ -2524,15 +2530,11 @@ function renderDayView() {
     document.getElementById('feeling-checkin-card').style.display = (document.getElementById('readiness-card').style.display === 'block' || document.getElementById('checkin-card').style.display === 'block') ? 'block' : '';
     document.getElementById('ai-card').style.display = '';
     document.getElementById('progress-card').style.display = '';
-    // Restore today-only unmatched-Fitbit + recent-workouts cards (past-day mode hides them).
+    // Restore today-only unmatched-Fitbit card (past-day mode hides it).
     var imp = document.getElementById('unmatched-fitbit-card');
     if (imp) imp.style.display = '';
-    var rec = document.getElementById('recent-workouts-card');
-    if (rec) rec.style.display = '';
     // Restore today's live readiness card if we have data.
     if (typeof renderReadiness === 'function' && readiness) renderReadiness();
-    // Body card visibility is decided by renderBodyTodayCard (it self-hides).
-    if (typeof renderBodyTodayCard === 'function') renderBodyTodayCard();
     renderLogArea();
     return;
   }
@@ -2540,17 +2542,13 @@ function renderDayView() {
   // Past day mode
   banner.style.display = 'block';
   document.getElementById('past-day-label').textContent = '\u2190 Viewing ' + d.toLocaleDateString('en-US', {month:'long', day:'numeric'});
-  // Hide today-only elements (AI rec / progress brief / check-in / body card).
+  // Hide today-only elements (AI rec / progress brief / check-in).
   document.getElementById('feeling-checkin-card').style.display = 'none';
   document.getElementById('ai-card').style.display = 'none';
   document.getElementById('progress-card').style.display = 'none';
-  var bodyCard = document.getElementById('body-metrics-card');
-  if (bodyCard) bodyCard.style.display = 'none';
-  // Hide today-only unmatched-Fitbit card and recent-workouts card too.
+  // Hide today-only unmatched-Fitbit card too.
   var importsCard = document.getElementById('unmatched-fitbit-card');
   if (importsCard) importsCard.style.display = 'none';
-  var recentCard = document.getElementById('recent-workouts-card');
-  if (recentCard) recentCard.style.display = 'none';
 
   // Render the past-day biometrics card (Fitbit data for that date), then the
   // logged workout if any. Fitbit data is fetched on demand; we re-use the
@@ -4911,19 +4909,40 @@ function renderProfileTab() {
   document.getElementById('profile-context').innerHTML = ctxHTML;
 }
 
+// Analytics-style visual-only collapse (2026-07-16 declutter pass). Purely a
+// display toggle over already-rendered content — the brief itself is still
+// fetched eagerly at boot (see the /brief fetch in bootApp) and regenerated
+// after every workout save, exactly as before; this only hides/shows the
+// already-populated card body.
+function cbIsOpen() { return localStorage.getItem('ac_coaching_brief_open') === '1'; }
+function toggleCoachingBriefCard() {
+  var body = document.getElementById('coaching-brief-body');
+  var chev = document.getElementById('cb-chevron');
+  if (!body) return;
+  var show = (body.style.display === 'none');
+  body.style.display = show ? 'block' : 'none';
+  if (chev) chev.style.transform = show ? 'rotate(90deg)' : 'rotate(0)';
+  localStorage.setItem('ac_coaching_brief_open', show ? '1' : '0');
+}
+
 function renderCoachingBrief() {
   var el = document.getElementById('coaching-brief-card');
   if (!el) return;
+  var open = cbIsOpen();
+  var chevronHtml = '<span id="cb-chevron" style="color:var(--text-dim);font-size:13px;transition:transform .2s;display:inline-block' + (open ? ';transform:rotate(90deg)' : '') + '">&#9656;</span>';
   if (!coachingBrief && !historicalBrief) {
-    el.innerHTML = '<div class="card" style="border-color:var(--border-ai)"><p class="clabel" style="color:var(--accent-cornerman)">&#x1F9E0; coaching brief</p>' +
+    el.innerHTML = '<div class="card" style="border-color:var(--border-ai)">' +
+      '<div onclick="toggleCoachingBriefCard()" style="cursor:pointer;display:flex;justify-content:space-between;align-items:center"><p class="clabel" style="margin-bottom:0;color:var(--accent-cornerman)">&#x1F9E0; coaching brief</p>' + chevronHtml + '</div>' +
+      '<div id="coaching-brief-body" style="display:' + (open ? 'block' : 'none') + ';margin-top:12px">' +
       '<p style="font-size:14px;color:var(--text-muted);margin-bottom:12px">No coaching brief generated yet.</p>' +
-      '<button onclick="generateBrief()" class="btnPri" style="font-size:13px;padding:10px 18px;background:var(--accent-ember);color:#fff;border-radius:12px">Generate Brief</button></div>';
+      '<button onclick="generateBrief()" class="btnPri" style="font-size:13px;padding:10px 18px;background:var(--accent-ember);color:#fff;border-radius:12px">Generate Brief</button></div></div>';
     return;
   }
   var updatedStr = briefUpdatedAt ? new Date(briefUpdatedAt).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }) : '';
   var html = '<div class="card" style="border-color:var(--border-ai)">';
-  html += '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px"><p class="clabel" style="margin-bottom:0;color:var(--accent-cornerman)">&#x1F9E0; coaching brief</p>';
-  html += '<button onclick="generateBrief()" id="brief-regen-btn" style="background:transparent;border:none;color:var(--text-muted);padding:5px 8px;cursor:pointer;font-size:12px;font-weight:600">Regenerate</button></div>';
+  html += '<div onclick="toggleCoachingBriefCard()" style="cursor:pointer;display:flex;justify-content:space-between;align-items:center"><p class="clabel" style="margin-bottom:0;color:var(--accent-cornerman)">&#x1F9E0; coaching brief</p>';
+  html += '<span style="display:flex;align-items:center;gap:10px">' + chevronHtml + '<span onclick="event.stopPropagation()"><button onclick="generateBrief()" id="brief-regen-btn" style="background:transparent;border:none;color:var(--text-muted);padding:5px 8px;cursor:pointer;font-size:12px;font-weight:600">Regenerate</button></span></span></div>';
+  html += '<div id="coaching-brief-body" style="display:' + (open ? 'block' : 'none') + ';margin-top:12px">';
   if (coachingBrief) {
     var cbTitle = extractMdTitle(coachingBrief);
     if (cbTitle) html += '<div class="oswald" style="font-size:18px;font-weight:600;color:var(--text-bright);margin-bottom:12px">' + escHtml(cbTitle) + '</div>';
@@ -4938,7 +4957,7 @@ function renderCoachingBrief() {
     html += parseMd(historicalBrief) + '</div>';
     html += '</div>';
   }
-  html += '</div>';
+  html += '</div></div>';
   el.innerHTML = html;
 }
 
@@ -5090,19 +5109,42 @@ function renderRoadmapData() {
   body.innerHTML = currentRoadmapData ? rdLoadedHtml(currentRoadmapData) : rdEmptyHtml();
 }
 
+// Analytics-style visual-only collapse (2026-07-16 declutter pass). Purely a
+// display toggle over already-rendered content — never touches loadRoadmapData()/
+// generateRoadmapData(), which keep firing eagerly at boot exactly as before.
+function rdIsOpen() { return localStorage.getItem('ac_roadmap_data_open') === '1'; }
+function rdToggleCollapse() {
+  var body = document.getElementById('rd-collapse-body');
+  var chev = document.getElementById('rd-chevron');
+  if (!body) return;
+  var show = (body.style.display === 'none');
+  body.style.display = show ? 'block' : 'none';
+  if (chev) chev.style.transform = show ? 'rotate(90deg)' : 'rotate(0)';
+  localStorage.setItem('ac_roadmap_data_open', show ? '1' : '0');
+}
+
 function rdEmptyHtml() {
+  var open = rdIsOpen();
   var h = '';
-  h += '<div class="rd-head"><p class="clabel" style="margin-bottom:0">MACRO ROADMAP</p></div>';
+  h += '<div class="rd-head" onclick="rdToggleCollapse()" style="cursor:pointer">';
+  h += '<p class="clabel" style="margin-bottom:0">MACRO ROADMAP</p>';
+  h += '<span id="rd-chevron" style="color:var(--text-dim);font-size:13px;transition:transform .2s;display:inline-block' + (open ? ';transform:rotate(90deg)' : '') + '">&#9656;</span></div>';
+  h += '<div id="rd-collapse-body" style="display:' + (open ? 'block' : 'none') + '">';
   h += '<p style="font-size:13px;color:var(--text-muted);line-height:1.6;margin:10px 0 16px">Your AI coach will build a phased plan across all your goals.</p>';
   h += '<button onclick="generateRoadmapData()" class="rd-gen-btn" style="width:100%">Generate</button>';
+  h += '</div>';
   return h;
 }
 
 function rdLoadedHtml(rd) {
+  var open = rdIsOpen();
   var h = '';
-  // 1. Header — MACRO ROADMAP label + secondary Regenerate link; timeline below.
-  h += '<div class="rd-head"><p class="clabel" style="margin-bottom:0">MACRO ROADMAP</p>';
-  h += '<span id="rd-regen-slot"><button class="rd-regen" onclick="rdAskRegen()">Regenerate</button></span></div>';
+  // 1. Header — MACRO ROADMAP label + collapse chevron + secondary Regenerate link.
+  h += '<div class="rd-head" onclick="rdToggleCollapse()" style="cursor:pointer"><p class="clabel" style="margin-bottom:0">MACRO ROADMAP</p>';
+  h += '<span style="display:flex;align-items:center;gap:10px">';
+  h += '<span id="rd-chevron" style="color:var(--text-dim);font-size:13px;transition:transform .2s;display:inline-block' + (open ? ';transform:rotate(90deg)' : '') + '">&#9656;</span>';
+  h += '<span id="rd-regen-slot" onclick="event.stopPropagation()"><button class="rd-regen" onclick="rdAskRegen()">Regenerate</button></span></span></div>';
+  h += '<div id="rd-collapse-body" style="display:' + (open ? 'block' : 'none') + '">';
   h += '<div id="rd-confirm"></div>';
   if (rd.timeline_range) h += '<div class="rd-timeline">' + rdEsc(rd.timeline_range) + '</div>';
   if (rd.timeline_note) h += '<div class="rd-note">' + rdEsc(rd.timeline_note) + '</div>';
@@ -5146,6 +5188,7 @@ function rdLoadedHtml(rd) {
   if (genDate) foot.push('Generated ' + genDate);
   if (rd.version != null) foot.push('v' + rd.version);
   if (foot.length) h += '<div class="rd-foot">' + foot.join('  ·  ') + '</div>';
+  h += '</div>'; // rd-collapse-body
   return h;
 }
 
@@ -11531,41 +11574,10 @@ function renderProfileBodyCard() {
   var heightFt = heightTotal != null ? Math.floor(heightTotal / 12) : '';
   var heightIn = heightTotal != null ? heightTotal - heightFt * 12 : '';
 
-  // Current weight (and BMI/BF when available) come from the latest
-  // body_metrics row, NOT from the profiles table. We surface them here as
-  // a read-only summary above the editable fields.
-  var latest = bodyMetricsLatest;
-  var curWt = latest && latest.weight_lbs != null ? latest.weight_lbs : null;
-  var curBf = latest && latest.body_fat_pct != null ? latest.body_fat_pct : null;
-  var curBmi = latest && latest.bmi != null ? latest.bmi : (curWt && pb.height_inches ? calcBmiClient(curWt, pb.height_inches) : null);
-  var tier = bmiTier(curBmi);
-
+  // Current weight/BMI/body-fat are shown by #body-metrics-card (relocated
+  // here from Today, 2026-07-16 declutter pass) directly above this card —
+  // this card is editable fields only now, no redundant read-only summary.
   var h = '<div class="card"><p class="clabel">body</p>';
-
-  // Read-only current-state summary (always present so user can confirm
-  // their saved values land somewhere visible even before they log a weight).
-  h += '<div style="background:var(--bg-input);border-radius:6px;padding:12px;margin-bottom:14px">';
-  h += '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">';
-  h += '<span class="mono" style="font-size:10px;color:var(--text-dim);letter-spacing:2px">CURRENT WEIGHT</span>';
-  h += '<button onclick="openLogWeight()" style="background:transparent;border:1px solid var(--accent-33);color:var(--accent);padding:4px 10px;border-radius:4px;cursor:pointer;font-size:11px;font-weight:600">+ Log Weight</button>';
-  h += '</div>';
-  if (curWt != null) {
-    h += '<div style="display:flex;align-items:baseline;gap:10px;flex-wrap:wrap">';
-    h += '<span style="font-size:22px;font-weight:600;color:var(--text-bright)">' + curWt.toFixed(1) + ' lbs</span>';
-    if (curBmi != null) {
-      h += '<span style="font-size:13px;color:' + (tier ? tier.color : 'var(--text-muted)') + '">BMI ' + curBmi.toFixed(1) + (tier ? ' &middot; ' + tier.label : '') + '</span>';
-    }
-    if (curBf != null) {
-      h += '<span style="font-size:13px;color:var(--text-muted)">' + curBf.toFixed(1) + '% body fat</span>';
-    }
-    h += '</div>';
-    if (latest && latest.date) {
-      h += '<p class="mono" style="font-size:10px;color:var(--text-dim);margin-top:4px">last logged ' + latest.date + (latest.source ? ' &middot; ' + latest.source : '') + '</p>';
-    }
-  } else {
-    h += '<p style="font-size:13px;color:var(--text-dim);font-style:italic">No weight logged yet — tap + Log Weight to start tracking BMI and progress.</p>';
-  }
-  h += '</div>';
 
   h += '<div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">';
 
