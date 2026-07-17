@@ -8,6 +8,33 @@
 > `wearables/`, and `migrations/` rather than transcribed. Where the original brief differed
 > from the live code, the doc follows the code and flags it with **⚠ Correction**.
 >
+> **2026-07-16 session #13** (Wearable Sync bulk-review modal — Google Health provider picker,
+> closes §7 priority 6 — UI-only, no backend/endpoint/dependency changes):
+> - `wsFetchProviders()` reads the existing `GET /api/wearables/providers/:userId` (same one the
+>   Google Health reconsent banner already uses), filters to connected providers, and sets
+>   `wsState.provider`: Google Health if connected, else Fitbit, else first connected, else the
+>   pre-existing `'fitbit'` default. A pill picker renders when 2+ providers are connected
+>   (skipped otherwise — nothing to choose). `sync-backlog` and the merge/reject/import action
+>   functions already read `wsState.provider` generically — confirmed via direct diff review, zero
+>   changes needed there.
+> - **Real bug found and fixed along the way**: the reconnect step (`wsRenderReconnect()`) linked to
+>   the legacy Fitbit-only `/auth?profile_id=` route regardless of which provider actually needed
+>   reconnecting — selecting Google Health and hitting a stale token would have silently kicked off
+>   the wrong OAuth flow. Fixed with `wsReconnect()`, reusing the existing provider-agnostic
+>   `POST /api/wearables/connect/:provider` (the same endpoint `connectGoogleHealth()` already uses
+>   elsewhere) — not scope creep, since leaving it broken would have shipped a picker that's
+>   actively wrong in exactly the state it's most likely to be exercised in.
+> - **Verified live, profile 1, both providers actually connected**: `wsState.providers` correctly
+>   resolved `['fitbit','google_health']` with Google Health as the default; switching to Fitbit via
+>   the picker correctly reloaded Fitbit-specific activity types; a full Fitbit sync ran end-to-end
+>   (`sync-backlog` → 13 matched / 25 unmatched / 32 already-synced, real data) confirming the
+>   pre-existing pipeline is untouched. **Google Health's token happened to be genuinely expired on
+>   this account** — an unplanned real-world test of the reconnect fix: it correctly surfaced
+>   "Reconnect Google Health" (previously would have read "Fitbit" and misdirected the OAuth flow).
+>   No merge/reject/import action was exercised against real data (would permanently alter Shimmy's
+>   actual workout history; the code path was already confirmed untouched by diff review). Zero new
+>   console errors.
+>
 > **2026-07-16 session #12** (frontend declutter, closes §7 priority 5 — pure UI: render-call
 > relocation + CSS/HTML wrapper only, no JS logic/API/data-flow changes):
 > - **Two-phase process**: a read-only Phase 1 audit of `public/index.html` (actual DOM order,
@@ -719,7 +746,7 @@ Each item below is self-contained — no other doc/session context should be nee
 3. ~~wger bulk-seed~~ — **✅ done (session #8)**, replacing the MuscleWiki seed that was built but never run (paid key never obtained). 842 exercises fetched, catalog now **879 rows**. See §3 → Exercise Canonicalization / `CLAUDE.md`.
 4. ~~Exercise Canonicalization phase 2 — family rollups, muscle-group filter, muscle heatmap~~ — **✅ done (session #9)**. Library Exercises list groups by `family` (collapsible cards, unfiltered state only — any active search/category/muscle filter falls to the flat list by design); an 11-pill muscle-group filter (Primary / Primary+Secondary toggle) sits below category/subcategory; a new "MUSCLE HEAT" card on the Dashboard renders two original geometric SVG body figures (7D/30D/90D), fed by a new `GET /api/analytics/muscle-volume/:userId`. **Not built**: a dedicated "show me similar exercises" action (the muscle filter partially substitutes but isn't the same UX) — left for a future pass if wanted. See §3 → Exercise Canonicalization Phase 2 / `CLAUDE.md`.
 5. ~~Full frontend declutter pass~~ — **✅ done (2026-07-16)**. Today tab above-the-fold is now exactly readiness + feeling check-in + rec, nothing else between them (streak/progress/unmatched-Fitbit demoted below the rec, Body Metrics moved to Profile, Recent Workouts removed entirely); Profile tab regrouped into identity/body, coaching/AI (Coaching Brief + Macro Roadmap now collapsed by default, visual-only), goals cluster, analytics, templates/settings. Pure render-relocation + CSS, no JS logic/API changes. See `CLAUDE.md` → "Today Tab + Profile Tab Reorganization" for the full before/after and what was audited/deferred.
-6. Wearable Sync bulk-review modal — Google Health provider picker (below).
+6. ~~Wearable Sync bulk-review modal — Google Health provider picker~~ — **✅ done (2026-07-16)**. `wsFetchProviders()` reads the existing `GET /api/wearables/providers/:userId`, offers a pill picker for connected providers only (skipped when ≤1 connected), defaults to Google Health when connected. `sync-backlog` and the merge/reject/import actions were already provider-agnostic — zero changes there. Also fixed a real bug the picker would otherwise have exposed: the reconnect step linked to the legacy Fitbit-only `/auth` route regardless of which provider needed reconnecting — now uses the provider-agnostic `POST /api/wearables/connect/:provider`. Verified live with both providers actually connected on profile 1 (including a real expired-Google-Health-token reconnect case). See `CLAUDE.md` → "Wearable Sync Bulk-Review Modal — Provider Picker".
 7. Apple HealthKit / iOS integration — long-term (below).
 8. **Optional: Free Exercise DB top-up import**, if wger coverage gaps keep surfacing in practice. A concrete gap already found live (session #8): wger seeded plenty of *variant-qualified* lat pulldown names (Wide-Grip, Neutral-Grip, Single-Arm, …) but no bare "Lat Pulldown" — today that correctly falls through to Haiku and creates a `source:'custom'` row with a confirm chip (working as designed, not broken), but a free, keyless top-up source (e.g. `github.com/yuhonas/free-exercise-db`, public domain JSON) could close gaps like this proactively instead of relying on Haiku to backfill them one save at a time. Not started — only worth building if this keeps happening after wger's ~880 rows are in real use.
 9. **MuscleWiki video-streaming layer — paid-user/beta stage, not started.** Distinct from data seeding (which wger now covers): subscribing to MuscleWiki's video API ($10/mo TESTING plan minimum) and doing a **one-time exercise-ID mapping pass** onto the existing catalog via the `musclewiki_id` column (kept on the schema for exactly this) — matching wger-seeded `canonical_name`s against MuscleWiki's own names, filling `musclewiki_id` where found. **In-app streaming only, through a server proxy — no stored media**, per MuscleWiki's API ToS. Gated behind a paid-user/beta flag, not a v1 feature. See the Exercise Video / Demonstration Database plan below, updated to reflect this split.
@@ -799,7 +826,7 @@ Macro roadmap shape (stored on `profiles.roadmap_data`):
 ### Next up
 
 - **Apple HealthKit / iOS integration** — opens the app to all iPhone users. Requires an iOS companion app + an Apple Developer Account ($99/yr). Long-term but high impact.
-- **Wearable Sync bulk-review modal — Google Health support.** The bulk-review modal (`openWearableSync`, `wsState.provider`) is currently **Fitbit-only**; it needs a provider picker so Google Health activities surface in the bulk backlog review UI. The `sync-backlog` endpoint is already provider-agnostic — this is UI-only.
+- ~~Wearable Sync bulk-review modal — Google Health support~~ — **✅ done (2026-07-16)**, see §7 priority 6 and `CLAUDE.md` → "Wearable Sync Bulk-Review Modal — Provider Picker".
 - ~~Today tab declutter~~ / ~~Profile tab cleanup~~ — **✅ done (2026-07-16)**, see §7 priority 5 and `CLAUDE.md` → "Today Tab + Profile Tab Reorganization".
 - **Logo transparent background** — regenerate `public/logo.png` with a transparent background so the figure floats on the app background instead of sitting in a black box.
 - **Exercise catalog phase 2 / MuscleWiki video layer / Free Exercise DB top-up** — see the Priority order list above (items 4-6) for the current, detailed version of this; not duplicated here to avoid drift.
