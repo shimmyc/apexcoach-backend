@@ -8,6 +8,45 @@
 > `wearables/`, and `migrations/` rather than transcribed. Where the original brief differed
 > from the live code, the doc follows the code and flags it with **⚠ Correction**.
 >
+> **2026-07-17 session #19** (Wearable connection health — real token status, serialized
+> refresh, Reconnect/Disconnect UI; report-first, audit approved before any edit):
+> - **Root cause of the "connected but no data" audit**: both profile-1 tokens were dead
+>   (`invalid_grant`) yet the UI showed connected, because `GET /api/wearables/providers/:id`
+>   computed `connected: !!c` (row exists), never token health. The likely cause of the Fitbit
+>   token *death* was a refresh race — `getValidProfileToken`/`getValidWearableToken` are called
+>   from several endpoints that fire together on app boot, and OAuth refresh tokens are single-use,
+>   so two concurrent refreshes could each spend the same token and clobber each other.
+> - **Serialized refresh** — new in-process `_refreshLocks` map + `withRefreshLock(key, fn)` keyed
+>   `provider:profileId`; concurrent callers now await ONE in-flight refresh instead of each POSTing
+>   the same refresh token. Wraps the Fitbit path (`refreshProfileToken` → `_doRefreshProfileToken`)
+>   and the Google Health path (the refresh+save block in `getValidWearableToken`). Valid-token
+>   reads are never serialized. Single-instance only (fine for the one Render web service).
+> - **Persisted `needs_reconnect` flag** on `wearable_connections` (migration
+>   `2026-07-17_wearable_needs_reconnect.sql`, **run manually**) — set true on a definitive
+>   `invalid_grant`/`RECONNECT_REQUIRED`, cleared to false on every successful (re)connect or
+>   refresh (`saveProfileTokens`/`saveWearableTokens`, both OAuth callbacks). Only ever set on a
+>   real auth failure, never a transient blip, so it doesn't flap. Writes are best-effort
+>   (`setNeedsReconnect`, never blocks a token save) and the providers read falls back to a
+>   column-less select if the migration hasn't been applied yet — so deploy/migration ordering
+>   can't break token persistence or the endpoint.
+> - **Providers endpoint** now returns real health: `connected` = row exists AND healthy, plus
+>   `needs_reconnect` and a `status` enum (`connected`|`needs_reconnect`|`disconnected`). Both
+>   existing consumers (sync-modal `wsFetchProviders`, GH reconsent banner) keep reading `.connected`
+>   and now correctly drop a dead connection instead of treating it as live.
+> - **Settings → Account "Connected Devices"** rebuilt: was a single hardcoded Fitbit row driven by
+>   `profile_data.fitbit`; now `loadConnectedDevices()` renders Fitbit + Google Health from the
+>   providers endpoint with per-provider status and **Reconnect** (reuses `POST
+>   /api/wearables/connect/:provider`) + **Disconnect** (confirm → existing `POST
+>   /api/wearables/disconnect/:provider`) buttons; `needs_reconnect` surfaces an amber
+>   "&#9888; Reconnect required". Additive JS, inline styles only, no global class changes.
+> - **Disconnect endpoint already existed** (`server.js`) — reused, not duplicated. **Scheduler/
+>   nightly-sync gap deliberately untouched** (tracked separately).
+> - **Removed** two stale "Front-end redesign — in progress in a separate chat" claims (no such
+>   redesign exists) from §7 and the Exercise Video section.
+> - **Not yet verified live** at write time — needs deploy + the manual migration; then confirm
+>   `providers/1` reports `needs_reconnect:true` for both dead providers and the Settings rows +
+>   buttons work, and reconnect Google Health to watch the flag clear and sync resume.
+>
 > **2026-07-17 session #18** (Doc sync + roadmap refresh — no feature work):
 > - **Full read-through of `CLAUDE.md` + `ROADMAP.md`, verified against live `server.js`/
 >   `public/index.html`/`migrations/`** for everything shipped since the last full sync: frontend
@@ -33,7 +72,7 @@
 >   decision gate requiring the next session to actively resolve three real-use-conditional items
 >   (readiness hero compaction, Today template quick-row, Coach Chat monthly aggregates) before
 >   defaulting to (5) the Free Exercise DB top-up — plus an unordered parked backlog and a "still on
->   the board" list (Apple HealthKit, MuscleWiki video, logo, frontend redesign). Cleaned up three
+>   the board" list (Apple HealthKit, MuscleWiki video, logo). Cleaned up three
 >   now-stale live cross-references to the old priority numbering (Exercise Video plan section,
 >   "Next up" subsection) that would otherwise have pointed at numbers that no longer meant anything.
 >
@@ -598,6 +637,7 @@ Remembers a user's "these are separate sessions" decision so a rejected pairing 
 - `migrations/2026-07-17_drop_fitbit_pending_imports.sql` — drops `profiles.fitbit_pending_imports`. Code removed same day (§9). **✅ Applied to production.**
 - `migrations/2026-07-17_drop_legacy_roadmap.sql` — drops `profiles.roadmap` + `roadmap_updated_at`. Code removed same day (§9). **✅ Applied to production.**
 - `migrations/2026-07-17_exercises_workout_fk_cascade.sql` — adds `exercises_workout_id_fkey` (`exercises.workout_id → workouts.id`, `ON DELETE CASCADE`). **✅ Applied to production** — the orphan check ran clean across every profile first (a pre-existing orphan would have made the `ALTER TABLE` itself fail); see §9.
+- `migrations/2026-07-17_wearable_needs_reconnect.sql` — adds `wearable_connections.needs_reconnect` (boolean, `NOT NULL DEFAULT false`) for the connection-health flag (session #19). **⚠ Run manually in the Supabase SQL editor.** Code is resilient to its absence — writes are best-effort and the providers endpoint falls back to a column-less select — so it can be applied just before/with the deploy without a broken window, but the flag only persists/reports once it's run.
 
 > Most other tables/columns were created ad-hoc via the Supabase SQL editor (the `CREATE TABLE`/`ALTER TABLE` snippets are documented inline in `CLAUDE.md`). Only the wearables + the 2026-05-22 / 2026-05-24 / 2026-05-26 migrations are committed as files.
 
@@ -817,7 +857,7 @@ All verified present in `server.js`. `:id`/`:userId` = profile id.
 ### Wearables
 | Method | Path |
 |--------|------|
-| GET | `/api/wearables/providers/:userId` |
+| GET | `/api/wearables/providers/:userId` — per-provider `{connected, needs_reconnect, status}` reflecting real token health (session #19), not just row existence |
 | POST | `/api/wearables/connect/:provider` · `/disconnect/:provider` |
 | GET | `/api/wearables/sync-backlog/:userId` · `/activity-types/:userId` |
 | POST | `/api/wearables/merge/:userId` · `/reject/:userId` · `/import/:userId` · `/bulk-action/:userId` |
@@ -914,7 +954,6 @@ Each item below is self-contained — no other doc/session context should be nee
 - Apple HealthKit / iOS integration — long-term, needs an iOS companion app + Apple Developer Account.
 - MuscleWiki video-streaming layer — paid-user/beta stage, gated behind a subscription decision (see the Exercise Video / Demonstration Database plan below).
 - Logo transparent background.
-- Front-end redesign — in progress in a separate chat.
 
 > **Shipped 2026-07-16 → 2026-07-17** (superseded from the priority list above to avoid drift — see §3, session banners at the top of this file, and `CLAUDE.md` for full detail): Exercise Canonicalization phase 2 (family rollups, muscle-group filter, muscle heatmap), full frontend declutter pass, Wearable Sync bulk-review provider picker, Readiness card hero/detail split, tech-debt batch (4 items, all migrations now run in production), Coach Chat sleep-history snapshot, full-history Fitbit backfill (+ RHR chunking fix).
 
@@ -986,8 +1025,6 @@ Macro roadmap shape (stored on `profiles.roadmap_data`):
 - **Video — 🔲 not started, explicitly paid-user/beta stage** (see §7 → "Still on the board"). MuscleWiki remains the only tiered source with a real video library (1,900+ demonstrations) — still requires the **$10/mo TESTING plan minimum**, videos served through **authenticated endpoints** so a **server proxy is required** (never embed the raw URL, and **no stored media** — stream-through only, per their API ToS). When this gets built: a one-time exercise-ID **mapping pass** (not a data seed) matches existing `exercise_catalog.canonical_name`s against MuscleWiki's own names and fills `musclewiki_id` — the column has sat ready for exactly this since the original 2026-07-15 migration. An AI rec-card **"Watch" CTA** would match the recommended exercise name against `exercise_catalog` and, when `musclewiki_id` is set, open the proxied video.
   - **Secondary — ExerciseDB** (`exercisedb.io` via RapidAPI): ~1,300 exercises, GIF demonstrations, has a free tier — still a viable fallback for the video layer specifically once that's being built.
   - **Tertiary — YouTube** embed links (optional "deep dive" per exercise) — no change from the original plan.
-
-**Front-end redesign** — in progress in a separate chat.
 
 ### Next up
 

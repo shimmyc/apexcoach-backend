@@ -189,6 +189,53 @@ async function getValidToken() {
   return await refreshAccessToken();
 }
 
+// ── TOKEN REFRESH SERIALIZATION ───────────────────────────────────────────
+// OAuth refresh tokens are single-use: Fitbit (and Google Health) rotate the
+// refresh token on every successful exchange, invalidating the previous one.
+// getValidProfileToken / getValidWearableToken are called from several
+// endpoints that can fire concurrently on app boot (daily fetch, unmatched,
+// sync-backlog, life-os-summary, …). Two callers that both see an expired
+// token would each POST the SAME refresh token; whichever loses the race then
+// holds a now-dead token and its save clobbers the winner's fresh one — the
+// suspected cause of the 2026-07-17 Fitbit token death.
+//
+// This map serializes refreshes per (provider:profileId): the first caller
+// starts the refresh, everyone else awaits the same in-flight promise and
+// receives the same fresh access token. Non-refresh (valid-token) reads never
+// touch this — only the actual refresh is serialized. In-process only, which
+// is sufficient here (single Render web instance); a multi-instance deploy
+// would need a DB/row lock instead.
+var _refreshLocks = {};
+function withRefreshLock(key, fn) {
+  if (_refreshLocks[key]) return _refreshLocks[key];
+  var p = Promise.resolve().then(fn);
+  _refreshLocks[key] = p;
+  return p.finally(function() {
+    if (_refreshLocks[key] === p) delete _refreshLocks[key];
+  });
+}
+
+// Best-effort write of the wearable_connections.needs_reconnect health flag.
+// NEVER throws and NEVER blocks a token save: a failure (including the column
+// not existing yet, before the 2026-07-17 migration is applied) is logged and
+// swallowed. Set true on a definitive invalid_grant / RECONNECT_REQUIRED;
+// cleared to false on any successful (re)connect or refresh.
+async function setNeedsReconnect(profileId, provider, value) {
+  try {
+    await fetch(
+      SUPABASE_URL + "/rest/v1/wearable_connections?profile_id=eq." + profileId
+        + "&provider=eq." + provider,
+      {
+        method: "PATCH",
+        headers: sbHeaders("return=minimal"),
+        body: JSON.stringify({ needs_reconnect: !!value }),
+      }
+    );
+  } catch (e) {
+    console.warn("[Wearables] setNeedsReconnect(" + provider + "=" + value + ") failed (non-fatal): " + e.message);
+  }
+}
+
 // ── PROFILE TOKEN STORAGE ─────────────────────────────────────────────────
 async function loadProfileTokens(profileId) {
   try {
@@ -248,6 +295,10 @@ async function saveProfileTokens(profileId, tokens) {
           updated_at: new Date().toISOString(),
         }),
       });
+      // Fresh tokens just landed → this connection is healthy again. Cleared
+      // separately (not folded into the upsert body) so a missing
+      // needs_reconnect column can never break the token mirror itself.
+      setNeedsReconnect(profileId, "fitbit", false);
     } catch (e) {
       console.warn("[Fitbit] saveProfileTokens wearable_connections mirror failed: " + e.message);
     }
@@ -256,7 +307,16 @@ async function saveProfileTokens(profileId, tokens) {
   }
 }
 
+// Public entry — serialized per profile so concurrent callers share ONE
+// refresh instead of each spending the single-use refresh token (see
+// withRefreshLock). The actual work lives in _doRefreshProfileToken.
 async function refreshProfileToken(profileId) {
+  return withRefreshLock("fitbit:" + profileId, function() {
+    return _doRefreshProfileToken(profileId);
+  });
+}
+
+async function _doRefreshProfileToken(profileId) {
   const tokens = await loadProfileTokens(profileId);
   if (!tokens.refresh_token) throw new Error("No Fitbit refresh token for this profile. Please re-authorize.");
   const creds = Buffer.from(CLIENT_ID + ":" + CLIENT_SECRET).toString("base64");
@@ -284,6 +344,9 @@ async function refreshProfileToken(profileId) {
       if (!res.ok) {
         if (res.status === 400 && /invalid_grant/i.test(text)) {
           console.error("[Fitbit] Refresh token already rotated or invalid — re-auth required");
+          // Persist the health flag so the providers endpoint / UI can surface
+          // "Reconnect required" instead of silently failing. Best-effort.
+          setNeedsReconnect(profileId, "fitbit", true);
         }
         // Non-2xx is a server-side rejection, not a network blip — do not retry.
         throw new Error("Refresh failed: " + text);
@@ -7483,6 +7546,10 @@ async function saveWearableTokens(profileId, provider, tokens) {
     headers: sbHeaders("return=minimal,resolution=merge-duplicates"),
     body: JSON.stringify(payload),
   });
+  // Fresh tokens → connection healthy again. Cleared separately (not folded
+  // into the upsert body) so a missing needs_reconnect column can never break
+  // the token write itself.
+  setNeedsReconnect(profileId, provider, false);
   // Mirror Fitbit tokens to profiles.fitbit_* so the legacy buildDailyData
   // / runFitbitBackfill paths keep working without changes.
   if (provider === "fitbit") {
@@ -7547,16 +7614,24 @@ async function getValidWearableToken(profileId, provider) {
     e1.code = "RECONNECT_REQUIRED";
     throw e1;
   }
-  var adapter = wearables.getProviderAdapter(provider);
-  var fresh;
-  try {
-    fresh = await adapter.refreshToken(tokens.refresh_token);
-  } catch (refreshErr) {
-    refreshErr.code = refreshErr.code || "RECONNECT_REQUIRED";
-    throw refreshErr;
-  }
-  await saveWearableTokens(profileId, provider, fresh);
-  return fresh.access_token;
+  // Serialize the refresh per (provider:profileId) so concurrent callers share
+  // ONE exchange instead of each spending the single-use refresh token (see
+  // withRefreshLock). tokens.refresh_token captured above is only ever used by
+  // the caller that actually runs this fn; everyone else awaits its result.
+  return withRefreshLock(provider + ":" + profileId, async function() {
+    var adapter = wearables.getProviderAdapter(provider);
+    var fresh;
+    try {
+      fresh = await adapter.refreshToken(tokens.refresh_token);
+    } catch (refreshErr) {
+      refreshErr.code = refreshErr.code || "RECONNECT_REQUIRED";
+      // Definitive auth failure → persist the health flag for the UI. Best-effort.
+      setNeedsReconnect(profileId, provider, true);
+      throw refreshErr;
+    }
+    await saveWearableTokens(profileId, provider, fresh);
+    return fresh.access_token;
+  });
 }
 
 // Maps RECONNECT_REQUIRED errors → 401 with a structured payload the UI
@@ -7581,26 +7656,52 @@ function sendWearableError(res, err, provider) {
 // ── endpoints ─────────────────────────────────────────────────────────────
 
 // GET /api/wearables/providers/:userId
-// → { providers: [{ provider, label, connected, last_synced_at }] }
+// → { providers: [{ provider, label, connected, needs_reconnect, status, last_synced_at }] }
+//   status: 'connected' | 'needs_reconnect' | 'disconnected'.
+//   connected reflects real token health (a row whose last refresh hit
+//   invalid_grant reports connected:false / status:'needs_reconnect'), NOT
+//   mere row existence — so the UI and the sync modal stop treating a dead
+//   token as a live connection. needs_reconnect is only ever set on a
+//   definitive auth failure, never a transient blip, so this doesn't flap.
 app.get("/api/wearables/providers/:userId", async function(req, res) {
   try {
     var pid = req.params.userId;
+    // Select needs_reconnect too; fall back to a column-less select if the
+    // 2026-07-17 migration hasn't been applied yet (PostgREST 400s an unknown
+    // column) so the endpoint never breaks in the pre-migration window —
+    // every row then reads as healthy (needs_reconnect defaults false).
+    var selectBase = "profile_id=eq." + pid + "&select=provider,last_synced_at,token_expires_at";
     var connRes = await fetch(
-      SUPABASE_URL + "/rest/v1/wearable_connections?profile_id=eq." + pid
-        + "&select=provider,last_synced_at,token_expires_at",
+      SUPABASE_URL + "/rest/v1/wearable_connections?" + selectBase + ",needs_reconnect",
       { headers: sbHeaders() }
     );
     var conns = await connRes.json();
+    if (!Array.isArray(conns)) {
+      // Most likely the needs_reconnect column doesn't exist yet — retry the
+      // original, column-less shape.
+      var retryRes = await fetch(
+        SUPABASE_URL + "/rest/v1/wearable_connections?" + selectBase,
+        { headers: sbHeaders() }
+      );
+      conns = await retryRes.json();
+    }
     var byProvider = {};
     (Array.isArray(conns) ? conns : []).forEach(function(c) { byProvider[c.provider] = c; });
 
     var all = wearables.listProviders();
     var out = all.map(function(p) {
       var c = byProvider[p.provider];
+      var needsReconnect = !!(c && c.needs_reconnect);
+      var status = !c ? "disconnected" : (needsReconnect ? "needs_reconnect" : "connected");
       return {
         provider: p.provider,
         label: p.label,
-        connected: !!c,
+        // Backward-compatible field: true only when a row exists AND its token
+        // is healthy. Existing consumers (sync modal, GH reconsent banner)
+        // keep reading .connected and now correctly drop a dead connection.
+        connected: status === "connected",
+        needs_reconnect: needsReconnect,
+        status: status,
         last_synced_at: c ? c.last_synced_at : null,
       };
     });
