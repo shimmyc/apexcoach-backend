@@ -1104,6 +1104,15 @@ app.delete("/api/profiles/:id", async function(req, res) {
     if (rows[0].pin !== hashPin(body.pin)) {
       return res.json({ success: false, error: "Incorrect PIN." });
     }
+    // Delete all exercises for this profile (2026-07-17, ROADMAP §9 — mirrors
+    // the session #11 DELETE /api/workouts/:id fix, same root cause. Stays
+    // independent of the exercises_workout_id_fkey CASCADE migration: a
+    // cascade from workouts can never reach an exercises row whose
+    // workout_id is null, and extract-exercises can insert one).
+    await fetch(SUPABASE_URL + "/rest/v1/exercises?profile_id=eq." + req.params.id, {
+      method: "DELETE",
+      headers: sbHeaders("return=minimal"),
+    });
     // Delete all workouts for this profile
     await fetch(SUPABASE_URL + "/rest/v1/workouts?profile_id=eq." + req.params.id, {
       method: "DELETE",
@@ -1316,12 +1325,11 @@ app.get("/api/profiles/:id/daily", async function(req, res) {
         console.error("[Sleep] daily upsert failed:", e.message);
       });
     }
-    // NOTE: the legacy fitbit_pending_imports queue is deprecated and no longer
-    // written. The Today-tab "Unmatched Fitbit Activities" card
-    // (GET /api/profiles/:id/unmatched-fitbit) replaces it — it computes
-    // unmatched activities on demand over the last 7 days, so there's nothing to
-    // queue here. diffAndQueueFitbitImports() / the fitbit-pending-imports /
-    // fitbit-import endpoints remain defined but unused (kept for back-compat).
+    // NOTE: no pending-imports queue write here — the Today-tab "Unmatched
+    // Fitbit Activities" card (GET /api/profiles/:id/unmatched-fitbit)
+    // computes unmatched activities on demand over the last 7 days instead
+    // (2026-07-17: the old fitbit_pending_imports queue + its endpoints were
+    // removed entirely, see ROADMAP.md §9).
     res.json({ success: true, date: result.date, data: result.data });
   } catch (err) {
     console.error("Error:", err.message);
@@ -1609,187 +1617,6 @@ async function runFitbitBackfill(profileId, days) {
   console.log("[Backfill] profile=" + profileId + " stepDays=" + stepDays + " weightDays=" + weightDays);
   return { stepDays: stepDays, weightDays: weightDays, height_inches_used: height };
 }
-
-// ── FITBIT WORKOUT AUTO-IMPORT ────────────────────────────────────────────
-// Map common Fitbit activityName values into our workout-type taxonomy.
-// Anything not in the table is kept verbatim — Claude's title generator will
-// normalize it later if the user imports.
-var FITBIT_ACTIVITY_TYPE_MAP = {
-  "Run": "Cardio",
-  "Outdoor Run": "Cardio",
-  "Treadmill": "Cardio",
-  "Walk": "Cardio",
-  "Outdoor Walk": "Cardio",
-  "Hike": "Cardio",
-  "Bike": "Cardio",
-  "Outdoor Bike": "Cardio",
-  "Spinning": "Cardio",
-  "Elliptical": "Cardio",
-  "Swim": "Cardio",
-  "Weights": "Strength",
-  "Strength Training": "Strength",
-  "Workout": "Strength",
-  "Yoga": "Mind & Body",
-  "Pilates": "Mind & Body",
-  "Meditation": "Mind & Body",
-  "Martial Arts": "Martial Arts",
-  "MMA": "Martial Arts",
-  "Boxing": "Martial Arts",
-};
-function mapFitbitActivityType(name) {
-  if (!name) return "Workout";
-  if (FITBIT_ACTIVITY_TYPE_MAP[name]) return FITBIT_ACTIVITY_TYPE_MAP[name];
-  // Lowercase prefix fallbacks for things like "Outdoor Run (lap)" etc.
-  var lower = String(name).toLowerCase();
-  if (lower.indexOf("run") >= 0 || lower.indexOf("walk") >= 0 || lower.indexOf("hike") >= 0 || lower.indexOf("bike") >= 0 || lower.indexOf("swim") >= 0 || lower.indexOf("ellipt") >= 0) return "Cardio";
-  if (lower.indexOf("strength") >= 0 || lower.indexOf("weight") >= 0 || lower.indexOf("lift") >= 0) return "Strength";
-  if (lower.indexOf("yoga") >= 0 || lower.indexOf("pilates") >= 0 || lower.indexOf("medit") >= 0 || lower.indexOf("stretch") >= 0) return "Mind & Body";
-  if (lower.indexOf("martial") >= 0 || lower.indexOf("mma") >= 0 || lower.indexOf("boxing") >= 0 || lower.indexOf("bjj") >= 0 || lower.indexOf("kickbox") >= 0) return "Martial Arts";
-  return name; // Keep Fitbit's name as-is.
-}
-
-// Decide whether an activity is already represented either by an existing
-// workout (source="fitbit_activity" + same activityName/date) OR by an
-// already-pending import for the same activityId. Returns the new pending
-// queue (pre-existing entries kept, new ones appended).
-async function diffAndQueueFitbitImports(profileId, dateStr, activities) {
-  // Existing workouts that match: fitbit_activity-source rows for today.
-  var wRes = await fetch(
-    SUPABASE_URL + "/rest/v1/workouts?profile_id=eq." + profileId +
-      "&date=eq." + dateStr +
-      "&select=type,notes",
-    { headers: sbHeaders() }
-  );
-  var existingWorkouts = await wRes.json();
-  if (!Array.isArray(existingWorkouts)) existingWorkouts = [];
-
-  // Helper: do we already have a fitbit_activity workout matching this name?
-  function matchesExistingWorkout(activityName) {
-    var nameL = String(activityName || "").toLowerCase();
-    for (var i = 0; i < existingWorkouts.length; i++) {
-      var w = existingWorkouts[i];
-      // Source is encoded as a marker in notes (we don't have a source col on
-      // workouts). Belt-and-braces: also match on the type containing the
-      // activity name to dedupe manual logs.
-      if (w.notes && String(w.notes).indexOf("source: fitbit_activity") >= 0 &&
-          String(w.type || "").toLowerCase().indexOf(nameL) >= 0) return true;
-      if (String(w.type || "").toLowerCase() === nameL) return true;
-    }
-    return false;
-  }
-
-  var pRes = await fetch(SUPABASE_URL + "/rest/v1/profiles?id=eq." + profileId + "&select=fitbit_pending_imports", { headers: sbHeaders() });
-  var pRows = await pRes.json();
-  var existingPending = (pRows && pRows[0] && Array.isArray(pRows[0].fitbit_pending_imports)) ? pRows[0].fitbit_pending_imports : [];
-  var existingIds = {};
-  for (var ei = 0; ei < existingPending.length; ei++) {
-    if (existingPending[ei] && existingPending[ei].activityId != null) existingIds[String(existingPending[ei].activityId)] = true;
-  }
-
-  var added = 0;
-  var nextPending = existingPending.slice();
-  for (var ai = 0; ai < activities.length; ai++) {
-    var a = activities[ai];
-    if (!a || !a.activityId) continue;
-    if (existingIds[String(a.activityId)]) continue; // already pending
-    if (matchesExistingWorkout(a.name)) continue;    // already imported as a workout
-    nextPending.push(a);
-    added++;
-  }
-  if (added === 0) return;
-
-  await fetch(SUPABASE_URL + "/rest/v1/profiles?id=eq." + profileId, {
-    method: "PATCH",
-    headers: sbHeaders("return=minimal"),
-    body: JSON.stringify({ fitbit_pending_imports: nextPending }),
-  });
-  console.log("[FitbitImport] queued " + added + " new pending activity/activities for profile " + profileId);
-}
-
-// GET pending Fitbit imports for a profile (the client polls this on Today
-// tab render).
-app.get("/api/profiles/:id/fitbit-pending-imports", async function(req, res) {
-  try {
-    var pid = req.params.id;
-    var r = await fetch(SUPABASE_URL + "/rest/v1/profiles?id=eq." + pid + "&select=fitbit_pending_imports", { headers: sbHeaders() });
-    var rows = await r.json();
-    var pending = (rows && rows[0] && Array.isArray(rows[0].fitbit_pending_imports)) ? rows[0].fitbit_pending_imports : [];
-    res.json({ success: true, pending: pending });
-  } catch (e) {
-    res.status(500).json({ success: false, error: e.message });
-  }
-});
-
-// Import OR dismiss a pending Fitbit activity. Body: { activityId,
-// action: "import" | "dismiss" }. On import we create a workouts row and
-// remove from the pending list. On dismiss we just remove.
-app.post("/api/profiles/:id/fitbit-import", async function(req, res) {
-  try {
-    var pid = req.params.id;
-    var body = req.body || {};
-    var activityId = body.activityId;
-    var action = body.action || "import";
-    if (!activityId) return res.status(400).json({ success: false, error: "activityId required" });
-
-    var pr = await fetch(SUPABASE_URL + "/rest/v1/profiles?id=eq." + pid + "&select=fitbit_pending_imports", { headers: sbHeaders() });
-    var pRows = await pr.json();
-    var pending = (pRows && pRows[0] && Array.isArray(pRows[0].fitbit_pending_imports)) ? pRows[0].fitbit_pending_imports : [];
-    var idx = -1;
-    for (var i = 0; i < pending.length; i++) {
-      if (pending[i] && String(pending[i].activityId) === String(activityId)) { idx = i; break; }
-    }
-    if (idx < 0) return res.status(404).json({ success: false, error: "Pending activity not found" });
-    var act = pending[idx];
-
-    var createdWorkout = null;
-    if (action === "import") {
-      var dateStr = act.startTime ? String(act.startTime).slice(0, 10) : (function() {
-        var d = new Date(); var pad = function(n) { return String(n).padStart(2, "0"); };
-        return d.getFullYear() + "-" + pad(d.getMonth() + 1) + "-" + pad(d.getDate());
-      })();
-      var noteParts = ["Auto-imported from Fitbit: " + (act.durationMinutes != null ? act.durationMinutes + " min" : "?")];
-      if (act.calories != null) noteParts.push(act.calories + " cal burned");
-      if (act.avgHeartRate != null) noteParts.push("avg HR: " + act.avgHeartRate + " bpm");
-      var notes = noteParts.join(", ") + "\n[source: fitbit_activity, activityId=" + act.activityId + "]";
-      var workoutPayload = {
-        profile_id: parseInt(pid, 10),
-        date: dateStr,
-        type: mapFitbitActivityType(act.name),
-        notes: notes,
-        done: true,
-        mobility: false,
-        med: false,
-        ts: Date.now(),
-      };
-      var wRes = await fetch(SUPABASE_URL + "/rest/v1/workouts", {
-        method: "POST",
-        headers: sbHeaders("return=representation"),
-        body: JSON.stringify(workoutPayload),
-      });
-      if (!wRes.ok) {
-        var t = await wRes.text();
-        return res.status(wRes.status).json({ success: false, error: t });
-      }
-      var wRows = await wRes.json();
-      createdWorkout = Array.isArray(wRows) ? wRows[0] : wRows;
-      // Invalidate the progress brief — history changed.
-      clearProgressBriefCache(pid);
-    }
-
-    // Remove from pending regardless of action.
-    var nextPending = pending.slice(0, idx).concat(pending.slice(idx + 1));
-    await fetch(SUPABASE_URL + "/rest/v1/profiles?id=eq." + pid, {
-      method: "PATCH",
-      headers: sbHeaders("return=minimal"),
-      body: JSON.stringify({ fitbit_pending_imports: nextPending }),
-    });
-
-    res.json({ success: true, action: action, workout: createdWorkout, pending: nextPending });
-  } catch (e) {
-    console.error("[FitbitImport] action error:", e.message);
-    res.status(500).json({ success: false, error: e.message });
-  }
-});
 
 // ── UNMATCHED FITBIT ACTIVITIES (Today-tab convenience card) ────────────────
 // Replaces the legacy fitbit_pending_imports queue with a smarter card: surfaces
@@ -4107,131 +3934,6 @@ async function clearProgressBriefCache(pid) {
     console.warn("[ProgressBrief] clearProgressBriefCache failed:", e.message);
   }
 }
-
-// ── ROAD MAP ─────────────────────────────────────────────────────────────
-app.get("/api/profiles/:id/roadmap", async function(req, res) {
-  try {
-    const pid = req.params.id;
-    const r = await fetch(
-      SUPABASE_URL + "/rest/v1/profiles?id=eq." + pid + "&select=roadmap,roadmap_updated_at",
-      { headers: sbHeaders() }
-    );
-    const rows = await r.json();
-    if (!rows || !rows.length) return res.status(404).json({ error: "Profile not found" });
-    res.json({ success: true, roadmap: rows[0].roadmap, roadmap_updated_at: rows[0].roadmap_updated_at });
-  } catch (e) {
-    res.status(500).json({ error: e.message });
-  }
-});
-
-app.post("/api/profiles/:id/roadmap", async function(req, res) {
-  try {
-    const pid = req.params.id;
-    // Fetch profile
-    const pRes = await fetch(SUPABASE_URL + "/rest/v1/profiles?id=eq." + pid, { headers: sbHeaders() });
-    const profiles = await pRes.json();
-    if (!profiles || !profiles.length) return res.status(404).json({ error: "Profile not found" });
-    const profile = profiles[0];
-    const pd = profile.profile_data || {};
-    const goals = pd.goals || [];
-    const brief = (profile.coaching_brief || '').substring(0, 300);
-
-    // Fetch last 30 workouts
-    const wRes = await fetch(SUPABASE_URL + "/rest/v1/workouts?profile_id=eq." + pid + "&order=date.desc&limit=30", { headers: sbHeaders() });
-    const workouts = await wRes.json();
-    const doneCount = (workouts || []).filter(w => w.done).length;
-    const types = {};
-    (workouts || []).forEach(w => { if (w.type) types[w.type] = (types[w.type] || 0) + 1; });
-    const typeStr = Object.entries(types).map(([k,v]) => k + ' x' + v).join(', ') || 'none logged';
-
-    // Build goal context
-    let goalCtx = '';
-    for (let i = 0; i < goals.length; i++) {
-      const g = goals[i];
-      goalCtx += (i + 1) + '. ' + (g.title || 'Untitled') + ' (' + (g.status || 'IN PROGRESS') + ')';
-      if (g.target_value) goalCtx += ' — target: ' + g.target_value + ' ' + (g.unit || '');
-      goalCtx += '\n';
-    }
-
-    // Build schedule from profile_data. Supports both legacy string-per-day
-    // format and the new array-of-{activity, duration}-per-day format.
-    let scheduleStr = '';
-    if (pd.schedule) {
-      const days = ['mon','tue','wed','thu','fri','sat','sun'];
-      const dayNames = ['Monday','Tuesday','Wednesday','Thursday','Friday','Saturday','Sunday'];
-      const formatDay = (v) => {
-        if (!v) return null;
-        if (Array.isArray(v)) {
-          const parts = v
-            .filter((e) => e && e.activity)
-            .map((e) => e.activity + (typeof e.duration === 'number' && e.duration > 0 ? ' (' + e.duration + ' min)' : ''));
-          return parts.length ? parts.join(' + ') : null;
-        }
-        if (typeof v === 'string') {
-          const s = v.trim();
-          return (!s || s === 'Flexible') ? null : s;
-        }
-        return null;
-      };
-      days.forEach(function(d, i) {
-        const f = formatDay(pd.schedule[d]);
-        if (f) scheduleStr += dayNames[i] + ': ' + f + '\n';
-      });
-    }
-
-    // Gym access line for the prompt — same shape used by goal-progress.
-    var gymLine = '';
-    if (profile.gym_access) {
-      gymLine = 'GYM ACCESS: ' + profile.gym_access;
-      if (profile.gym_access === 'yes' && profile.gym_type) gymLine += ' (' + profile.gym_type + ')';
-      gymLine += '\n\n';
-    }
-
-    const prompt = 'You are a personal fitness coach creating a realistic road map for this athlete based on their current progress and goals.\n\n' +
-      'ATHLETE PROFILE:\n' + (pd.ai_prompt_context || pd.name || 'Athlete') + '\n\n' +
-      gymLine +
-      'GOAL PRIORITIES AND CURRENT PROGRESS:\n' + (goalCtx || 'No goals set yet.\n') + '\n' +
-      'RECENT CONSISTENCY: ' + doneCount + ' sessions in last 30 days (~' + Math.round(doneCount / 4.3) + '/week). Types: ' + typeStr + '\n\n' +
-      (scheduleStr ? 'ATHLETE\'S ACTUAL WEEKLY SCHEDULE (use this exactly, do not suggest different days):\n' + scheduleStr + '\nWhen writing the Weekly Blueprint section, build around these specific days. For example if Tuesday and Thursday are MMA days, the blueprint must show MMA on Tuesday and Thursday, not Monday or Saturday.\n\n' : '') +
-      'COACHING BRIEF:\n' + (brief || 'No coaching brief yet.') + '\n\n' +
-      'Generate a realistic road map with:\n\n' +
-      'CURRENT STATUS (1 paragraph):\nWhere they are right now honestly - consistency, progress toward each goal, what\'s working.\n\n' +
-      '30-DAY MILESTONES:\n- 3 specific achievable targets for next 30 days\n- One per top 3 goals\n- Concrete and measurable\n\n' +
-      '90-DAY MILESTONES:\n- 3 specific targets for 90 days\n- Based on realistic progression from current pace\n\n' +
-      '6-MONTH VISION:\n- Where they could realistically be in 6 months\n- If consistent at current pace vs if they hit targets\n\n' +
-      '12-MONTH VISION:\n- Long term projection\n- Which goals could be achieved by then\n\n' +
-      'WEEKLY BLUEPRINT:\n- Build around the athlete\'s ACTUAL schedule above — do not change their training days\n- Fill in recovery/rest days and add specific focus for each session\n- If no schedule provided, suggest an ideal split\n\n' +
-      'BIGGEST RISK:\n- One honest assessment of what could derail progress\n- One specific mitigation strategy\n\n' +
-      'Keep total response under 600 words. Be specific with numbers and dates. Be honest but encouraging. Use markdown formatting with ## headers.';
-
-    console.log("[Roadmap] Generating for profile " + pid);
-    const aiRes = await fetch("https://api.anthropic.com/v1/messages", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "x-api-key": process.env.ANTHROPIC_KEY,
-        "anthropic-version": "2023-06-01",
-      },
-      body: JSON.stringify({ model: MODEL_SONNET, max_tokens: 1200, messages: [{ role: "user", content: prompt }] }),
-    });
-    const aiData = await aiRes.json();
-    const roadmap = (aiData.content && aiData.content[0]) ? aiData.content[0].text : '';
-    if (!roadmap) return res.status(500).json({ error: "AI returned empty response" });
-
-    // Save to profiles
-    const now = new Date().toISOString();
-    await fetch(SUPABASE_URL + "/rest/v1/profiles?id=eq." + pid, {
-      method: "PATCH",
-      headers: sbHeaders("return=minimal"),
-      body: JSON.stringify({ roadmap: roadmap, roadmap_updated_at: now }),
-    });
-    console.log("[Roadmap] Saved for profile " + pid);
-    res.json({ success: true, roadmap: roadmap, roadmap_updated_at: now });
-  } catch (e) {
-    console.error("[Roadmap] Error:", e.message);
-    res.status(500).json({ error: e.message });
-  }
-});
 
 // ── EXERCISE CONTEXT HELPERS (roadmap generation + adaptation) ───────────────
 // Shared by the per-goal and macro roadmap endpoints to ground AI prompts in
@@ -9304,8 +9006,8 @@ app.post("/api/wearables/bulk-action/:userId", async function(req, res) {
 });
 
 // Shared by /reject and /import. Fetches the detail through the adapter,
-// shapes a workouts-table row (mirrors the existing /fitbit-import notes
-// format for consistency in the History tab), and inserts.
+// shapes a workouts-table row (matches the "Auto-imported from..." notes
+// format used elsewhere for consistency in the History tab), and inserts.
 async function createWearableWorkout(profileId, provider, namespacedActivityId, listActivity) {
   var bareId = namespacedActivityId.indexOf(provider + ":") === 0
     ? namespacedActivityId.slice(provider.length + 1)
@@ -9430,10 +9132,11 @@ function wearableMetrics(wd) {
     peak_hr_est: peakEst,
   };
 }
-// Fallback metrics parsed from a workout's free-text notes. Legacy Fitbit
-// auto-imports (/api/profiles/:id/fitbit-import) store HR / calories / duration
-// in the notes string ONLY — they never populate the wearable_data column — so
-// without this, HR shows N/A for every auto-imported session.
+// Fallback metrics parsed from a workout's free-text notes. Historical rows
+// created by the old fitbit-import endpoint (removed 2026-07-17, see
+// ROADMAP.md §9) stored HR / calories / duration in the notes string ONLY —
+// they never populated the wearable_data column — so without this, HR shows
+// N/A for every one of those older auto-imported sessions still on file.
 function notesMetrics(notes) {
   var out = { minutes: null, calories: null, avg_hr: null, peak_hr: null, peak_hr_est: false };
   if (!notes) return out;

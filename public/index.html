@@ -913,16 +913,8 @@ input[type=range]{width:100%;accent-color:var(--accent)}
          it's an AI-behavior control, same family as Coaching Brief/Roadmap. -->
     <div class="card" id="focus-override-card"></div>
     <div id="coaching-brief-card"></div>
-    <div id="roadmap-card" class="card" style="display:none">
-      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">
-        <p class="clabel" style="margin-bottom:0">&#128506; my road map</p>
-        <button id="roadmap-gen-btn" onclick="generateRoadmap()" style="background:var(--accent-ember);border:none;color:#fff;padding:8px 16px;border-radius:14px;cursor:pointer;font-size:13px;font-weight:600">Generate</button>
-      </div>
-      <div id="roadmap-content"></div>
-      <div id="roadmap-updated" class="mono" style="font-size:10px;color:var(--text-dim);margin-top:10px;display:none"></div>
-    </div>
 
-    <!-- MACRO ROADMAP (structured roadmap_data) — replaces the legacy text card above (kept but no longer shown) -->
+    <!-- MACRO ROADMAP (structured roadmap_data) — replaced the legacy free-text roadmap card, which was fully retired 2026-07-17 (see ROADMAP.md §9) -->
     <div id="roadmap-data-card" class="card" style="display:none">
       <div id="roadmap-data-body"></div>
     </div>
@@ -2388,8 +2380,9 @@ function bootApp() {
         }
       })
       .catch(function() {});
-    // Structured macro roadmap (replaces the legacy text card; loadRoadmap()
-    // and its /roadmap path stay intact but are no longer invoked).
+    // Structured macro roadmap (2026-07-17: the legacy free-text roadmap
+    // card + its loadRoadmap()/generateRoadmap()/renderRoadmapContent()
+    // functions and /roadmap endpoint were fully retired, see ROADMAP §9).
     loadRoadmapData();
     // Warm the 7-day schedule preview so it's ready when the user reaches the
     // Profile tab (renders from cache if same-day, else fetches).
@@ -5026,69 +5019,11 @@ function generateBrief() {
     });
 }
 
-// ── ROAD MAP ─────────────────────────────────────────────────────────────
-function loadRoadmap() {
-  if (!currentProfileId) return;
-  var card = document.getElementById('roadmap-card');
-  card.style.display = 'block';
-  fetch('/api/profiles/' + currentProfileId + '/roadmap')
-    .then(function(r) { return r.json(); })
-    .then(function(data) {
-      if (data.roadmap) {
-        renderRoadmapContent(data.roadmap, data.roadmap_updated_at);
-        document.getElementById('roadmap-gen-btn').textContent = 'Regenerate';
-      } else {
-        document.getElementById('roadmap-content').innerHTML = '<p style="color:var(--text-dim);font-size:14px;font-style:italic">No road map yet. Tap Generate to create your personalized plan.</p>';
-      }
-    })
-    .catch(function() {});
-}
-
-function generateRoadmap() {
-  if (!currentProfileId) return;
-  var btn = document.getElementById('roadmap-gen-btn');
-  if (btn.textContent === 'Regenerate') {
-    if (!confirm('Regenerate your road map? This will replace the current one.')) return;
-  }
-  btn.textContent = 'Generating...';
-  btn.disabled = true;
-  document.getElementById('roadmap-content').innerHTML = '<p class="mono" style="font-size:11px;color:#22c97a;letter-spacing:3px;animation:pulse 1.6s infinite">BUILDING YOUR ROAD MAP...</p>';
-  fetch('/api/profiles/' + currentProfileId + '/roadmap', { method: 'POST', headers: { 'Content-Type': 'application/json' } })
-    .then(function(r) { return r.json(); })
-    .then(function(data) {
-      if (data.success && data.roadmap) {
-        renderRoadmapContent(data.roadmap, data.roadmap_updated_at);
-        btn.textContent = 'Regenerate';
-        showToast('Road map generated!');
-        // Road map reflects updated plan/goals — invalidate recs
-        if (document.getElementById('ai-card').style.display === 'block') regenerateAIForContextChange('roadmap_regenerated');
-      } else {
-        document.getElementById('roadmap-content').innerHTML = '<p style="color:#e87;font-size:14px">Failed to generate — <button onclick="generateRoadmap()" style="background:transparent;border:1px solid #333;color:#666;padding:4px 10px;cursor:pointer;border-radius:4px;font-size:12px">Retry</button></p>';
-        btn.textContent = 'Generate';
-      }
-      btn.disabled = false;
-    })
-    .catch(function() {
-      document.getElementById('roadmap-content').innerHTML = '<p style="color:#e87;font-size:14px">Error — <button onclick="generateRoadmap()" style="background:transparent;border:1px solid #333;color:#666;padding:4px 10px;cursor:pointer;border-radius:4px;font-size:12px">Retry</button></p>';
-      btn.textContent = 'Generate';
-      btn.disabled = false;
-    });
-}
-
-function renderRoadmapContent(text, updatedAt) {
-  document.getElementById('roadmap-content').innerHTML = '<div style="font-size:14px;color:var(--text-sec);line-height:1.75">' + parseMd(text) + '</div>';
-  var upEl = document.getElementById('roadmap-updated');
-  if (updatedAt) {
-    upEl.textContent = 'Last generated: ' + new Date(updatedAt).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
-    upEl.style.display = 'block';
-  }
-}
-
 // ── MACRO ROADMAP (structured roadmap_data) ──────────────────────────────
-// Structured phase-card UI that replaces the legacy free-text roadmap render
+// Structured phase-card UI that replaced the legacy free-text roadmap render
 // on the Profile tab. Reads GET/POST /api/profiles/:id/roadmap-data. The
 // legacy loadRoadmap()/renderRoadmapContent()/generateRoadmap() functions and
-// the /roadmap (text) endpoint are intentionally left intact but uncalled.
+// the /roadmap (text) endpoint were fully retired 2026-07-17 (ROADMAP §9).
 var currentRoadmapData = null;        // structured roadmap_data (null = not generated)
 var currentRoadmapUpdatedAt = null;   // roadmap_data_updated_at
 var roadmapDataLoaded = false;        // false until the first GET resolves for this profile
