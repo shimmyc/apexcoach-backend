@@ -8,6 +8,36 @@
 > `wearables/`, and `migrations/` rather than transcribed. Where the original brief differed
 > from the live code, the doc follows the code and flags it with **⚠ Correction**.
 >
+> **2026-07-16 session #14** (Readiness card hero/detail split, closes §7 priority 10 — the JS
+> restructure explicitly deferred from the declutter session):
+> - `renderReadiness()` split into an always-visible hero (ring/score/tier/bar + 2×2 bio-grid) and
+>   a collapsed-by-default detail section (bars/sleep-stages/zones/HRV), same visual-only toggle
+>   pattern as Coaching Brief/Macro Roadmap. **No data computation, fetch paths, or regen triggers
+>   touched** — confirmed by capturing production's readiness/HRV/RHR/sleep/steps numbers *before*
+>   deploying and diffing against the same numbers post-deploy: identical.
+> - **Sleep score surfaced in the hero** — the bio-grid's "Sleep" cell now shows the computed sleep
+>   SCORE as its headline number (was hours-only before), e.g. "81" with a "Good · 5.9h" caption,
+>   reusing the exact `ssColor`/`ssTier` tier logic the detail card's own SLEEP SCORE display
+>   already used.
+> - **Real bug found and fixed along the way**: `ssColor`/`ssTier` were computed inside `if
+>   (deep.minutes || rem.minutes)`, one condition narrower than `sleepScore`'s own gate (`deep ||
+>   rem || light`) — a light-only night left them `undefined`. Not reachable before this session
+>   (the hero never referenced them), became a real risk once it started reusing them for the new
+>   cell, so hoisted and fixed at the source.
+> - **Dead code removed**: `vitalsHTML` was computed every render but never concatenated into
+>   `card.innerHTML` — confirmed via diff review it was a true no-op, safe to delete.
+> - **Honest gap, not glossed over**: the ~200px hero target wasn't hit — measured live it's
+>   ~354px, since the ring/grid dimensions are pre-existing and shrinking them would itself be a
+>   visual change beyond "the collapse" (out of scope per this session's own guardrails). What
+>   shipped: the full card (hero + detail) went from ~1084px always-expanded to ~415px with the
+>   detail collapsed — roughly halves the scroll distance to the feeling check-in/rec even though
+>   the hero itself didn't hit the aspirational number.
+> - **Verified live** (profile 1, production, 390×844 and 1440×900): pre/post-deploy numbers
+>   identical (readiness 62/light, HRV 52.3, RHR 58, sleep 5.87h, steps 5976, sleep score 81/Good);
+>   detail toggle expands with all four subsections and matching numbers;
+>   `localStorage.ac_readiness_detail_open` persists across a full page reload, not just a
+>   client-side re-render; zero new console errors.
+>
 > **2026-07-16 session #13** (Wearable Sync bulk-review modal — Google Health provider picker,
 > closes §7 priority 6 — UI-only, no backend/endpoint/dependency changes):
 > - `wsFetchProviders()` reads the existing `GET /api/wearables/providers/:userId` (same one the
@@ -750,7 +780,7 @@ Each item below is self-contained — no other doc/session context should be nee
 7. Apple HealthKit / iOS integration — long-term (below).
 8. **Optional: Free Exercise DB top-up import**, if wger coverage gaps keep surfacing in practice. A concrete gap already found live (session #8): wger seeded plenty of *variant-qualified* lat pulldown names (Wide-Grip, Neutral-Grip, Single-Arm, …) but no bare "Lat Pulldown" — today that correctly falls through to Haiku and creates a `source:'custom'` row with a confirm chip (working as designed, not broken), but a free, keyless top-up source (e.g. `github.com/yuhonas/free-exercise-db`, public domain JSON) could close gaps like this proactively instead of relying on Haiku to backfill them one save at a time. Not started — only worth building if this keeps happening after wger's ~880 rows are in real use.
 9. **MuscleWiki video-streaming layer — paid-user/beta stage, not started.** Distinct from data seeding (which wger now covers): subscribing to MuscleWiki's video API ($10/mo TESTING plan minimum) and doing a **one-time exercise-ID mapping pass** onto the existing catalog via the `musclewiki_id` column (kept on the schema for exactly this) — matching wger-seeded `canonical_name`s against MuscleWiki's own names, filling `musclewiki_id` where found. **In-app streaming only, through a server proxy — no stored media**, per MuscleWiki's API ToS. Gated behind a paid-user/beta flag, not a v1 feature. See the Exercise Video / Demonstration Database plan below, updated to reflect this split.
-10. **Readiness card hero/detail split — deferred, own session.** Found during the declutter pass (item 5): `renderReadiness()` renders one monolithic `card.innerHTML` (compact hero ring+bio-grid, then HRV/sleep/RHR bars, sleep-stage detail incl. the computed sleep score, zone minutes, HRV stat cards all appended below) with no seam to split a true compact "above-fold hero (ring + sleep score)" from a collapsible detail section without a JS restructure — out of scope for a pure-relocation pass. Needs: pull the computed sleep score into the compact hero/bio-grid (currently only sleep *hours* shows there — the score is buried in the detail tail), then gate the bars/stages/zones/HRV block behind a collapse, same visual-only pattern as Coaching Brief/Macro Roadmap (item 5).
+10. ~~Readiness card hero/detail split~~ — **✅ done (2026-07-16)**. `renderReadiness()` split into an always-visible hero (ring/score/tier/bar + 2×2 bio-grid, "Sleep" cell now shows the computed sleep SCORE — e.g. "81"/"Good · 5.9h" — not just hours) and a collapsed-by-default detail section (bars/sleep-stages/zones/HRV, all four subsections unchanged), same visual-only toggle pattern as Coaching Brief/Macro Roadmap (item 5). No data computation, fetch paths, or regen triggers touched — verified live pre/post-deploy with identical numbers. **Honest gap**: hero measures ~354px live, not the ~200px target — the ring/grid dimensions are pre-existing and shrinking them was out of scope ("no behavior change other than the collapse"); still cut the full card from ~1084px to ~415px by collapsing the detail. Found and fixed along the way: `ssColor`/`ssTier` were scoped inside a conditional that didn't match `sleepScore`'s own gate, leaving them `undefined` for a light-only-sleep edge case — hoisted to fix, and to make them safely reusable by the new hero cell. Also removed `vitalsHTML`, a fully dead block (computed, never rendered). See `CLAUDE.md` → "Readiness Card Hero/Detail Split".
 
 ### Near term
 
