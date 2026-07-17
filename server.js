@@ -1315,14 +1315,22 @@ app.get("/api/profiles/:id/daily", async function(req, res) {
           }
 
           // Build the response in the shape the client expects (mirrors buildDailyData).
+          // sleep.stages must be the Fitbit NESTED shape — { deep: { minutes }, ... } —
+          // NOT flat numbers. The frontend readers (renderReadiness, computeReadiness,
+          // and the AI-prompt builder) all read `stages.<stage>.minutes` (Fitbit's
+          // levels.summary shape); emitting bare numbers here made `.minutes` undefined,
+          // which blanked the sleep card and zeroed deep-sleep in the readiness formula
+          // (was masked while GH's token was dead and /daily fell through to Fitbit).
+          // thirtyDayAvgMinutes is absent for GH — the frontend already treats it as
+          // optional (`|| '?'` / `|| 0`), so its absence is safe.
           const responseData = {
             sleep: ghData.sleep ? {
               hours: ghData.sleep.hours,
               stages: {
-                deep: ghData.sleep.deep_minutes,
-                rem: ghData.sleep.rem_minutes,
-                light: ghData.sleep.light_minutes,
-                wake: ghData.sleep.wake_minutes,
+                deep:  { minutes: ghData.sleep.deep_minutes },
+                rem:   { minutes: ghData.sleep.rem_minutes },
+                light: { minutes: ghData.sleep.light_minutes },
+                wake:  { minutes: ghData.sleep.wake_minutes },
               },
               score: ghSleepScore,
               fitbit_score: null,

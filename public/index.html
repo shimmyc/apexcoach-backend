@@ -3622,6 +3622,11 @@ function startCheckinVoice() {
 }
 
 var CACHE_MAX_AGE = 2 * 60 * 60 * 1000; // 2 hours
+// Bumped 2026-07-17: the Fitbit-vs-Google-Health sleep-stages shape fix means
+// any ac_cache holding the old flat-numeric GH stages must be discarded so the
+// client refetches the corrected object-shaped payload. isCacheValid rejects a
+// wearable-data cache whose `v` !== this, forcing one fresh /daily fetch.
+var CACHE_VERSION = 2;
 
 function isCacheValid(c) {
   if (!c || c.date !== ds(0)) return false;
@@ -3634,6 +3639,11 @@ function isCacheValid(c) {
   if (c.manualCheckin) return true;
   // Fitbit cache: validate data quality
   if (c.fitData) {
+    // Schema-version gate: discard caches from before the GH sleep-stages shape
+    // fix (flat numbers → { minutes } objects) so the fix isn't hidden by a
+    // still-valid stale cache. Only the wearable-data cache is versioned; the
+    // manual-checkin cache above is unaffected.
+    if (c.v !== CACHE_VERSION) { console.log('[Cache] Invalid: stale schema version (' + c.v + ' != ' + CACHE_VERSION + ')'); return false; }
     var fd = c.fitData;
     var hasSleep = fd.sleep && fd.sleep.hours !== null;
     var hasHrv = fd.hrv !== null;
@@ -3700,7 +3710,7 @@ function syncFitbit(forceRefresh) {
       readiness = computeReadiness(fitData);
       // Only cache if we got real data (sleep.hours not null)
       if (fitData.sleep && fitData.sleep.hours !== null) {
-        localStorage.setItem('ac_cache', JSON.stringify({ date: ds(0), ts: Date.now(), fitData: fitData }));
+        localStorage.setItem('ac_cache', JSON.stringify({ v: CACHE_VERSION, date: ds(0), ts: Date.now(), fitData: fitData }));
         console.log('[Cache] Saved fresh Fitbit data');
       } else {
         console.log('[Cache] Not caching - sleep.hours is null (incomplete data)');

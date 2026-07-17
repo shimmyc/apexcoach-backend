@@ -8,6 +8,27 @@
 > `wearables/`, and `migrations/` rather than transcribed. Where the original brief differed
 > from the live code, the doc follows the code and flags it with **⚠ Correction**.
 >
+> **2026-07-17 session #24** (Bugfix — GH sleep card blank + readiness stuck at 1/100;
+> report-first, approved before edits):
+> - **Root cause**: the `/daily` response built `data.sleep.stages` as flat numbers
+>   (`{deep:128}`) for Google Health, but every frontend reader (`renderReadiness`,
+>   `computeReadiness`, AI-prompt builder) reads Fitbit's nested `stages.<stage>.minutes` shape.
+>   So on GH data `stages.deep.minutes` was `undefined` → sleep score `null` + stage detail skipped
+>   (blank card), and deep sleep read as 0 (understated readiness → cached 1/100). Masked for weeks
+>   while GH's token was dead and `/daily` fell through to Fitbit; the session #19 reconnect made GH
+>   primary and exposed it. **Not** caused by session #23 (which never touched `data.sleep.stages`).
+> - **Fix**: GH response builder now emits `stages: { deep: { minutes: … }, rem: {…}, … }` —
+>   normalizes to the Fitbit shape so all three readers work unchanged; `thirtyDayAvgMinutes` absent
+>   for GH is already handled as optional.
+> - **Cache bust**: added `CACHE_VERSION` (=2); `isCacheValid` rejects a `fitData` cache whose `v`
+>   mismatches, so the stale broken-shape `ac_cache` is discarded on first load of the new JS (no
+>   service worker → a normal reload suffices). Manual-checkin caches unaffected.
+> - **Readiness re-stamp**: automatic — same root cause; fixed shape → `computeReadiness` reads deep
+>   sleep correctly (~77) → `maybeRegenForReadiness` (delta > 10) re-stamps the server value. No
+>   separate readiness code.
+> - **Verified live**: `/daily` sleep stages now `{minutes:N}` objects; readiness math recomputes to
+>   ~77 (before/after in the session report). Frontend cache-bust + re-stamp confirmed by force-refresh.
+>
 > **2026-07-17 session #23** (Bugfix — GH sleep not persisting after reconnect; report-first,
 > plan approved before edits):
 > - **Diagnosis**: everything landed except sleep because `ghData.sleep` came back null on morning
