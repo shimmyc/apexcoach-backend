@@ -10489,6 +10489,61 @@ function lpAllWorkouts() {
   return all;
 }
 
+// Single history-row markup. Factored out so the full render and the
+// append-only "See more" path (lpAppendRows) build byte-identical rows.
+function lpRowHtml(r) {
+  var rid = r.id;
+  var exCount = (typeof exerciseCountByWorkoutId === 'object' && rid != null && exerciseCountByWorkoutId[rid]) ? exerciseCountByWorkoutId[rid] : null;
+  var expanded = !!logPastExpanded[rid];
+  var h = '<div style="background:var(--bg-base);border:1px solid var(--border-subtle);border-radius:12px;padding:10px 12px">';
+  h += '<div style="display:flex;align-items:center;justify-content:space-between;gap:8px">';
+  h += '<div style="flex:1;min-width:0;display:flex;align-items:center;gap:8px;cursor:pointer" onclick="toggleLogPastRow(\'' + rid + '\')">';
+  h += '<span id="lp-chev-' + rid + '" style="display:inline-block;transition:transform .15s;transform:rotate(' + (expanded ? '90' : '0') + 'deg);color:var(--text-dim);font-size:11px;flex-shrink:0">&#9654;</span>';
+  h += '<div style="min-width:0">';
+  h += '<div style="font-size:14px;color:var(--text-bright);font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">' + escHtml(r.type || 'Workout') + '</div>';
+  h += '<div class="mono" style="font-size:10px;color:var(--text-dim);margin-top:2px">' + escHtml(r.date || '') + (exCount != null ? ' &middot; ' + exCount + ' exercise' + (exCount === 1 ? '' : 's') : '') + '</div>';
+  h += '</div></div>';
+  h += '<button type="button" onclick="reLogWorkout(\'' + rid + '\')" style="background:transparent;border:1px solid var(--border-subtle);color:var(--accent-ember);padding:6px 12px;border-radius:10px;cursor:pointer;font-size:12px;font-weight:600;white-space:nowrap">&#128260; Re-log</button>';
+  h += '</div>';
+  var detailInner = '';
+  if (expanded) detailInner = fullWorkoutCache[rid] ? renderLogPastRowDetail(rid) : '<p style="font-size:12px;color:var(--text-dim);margin:0">Loading&hellip;</p>';
+  h += '<div id="lp-detail-' + rid + '" style="display:' + (expanded ? 'block' : 'none') + ';margin-top:8px;padding-top:8px;border-top:1px solid var(--border-subtle)">' + detailInner + '</div>';
+  h += '</div>';
+  return h;
+}
+
+// Refresh only the See-more button (append path). Removes it once everything's
+// shown and there's nothing left to page in.
+function lpUpdateSeeMore() {
+  var btn = document.getElementById('lp-see-more');
+  if (!btn) return;
+  var listEl = document.getElementById('log-past-history-list');
+  var shownCount = listEl ? listEl.children.length : 0;
+  var canFetch = (Array.isArray(workoutLog) && workoutLog.length >= 60) && !logPastServerExhausted;
+  if (shownCount < lpAllWorkouts().length || canFetch) {
+    btn.disabled = false;
+    btn.textContent = 'See more';
+  } else if (btn.parentNode) {
+    btn.parentNode.removeChild(btn);
+  }
+}
+
+// Append-only "See more" render: adds just the newly-revealed rows to the
+// existing list so existing rows, expanded detail, and scroll position are
+// untouched (fixes the scroll-jump). Falls back to a full render if the list
+// container isn't present (e.g. first paint).
+function lpAppendRows() {
+  var listEl = document.getElementById('log-past-history-list');
+  if (!listEl) { renderLogPastHistory(); return; }
+  var all = lpAllWorkouts();
+  var already = listEl.children.length;
+  var target = Math.min(logPastShown, all.length);
+  var frag = '';
+  for (var i = already; i < target; i++) frag += lpRowHtml(all[i]);
+  if (frag) listEl.insertAdjacentHTML('beforeend', frag);
+  lpUpdateSeeMore();
+}
+
 function renderLogPastHistory() {
   var el = document.getElementById('log-past-history');
   if (!el) return;
@@ -10501,26 +10556,7 @@ function renderLogPastHistory() {
   var visible = all.slice(0, logPastShown);
   var h = '<p class="lp-section-label">past workout history</p>';
   h += '<div id="log-past-history-list">';
-  for (var i = 0; i < visible.length; i++) {
-    var r = visible[i];
-    var rid = r.id;
-    var exCount = (typeof exerciseCountByWorkoutId === 'object' && rid != null && exerciseCountByWorkoutId[rid]) ? exerciseCountByWorkoutId[rid] : null;
-    var expanded = !!logPastExpanded[rid];
-    h += '<div style="background:var(--bg-base);border:1px solid var(--border-subtle);border-radius:12px;padding:10px 12px">';
-    h += '<div style="display:flex;align-items:center;justify-content:space-between;gap:8px">';
-    h += '<div style="flex:1;min-width:0;display:flex;align-items:center;gap:8px;cursor:pointer" onclick="toggleLogPastRow(\'' + rid + '\')">';
-    h += '<span id="lp-chev-' + rid + '" style="display:inline-block;transition:transform .15s;transform:rotate(' + (expanded ? '90' : '0') + 'deg);color:var(--text-dim);font-size:11px;flex-shrink:0">&#9654;</span>';
-    h += '<div style="min-width:0">';
-    h += '<div style="font-size:14px;color:var(--text-bright);font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">' + escHtml(r.type || 'Workout') + '</div>';
-    h += '<div class="mono" style="font-size:10px;color:var(--text-dim);margin-top:2px">' + escHtml(r.date || '') + (exCount != null ? ' &middot; ' + exCount + ' exercise' + (exCount === 1 ? '' : 's') : '') + '</div>';
-    h += '</div></div>';
-    h += '<button type="button" onclick="reLogWorkout(\'' + rid + '\')" style="background:transparent;border:1px solid var(--border-subtle);color:var(--accent-ember);padding:6px 12px;border-radius:10px;cursor:pointer;font-size:12px;font-weight:600;white-space:nowrap">&#128260; Re-log</button>';
-    h += '</div>';
-    var detailInner = '';
-    if (expanded) detailInner = fullWorkoutCache[rid] ? renderLogPastRowDetail(rid) : '<p style="font-size:12px;color:var(--text-dim);margin:0">Loading&hellip;</p>';
-    h += '<div id="lp-detail-' + rid + '" style="display:' + (expanded ? 'block' : 'none') + ';margin-top:8px;padding-top:8px;border-top:1px solid var(--border-subtle)">' + detailInner + '</div>';
-    h += '</div>';
-  }
+  for (var i = 0; i < visible.length; i++) h += lpRowHtml(visible[i]);
   h += '</div>';
   var canFetch = (Array.isArray(workoutLog) && workoutLog.length >= 60) && !logPastServerExhausted;
   if (logPastShown < all.length || canFetch) {
@@ -10587,7 +10623,7 @@ function logPastSeeMore() {
   var canFetch = (Array.isArray(workoutLog) && workoutLog.length >= 60) && !logPastServerExhausted;
   if (logPastShown + 20 > all.length && canFetch) { lpFetchNextPage(); return; }
   logPastShown += 20;
-  renderLogPastHistory();
+  lpAppendRows();
 }
 
 function lpFetchNextPage() {
@@ -10607,9 +10643,9 @@ function lpFetchNextPage() {
       for (var j = 0; j < rows.length; j++) { if (rows[j] && rows[j].id != null && !have[rows[j].id]) logPastExtra.push(rows[j]); }
       logPastShown += 20;
       lpPageLoading = false;
-      renderLogPastHistory();
+      lpAppendRows();
     })
-    .catch(function() { lpPageLoading = false; renderLogPastHistory(); });
+    .catch(function() { lpPageLoading = false; lpUpdateSeeMore(); });
 }
 
 // ── Template create / append (notes_template only) ────────────────────────

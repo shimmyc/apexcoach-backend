@@ -8,6 +8,15 @@
 > `wearables/`, and `migrations/` rather than transcribed. Where the original brief differed
 > from the live code, the doc follows the code and flags it with **⚠ Correction**.
 >
+> **2026-07-17 session #22** (Bugfix — Log-past "See more" scroll jump): clicking "See more"
+> re-rendered the whole history list (`el.innerHTML = …`), rebuilding the `#log-past-history-list`
+> scroll container and resetting `scrollTop` to top. Fixed with an **append-only** render path: the
+> per-row markup was factored into `lpRowHtml()` (shared with the full render), and "See more" now
+> calls `lpAppendRows()` (inserts only the newly-revealed/paged rows) + `lpUpdateSeeMore()` (refreshes
+> just the button) instead of `renderLogPastHistory()`. Existing rows, expanded detail, and scroll
+> position are untouched. Pagination/offset-fetch/expand/template logic all unchanged; frontend-only,
+> id-scoped to the panel.
+>
 > **2026-07-17 session #21** (Log past workout panel — expand + pagination + template creation;
 > report-first, audit approved before edits):
 > - **Expand** — each history row lazy-fetches `/api/workouts/:id/full` on first expand into a shared
