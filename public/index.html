@@ -3724,16 +3724,21 @@ function renderReadiness() {
   var deep = stages.deep || {}; var light = stages.light || {}; var rem = stages.rem || {}; var wake = stages.wake || {};
   var fitbitScore = (fitData.sleep && fitData.sleep.fitbit_score != null) ? fitData.sleep.fitbit_score : null;
   var sleepScore = (deep.minutes || rem.minutes || light.minutes) ? estimateSleepScore(deep.minutes, rem.minutes, light.minutes, wake.minutes) : null;
+  // Tier color/label — hoisted above the stages block (2026-07-16 readiness
+  // split) so the compact hero can reuse the exact same tier logic as the
+  // detail card's own SLEEP SCORE display, no duplicated thresholds. Also
+  // fixes a latent gap: this used to live inside `if (deep.minutes ||
+  // rem.minutes)`, so a light-only night (sleepScore non-null via
+  // light.minutes alone, deep/rem both 0) left ssColor/ssTier undefined.
+  var ssColor = 'var(--text-muted)'; var ssTier = '';
+  if (sleepScore !== null) {
+    if (sleepScore >= 85) { ssColor = '#22c97a'; ssTier = 'Excellent'; }
+    else if (sleepScore >= 70) { ssColor = '#f5a623'; ssTier = 'Good'; }
+    else if (sleepScore >= 55) { ssColor = '#f07020'; ssTier = 'Fair'; }
+    else { ssColor = '#e84545'; ssTier = 'Poor'; }
+  }
   var sleepStagesHTML = '';
   if (deep.minutes || rem.minutes) {
-    // Personal sleep score display
-    var ssColor = 'var(--text-muted)'; var ssTier = '';
-    if (sleepScore !== null) {
-      if (sleepScore >= 85) { ssColor = '#22c97a'; ssTier = 'Excellent'; }
-      else if (sleepScore >= 70) { ssColor = '#f5a623'; ssTier = 'Good'; }
-      else if (sleepScore >= 55) { ssColor = '#f07020'; ssTier = 'Fair'; }
-      else { ssColor = '#e84545'; ssTier = 'Poor'; }
-    }
     var sleepScoreHTML = '';
     if (sleepScore !== null) {
       var fitbitCompare = fitbitScore !== null ? '<div class="mono" style="font-size:10px;color:var(--text-dim);margin-top:6px">Fitbit: ' + fitbitScore + ' · Diff: ' + (sleepScore - fitbitScore > 0 ? '+' : '') + (sleepScore - fitbitScore) + '</div>' : '';
@@ -3783,15 +3788,6 @@ function renderReadiness() {
     '<div style="background:#060810;border-radius:8px;padding:12px;text-align:center"><div class="mono" style="font-size:10px;color:#555;margin-bottom:4px">VS AVG</div><div class="oswald" style="font-size:24px;font-weight:700;color:' + hrvColor + '">' + hrvArrow + Math.abs(Math.round(hrvDiff*10)/10) + '</div></div>' +
     '</div></div>' : '';
 
-  var ssVital = sleepScore !== null ? sleepScore : '-';
-  var ssVSub = sleepScore !== null ? (sleepScore >= 85 ? 'Excellent' : sleepScore >= 70 ? 'Good' : sleepScore >= 55 ? 'Fair' : 'Poor') : 'n/a';
-  var vitalsHTML = '<div style="display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-top:16px;padding-top:16px;border-top:1px solid var(--border)">' +
-    statCard("Sleep", fitData.sleep && fitData.sleep.hours ? fmtHours(fitData.sleep.hours) : "-", fitData.sleep && fitData.sleep.efficiency ? fitData.sleep.efficiency + "% efficient" : "") +
-    statCard("Sleep Score", ssVital, ssVSub) +
-    statCard("Resting HR", fitData.rhr ? fitData.rhr + " bpm" : "-", r7.rhr ? "7d avg " + r7.rhr : "") +
-    statCard("Steps", fitData.steps ? fitData.steps.toLocaleString() : "-", "yesterday") +
-    '</div>';
-
   // ── Readiness hero (Agent 2/5): SVG 270° ring + status + score bar + 2×2
   //    biometric grid. Ring color by the spec's thresholds (>=70 / 40-69 / <40).
   //    All values come from data already computed above — no new data/logic. ──
@@ -3828,11 +3824,17 @@ function renderReadiness() {
   var rhrDev2 = readiness.breakdown.rhrDeviation;
   var rhrTrendTxt = fitData.rhr ? ((rhrDev2 >= 0 ? '+' : '') + rhrDev2 + ' vs base') : '';
   var rhrTrendColor = rhrDev2 >= 0 ? 'var(--color-positive)' : 'var(--color-danger)';
-  // Sleep cell.
+  // Sleep-score cell (2026-07-16 readiness split, ROADMAP §7 priority 10):
+  // surfaces the computed sleep SCORE as the primary hero value — previously
+  // only sleep hours showed here, the score was buried in the collapsed
+  // detail's "sleep stages" card. Hours moves to the caption line instead of
+  // disappearing. Reuses ssColor/ssTier (hoisted above, computed once).
   var sleepH = (fitData.sleep && typeof fitData.sleep.hours === 'number') ? fitData.sleep.hours : null;
   var sleepVal = sleepH != null ? sleepH.toFixed(1) : '—';
-  var sleepUnit = sleepH != null ? 'h' : '';
-  var sleepEff = (fitData.sleep && fitData.sleep.efficiency) ? fitData.sleep.efficiency + '% eff' : '';
+  var sleepCellTrend = sleepScore !== null
+    ? (ssTier + (sleepH != null ? ' · ' + sleepVal + 'h' : ''))
+    : (sleepH != null ? sleepVal + 'h' : '');
+  var sleepCellColor = sleepScore !== null ? ssColor : 'var(--text-muted)';
   // Steps cell.
   var stepsVal = fitData.steps ? fitData.steps.toLocaleString() : '—';
 
@@ -3859,20 +3861,47 @@ function renderReadiness() {
     '<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:4px">' +
       bioCell('HRV', hrvNow != null ? hrvNow : '—', hrvNow != null ? 'ms' : '', hrvTrendTxt, hrvTrendColor) +
       bioCell('Resting HR', fitData.rhr || '—', fitData.rhr ? 'bpm' : '', rhrTrendTxt, rhrTrendColor) +
-      bioCell('Sleep', sleepVal, sleepUnit, sleepEff, 'var(--text-muted)') +
+      bioCell('Sleep Score', sleepScore !== null ? sleepScore : '—', '', sleepCellTrend, sleepCellColor) +
       bioCell('Steps', stepsVal, '', 'yesterday', 'var(--text-muted)') +
+    '</div>';
+
+  // Detail section (2026-07-16 readiness split) — bars/sleep-stages/zones/HRV,
+  // collapsed by default, visual-only toggle: same pattern as Coaching Brief /
+  // Macro Roadmap (toggleCoachingBriefCard() / rdToggleCollapse()). No data
+  // computation above this line changed — this only decides how the same
+  // barsHTML/sleepStagesHTML/zonesHTML/hrvHTML strings get shown.
+  var detailOpen = localStorage.getItem('ac_readiness_detail_open') === '1';
+  var detailToggleHTML =
+    '<div id="readiness-detail-toggle" onclick="toggleReadinessDetail()" style="cursor:pointer;display:flex;align-items:center;justify-content:center;gap:6px;margin-top:10px;padding:10px 0;border-top:1px solid var(--border-subtle)">' +
+      '<span id="readiness-detail-label" class="mono" style="font-size:11px;color:var(--text-muted);letter-spacing:1.5px">' + (detailOpen ? 'HIDE DETAIL' : 'SHOW DETAIL') + '</span>' +
+      '<span id="readiness-detail-chevron" style="color:var(--text-dim);font-size:12px;display:inline-block;transition:transform .2s' + (detailOpen ? ';transform:rotate(90deg)' : '') + '">&#9656;</span>' +
     '</div>';
 
   card.innerHTML =
     '<p class="clabel">readiness score</p>' +
     heroHTML + bioGrid +
-    barsHTML + sleepStagesHTML + zonesHTML + hrvHTML;
+    detailToggleHTML +
+    '<div id="readiness-detail-body" style="display:' + (detailOpen ? 'block' : 'none') + '">' +
+      barsHTML + sleepStagesHTML + zonesHTML + hrvHTML +
+    '</div>';
 
   showFeelingCheckinCard();
   document.getElementById('ai-card').style.display = 'block';
   document.getElementById('progress-card').style.display = 'block';
   document.getElementById('progress-content').innerHTML = '<p class="font-mono" style="font-size:11px;color:var(--accent-cornerman);letter-spacing:2px;animation:pulse 1.6s infinite">ANALYZING PROGRESS...</p>';
   renderLogArea();
+}
+
+function toggleReadinessDetail() {
+  var body = document.getElementById('readiness-detail-body');
+  var chev = document.getElementById('readiness-detail-chevron');
+  var label = document.getElementById('readiness-detail-label');
+  if (!body) return;
+  var show = (body.style.display === 'none');
+  body.style.display = show ? 'block' : 'none';
+  if (chev) chev.style.transform = show ? 'rotate(90deg)' : 'rotate(0)';
+  if (label) label.textContent = show ? 'HIDE DETAIL' : 'SHOW DETAIL';
+  localStorage.setItem('ac_readiness_detail_open', show ? '1' : '0');
 }
 
 function stagePill(name, mins, avg, color, totalMins) {
