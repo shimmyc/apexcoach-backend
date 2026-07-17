@@ -2,11 +2,42 @@
 
 > Single reference for anyone joining the project or picking it back up after a break.
 > Pairs with `CLAUDE.md` (deep implementation notes) and `FORMULAS.md` (readiness/sleep math).
-> Last updated: 2026-07-16.
+> Last updated: 2026-07-17.
 >
 > **Doc accuracy notes:** Sections 2, 4, and 10 were verified directly against `server.js`,
 > `wearables/`, and `migrations/` rather than transcribed. Where the original brief differed
 > from the live code, the doc follows the code and flags it with **⚠ Correction**.
+>
+> **2026-07-17 session #15** (Tech debt batch, ROADMAP §9 — report-first, all 4 items approved
+> before any edit, see git history for the full audit report):
+> - **Item 1 — dropped `fitbit_pending_imports` dead code.** Confirmed zero call sites (grep before
+>   removal) for `diffAndQueueFitbitImports()`, `GET .../fitbit-pending-imports`, and
+>   `POST .../fitbit-import`; all removed from `server.js`, along with the now-dead
+>   `mapFitbitActivityType()`/`FITBIT_ACTIVITY_TYPE_MAP`. Column drop is a migration file
+>   (`2026-07-17_drop_fitbit_pending_imports.sql`), **not run** — the user runs it manually.
+> - **Item 2 — retired the legacy text roadmap fully.** Confirmed no external consumer reads
+>   `profiles.roadmap`/`roadmap_updated_at` (`life-os-summary` and `PROFILE_SELECT_BASE` both use
+>   explicit column lists that never included them). Removed `GET/POST /api/profiles/:id/roadmap`,
+>   `loadRoadmap()`/`generateRoadmap()`/`renderRoadmapContent()`, and the hidden `#roadmap-card` div
+>   (left in place during the 2026-07-16 declutter session on purpose — full retirement was out of
+>   scope then). Column drop is a migration file (`2026-07-17_drop_legacy_roadmap.sql`), **not run**.
+> - **Item 3 — FK migration written, not run.** `2026-07-17_exercises_workout_fk_cascade.sql` adds
+>   `exercises_workout_id_fkey` (`ON DELETE CASCADE`) — closes the orphaned-exercises bug class
+>   structurally. Requires an orphan check across every profile first (the `ALTER TABLE` fails on
+>   any existing orphan); profile 1 was cleaned in session #11, profiles 4/5/7/8 haven't been
+>   checked for this. No code changes for this item — SQL file only, per the approved scope.
+> - **Item 4 — `DELETE /api/profiles/:id` now deletes `exercises` too**, mirroring the session #11
+>   `DELETE /api/workouts/:id` fix. Deliberately kept independent of item 3's FK: `extract-exercises`
+>   can insert a null `workout_id`, and a cascade from `workouts` can never reach those rows — so
+>   this explicit profile-scoped delete stays load-bearing even after the FK lands, not just
+>   belt-and-suspenders.
+> - **Verified live** (profile 1, production, post-deploy): confirmed the old `#roadmap-card` div
+>   and `fitbit-pending-imports` references are gone from the deployed page while `#roadmap-data-card`
+>   renders correctly; ran a full create → extract-exercises → delete cycle on a throwaway workout
+>   (id 104) to confirm the save/extract/delete pipeline is unaffected — the exercise row was
+>   correctly cleaned up on delete; swept all four tabs with zero console errors. **Not tested live**:
+>   `DELETE /api/profiles/:id` itself (would require deleting a real profile) — verified via code
+>   review only.
 >
 > **2026-07-16 session #14** (Readiness card hero/detail split, closes §7 priority 10 — the JS
 > restructure explicitly deferred from the declutter session):
@@ -381,7 +412,7 @@ Core user record. PIN-protected, all child data scoped by `profile_id`.
 | `profile_data` | jsonb | goals, injuries, schedule, equipment, `ai_prompt_context`, `onboarding_complete`, `avatar_image`, `settings.*`. **Long-term goals live here at `profile_data.goals[]` — there is no separate `goals` table.** Each goal carries `id` (uuid, backfilled by `ensureGoalIds()` on every profile GET) and, once a Living Goal Roadmap is built: `intake_questions[]` (`{question,key}`), `intake_answers[]` (`{question,key,answer}`), `intake_completed` (bool), `roadmap{}` (structured — `timeline_range`, `timeline_note`, `date_confidence`, 3 `near_term` + 2 `horizon` `phases[]`, `version`, `adaptation_log[]`; full shape in §7 + `CLAUDE.md`), `last_adapted_at` (ISO ts). Sanitized via `cleanProfileData()` on read+write. |
 | `fitbit_access_token`, `fitbit_refresh_token`, `fitbit_expires_at` | text / bigint | Live Fitbit token store (rotating). Mirrored ↔ `wearable_connections`. |
 | `coaching_brief`, `historical_brief`, `historical_brief_updated_at` | text / ts | Three-tier coaching memory |
-| `roadmap`, `roadmap_updated_at` | text / ts | LEGACY free-text macro road map (still used by current client) |
+| `roadmap`, `roadmap_updated_at` | text / ts | ⚠ **Code removed 2026-07-17** (endpoint + client fns retired, see §9) — **column drop is a pending manual migration** (`migrations/2026-07-17_drop_legacy_roadmap.sql`), not yet run as of this doc update. Was the legacy free-text macro road map. |
 | `roadmap_data`, `roadmap_data_updated_at` | jsonb / ts | Structured macro road map (ties all goals; served by `/roadmap-data`) |
 | `daily_recommendations` (jsonb), `daily_recommendations_date` (date), `daily_recommendations_readiness` (int) | | Daily rec cache |
 | `progress_brief` (jsonb), `progress_brief_date` (date) | | Progress brief cache |
@@ -389,7 +420,7 @@ Core user record. PIN-protected, all child data scoped by `profile_id`.
 | `gym_access` | text | `yes` / `no` / `sometimes` |
 | `gym_type` | text | Commercial gym / Home gym / CrossFit / functional fitness / Multiple |
 | `dismissed_fitbit_activities` | jsonb (default `[]`) | Global wearable-activity dismissals — array of namespaced `"provider:id"` strings (e.g. `fitbit:…` or `google_health:…`) hidden from the Unmatched Wearable Activities card (§3). Migration `2026-05-22_dismissed_fitbit_activities.sql`. |
-| `fitbit_pending_imports` | jsonb | **Deprecated** — nothing writes to it anymore (the daily-sync `diffAndQueueFitbitImports()` call was removed). Replaced by `dismissed_fitbit_activities` + the Unmatched Fitbit card (see §9). |
+| `fitbit_pending_imports` | jsonb | ⚠ **Code removed 2026-07-17** (`diffAndQueueFitbitImports()` + both endpoints deleted, see §9) — **column drop is a pending manual migration** (`migrations/2026-07-17_drop_fitbit_pending_imports.sql`), not yet run as of this doc update. Was replaced by `dismissed_fitbit_activities` + the Unmatched Fitbit card. |
 | `timezone` | text | IANA identifier (e.g. `America/Chicago`), nullable, no default. Captured silently client-side (`captureTimezoneIfNeeded()`, no UI) and consumed by `localToday()` for every server-side "today" computation. Migration `2026-07-15_profile_timezone.sql`. |
 | `created_at` | ts | |
 
@@ -463,7 +494,7 @@ Remembers a user's "these are separate sessions" decision so a rejected pairing 
 
 ### Migrations
 - `migrations/2026-05-19_wearables.sql` — adds `workouts.wearable_data` + `wearable_activity_id`, creates `wearable_connections` + `rejected_wearable_matches`, backfills Fitbit tokens from `profiles.fitbit_*`.
-- `migrations/2026-05-22_roadmap_data.sql` — adds `profiles.roadmap_data` (jsonb) + `roadmap_data_updated_at` (timestamptz) for the structured macro roadmap. Legacy `profiles.roadmap` (text) is kept.
+- `migrations/2026-05-22_roadmap_data.sql` — adds `profiles.roadmap_data` (jsonb) + `roadmap_data_updated_at` (timestamptz) for the structured macro roadmap. Legacy `profiles.roadmap` (text) code was retired 2026-07-17 — see `2026-07-17_drop_legacy_roadmap.sql` below.
 - `migrations/2026-05-22_dismissed_fitbit_activities.sql` — adds `profiles.dismissed_fitbit_activities` jsonb (default `[]`) for global wearable-activity dismissals (workout-agnostic, because `rejected_wearable_matches.workout_id` is `NOT NULL`).
 - `migrations/2026-05-24_daily_sleep.sql` — adds the `daily_sleep` table (Life OS sleep fast-path; see `CLAUDE.md`).
 - `migrations/2026-05-26_google_health.sql` — adds `wearable_connections.provider_metadata` jsonb (default `{}`) for the Google Health API v4 integration (stores the stable Google Health identity).
@@ -473,6 +504,9 @@ Remembers a user's "these are separate sessions" decision so a rejected pairing 
 - `migrations/2026-07-15_chat_proposals_regen_type.sql` — adds `'regenerate_goal_roadmap'` to `chat_proposals.type`'s CHECK constraint (the original migration only allowed the first 3 proposal types; found live via a real `23514` constraint violation while verifying the roadmap-regen auto-offer — see session #6 changelog above). **✅ Applied to production.**
 - `migrations/2026-07-15_exercise_catalog.sql` — creates `exercise_catalog`, RLS + `service_role_bypass`, seeded from the existing `CANONICAL_NAMES` map (18 rows). **✅ Applied to production.**
 - `migrations/2026-07-16_exercise_catalog_wger.sql` — adds `exercise_catalog.wger_id` (text, unique when set) and widens the `source` CHECK to admit `'wger'`; doesn't touch RLS/policies (adds a column only). **✅ Applied to production.**
+- `migrations/2026-07-17_drop_fitbit_pending_imports.sql` — drops `profiles.fitbit_pending_imports`. Code removed same day (§9). **Not yet applied** — run any time.
+- `migrations/2026-07-17_drop_legacy_roadmap.sql` — drops `profiles.roadmap` + `roadmap_updated_at`. Code removed same day (§9). **Not yet applied** — run any time.
+- `migrations/2026-07-17_exercises_workout_fk_cascade.sql` — adds `exercises_workout_id_fkey` (`exercises.workout_id → workouts.id`, `ON DELETE CASCADE`). **Not yet applied** — requires an orphan check across every profile first (fails if any exist); see §9.
 
 > Most other tables/columns were created ad-hoc via the Supabase SQL editor (the `CREATE TABLE`/`ALTER TABLE` snippets are documented inline in `CLAUDE.md`). Only the wearables + the 2026-05-22 / 2026-05-24 / 2026-05-26 migrations are committed as files.
 
@@ -623,7 +657,7 @@ All verified present in `server.js`. `:id`/`:userId` = profile id.
 | GET | `/api/profiles` · GET `/api/profiles/:id` |
 | POST | `/api/profiles` · POST `/api/profiles/verify` |
 | PATCH | `/api/profiles/:id` · PATCH `/api/profiles/:id/pin` |
-| DELETE | `/api/profiles/:id` |
+| DELETE | `/api/profiles/:id` — deletes `exercises` (2026-07-17, see §9) then `workouts` then the profile row |
 
 ### Daily data / biometrics
 | Method | Path |
@@ -634,8 +668,6 @@ All verified present in `server.js`. `:id`/`:userId` = profile id.
 | GET | `/api/profiles/:id/unmatched-fitbit` — last-7-day unmatched activities + same-day match candidates; `{activities:[]}` if no token / Fitbit error |
 | POST | `/api/profiles/:id/dismiss-fitbit-activity` — body `{provider_activity_id}`; global dismissal → `dismissed_fitbit_activities` |
 | POST | `/api/profiles/:id/fitbit-backfill` |
-| GET | `/api/profiles/:id/fitbit-pending-imports` ⚠ **legacy** — client no longer calls (see §9) |
-| POST | `/api/profiles/:id/fitbit-import` ⚠ **legacy** — client no longer calls (see §9) |
 
 ### Workouts / templates / exercises
 | Method | Path |
@@ -658,7 +690,7 @@ All verified present in `server.js`. `:id`/`:userId` = profile id.
 | POST | `/api/ai` (Anthropic proxy, server-side model selection) |
 | GET/POST | `/api/profiles/:id/brief` · `/generate-brief` |
 | POST | `/api/profiles/:id/search-history` |
-| GET/POST | `/api/profiles/:id/daily-recs` · `/progress-brief` · `/roadmap` (legacy text) · `/roadmap-data` (structured macro, Sonnet) |
+| GET/POST | `/api/profiles/:id/daily-recs` · `/progress-brief` · `/roadmap-data` (structured macro, Sonnet) |
 | GET | `/api/profiles/:id/life-os-summary` — read-only aggregated daily summary for the external Life OS app; auth `X-Life-OS-Key` (or admin secret); DB-first sleep/HRV/RHR (see `CLAUDE.md` for full field shape) |
 | POST | `/api/profiles/:id/goal-progress` · `/generate-goal-description` |
 | POST | `/api/profiles/:id/week-preview` — 7-Day Smart Schedule Preview (`schedule_preview` → Haiku); body `{schedule, readiness}` → rolling-7-day rule-engine skeleton + per-day Haiku coaching notes; non-fatal (6s cap), returns `{week, week_note, generated_at}` |
@@ -741,14 +773,14 @@ All verified present in `server.js`. `:id`/`:userId` = profile id.
 - **Fitbit Server-type app → no intraday HR.** Peak HR falls back to TCX `MaximumHeartRateBpm`, then to a zone-floor estimate. (Confirm the registered app type in the Fitbit dev portal to know which path is active.)
 - **Peak HR historical backfill** — a subset of older sessions (~24) only ever yields **estimated** peak values (no measured/sampled peak recoverable).
 - **`wearable_connections` redundant double-write** on the OAuth callback (`/callback` calls both `saveProfileTokens` and `saveWearableTokens`) — cosmetic, idempotent, low priority (see §9).
-- **Legacy text roadmap is now orphaned** — the Profile tab renders the structured `/roadmap-data` card (2026-05-29), so the client no longer reads or writes the legacy `profiles.roadmap` text via `POST /api/profiles/:id/roadmap`. That endpoint + column are still defined (and `renderRoadmapContent()` is kept) but dead-code; safe to retire (§9). Any pre-existing `profiles.roadmap` text is simply ignored.
+- **✅ RESOLVED 2026-07-17 — legacy text roadmap fully retired.** The Profile tab had rendered the structured `/roadmap-data` card since 2026-05-29, leaving `GET/POST /api/profiles/:id/roadmap`, `loadRoadmap()`/`renderRoadmapContent()`/`generateRoadmap()`, and the hidden `#roadmap-card` as dead code. All removed from `server.js`/`public/index.html`. The `profiles.roadmap`/`roadmap_updated_at` columns themselves are a **pending manual migration** (`migrations/2026-07-17_drop_legacy_roadmap.sql`), not yet run as of this doc update — see §9.
 - **Horizon-phase `progress_pct` is always 0** — by design: horizon phases have no `start_date`, so `computePhaseProgress()` returns null and the macro/per-goal roadmap UI shows no progress bar for them (only `milestone` + `estimated_range`).
 - **`wearables/fitbit.js`'s `adapter.refreshToken()` lacks the retry / `invalid_grant` guard `refreshProfileToken()` has.** Confirmed by direct code comparison (2026-07-15): `refreshProfileToken()` (`server.js`) retries transient failures and stops cleanly on a `400 invalid_grant` (logging instead of looping on a dead token); `wearables/fitbit.js`'s own `refreshToken()` just throws on any non-ok response. This path is only reached for wearable-only Fitbit connections that never populated `profiles.fitbit_*`. **Pre-existing, low priority** — confirm whether any active profile actually hits that fallback path before patching.
 - **✅ RESOLVED 2026-07-16 (same day as found).** `daily_sleep` table's RLS status was undocumented — found during the first 2026-07-16 doc-sync audit: the table's migration (`migrations/2026-05-24_daily_sleep.sql`) contains no `ALTER TABLE ... ENABLE ROW LEVEL SECURITY` / `CREATE POLICY` statements, and the table was absent from `CLAUDE.md`'s RLS enumeration (11 original tables + 3 Coach Chat + 1 exercise_catalog = 15 named tables — `daily_sleep`, created 2 days before the 2026-05-26 "enable RLS on all 11 tables" session, wasn't among any of the three groups). Fixed manually via the Supabase SQL editor the same day: RLS + `service_role_bypass` applied, no committed migration, matching how several other tables/columns in this project were created (see §2's note). `CLAUDE.md`'s RLS enumeration now lists 16 tables.
 - **Watch item: workout 17's exercises were each found in exactly 2 copies (2026-07-16, session #11 orphaned-exercises audit).** All 8 exercises under historical workout id 17 had duplicate rows under that one `workout_id`, pointing at a one-off `/extract-exercises` double-call sometime in the past (unrelated to the orphaned-exercises bug that surfaced it — workout 17 itself is a dead workout id, so all 16 rows were deleted as orphans). Not chased since it's a single historical event, not reproduced. **If ×2 duplicates recur on a live/current workout, that's a real, active bug** in `/extract-exercises` (or something double-calling it), not this same one-off.
 - **wger seed left visible near-duplicate and foreign-sourced variant names in the new Exercise Guide (4th Library sub-nav) — known noise, not cleaned up.** Distinct from the `exercise-catalog-dupes` cleanup (session #8), which only resolved *colliding* duplicates (same `catalogNormKey`); some non-colliding near-duplicates and oddly-worded variant names from wger's raw dataset remain visible when browsing the full catalog in Guide. Low priority — cosmetic browse-time noise, not a matching bug (save-time resolution is unaffected). Worth a manual sweep only if the confirm-chip "change" picker's search results start getting cluttered by these in practice.
 - **`exercise_catalog` id 18 (Dead Hang) has `family:"Deadhang"` (no space), inherited from the wger merge.** Cosmetic — doesn't affect the family-rollup grouping today since no other row shares that exact family string. Becomes a real (one-line `exercise-catalog-upsert`) fix the moment a second Dead Hang variant joins the family and needs to group with it.
-- **`DELETE /api/profiles/:id` still orphans `exercises` rows — same root cause as the now-fixed `DELETE /api/workouts/:id` bug (session #11), narrower fix scope meant this wasn't included.** Deleting a profile deletes its `workouts` rows but never its `exercises` rows (nor `daily_checkins`/`micro_goals`/`daily_steps`/`body_metrics`/etc. — profile deletion was never audited beyond `workouts`). Low real-world impact (profile deletion is rare) but not purely inert dead data: confirmed by reading `mgHabitDaySources()` (second 2026-07-16 doc-sync pass) that it sources `daily_habit` days straight from `exercises.profile_id`/`date` with no check that `workout_id` still points at a live workout — so on a *different* profile, orphaned rows left by this path would keep inflating that profile's habit-streak count, not just sit unreachable. Same fix pattern (explicit child-table delete before the parent, no schema change) would close it.
+- **✅ RESOLVED 2026-07-17.** `DELETE /api/profiles/:id` orphaned `exercises` rows — same root cause as the `DELETE /api/workouts/:id` bug fixed in session #11, just narrower scope at the time. Fixed by adding an explicit `exercises?profile_id=eq.` delete before the existing `workouts` delete (same pattern, no schema change). Deliberately kept **independent** of the `exercises_workout_id_fkey` CASCADE migration proposed the same session (not yet run) — a cascade from `workouts` can never reach an `exercises` row whose `workout_id` is `null` (a real, reachable state — `extract-exercises` can insert one), so the explicit profile-scoped delete stays load-bearing even after the FK lands. Still not extended to `daily_checkins`/`micro_goals`/`daily_steps`/`body_metrics` — profile deletion beyond `workouts`+`exercises` remains unaudited, low real-world impact (profile deletion is rare).
 - **Editing a workout's notes doesn't refresh its extracted `exercises` rows — found live during the session #11 orphaned-exercises audit, not fixed.** `PATCH /api/workouts/:id` never re-runs extraction (confirmed by tracing `saveWorkout`→`updateWorkoutInSupabase` in `public/index.html` — an edit only regenerates the AI title when notes change, nothing calls `/extract-exercises` again). So there's no duplicate-row risk from editing, but the original exercises rows go stale if the edited notes actually change which exercises were done (e.g. correcting a typo'd exercise name, or removing/adding a set). A fix would need to decide replace-vs-diff semantics for the stale rows — a real design decision, not a one-line patch.
 - **`exercises.duration_minutes` silently fails to insert for non-integer values — found live 2026-07-16, NOT fixed (out of scope for the exercise-canonicalization session that discovered it).** Reproduced directly: logging a Dead Hang or Plank with a whole-number duration (e.g. "1 minute") inserts fine; the identical save with a fractional duration (0.75 for "45 seconds", 0.5 for "30 seconds") returns `count:0` from `POST /api/profiles/:id/extract-exercises` — the row is silently never written, no error surfaced to the client or logged distinctly from a normal skip. This is unrelated to the exercise-catalog work (catalog resolution never touches `duration_minutes`) but directly contradicts the extraction prompt's own hardcoded Dead Hang rule, which explicitly instructs fractional-minute values ("45 seconds → 0.75"). Almost certainly explains the pre-existing `CLAUDE.md` caveat that `strength_milestone`'s time-based tracking "prefers `parseDurationToSeconds(raw_text||notes)` over the often-mis-populated `duration_minutes` column" — that workaround was likely built around this exact bug without ever finding the root cause. **Likely root cause** (not confirmed — would need direct schema access to verify): `exercises.duration_minutes` is probably typed as an integer column in the live database, despite the app-level code and multiple docs treating it as free-precision numeric. **Fix, not attempted this session**: either a migration to widen the column to `numeric`, or have `extract-exercises` round to the nearest whole minute before insert (lossy — would break sub-minute hold tracking, the opposite of what the Dead Hang PR feature needs) — a real design decision, not a one-line patch, and out of scope for the session that found it.
 
@@ -905,8 +937,8 @@ Macro roadmap shape (stored on `profiles.roadmap_data`):
 
 ## 9. Technical Debt & Cleanup
 
-- [ ] **Drop the deprecated `fitbit_pending_imports` queue.** `diffAndQueueFitbitImports()` was removed from the daily sync (2026-05-22), so nothing writes the column anymore. The `GET /api/profiles/:id/fitbit-pending-imports` + `POST /api/profiles/:id/fitbit-import` endpoints are kept but the client no longer calls them (replaced by the Unmatched Fitbit Activities card). Safe to drop the column + both endpoints once confirmed no active profile depends on it.
-- [ ] **Retire the legacy text roadmap (now unblocked).** The frontend migrated to the structured `/roadmap-data` card on 2026-05-29, so `profiles.roadmap` (text), `GET/POST /api/profiles/:id/roadmap`, and the client fns `loadRoadmap`/`renderRoadmapContent`/`generateRoadmap` (+ the hidden `#roadmap-card`) are now dead code. Remove the endpoint + client fns and drop the column once confirmed no external consumer reads it.
+- [x] **Drop the deprecated `fitbit_pending_imports` queue.** ✅ **Code done 2026-07-17** — confirmed zero call sites (grep before removal), then deleted `diffAndQueueFitbitImports()`/`mapFitbitActivityType()`/`FITBIT_ACTIVITY_TYPE_MAP` and both endpoints from `server.js`. **Column drop is a pending manual migration** (`migrations/2026-07-17_drop_fitbit_pending_imports.sql`) — not yet run as of this doc update.
+- [x] **Retire the legacy text roadmap (now unblocked).** ✅ **Code done 2026-07-17** — confirmed no external consumer reads `profiles.roadmap`/`roadmap_updated_at` (neither `life-os-summary` nor `PROFILE_SELECT_BASE` select them), then removed `GET/POST /api/profiles/:id/roadmap`, `loadRoadmap`/`renderRoadmapContent`/`generateRoadmap`, and the hidden `#roadmap-card`. **Column drop is a pending manual migration** (`migrations/2026-07-17_drop_legacy_roadmap.sql`) — not yet run as of this doc update.
 - [ ] **Drop the redundant `saveWearableTokens` call** in the `/callback` OAuth handler — `saveProfileTokens` now mirrors into `wearable_connections`, so the explicit second write is redundant (idempotent, harmless).
 - [ ] **Add `workouts.duration_minutes` column** so manual session durations count in analytics without relying on summed `exercises.duration_minutes`.
 - [ ] **Rename `?max_intraday=` → `?max_calls=`** in `/api/debug/backfill-wearable-hr` (the budget now covers TCX **+** intraday calls, not just intraday). Keep `max_intraday` as an alias for back-compat.
@@ -916,8 +948,8 @@ Macro roadmap shape (stored on `profiles.roadmap_data`):
 - [ ] **Drop the Fitbit adapter + legacy Fitbit paths after September 2026** once all active profiles have migrated to Google Health: remove the `profiles.fitbit_*` columns, the legacy `/auth` + `/callback` routes, `buildDailyData` / `runFitbitBackfill`, the `getValidProfileToken` Fitbit special-case inside `getValidWearableToken`, the Fitbit-first preference logic in `findWearableMatchOnSave` + the `unmatched-fitbit` endpoint, and the `wearables/fitbit.js` adapter.
 - [ ] **Timezone verification — Google Health daily fetch.** The local-date fix (inline IIFE using `getFullYear`/`getMonth`/`getDate` instead of UTC `dateStr()`) appears to work, but logs still occasionally show a UTC date. Verify it applies correctly across timezone edge cases, particularly around midnight in negative-offset timezones.
 - [ ] **Google Health weight returns null** in testing — verify once a user logs weight in the Fitbit/Google Health app. The `weightGrams / 453.592` lb conversion is implemented in `fetchDailyData`.
-- [ ] **`ON DELETE CASCADE` FK from `exercises.workout_id` → `workouts.id`** — future hardening flagged during the session #11 orphaned-exercises fix. The explicit `DELETE .../exercises?workout_id=eq...` in `DELETE /api/workouts/:id` closes the bug without a schema change, but a real FK would make it structurally impossible to reintroduce (e.g. if a future endpoint deletes a workout some other way). Not applied this session — no-schema-change was an explicit guardrail.
-- [ ] **Extend the same orphan-prevention fix to `DELETE /api/profiles/:id`** (deletes `workouts`, never `exercises` — see §6).
+- [ ] **`ON DELETE CASCADE` FK from `exercises.workout_id` → `workouts.id`** — future hardening flagged during the session #11 orphaned-exercises fix. The explicit `DELETE .../exercises?workout_id=eq...` in `DELETE /api/workouts/:id` closes the bug without a schema change, but a real FK would make it structurally impossible to reintroduce (e.g. if a future endpoint deletes a workout some other way). **Migration written 2026-07-17** (`migrations/2026-07-17_exercises_workout_fk_cascade.sql`) — **not yet run**: requires an orphan check (`GET /api/debug/orphaned-exercises/:userId`) across every profile first, since the `ALTER TABLE` fails on any existing orphan. Profile 1 was cleaned in session #11; profiles 4/5/7/8 haven't been checked for this specifically.
+- [x] **Extend the same orphan-prevention fix to `DELETE /api/profiles/:id`** — ✅ **done 2026-07-17** (deletes `exercises` for the profile, then `workouts`, then the profile row). Deliberately kept independent of the FK above — see §6.
 - [ ] **`PATCH /api/workouts/:id` doesn't refresh stale `exercises` rows on a notes edit** — see §6 for the full gap; needs a replace-vs-diff design decision, not a one-line patch.
 
 ---
