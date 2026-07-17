@@ -26,8 +26,12 @@
 > - **Readiness re-stamp**: automatic — same root cause; fixed shape → `computeReadiness` reads deep
 >   sleep correctly (~77) → `maybeRegenForReadiness` (delta > 10) re-stamps the server value. No
 >   separate readiness code.
-> - **Verified live**: `/daily` sleep stages now `{minutes:N}` objects; readiness math recomputes to
->   ~77 (before/after in the session report). Frontend cache-bust + re-stamp confirmed by force-refresh.
+> - **Verified live (backend)**: `/daily` sleep stages now come back as `{minutes:N}` objects
+>   (before: `{deep:128}` flat). Readiness recomputes to **77** with the fixed shape vs **63** on the
+>   broken shape (deep read as 0) vs the stale cached **1/100**; sleep score computes to **97**
+>   (matches the server's value). Frontend render + the server-side readiness re-stamp happen on
+>   Shimmy's next app load (cache-bust auto-discards the stale `ac_cache`); a hard refresh forces it
+>   immediately — not yet observed from the PIN-gated client at write time.
 >
 > **2026-07-17 session #23** (Bugfix — GH sleep not persisting after reconnect; report-first,
 > plan approved before edits):
