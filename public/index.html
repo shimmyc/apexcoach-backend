@@ -145,6 +145,7 @@ body.compact main{padding:20px 24px 60px}
 #lib-detail .ex-howto-attr{font-size:10px;color:var(--text-dim);margin:10px 0 0}
 #lib-detail .ex-howto-attr a{color:inherit}
 #lib-detail .ex-nolog{font-size:12px;color:var(--text-muted);font-style:italic;margin:8px 0 0}
+#lib-detail .ex-log-cta{display:block;width:100%;margin-top:14px;background:var(--accent-ember);color:#fff;border:none;padding:12px 20px;font-size:14px;font-weight:700;cursor:pointer;border-radius:14px;font-family:Inter,sans-serif}
 /* Feeling check-in pills (Today-only class). Energy = ember when selected;
    soreness/severity = surface-2 when selected. */
 #feeling-checkin-card .fc-pill{background:var(--bg-base);border:1px solid var(--border-subtle);color:var(--text-muted)}
@@ -13243,7 +13244,11 @@ function filterLibGuide() {
     var tags = (row.muscle_groups_primary || []).concat(row.muscle_groups_secondary || []);
     var tagsHtml = tags.map(function(t) { return '<span style="font-size:9px;color:var(--text-muted);background:var(--bg-surface-2);padding:1px 6px;border-radius:9999px">' + (MUSCLE_FILTER_LABELS[t] || t) + '</span>'; }).join('');
     var equipHtml = (row.equipment || []).map(function(e) { return '<span style="font-size:9px;color:var(--accent-cornerman);background:rgba(139,92,246,0.1);padding:1px 6px;border-radius:9999px">' + escHtml(e) + '</span>'; }).join('');
-    html += '<div' + (isLogged ? ' onclick="showExerciseDetail(\'' + escAttr(row.canonical_name) + '\')"' : '') + ' style="display:flex;align-items:center;justify-content:space-between;padding:14px 16px;background:var(--bg-surface-1);border:1px solid var(--border-subtle);border-radius:16px;margin-bottom:8px' + (isLogged ? ';cursor:pointer' : '') + '">';
+    // All Guide rows are clickable — logged or not. Zero-history mode
+    // (session #26) handles unlogged exercises in showExerciseDetail, so an
+    // unlogged catalog row opens to its how-to/muscle/variations view. The
+    // "logged Nx" badge still only shows for exercises in this profile's history.
+    html += '<div onclick="showExerciseDetail(\'' + escAttr(row.canonical_name) + '\')" style="display:flex;align-items:center;justify-content:space-between;padding:14px 16px;background:var(--bg-surface-1);border:1px solid var(--border-subtle);border-radius:16px;margin-bottom:8px;cursor:pointer">';
     html += '<div style="min-width:0"><div style="font-size:15px;color:var(--text-primary);font-weight:600">' + escHtml(row.canonical_name) + '</div>';
     html += '<div style="display:flex;gap:6px;align-items:center;margin-top:4px;flex-wrap:wrap">' + tagsHtml + equipHtml + '</div></div>';
     html += (isLogged ? '<span style="font-size:10px;color:var(--color-positive);background:rgba(61,220,151,0.12);padding:2px 8px;border-radius:9999px;white-space:nowrap;margin-left:8px">logged ' + loggedCount + 'x</span>' : '') + '</div>';
@@ -13278,6 +13283,16 @@ function renderExerciseHowTo(data, name) {
   return h;
 }
 
+// "Log this" CTA (session #27) — opens the Log Workout modal prefilled with
+// this exercise as a note line, reusing the existing AI-rec prefill path
+// (prefillLogFromAI). Reachable now that the detail view opens from Guide +
+// AI-rec links, not just from already-logged history. Empty type/headline →
+// the notes become a single "- <Exercise>" bullet the athlete completes with
+// sets/reps; extract-exercises re-canonicalizes it on save exactly as normal.
+function logThisExercise(name) {
+  prefillLogFromAI('', '', [name], '');
+}
+
 function showExerciseDetail(name) {
   if (!currentProfileId) return;
   // Remember which view we came from
@@ -13309,6 +13324,11 @@ function showExerciseDetail(name) {
       html += '<div style="font-size:22px;font-weight:700;color:var(--text-primary);margin-bottom:6px">' + escHtml(name) + '</div>';
       html += '<span style="font-size:10px;color:' + cc + ';letter-spacing:1px;text-transform:uppercase;background:' + cc + '18;padding:2px 8px;border-radius:9999px">' + cat + '</span>';
       if (!logged) html += '<p class="ex-nolog">Not in your log yet.</p>';
+
+      // "Log this" CTA (session #27) — in BOTH modes now that the view is
+      // reachable from Guide/AI-rec links, not just logged history. Prefills
+      // the Log modal with this exercise (logThisExercise → prefillLogFromAI).
+      html += '<button onclick="logThisExercise(\'' + escAttr(name) + '\')" class="ex-log-cta">&#43; ' + (logged ? 'Log this again' : 'Log this exercise') + '</button>';
 
       if (logged) {
         // Stats row
