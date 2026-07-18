@@ -146,6 +146,10 @@ body.compact main{padding:20px 24px 60px}
 #lib-detail .ex-howto-attr a{color:inherit}
 #lib-detail .ex-nolog{font-size:12px;color:var(--text-muted);font-style:italic;margin:8px 0 0}
 #lib-detail .ex-log-cta{display:block;width:100%;margin-top:14px;background:var(--accent-ember);color:#fff;border:none;padding:12px 20px;font-size:14px;font-weight:700;cursor:pointer;border-radius:14px;font-family:Inter,sans-serif}
+#lib-detail .ex-variations{margin-top:16px;border-top:1px solid var(--border-subtle);padding-top:12px}
+#lib-detail .ex-var-chips{display:flex;flex-wrap:wrap;gap:8px}
+#lib-detail .ex-var-chip{font-size:13px;color:var(--text-primary);background:var(--bg-surface-1);border:1px solid var(--border-subtle);border-radius:9999px;padding:7px 14px;cursor:pointer;font-family:Inter,sans-serif}
+#lib-detail .ex-var-chip:hover{border-color:var(--accent-ember);color:var(--accent-ember)}
 /* Feeling check-in pills (Today-only class). Energy = ember when selected;
    soreness/severity = surface-2 when selected. */
 #feeling-checkin-card .fc-pill{background:var(--bg-base);border:1px solid var(--border-subtle);color:var(--text-muted)}
@@ -4064,6 +4068,16 @@ var altRecMode = null;          // 'reroll' | 'category'
 var altRecCategory = null;      // raw category key (e.g. 'strength')
 var altRecLoading = false;
 
+// AI-rec exercise-name → catalog canonical linking (session #27). Keyed by the
+// RAW freeform rec string ("Bench Press 3x8 @135"); value is the canonical
+// catalog name (clickable) or null (resolved, no exact/alias match → plain
+// text). Resolved lazily/once per string via the read-only resolve-batch
+// endpoint (exact/alias ONLY, server-side); persists for the session so
+// re-renders (option toggles) are instant. A miss is cached as null so it's
+// never re-requested. See renderAI + ensureAIExerciseLinks.
+var aiRecLinkCache = {};
+var aiRecLinkFetching = false;
+
 function cacheAIRecOnServer(rec, readinessVal) {
   if (!currentProfileId || !rec) return;
   var today = ds(0);
@@ -4772,6 +4786,37 @@ function logAIWorkout(btn) {
   prefillLogFromAI(type, headline, exes, mob);
 }
 
+// Resolves any not-yet-cached AI-rec exercise strings via the read-only
+// resolve-batch endpoint (exact/alias only, server-side), then re-renders once
+// so links appear. Guarded against re-entry (aiRecLinkFetching) and against a
+// re-render loop (every requested string is written to the cache — null on a
+// miss or failure — so it's never requested again). Read-only + non-fatal: any
+// failure leaves everything plain text, exactly as before this feature.
+function ensureAIExerciseLinks(strings) {
+  var pending = [];
+  var seen = {};
+  (strings || []).forEach(function(s) {
+    if (s && typeof s === 'string' && !(s in aiRecLinkCache) && !seen[s]) { seen[s] = 1; pending.push(s); }
+  });
+  if (!pending.length || aiRecLinkFetching) return;
+  aiRecLinkFetching = true;
+  fetch('/api/exercise-catalog/resolve-batch', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ names: pending })
+  })
+    .then(function(r) { return r.json(); })
+    .then(function(data) {
+      var results = (data && data.results) || {};
+      pending.forEach(function(s) { aiRecLinkCache[s] = (s in results) ? results[s] : null; });
+    })
+    .catch(function() { pending.forEach(function(s) { aiRecLinkCache[s] = null; }); })
+    .then(function() {
+      aiRecLinkFetching = false;
+      if (typeof renderAI === 'function') renderAI(); // re-render with links applied
+    });
+}
+
 function renderAI() {
   var viewingAlt = !!(altRec || altRecLoading);
   var activeRec = (altRec && !altRecLoading) ? altRec : aiRec;
@@ -4891,7 +4936,19 @@ function renderAI() {
       html += '<div style="margin-bottom:10px">';
       for (var j = 0; j < exes.length; j++) {
         var num = j < 9 ? '0' + (j+1) : '' + (j+1);
-        html += '<div style="display:flex;gap:12px;padding:8px 0;border-bottom:1px solid ' + exBorder + ';font-size:14px;align-items:flex-start"><span class="font-mono" style="font-size:10px;color:' + exNumColor + ';width:20px;flex-shrink:0;padding-top:2px">' + num + '</span><span style="color:' + exTxtColor + ';line-height:1.5">' + exes[j] + '</span></div>';
+        var exStr = exes[j];
+        // Link the line ONLY when the string resolved to a catalog canonical
+        // (aiRecLinkCache, filled by ensureAIExerciseLinks via the exact/alias-
+        // only resolve-batch endpoint). null/undefined → plain text, unchanged.
+        var exCanon = aiRecLinkCache[exStr];
+        var exSpan;
+        if (exCanon) {
+          var uColor = primary ? 'rgba(255,255,255,0.5)' : 'var(--text-muted)';
+          exSpan = '<span onclick="event.stopPropagation();showExerciseDetail(\'' + escAttr(exCanon) + '\')" title="View ' + escAttr(exCanon) + '" style="color:' + exTxtColor + ';line-height:1.5;cursor:pointer;text-decoration:underline;text-decoration-color:' + uColor + ';text-underline-offset:2px">' + exStr + '</span>';
+        } else {
+          exSpan = '<span style="color:' + exTxtColor + ';line-height:1.5">' + exStr + '</span>';
+        }
+        html += '<div style="display:flex;gap:12px;padding:8px 0;border-bottom:1px solid ' + exBorder + ';font-size:14px;align-items:flex-start"><span class="font-mono" style="font-size:10px;color:' + exNumColor + ';width:20px;flex-shrink:0;padding-top:2px">' + num + '</span>' + exSpan + '</div>';
       }
       html += '</div>';
       if (o.mobility) {
@@ -4954,6 +5011,12 @@ function renderAI() {
   }
 
   document.getElementById('ai-content').innerHTML = html;
+
+  // Resolve exercise-name links (session #27) across ALL options up front, so
+  // expanding a collapsed option is instant. One batched call + one re-render.
+  var allExStrings = [];
+  opts.forEach(function(o) { (o.exercises || []).forEach(function(s) { allExStrings.push(s); }); });
+  ensureAIExerciseLinks(allExStrings);
 }
 
 // ── DYNAMIC PROFILE TAB ───────────────────────────────────────────────────
@@ -13283,6 +13346,23 @@ function renderExerciseHowTo(data, name) {
   return h;
 }
 
+// Variations section (session #27) — wger's own variation_group siblings,
+// resolved server-side against the LIVE catalog (so every name here is a real,
+// current row — no dead links; merged/renamed rows already resolve to their
+// current name; deleted ones never appear). Each chip opens that exercise's
+// own detail view (works logged or not, via zero-history mode). Returns ''
+// when there are no siblings so the section is absent, never an empty block.
+function renderExerciseVariations(variations) {
+  var list = Array.isArray(variations) ? variations.filter(Boolean) : [];
+  if (!list.length) return '';
+  var h = '<div class="ex-variations"><p class="clabel">variations</p><div class="ex-var-chips">';
+  list.forEach(function(v) {
+    h += '<button type="button" class="ex-var-chip" onclick="showExerciseDetail(\'' + escAttr(v) + '\')">' + escHtml(v) + '</button>';
+  });
+  h += '</div></div>';
+  return h;
+}
+
 // "Log this" CTA (session #27) — opens the Log Workout modal prefilled with
 // this exercise as a note line, reusing the existing AI-rec prefill path
 // (prefillLogFromAI). Reachable now that the detail view opens from Guide +
@@ -13356,6 +13436,10 @@ function showExerciseDetail(name) {
       // How-to (session #26) — catalog description + image, after the muscle
       // diagram in both modes. Returns '' when there's neither.
       html += renderExerciseHowTo(data, name);
+
+      // Variations (session #27) — wger variation_group siblings from the live
+      // catalog, clickable. Both modes. Returns '' when there are none.
+      html += renderExerciseVariations(data.variations);
 
       if (logged) {
         // Performance analytics (date-filtered Best Set + Volume charts, stats)

@@ -3202,6 +3202,42 @@ async function haikuResolveExerciseName(rawName, candidates) {
 // unreachable would be worse than the fragmentation problem this fixes) vs
 // 'unmatched' (the catalog is fine, Haiku ran and genuinely couldn't decide
 // — show a chip, this is a real new-to-the-app exercise worth flagging).
+// Read-only EXACT/ALIAS resolution — the top-confidence tier ONLY (no fuzzy,
+// no Haiku, no writes). Returns { canonical_name, method:'exact'|'alias' } or
+// null. Extracted from resolveExerciseCatalog's own step-1 block (which now
+// calls this) so the save-time path and the read-only display-time linking
+// path (resolve-batch, below) share ONE implementation and can never drift —
+// a link is only ever emitted when the name normalizes identically to a
+// catalog canonical_name or alias, the same bar as save-time method:'exact'/
+// 'alias'. Never the fuzzy/Haiku tiers (those are exactly what can mis-merge).
+function matchCatalogExactAlias(name, catalog) {
+  var key = catalogNormKey(name);
+  if (!key) return null;
+  var exactRow = catalog.find(function(row) {
+    if (catalogNormKey(row.canonical_name) === key) return true;
+    return (row.aliases || []).some(function(a) { return catalogNormKey(a) === key; });
+  });
+  if (!exactRow) return null;
+  var isAliasHit = catalogNormKey(exactRow.canonical_name) !== key;
+  return { canonical_name: exactRow.canonical_name, method: isAliasHit ? 'alias' : 'exact' };
+}
+
+// Strips a trailing set/rep/weight/duration annotation off a freeform AI-rec
+// exercise line ("Bench Press 3x8 @ 135lbs" -> "Bench Press") so the leading
+// exercise NAME can be exact/alias-matched. CONSERVATIVE by design: the name
+// is everything before the first digit / '@' / '(' / spaced separator
+// (-,–,—,:); catalog exercise names are word-only so this never truncates a
+// real name, and a line that leads with a number ("3 rounds of burpees") or is
+// a compound ("Superset: A + B") yields something that simply misses the
+// exact/alias match -> stays plain text. Never guesses.
+function stripExerciseAnnotation(raw) {
+  if (!raw) return '';
+  var s = String(raw).trim();
+  var cut = s.search(/[\d@(]|\s[-–—:]\s/);
+  var name = (cut >= 0 ? s.slice(0, cut) : s);
+  return name.replace(/[\s,;:+\-–—]+$/, '').trim();
+}
+
 async function resolveExerciseCatalog(name, category, requestCache) {
   var result = { canonicalName: name, method: 'unavailable', typedName: null, candidates: [] };
   try {
@@ -3212,14 +3248,12 @@ async function resolveExerciseCatalog(name, category, requestCache) {
     var key = catalogNormKey(name);
     if (!key) return result;
 
-    // 1. Exact / alias match.
-    var exactRow = catalog.find(function(row) {
-      if (catalogNormKey(row.canonical_name) === key) return true;
-      return (row.aliases || []).some(function(a) { return catalogNormKey(a) === key; });
-    });
-    if (exactRow) {
-      var isAliasHit = catalogNormKey(exactRow.canonical_name) !== key;
-      return { canonicalName: exactRow.canonical_name, method: isAliasHit ? 'alias' : 'exact', typedName: isAliasHit ? name : null, candidates: [] };
+    // 1. Exact / alias match — shared with the read-only resolve-batch endpoint
+    // via matchCatalogExactAlias (single implementation, never reimplemented).
+    var exactMatch = matchCatalogExactAlias(name, catalog);
+    if (exactMatch) {
+      var isAliasHit = exactMatch.method === 'alias';
+      return { canonicalName: exactMatch.canonical_name, method: exactMatch.method, typedName: isAliasHit ? name : null, candidates: [] };
     }
 
     // 2. Fuzzy match — score every canonical_name + alias, keep the best.
@@ -3439,6 +3473,39 @@ app.get("/api/exercise-catalog", async function(req, res) {
     res.json({ success: true, results: Array.isArray(rows) ? rows : [] });
   } catch (e) {
     res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+// POST /api/exercise-catalog/resolve-batch  { names: ["Bench Press 3x8 @135", …] }
+// Read-only, display-time linking for AI-rec exercise lines (renderAI,
+// public/index.html). For each freeform string: strip its set/rep/weight
+// annotation (stripExerciseAnnotation), then EXACT/ALIAS match ONLY (shared
+// matchCatalogExactAlias — the same top-confidence tier as save-time
+// method:'exact'/'alias'). Deliberately does NOT call resolveExerciseCatalog:
+// that path's Haiku fallback CREATES source:'custom' rows, and a browse
+// surface must never spawn catalog rows just from someone viewing a rec. So:
+// NO fuzzy, NO Haiku, NO writes. A miss returns null → the client renders
+// plain text, never a low-confidence link. Not admin-gated (normal user flow).
+// Fully non-fatal: any failure returns empty results → everything stays plain
+// text, exactly as before this feature existed.
+app.post("/api/exercise-catalog/resolve-batch", async function(req, res) {
+  try {
+    var names = Array.isArray(req.body && req.body.names) ? req.body.names : [];
+    var results = {};
+    if (!names.length) return res.json({ success: true, results: results, matched: 0, total: 0 });
+    var catalog = await fetchExerciseCatalogForMatching();
+    names.forEach(function(raw) {
+      if (typeof raw !== "string" || raw in results) return; // skip non-strings + dedupe
+      var clean = stripExerciseAnnotation(raw);
+      var match = clean ? matchCatalogExactAlias(clean, catalog) : null;
+      results[raw] = match ? match.canonical_name : null; // keyed by the RAW string the client holds
+    });
+    var keys = Object.keys(results);
+    var matched = keys.filter(function(k) { return results[k]; }).length;
+    res.json({ success: true, results: results, matched: matched, total: keys.length });
+  } catch (e) {
+    console.error("[ResolveBatch] failed (non-fatal):", e.message);
+    res.json({ success: true, results: {}, matched: 0, total: 0 }); // degrade → all plain text
   }
 });
 
@@ -3744,7 +3811,7 @@ app.get("/api/profiles/:id/exercises/:name", async function(req, res) {
     // degrade philosophy as the grouped /exercises endpoint's own attach:
     // any failure just leaves these null, never blocks the response.
     var family = null, muscleP = null, muscleS = null;
-    var category = null, description = null, images = null;
+    var category = null, description = null, images = null, variations = null;
     try {
       var catalogRows = await fetchExerciseCatalogWithMuscleData();
       var catalogIndex = buildCatalogMuscleIndex(catalogRows);
@@ -3760,12 +3827,33 @@ app.get("/api/profiles/:id/exercises/:name", async function(req, res) {
           var crow = ((await cr.json()) || [])[0];
           if (crow) { category = crow.category || null; description = crow.description || null; images = Array.isArray(crow.images) ? crow.images : null; }
         } catch (e2) { console.error("[ExerciseDetail] content fetch failed (non-fatal):", e2.message); }
+
+        // Variations (session #27) — resolved at READ time against the LIVE
+        // catalog via wger's own variation_group key, so merged/renamed rows
+        // resolve to their current names and deleted ones never appear (no dead
+        // links) — the group-key approach gives that for free. Kept as its OWN
+        // query + try/catch so a pre-migration missing column can't take down
+        // the content attach above (that select would otherwise error and null
+        // out description/images). Returns null unless there's ≥1 live sibling.
+        try {
+          var vgr = await fetch(SUPABASE_URL + "/rest/v1/exercise_catalog?id=eq." + match.id + "&select=variation_group", { headers: sbHeaders() });
+          var vgRow = ((await vgr.json()) || [])[0];
+          var groupKey = vgRow && vgRow.variation_group;
+          if (groupKey) {
+            var sibR = await fetch(SUPABASE_URL + "/rest/v1/exercise_catalog?variation_group=eq." + encodeURIComponent(groupKey) + "&id=neq." + match.id + "&select=canonical_name&order=canonical_name.asc", { headers: sbHeaders() });
+            var sibs = await sibR.json();
+            if (Array.isArray(sibs) && sibs.length) {
+              var sibNames = sibs.map(function(s) { return s.canonical_name; }).filter(Boolean);
+              if (sibNames.length) variations = sibNames;
+            }
+          }
+        } catch (e3) { console.error("[ExerciseDetail] variations fetch failed (non-fatal):", e3.message); }
       }
     } catch (e) {
       console.error("[ExerciseDetail] catalog attach failed (non-fatal):", e.message);
     }
 
-    res.json({ success: true, exercise: name, history: history, pr: pr, family: family, muscle_groups_primary: muscleP, muscle_groups_secondary: muscleS, category: category, description: description, images: images });
+    res.json({ success: true, exercise: name, history: history, pr: pr, family: family, muscle_groups_primary: muscleP, muscle_groups_secondary: muscleS, category: category, description: description, images: images, variations: variations });
   } catch (e) {
     res.status(500).json({ success: false, error: e.message });
   }
@@ -9246,6 +9334,113 @@ app.post("/api/debug/seed-exercise-content", async function(req, res) {
     });
   } catch (e) {
     console.error("[WgerContent] fatal:", e.message);
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+// POST /api/debug/seed-exercise-variations?secret=ADMIN_SECRET&max_calls=N&force=1
+// Populates exercise_catalog.variation_group from wger's exerciseinfo API,
+// matched to our rows by wger_id (UPDATE only — no name matching, no inserts).
+// wger's OWN grouping key: each item carries a `variation_group` UUID; items
+// sharing it are variants of each other. We store that UUID verbatim and
+// resolve siblings at READ time (see GET /api/profiles/:id/exercises/:name) so
+// merges/renames/deletes self-heal — mirroring the source model rather than
+// denormalizing an id-array. Fill-if-null by default (idempotent); ?force=1
+// overwrites. Requires the 2026-07-18_exercise_catalog_variation_group.sql
+// migration (adds the column). Same bulk-fetch shape as the content seed.
+app.post("/api/debug/seed-exercise-variations", async function(req, res) {
+  try {
+    if (process.env.ADMIN_SECRET) {
+      var got = req.query.secret || req.headers["x-admin-secret"];
+      if (got !== process.env.ADMIN_SECRET) return res.status(403).json({ success: false, error: "forbidden" });
+    }
+    var force = req.query.force === "1" || req.query.force === "true";
+    var maxCalls = req.query.max_calls ? parseInt(req.query.max_calls, 10) : 2000;
+    var sleep = function(ms) { return new Promise(function(r) { setTimeout(r, ms); }); };
+
+    async function wgerGet(url) {
+      var delays = [500, 1000, 2000];
+      for (var attempt = 0; attempt <= delays.length; attempt++) {
+        try {
+          var r = await fetch(url);
+          if (r.ok) return await r.json();
+          if (attempt === delays.length) { console.error("[WgerVar] " + url + " failed: " + r.status); return null; }
+        } catch (e) {
+          if (attempt === delays.length) { console.error("[WgerVar] " + url + " threw:", e.message); return null; }
+        }
+        await sleep(delays[attempt]);
+      }
+      return null;
+    }
+
+    // Only wger-linked rows can be matched by wger_id. Select variation_group
+    // so fill-if-null can skip already-populated rows — this SELECT is also the
+    // migration guard: if the column doesn't exist the query errors and we bail
+    // with a clear message rather than silently writing nothing.
+    var existingR = await fetch(SUPABASE_URL + "/rest/v1/exercise_catalog?select=id,canonical_name,wger_id,variation_group&wger_id=not.is.null&limit=10000", { headers: sbHeaders() });
+    var existingRows = await existingR.json();
+    if (!Array.isArray(existingRows)) {
+      return res.status(500).json({ success: false, error: "exercise_catalog not reachable, or the variation_group migration (2026-07-18_exercise_catalog_variation_group.sql) hasn't been run" });
+    }
+    var byWgerId = {};
+    existingRows.forEach(function(r) { if (r.wger_id) byWgerId[String(r.wger_id)] = r; });
+
+    var allItems = [], offset = 0, limit = 100, pageCalls = 0;
+    while (true) {
+      var page = await wgerGet("https://wger.de/api/v2/exerciseinfo/?format=json&language=2&limit=" + limit + "&offset=" + offset);
+      pageCalls++;
+      if (!page || !Array.isArray(page.results)) break;
+      allItems = allItems.concat(page.results);
+      if (!page.next) break;
+      offset += limit;
+      await sleep(1000);
+    }
+
+    var wgerLinkedRows = existingRows.length;
+    var matched = 0, groups_written = 0, wger_had_no_group = 0, skipped_have_group = 0, writes = 0, errors = 0;
+
+    for (var i = 0; i < allItems.length && writes < maxCalls; i++) {
+      var item = allItems[i];
+      var row = byWgerId[String(item.id)];
+      if (!row) continue; // wger exercise we didn't seed — skip
+      matched++;
+      try {
+        var vg = item.variation_group != null ? String(item.variation_group) : null;
+        if (!vg) { wger_had_no_group++; continue; } // wger item has no variation group (~78% of items)
+        var haveVg = row.variation_group != null && String(row.variation_group).trim() !== "";
+        if (haveVg && !force) { skipped_have_group++; continue; }
+
+        var pr = await fetch(SUPABASE_URL + "/rest/v1/exercise_catalog?id=eq." + row.id, {
+          method: "PATCH",
+          headers: sbHeaders("return=minimal"),
+          body: JSON.stringify({ variation_group: vg }),
+        });
+        if (!pr.ok) { errors++; console.error("[WgerVar] PATCH " + row.id + " failed: " + pr.status); continue; }
+        writes++;
+        groups_written++;
+      } catch (e) {
+        errors++;
+        console.error("[WgerVar] row " + (row && row.id) + " threw:", e.message);
+      }
+    }
+
+    console.log("[WgerVar] wger_linked=" + wgerLinkedRows + " matched=" + matched +
+      " groups_written=" + groups_written + " skipped_have=" + skipped_have_group +
+      " wger_no_group=" + wger_had_no_group + " errors=" + errors + " pages=" + pageCalls + " force=" + force);
+    res.json({
+      success: true,
+      force: force,
+      wger_english_total: allItems.length,
+      our_wger_linked_rows: wgerLinkedRows,
+      matched_to_wger: matched,
+      variation_groups_written: groups_written,
+      skipped_already_populated: skipped_have_group,
+      wger_had_no_group: wger_had_no_group,
+      errors: errors,
+      page_api_calls: pageCalls,
+    });
+  } catch (e) {
+    console.error("[WgerVar] fatal:", e.message);
     res.status(500).json({ success: false, error: e.message });
   }
 });
