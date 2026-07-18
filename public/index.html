@@ -4569,7 +4569,7 @@ function fetchAI(opts) {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
       callType: 'daily_recs',
-      max_tokens: 2200,
+      max_tokens: 4000,   // session #29: verbose recs truncated mid-JSON at 2200; SSE removed the timeout so the longer generation is safe. Paired with the conciseness constraints in buildResponseShapeSpec to keep real output well under this ceiling.
       system: systemPrompt,
       messages: [{ role: 'user', content: userMessage }]
     }),
@@ -8845,7 +8845,20 @@ function buildResponseShapeSpec(aiNumOpts, aiShowMV) {
   var arr = [optTmpl(45), optTmpl(30)];
   if (aiNumOpts >= 3) arr.push(optTmpl(20));
   if (aiNumOpts >= 4) arr.push(optTmpl(15));
-  return 'Respond ONLY with raw JSON, no markdown:\n' +
+  // OUTPUT LENGTH DISCIPLINE (session #29) — verbose recs (long, multi-clause
+  // parenthetical exercise lines) blew past the token ceiling and truncated the
+  // JSON, and drive generation latency up. Keep every option tight while still
+  // usable. The uniform/canonical naming also cleans up AI-rec exercise lines so
+  // more of them resolve to catalog entries (session #28 linking).
+  var conciseness = 'OUTPUT LENGTH — CRITICAL (keep it tight: ' + aiNumOpts + ' usable options, NOT an essay):\n' +
+    '- Each option lists 4–6 exercises MAX (fewer is fine). Do not exceed 6.\n' +
+    '- Each exercise is ONE short line: "Exercise Name sets×reps" or "Exercise Name sets×duration"' +
+    ' (add "@weight" only when relevant). A brief form cue is allowed ONLY if safety-critical — ≤6 words,' +
+    ' one short parenthetical — otherwise NO parenthetical. Never write multi-clause coaching descriptions inside an exercise line.\n' +
+    '- Use standard, fully spelled-out exercise names (e.g. "Dumbbell Bench Press" not "DB Bench Press", "Romanian Deadlift" not "RDL") so lines read uniformly.\n' +
+    '- "reasoning" ≤ 2 sentences. "goal_reasoning" ≤ 1 sentence. Do not pad any field.\n\n';
+  return conciseness +
+    'Respond ONLY with raw JSON, no markdown:\n' +
     '{"brief":"ONE short sentence (max ~25 words) of overall context based on goal priorities and today\'s schedule — even with a long Focus Override or many injuries/goals to weigh, summarize in one punchy sentence, never a list or paragraph","options":[' + arr.join(',') + ']' +
     (aiShowMV ? ',"minimum_viable":"genuine 10-15 min fallback that still includes every daily-habit micro-goal"' : '') +
     ',"warning":"one specific caution based on the data, or null"}';
