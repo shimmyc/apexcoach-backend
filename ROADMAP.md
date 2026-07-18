@@ -8,6 +8,26 @@
 > `wearables/`, and `migrations/` rather than transcribed. Where the original brief differed
 > from the live code, the doc follows the code and flags it with **⚠ Correction**.
 >
+> **2026-07-17 session #25** (Exercise how-to content seed + catalog cleanup prep — backend/data
+> only, report-first, plan approved before edits):
+> - **Built** `migrations/2026-07-17_exercise_catalog_content.sql` (adds `description` text + `images`
+>   jsonb) and `POST /api/debug/seed-exercise-content` — populates both from wger's `exerciseinfo` by
+>   `wger_id` (UPDATE-only, fill-if-null, `?force=`), with `sanitizeWgerHtml()` (strict attribute-free
+>   allowlist `p/ul/ol/li/br/strong/b/em/i`, safe to `innerHTML` later). Images hot-linked, video out
+>   of scope. Sanitizer verified locally (strips attrs/script/anchors, keeps allowlist).
+> - **`exercise-catalog-merge` upgraded to UNION** muscles/equipment/images across the pair (+ keep
+>   description fill-if-empty) so a cleanup merge never drops a freshly-seeded field or an enriched side.
+> - **Projected coverage** (measured live vs wger's 844 English exercises): ~96% descriptions, ~31%
+>   images → of ~805 wger-linked rows, ~770 descriptions / ~250 images; ~74 non-wger rows get nothing.
+> - **Noise-cleanup candidates finalized for review** (Guide §7/§9 debt): 22 left/right merges, 20
+>   abbreviation renames (+ "Extention"→"Extension"; "NB" left as-is, unresolved), 6 foreign-language
+>   (2 have English dups → DELETE: "Curl De Muñeca Con Barra", "Jalón al pecho con agarre ancho"; 3
+>   rename; 1 also an abbrev), 5 "HD" (1 collision → MERGE "Jumping Jack HD"→"Jumping Jack"; 4 rename),
+>   1 superset delete, + Dead Hang id 18 family "Deadhang"→"Dead Hang".
+> - **Execution pending the admin secret**: migration (user runs in Supabase), then seed + cleanup
+>   (admin-gated — user runs, or provides secret). Real coverage counts + cleanup results to be
+>   reported once run. Frontend untouched (detail view / Guide filters / AI rec rendering — later).
+>
 > **2026-07-17 session #24** (Bugfix — GH sleep card blank + readiness stuck at 1/100;
 > report-first, approved before edits):
 > - **Root cause**: the `/daily` response built `data.sleep.stages` as flat numbers
@@ -732,6 +752,7 @@ Remembers a user's "these are separate sessions" decision so a rejected pairing 
 - `migrations/2026-07-17_drop_legacy_roadmap.sql` — drops `profiles.roadmap` + `roadmap_updated_at`. Code removed same day (§9). **✅ Applied to production.**
 - `migrations/2026-07-17_exercises_workout_fk_cascade.sql` — adds `exercises_workout_id_fkey` (`exercises.workout_id → workouts.id`, `ON DELETE CASCADE`). **✅ Applied to production** — the orphan check ran clean across every profile first (a pre-existing orphan would have made the `ALTER TABLE` itself fail); see §9.
 - `migrations/2026-07-17_wearable_needs_reconnect.sql` — adds `wearable_connections.needs_reconnect` (boolean, `NOT NULL DEFAULT false`) for the connection-health flag (session #19). **⚠ Run manually in the Supabase SQL editor.** Code is resilient to its absence — writes are best-effort and the providers endpoint falls back to a column-less select — so it can be applied just before/with the deploy without a broken window, but the flag only persists/reports once it's run.
+- `migrations/2026-07-17_exercise_catalog_content.sql` — adds `exercise_catalog.description` (text) + `images` (jsonb), both nullable, for the exercise how-to content seed (session #25). **⚠ Run manually.** Populated by `POST /api/debug/seed-exercise-content` (fill-if-null, keyed by `wger_id`). Endpoint 500s cleanly if the columns are absent.
 
 > Most other tables/columns were created ad-hoc via the Supabase SQL editor (the `CREATE TABLE`/`ALTER TABLE` snippets are documented inline in `CLAUDE.md`). Only the wearables + the 2026-05-22 / 2026-05-24 / 2026-05-26 migrations are committed as files.
 

@@ -9097,6 +9097,147 @@ app.post("/api/debug/seed-exercise-catalog", async function(req, res) {
   }
 });
 
+// Sanitize wger description HTML to a strict, attribute-free tag allowlist so
+// the stored value is safe to render with a plain innerHTML later (no runtime
+// sanitizer dependency). Keeps only p/ul/ol/li/br/strong/b/em/i; strips ALL
+// attributes and every other tag (retaining inner text); drops script/style
+// blocks entirely. Because no attributes ever survive, no event handlers or
+// javascript: URIs can pass through. Returns null for empty/text-less input.
+function sanitizeWgerHtml(html) {
+  if (!html) return null;
+  var s = String(html);
+  s = s.replace(/<(script|style)\b[^>]*>[\s\S]*?<\/\1>/gi, ""); // drop these tag+contents
+  var ALLOWED = { p: 1, ul: 1, ol: 1, li: 1, br: 1, strong: 1, b: 1, em: 1, i: 1 };
+  s = s.replace(/<\/?([a-zA-Z0-9]+)\b[^>]*?>/g, function(m, name) {
+    var lower = String(name).toLowerCase();
+    if (!ALLOWED[lower]) return "";                 // non-allowed tag → drop, keep inner text
+    if (lower === "br") return "<br>";
+    return (/^<\//.test(m) ? "</" : "<") + lower + ">"; // bare, attribute-free tag
+  });
+  s = s.replace(/\s+/g, " ").replace(/>\s+</g, "><").trim();
+  var textOnly = s.replace(/<[^>]+>/g, "").trim();
+  return textOnly.length ? s : null;
+}
+
+// POST /api/debug/seed-exercise-content?secret=ADMIN_SECRET&max_calls=N&force=1
+// Populates exercise_catalog.description + images from wger's exerciseinfo API,
+// matched to our rows by the wger_id we already store (UPDATE only — no name
+// matching, no inserts). Fill-if-null by default (idempotent / re-runnable);
+// ?force=1 overwrites. VIDEO is out of scope (never read). Requires the
+// 2026-07-17_exercise_catalog_content.sql migration (adds the two columns).
+// Same bulk-fetch shape as seed-exercise-catalog (~9 pages @ limit=100,
+// ~1 req/sec, capped retry). Returns real coverage counts.
+app.post("/api/debug/seed-exercise-content", async function(req, res) {
+  try {
+    if (process.env.ADMIN_SECRET) {
+      var got = req.query.secret || req.headers["x-admin-secret"];
+      if (got !== process.env.ADMIN_SECRET) return res.status(403).json({ success: false, error: "forbidden" });
+    }
+    var force = req.query.force === "1" || req.query.force === "true";
+    var maxCalls = req.query.max_calls ? parseInt(req.query.max_calls, 10) : 2000;
+    var sleep = function(ms) { return new Promise(function(r) { setTimeout(r, ms); }); };
+
+    async function wgerGet(url) {
+      var delays = [500, 1000, 2000];
+      for (var attempt = 0; attempt <= delays.length; attempt++) {
+        try {
+          var r = await fetch(url);
+          if (r.ok) return await r.json();
+          if (attempt === delays.length) { console.error("[WgerContent] " + url + " failed: " + r.status); return null; }
+        } catch (e) {
+          if (attempt === delays.length) { console.error("[WgerContent] " + url + " threw:", e.message); return null; }
+        }
+        await sleep(delays[attempt]);
+      }
+      return null;
+    }
+
+    // Load our wger-linked rows (only these can be matched by wger_id). Select
+    // description/images too so fill-if-null can skip already-populated rows.
+    var existingR = await fetch(SUPABASE_URL + "/rest/v1/exercise_catalog?select=id,canonical_name,wger_id,description,images&wger_id=not.is.null&limit=10000", { headers: sbHeaders() });
+    var existingRows = await existingR.json();
+    if (!Array.isArray(existingRows)) {
+      return res.status(500).json({ success: false, error: "exercise_catalog not reachable, or the content migration (description/images columns) hasn't been run" });
+    }
+    var byWgerId = {};
+    existingRows.forEach(function(r) { if (r.wger_id) byWgerId[String(r.wger_id)] = r; });
+
+    // Fetch every wger English exercise (paginated).
+    var allItems = [], offset = 0, limit = 100, pageCalls = 0;
+    while (true) {
+      var page = await wgerGet("https://wger.de/api/v2/exerciseinfo/?format=json&language=2&limit=" + limit + "&offset=" + offset);
+      pageCalls++;
+      if (!page || !Array.isArray(page.results)) break;
+      allItems = allItems.concat(page.results);
+      if (!page.next) break;
+      offset += limit;
+      await sleep(1000);
+    }
+
+    var wgerLinkedRows = existingRows.length;
+    var matched = 0, descriptions_written = 0, images_written = 0;
+    var skipped_have_content = 0, wger_had_no_content = 0, writes = 0, errors = 0;
+
+    for (var i = 0; i < allItems.length && writes < maxCalls; i++) {
+      var item = allItems[i];
+      var row = byWgerId[String(item.id)];
+      if (!row) continue; // wger exercise we didn't seed into the catalog — skip
+      matched++;
+      try {
+        var translations = Array.isArray(item.translations) ? item.translations : [];
+        var en = translations.find(function(t) { return t.language === 2; }) || translations[0] || {};
+        var desc = sanitizeWgerHtml(en.description);
+        var images = (Array.isArray(item.images) ? item.images : [])
+          .filter(function(im) { return im && im.image; })
+          .map(function(im) { return { url: im.image, is_main: !!im.is_main, license_author: im.license_author || null }; });
+
+        var patch = {};
+        var haveDesc = row.description != null && String(row.description).trim() !== "";
+        var haveImgs = Array.isArray(row.images) && row.images.length > 0;
+        if (desc && (force || !haveDesc)) patch.description = desc;
+        if (images.length && (force || !haveImgs)) patch.images = images;
+
+        if (!desc && !images.length) { wger_had_no_content++; continue; }
+        if (!Object.keys(patch).length) { skipped_have_content++; continue; } // wger had content but row already populated
+
+        var pr = await fetch(SUPABASE_URL + "/rest/v1/exercise_catalog?id=eq." + row.id, {
+          method: "PATCH",
+          headers: sbHeaders("return=minimal"),
+          body: JSON.stringify(patch),
+        });
+        if (!pr.ok) { errors++; console.error("[WgerContent] PATCH " + row.id + " failed: " + pr.status); continue; }
+        writes++;
+        if (patch.description) descriptions_written++;
+        if (patch.images) images_written++;
+      } catch (e) {
+        errors++;
+        console.error("[WgerContent] row " + (row && row.id) + " threw:", e.message);
+      }
+    }
+
+    console.log("[WgerContent] wger_linked_rows=" + wgerLinkedRows + " matched=" + matched +
+      " desc_written=" + descriptions_written + " img_written=" + images_written +
+      " skipped_have=" + skipped_have_content + " wger_no_content=" + wger_had_no_content +
+      " errors=" + errors + " pages=" + pageCalls + " force=" + force);
+    res.json({
+      success: true,
+      force: force,
+      wger_english_total: allItems.length,
+      our_wger_linked_rows: wgerLinkedRows,
+      matched_to_wger: matched,
+      descriptions_written: descriptions_written,
+      images_written: images_written,
+      skipped_already_populated: skipped_have_content,
+      wger_had_no_content: wger_had_no_content,
+      errors: errors,
+      page_api_calls: pageCalls,
+    });
+  } catch (e) {
+    console.error("[WgerContent] fatal:", e.message);
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
 // GET /api/debug/exercise-canonicalization-report/:userId?secret=ADMIN_SECRET
 // Part 5 (reviewed backfill, NOT auto-applied): a Haiku pass over every
 // DISTINCT historical exercises.name value for one profile, proposing a
@@ -9560,11 +9701,34 @@ app.post("/api/debug/exercise-catalog-merge", async function(req, res) {
     addAlias(loser.canonical_name);
     (loser.aliases || []).forEach(addAlias);
 
+    // UNION array data across the pair (2026-07-17) — was previously fill-if-
+    // empty (winner-wins-whole-array), which could drop an enriched loser side.
+    // Now the winner keeps everything it has AND absorbs the loser's extras, so
+    // an l/r merge or a custom+wger merge never loses muscles/equipment/images.
+    function unionArr(a, b2) {
+      var out = (Array.isArray(a) ? a : []).slice();
+      (Array.isArray(b2) ? b2 : []).forEach(function(x) { if (out.indexOf(x) < 0) out.push(x); });
+      return out;
+    }
     var patch = { aliases: newAliases, updated_at: new Date().toISOString() };
-    if (!winner.family && loser.family) patch.family = loser.family;
-    if ((!winner.muscle_groups_primary || !winner.muscle_groups_primary.length) && loser.muscle_groups_primary && loser.muscle_groups_primary.length) patch.muscle_groups_primary = loser.muscle_groups_primary;
-    if ((!winner.muscle_groups_secondary || !winner.muscle_groups_secondary.length) && loser.muscle_groups_secondary && loser.muscle_groups_secondary.length) patch.muscle_groups_secondary = loser.muscle_groups_secondary;
-    if ((!winner.equipment || !winner.equipment.length) && loser.equipment && loser.equipment.length) patch.equipment = loser.equipment;
+    if (!winner.family && loser.family) patch.family = loser.family; // family is a grouping label — winner's stays authoritative
+    var mp = unionArr(winner.muscle_groups_primary, loser.muscle_groups_primary);
+    if (mp.length > (winner.muscle_groups_primary || []).length) patch.muscle_groups_primary = mp;
+    var ms = unionArr(winner.muscle_groups_secondary, loser.muscle_groups_secondary);
+    if (ms.length > (winner.muscle_groups_secondary || []).length) patch.muscle_groups_secondary = ms;
+    var eq = unionArr(winner.equipment, loser.equipment);
+    if (eq.length > (winner.equipment || []).length) patch.equipment = eq;
+    // images: union by url (dedupe), so a freshly-seeded image on either side survives.
+    var wImgs = Array.isArray(winner.images) ? winner.images : [];
+    var lImgs = Array.isArray(loser.images) ? loser.images : [];
+    if (lImgs.length) {
+      var seenUrl = {}, mergedImgs = [];
+      wImgs.concat(lImgs).forEach(function(im) { if (im && im.url && !seenUrl[im.url]) { seenUrl[im.url] = 1; mergedImgs.push(im); } });
+      if (mergedImgs.length > wImgs.length) patch.images = mergedImgs;
+    }
+    // description: scalar prose — can't merge two blocks, so keep the winner's
+    // and only fall back to the loser's when the winner has none (fill-if-empty).
+    if ((!winner.description || !String(winner.description).trim()) && loser.description) patch.description = loser.description;
     if (!winner.wger_id && loser.wger_id) patch.wger_id = loser.wger_id;
     if (b.retitle_canonical_name && b.retitle_canonical_name !== winner.canonical_name) patch.canonical_name = b.retitle_canonical_name;
 
