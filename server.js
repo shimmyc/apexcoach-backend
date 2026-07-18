@@ -5507,7 +5507,7 @@ app.get("/api/profiles/:id/goals/:goalId", async function(req, res) {
 // once per response (coach_chat's tool loop, see pipeAnthropicToolStream) or
 // exactly once (daily_recs, via pipeAnthropicStream). A per-chunk idle
 // timeout aborts a hung upstream, freshly armed for each leg.
-async function pumpAnthropicLeg(upstream, controller, res, label) {
+async function pumpAnthropicLeg(upstream, controller, res, label, sse) {
   let buffer = "";
   let usage = null;
   let wroteAny = false;
@@ -5541,7 +5541,7 @@ async function pumpAnthropicLeg(upstream, controller, res, label) {
         if (evt.type === "content_block_start" && evt.content_block && evt.content_block.type === "tool_use") {
           toolBlocks[evt.index] = { id: evt.content_block.id, name: evt.content_block.name, inputJson: "" };
         } else if (evt.type === "content_block_delta" && evt.delta && evt.delta.type === "text_delta") {
-          res.write(evt.delta.text);
+          res.write(sse ? sseFrame(evt.delta.text) : evt.delta.text);
           legText += evt.delta.text;
           wroteAny = true;
         } else if (evt.type === "content_block_delta" && evt.delta && evt.delta.type === "input_json_delta" && toolBlocks[evt.index]) {
@@ -5580,13 +5580,28 @@ async function pumpAnthropicLeg(upstream, controller, res, label) {
 // whether end() was reached but never actually flushed (proxy/socket issue)
 // vs never reached at all (a real code bug) — see the 2026-07-15 daily_recs
 // streaming-termination investigation in ROADMAP.md.
-function startAnthropicStreamResponse(res, label) {
+// One SSE data frame carrying arbitrary model text. JSON-encoded so embedded
+// newlines/quotes can't break SSE's newline-delimited framing; the client
+// JSON.parses each frame's payload and concatenates. Used only on the
+// daily_recs path (session #29) to try to defeat Render's response buffering —
+// text/plain is buffered and delivered in one burst at completion (measured
+// TTFB == total), which the SSE content-type is meant to disable so bytes flow
+// incrementally and the client's idle timer works as designed.
+function sseFrame(text) {
+  return "data: " + JSON.stringify(text) + "\n\n";
+}
+
+function startAnthropicStreamResponse(res, label, sse) {
   res.set({
-    "Content-Type": "text/plain; charset=utf-8",
+    "Content-Type": sse ? "text/event-stream; charset=utf-8" : "text/plain; charset=utf-8",
     "Cache-Control": "no-cache, no-transform",
     "X-Accel-Buffering": "no", // don't let a proxy buffer the stream
+    "Connection": "keep-alive",
   });
   if (typeof res.flushHeaders === "function") res.flushHeaders();
+  // Prime the SSE connection with a comment frame so the client sees bytes
+  // immediately (and any buffering proxy is forced to start flushing).
+  if (sse) { try { res.write(": ok\n\n"); } catch (e) {} }
   var resFinished = false;
   res.on("finish", function() {
     resFinished = true;
@@ -5600,7 +5615,7 @@ function startAnthropicStreamResponse(res, label) {
 // Logs the final usage + "stream complete" lines and ends the response — the
 // single finalize point shared by both streaming paths below so the log
 // format (and the finish/close observability) never drifts between them.
-function finalizeAnthropicStream(res, label, usage, wroteAny) {
+function finalizeAnthropicStream(res, label, usage, wroteAny, sse) {
   if (usage) {
     console.log("[AI] usage (stream): input=" + (usage.input_tokens || 0) +
       " output=" + (usage.output_tokens || 0) +
@@ -5609,6 +5624,9 @@ function finalizeAnthropicStream(res, label, usage, wroteAny) {
   }
   console.log("[AI] " + label + " stream complete, wroteAny=" + wroteAny);
   try {
+    // SSE terminal marker so the client knows the model text ended cleanly
+    // (vs a dropped connection). Harmless on the raw path (never sent).
+    if (sse) { try { res.write("data: [DONE]\n\n"); } catch (e) {} }
     res.end();
   } catch (endErr) {
     console.error("[AI] " + label + " res.end() threw:", endErr && endErr.message);
@@ -5622,9 +5640,13 @@ function finalizeAnthropicStream(res, label, usage, wroteAny) {
 // ends the response, returns the accumulated text.
 async function pipeAnthropicStream(upstream, controller, res, label) {
   label = label || "daily_recs";
-  startAnthropicStreamResponse(res, label);
-  var leg = await pumpAnthropicLeg(upstream, controller, res, label);
-  finalizeAnthropicStream(res, label, leg.usage, leg.wroteAny);
+  // daily_recs uses SSE (session #29) to defeat Render's response buffering.
+  // coach_chat keeps the raw text/plain path via pipeAnthropicToolStream, which
+  // calls these same helpers without the sse flag.
+  var sse = true;
+  startAnthropicStreamResponse(res, label, sse);
+  var leg = await pumpAnthropicLeg(upstream, controller, res, label, sse);
+  finalizeAnthropicStream(res, label, leg.usage, leg.wroteAny, sse);
   return leg.legText;
 }
 

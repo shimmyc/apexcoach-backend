@@ -4247,6 +4247,30 @@ function retryAIManually() {
   fetchAI();
 }
 
+// Incremental loading UI for the streamed daily rec (session #29). Now that
+// daily_recs streams as SSE, the rec JSON arrives token-by-token; we surface the
+// human-readable "brief" field as it streams so the user sees real progress
+// instead of a frozen spinner. Builds the wrapper once (so the pulse animation
+// doesn't restart on every chunk) and only updates the brief text node.
+function updateRecLoadingProgress(partial) {
+  var el = document.getElementById('ai-content');
+  if (!el) return;
+  if (!document.getElementById('ai-gen-wrap')) {
+    el.innerHTML = '<div id="ai-gen-wrap" style="text-align:center;padding:24px 0">' +
+      '<p class="mono" style="font-size:12px;color:#22c97a;letter-spacing:3px;animation:pulse 1.6s infinite">GENERATING RECOMMENDATION…</p>' +
+      '<p id="ai-gen-brief" style="font-size:14px;color:var(--text-sec);line-height:1.7;margin:14px auto 0;max-width:520px;text-align:left"></p></div>';
+  }
+  // Pull the "brief" string out of the partial JSON as it streams (may be
+  // unterminated). textContent keeps it XSS-safe; no card is built until the
+  // full response parses in the .then() below.
+  var briefEl = document.getElementById('ai-gen-brief');
+  if (briefEl) {
+    var m = /"brief"\s*:\s*"((?:[^"\\]|\\.)*)/.exec(partial || '');
+    var t = (m && m[1]) ? m[1].replace(/\\"/g, '"').replace(/\\n/g, ' ').replace(/\\\\/g, '\\') : '';
+    briefEl.textContent = t ? (t + '▍') : '';
+  }
+}
+
 function fetchAI(opts) {
   opts = opts || {};
   // Hard stop: once a chain has permanently failed, refuse all further fetches
@@ -4560,16 +4584,41 @@ function fetchAI(opts) {
         throw new Error((d && d.error && (d.error.message || d.error)) || ('Server returned ' + r.status));
       }, function() { throw new Error('Server returned ' + r.status); });
     }
-    // Streamed plain-text body — reassemble the full text before parsing.
+    // Streamed body — reassemble the model text. daily_recs now streams as SSE
+    // (session #29, text/event-stream) to defeat Render's response buffering;
+    // parse SSE data frames when the server says event-stream, else fall back to
+    // raw concat (backward-compatible with the old text/plain server).
+    var ctype = (r.headers && r.headers.get && r.headers.get('content-type')) || '';
+    var isSSE = ctype.indexOf('event-stream') >= 0;
+    var showProgress = !altOpts && !opts.silent;
     if (r.body && r.body.getReader) {
+      if (isSSE && showProgress) updateRecLoadingProgress('');   // immediate "generating" state
       var reader = r.body.getReader();
       var decoder = new TextDecoder();
-      var acc = '';
+      var acc = '';        // reassembled model text (the rec JSON)
+      var sseBuf = '';     // raw SSE transport buffer (frames split on blank line)
       var pump = function() {
         return reader.read().then(function(res) {
           if (res.done) { clearTimers(); return acc; }
           resetIdle();
-          acc += decoder.decode(res.value, { stream: true });
+          if (!isSSE) { acc += decoder.decode(res.value, { stream: true }); return pump(); }
+          sseBuf += decoder.decode(res.value, { stream: true });
+          var idx, grew = false;
+          while ((idx = sseBuf.indexOf('\n\n')) >= 0) {
+            var frame = sseBuf.slice(0, idx);
+            sseBuf = sseBuf.slice(idx + 2);
+            var flines = frame.split('\n');
+            for (var fi = 0; fi < flines.length; fi++) {
+              var fl = flines[fi];
+              if (fl.charAt(0) === ':') continue;          // comment frame (": ok")
+              if (fl.indexOf('data:') !== 0) continue;
+              var payload = fl.slice(5);
+              if (payload.charAt(0) === ' ') payload = payload.slice(1);
+              if (payload === '[DONE]') continue;
+              try { acc += JSON.parse(payload); grew = true; } catch (e) { /* skip malformed frame */ }
+            }
+          }
+          if (grew && showProgress) updateRecLoadingProgress(acc);
           return pump();
         });
       };
