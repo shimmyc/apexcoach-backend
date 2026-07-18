@@ -17,16 +17,17 @@
 >   of scope. Sanitizer verified locally (strips attrs/script/anchors, keeps allowlist).
 > - **`exercise-catalog-merge` upgraded to UNION** muscles/equipment/images across the pair (+ keep
 >   description fill-if-empty) so a cleanup merge never drops a freshly-seeded field or an enriched side.
-> - **Projected coverage** (measured live vs wger's 844 English exercises): ~96% descriptions, ~31%
->   images → of ~805 wger-linked rows, ~770 descriptions / ~250 images; ~74 non-wger rows get nothing.
-> - **Noise-cleanup candidates finalized for review** (Guide §7/§9 debt): 22 left/right merges, 20
->   abbreviation renames (+ "Extention"→"Extension"; "NB" left as-is, unresolved), 6 foreign-language
->   (2 have English dups → DELETE: "Curl De Muñeca Con Barra", "Jalón al pecho con agarre ancho"; 3
->   rename; 1 also an abbrev), 5 "HD" (1 collision → MERGE "Jumping Jack HD"→"Jumping Jack"; 4 rename),
->   1 superset delete, + Dead Hang id 18 family "Deadhang"→"Dead Hang".
-> - **Execution pending the admin secret**: migration (user runs in Supabase), then seed + cleanup
->   (admin-gated — user runs, or provides secret). Real coverage counts + cleanup results to be
->   reported once run. Frontend untouched (detail view / Guide filters / AI rec rendering — later).
+> - **Seed run (2026-07-17):** `matched_to_wger:839, descriptions_written:816, images_written:263,
+>   wger_had_no_content:18, errors:0` — 816 descriptions / 263 images landed; ~74 non-wger rows null.
+> - **Cleanup batched into one endpoint** `POST /api/debug/exercise-catalog-cleanup` (admin-gated,
+>   `?dry_run=1`), running the approved `CATALOG_CLEANUP_PLAN`: 24 renames (collision→merge), 13
+>   merges (l/r pairs + 3-way calf raise + "Jumping Jack HD"; "Pistol Squat"/"Side Plank" collisions),
+>   3 deletes (2 foreign English-dupes + 1 superset), 1 family fix (Dead Hang "Deadhang"→"Dead Hang").
+>   "Kreis Press DB"/"Low-Cable Cross-Over - NB"/"Kettlebell One Legged Deadlift" left as-is (not
+>   guessed). Merge logic factored into shared `mergeCatalogRowsById` (unions muscles/equipment/images).
+> - **Cleanup execution pending the admin-gated run** (user runs `dry_run` then real); final row count
+>   + per-op results to be recorded once run. Frontend untouched (detail view / Guide filters / AI rec
+>   rendering — later sessions).
 >
 > **2026-07-17 session #24** (Bugfix — GH sleep card blank + readiness stuck at 1/100;
 > report-first, approved before edits):

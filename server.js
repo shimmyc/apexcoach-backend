@@ -9672,6 +9672,68 @@ app.get("/api/debug/exercise-catalog-dupes", async function(req, res) {
 //     cascade concern — exercises.name is plain text, not an FK).
 // General-purpose, not a one-off — built for the wger near-dupe cleanup
 // (2026-07-16) but the same shape any future duplicate cluster needs.
+// Shared merge core (used by the merge endpoint AND the batched cleanup below).
+// Fetches both rows fresh (never trusts caller-supplied data), unions array data
+// (muscles/equipment/images) + aliases, fills description/family/wger_id only
+// when the winner lacks them, deletes the loser BEFORE patching the winner (frees
+// the unique wger_id), and optionally retitles the winner. Returns
+// { ok, status:'merged'|'not_found'|'error', winner?, deleted_loser?, error? }.
+async function mergeCatalogRowsById(winnerId, loserId, retitle) {
+  if (!winnerId || !loserId || String(winnerId) === String(loserId)) return { ok: false, status: "error", error: "winner and loser must be distinct" };
+  var wr = await fetch(SUPABASE_URL + "/rest/v1/exercise_catalog?id=eq." + encodeURIComponent(winnerId) + "&select=*", { headers: sbHeaders() });
+  var winner = ((await wr.json()) || [])[0];
+  var lr = await fetch(SUPABASE_URL + "/rest/v1/exercise_catalog?id=eq." + encodeURIComponent(loserId) + "&select=*", { headers: sbHeaders() });
+  var loser = ((await lr.json()) || [])[0];
+  if (!winner || !loser) return { ok: false, status: "not_found", error: "winner or loser row not found" };
+
+  var winnerKey = catalogNormKey(winner.canonical_name);
+  var newAliases = (winner.aliases || []).slice();
+  function addAlias(text) {
+    var k = catalogNormKey(text);
+    if (!k || k === winnerKey) return;
+    if (newAliases.some(function(a) { return catalogNormKey(a) === k; })) return;
+    newAliases.push(text);
+  }
+  addAlias(loser.canonical_name);
+  (loser.aliases || []).forEach(addAlias);
+
+  // UNION array data across the pair — winner keeps everything it has AND absorbs
+  // the loser's extras, so a merge never drops a freshly-seeded/enriched side.
+  function unionArr(a, b2) {
+    var out = (Array.isArray(a) ? a : []).slice();
+    (Array.isArray(b2) ? b2 : []).forEach(function(x) { if (out.indexOf(x) < 0) out.push(x); });
+    return out;
+  }
+  var patch = { aliases: newAliases, updated_at: new Date().toISOString() };
+  if (!winner.family && loser.family) patch.family = loser.family; // family: winner authoritative
+  var mp = unionArr(winner.muscle_groups_primary, loser.muscle_groups_primary);
+  if (mp.length > (winner.muscle_groups_primary || []).length) patch.muscle_groups_primary = mp;
+  var ms = unionArr(winner.muscle_groups_secondary, loser.muscle_groups_secondary);
+  if (ms.length > (winner.muscle_groups_secondary || []).length) patch.muscle_groups_secondary = ms;
+  var eq = unionArr(winner.equipment, loser.equipment);
+  if (eq.length > (winner.equipment || []).length) patch.equipment = eq;
+  var wImgs = Array.isArray(winner.images) ? winner.images : [];
+  var lImgs = Array.isArray(loser.images) ? loser.images : [];
+  if (lImgs.length) {
+    var seenUrl = {}, mergedImgs = [];
+    wImgs.concat(lImgs).forEach(function(im) { if (im && im.url && !seenUrl[im.url]) { seenUrl[im.url] = 1; mergedImgs.push(im); } });
+    if (mergedImgs.length > wImgs.length) patch.images = mergedImgs;
+  }
+  // description: scalar prose can't merge — winner wins, loser fills only a gap.
+  if ((!winner.description || !String(winner.description).trim()) && loser.description) patch.description = loser.description;
+  if (!winner.wger_id && loser.wger_id) patch.wger_id = loser.wger_id;
+  if (retitle && retitle !== winner.canonical_name) patch.canonical_name = retitle;
+
+  // Delete loser BEFORE patching winner — frees a unique wger_id the winner may
+  // be taking over (else both briefly hold it, tripping the unique index).
+  var delRes = await fetch(SUPABASE_URL + "/rest/v1/exercise_catalog?id=eq." + loser.id, { method: "DELETE", headers: sbHeaders("return=minimal") });
+  if (!delRes.ok) return { ok: false, status: "error", error: "loser delete failed, winner untouched: " + (await delRes.text()) };
+  var patchRes = await fetch(SUPABASE_URL + "/rest/v1/exercise_catalog?id=eq." + winner.id, { method: "PATCH", headers: sbHeaders("return=representation"), body: JSON.stringify(patch) });
+  if (!patchRes.ok) return { ok: false, status: "error", error: "loser " + loser.id + " deleted but winner patch failed; loser snapshot: " + JSON.stringify(loser) + " | " + (await patchRes.text()) };
+  var pr = await patchRes.json();
+  return { ok: true, status: "merged", winner: Array.isArray(pr) ? pr[0] : pr, deleted_loser: { id: loser.id, canonical_name: loser.canonical_name } };
+}
+
 app.post("/api/debug/exercise-catalog-merge", async function(req, res) {
   try {
     if (process.env.ADMIN_SECRET) {
@@ -9679,84 +9741,189 @@ app.post("/api/debug/exercise-catalog-merge", async function(req, res) {
       if (got !== process.env.ADMIN_SECRET) return res.status(403).json({ success: false, error: "forbidden" });
     }
     var b = req.body || {};
-    var winnerId = b.winner_id, loserId = b.loser_id;
-    if (!winnerId || !loserId || winnerId === loserId) return res.status(400).json({ success: false, error: "winner_id and loser_id (distinct) required" });
-
-    var wr = await fetch(SUPABASE_URL + "/rest/v1/exercise_catalog?id=eq." + encodeURIComponent(winnerId) + "&select=*", { headers: sbHeaders() });
-    var winnerRows = await wr.json();
-    var winner = Array.isArray(winnerRows) && winnerRows[0];
-    var lr = await fetch(SUPABASE_URL + "/rest/v1/exercise_catalog?id=eq." + encodeURIComponent(loserId) + "&select=*", { headers: sbHeaders() });
-    var loserRows = await lr.json();
-    var loser = Array.isArray(loserRows) && loserRows[0];
-    if (!winner || !loser) return res.status(404).json({ success: false, error: "winner or loser row not found" });
-
-    var winnerKey = catalogNormKey(winner.canonical_name);
-    var newAliases = (winner.aliases || []).slice();
-    function addAlias(text) {
-      var k = catalogNormKey(text);
-      if (!k || k === winnerKey) return;
-      if (newAliases.some(function(a) { return catalogNormKey(a) === k; })) return;
-      newAliases.push(text);
-    }
-    addAlias(loser.canonical_name);
-    (loser.aliases || []).forEach(addAlias);
-
-    // UNION array data across the pair (2026-07-17) — was previously fill-if-
-    // empty (winner-wins-whole-array), which could drop an enriched loser side.
-    // Now the winner keeps everything it has AND absorbs the loser's extras, so
-    // an l/r merge or a custom+wger merge never loses muscles/equipment/images.
-    function unionArr(a, b2) {
-      var out = (Array.isArray(a) ? a : []).slice();
-      (Array.isArray(b2) ? b2 : []).forEach(function(x) { if (out.indexOf(x) < 0) out.push(x); });
-      return out;
-    }
-    var patch = { aliases: newAliases, updated_at: new Date().toISOString() };
-    if (!winner.family && loser.family) patch.family = loser.family; // family is a grouping label — winner's stays authoritative
-    var mp = unionArr(winner.muscle_groups_primary, loser.muscle_groups_primary);
-    if (mp.length > (winner.muscle_groups_primary || []).length) patch.muscle_groups_primary = mp;
-    var ms = unionArr(winner.muscle_groups_secondary, loser.muscle_groups_secondary);
-    if (ms.length > (winner.muscle_groups_secondary || []).length) patch.muscle_groups_secondary = ms;
-    var eq = unionArr(winner.equipment, loser.equipment);
-    if (eq.length > (winner.equipment || []).length) patch.equipment = eq;
-    // images: union by url (dedupe), so a freshly-seeded image on either side survives.
-    var wImgs = Array.isArray(winner.images) ? winner.images : [];
-    var lImgs = Array.isArray(loser.images) ? loser.images : [];
-    if (lImgs.length) {
-      var seenUrl = {}, mergedImgs = [];
-      wImgs.concat(lImgs).forEach(function(im) { if (im && im.url && !seenUrl[im.url]) { seenUrl[im.url] = 1; mergedImgs.push(im); } });
-      if (mergedImgs.length > wImgs.length) patch.images = mergedImgs;
-    }
-    // description: scalar prose — can't merge two blocks, so keep the winner's
-    // and only fall back to the loser's when the winner has none (fill-if-empty).
-    if ((!winner.description || !String(winner.description).trim()) && loser.description) patch.description = loser.description;
-    if (!winner.wger_id && loser.wger_id) patch.wger_id = loser.wger_id;
-    if (b.retitle_canonical_name && b.retitle_canonical_name !== winner.canonical_name) patch.canonical_name = b.retitle_canonical_name;
-
-    // Delete the loser BEFORE patching the winner — real bug found live
-    // (2026-07-16): patching first meant that whenever the winner had no
-    // wger_id of its own (a pre-existing custom row) and was taking over
-    // the loser's, BOTH rows briefly held the same wger_id at once, tripping
-    // idx_exercise_catalog_wger_id's unique constraint. Deleting first frees
-    // the wger_id before the winner claims it. If the winner patch then
-    // fails, the loser's full pre-delete data is still in `loser` above —
-    // returned in the error so nothing already deleted is silently lost.
-    var delRes = await fetch(SUPABASE_URL + "/rest/v1/exercise_catalog?id=eq." + loser.id, {
-      method: "DELETE",
-      headers: sbHeaders("return=minimal"),
-    });
-    if (!delRes.ok) return res.status(delRes.status).json({ success: false, error: "loser delete failed, winner untouched: " + await delRes.text() });
-
-    var patchRes = await fetch(SUPABASE_URL + "/rest/v1/exercise_catalog?id=eq." + winner.id, {
-      method: "PATCH",
-      headers: sbHeaders("return=representation"),
-      body: JSON.stringify(patch),
-    });
-    if (!patchRes.ok) return res.status(patchRes.status).json({ success: false, error: "loser " + loser.id + " already deleted but winner patch failed — reconstruct from this loser snapshot if needed: " + JSON.stringify(loser) + " | patch error: " + await patchRes.text() });
-    var patchedRows = await patchRes.json();
-
-    res.json({ success: true, winner: Array.isArray(patchedRows) ? patchedRows[0] : patchedRows, deleted_loser: { id: loser.id, canonical_name: loser.canonical_name } });
+    var out = await mergeCatalogRowsById(b.winner_id, b.loser_id, b.retitle_canonical_name);
+    if (!out.ok) return res.status(out.status === "not_found" ? 404 : 400).json({ success: false, error: out.error });
+    res.json({ success: true, winner: out.winner, deleted_loser: out.deleted_loser });
   } catch (e) {
     console.error("[CatalogMerge] fatal:", e.message);
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+// Curated one-off wger-noise cleanup plan (2026-07-17, session #25), reviewed
+// and approved. Resolved by canonical_name at run time (no fragile ids); a
+// rename whose target already exists is auto-converted to a merge.
+var CATALOG_CLEANUP_PLAN = {
+  // {from, to}: rename canonical_name (→ merge if `to` already exists).
+  renames: [
+    // HD-suffix strips (Jumping Jack HD is a collision → handled in merges).
+    { from: "Bench Dips On Floor HD", to: "Bench Dips On Floor" },
+    { from: "Bodyweight lunge HD", to: "Bodyweight Lunge" },
+    { from: "Bodyweight Squat HD", to: "Bodyweight Squat" },
+    { from: "High Knee Skips HD", to: "High Knee Skips" },
+    // Foreign-language renames (the 2 with English dupes are deletes below).
+    { from: "Back extensión", to: "Back Extension" },
+    { from: "Elevación lateral polea", to: "Cable Lateral Raise" },
+    { from: "Military Press mit SZ-Bar", to: "Military Press EZ-Bar" },
+    // Abbreviation expansions (NB left as-is; Extention→Extension fixed).
+    { from: "Alternative DB Gorilla rows", to: "Alternative Dumbbell Gorilla Rows" },
+    { from: "Biceps Curls With SZ-bar", to: "Biceps Curls With EZ-Bar" },
+    { from: "DB Cross Body Hammer Curls", to: "Dumbbell Cross Body Hammer Curls" },
+    { from: "DB Underhand bench press", to: "Dumbbell Underhand Bench Press" },
+    { from: "DB Upper Chest Variation", to: "Dumbbell Upper Chest Variation" },
+    { from: "DB Wrist Extension", to: "Dumbbell Wrist Extension" },
+    { from: "Elbows Tucked DB Bench Press", to: "Elbows Tucked Dumbbell Bench Press" },
+    { from: "High-Cable Cross Tricep Extention - NB", to: "High-Cable Cross Tricep Extension - NB" },
+    { from: "Incline DB Y-Raise", to: "Incline Dumbbell Y-Raise" },
+    { from: "Incline OHP DB", to: "Incline Overhead Press Dumbbell" },
+    { from: "Lat Pull DB", to: "Lat Pull Dumbbell" },
+    { from: "Pin Bench Press BB", to: "Pin Bench Press Barbell" },
+    { from: "Pin OHP", to: "Pin Overhead Press" },
+    { from: "Push OHP", to: "Push Overhead Press" },
+    { from: "Shoulder Raise Side and Front DB", to: "Shoulder Raise Side and Front Dumbbell" },
+    { from: "Skullcrusher SZ-bar", to: "Skullcrusher EZ-Bar" },
+    { from: "Upright Row, SZ-bar", to: "Upright Row, EZ-Bar" },
+  ],
+  // {winner, loser, retitle?}: loser merged into winner (data unioned), winner
+  // optionally retitled. Order matters — the 3-way calf-raise runs sequentially.
+  merges: [
+    { winner: "Jumping Jack", loser: "Jumping Jack HD" },
+    { winner: "Bulgarian split squats left", loser: "Bulgarian split squats right", retitle: "Bulgarian Split Squat" },
+    { winner: "Split squats left", loser: "Split squats right", retitle: "Split Squat" },
+    { winner: "Side split squats left", loser: "Side split squats right", retitle: "Side Split Squat" },
+    { winner: "Pistol Squat", loser: "Pistol squats right" },
+    { winner: "Quadruped thoracic rotation left", loser: "Quadruped thoracic rotation right", retitle: "Quadruped Thoracic Rotation" },
+    { winner: "Side Plank", loser: "Side plank right" },
+    { winner: "Standing biceps stretch left", loser: "Standing biceps stretch right", retitle: "Standing Biceps Stretch" },
+    { winner: "Triceps stretch left", loser: "Triceps stretch right", retitle: "Triceps Stretch" },
+    { winner: "Left levator scapulae stretch", loser: "Right levator scapulae stretch", retitle: "Levator Scapulae Stretch" },
+    { winner: "Left neck stretch", loser: "Right neck stretch", retitle: "Neck Stretch" },
+    { winner: "Calf raises, left leg", loser: "Calf raises, right leg" },
+    { winner: "Calf raises, left leg", loser: "Calf raises, one legged", retitle: "Single-Leg Calf Raise" },
+  ],
+  deletes: [
+    "Curl De Muñeca Con Barra",       // English dupe of "Barbell Wrist Curl"
+    "Jalón al pecho con agarre ancho", // English dupe of "Wide-Grip Lat Pulldown"
+    "Lying Dumbbell Row SS Seated Shrug", // logged superset, not a single exercise
+  ],
+  familyFixes: [{ name: "Dead Hang", family: "Dead Hang" }], // was "Deadhang" typo
+  // Deliberately untouched (flagged, not guessed): "Kreis Press DB" + "Low-Cable
+  // Cross-Over - NB" (ambiguous — "NB"/"Kreis" not confidently expandable),
+  // "Kettlebell One Legged Deadlift" (a real named exercise, not l/r noise).
+};
+
+// POST /api/debug/exercise-catalog-cleanup?secret=ADMIN_SECRET[&dry_run=1]
+// Runs CATALOG_CLEANUP_PLAN in one call: renames (→ merge on collision), merges
+// (via mergeCatalogRowsById — unions data), deletes, family fixes. Resolves
+// everything by canonical_name against a live index it maintains as it mutates,
+// so it's idempotent-ish (a re-run skips already-done ops as not_found). Pass
+// ?dry_run=1 to preview every resolved action without writing. Returns a full
+// per-op report + final row count.
+app.post("/api/debug/exercise-catalog-cleanup", async function(req, res) {
+  try {
+    if (process.env.ADMIN_SECRET) {
+      var got = req.query.secret || req.headers["x-admin-secret"];
+      if (got !== process.env.ADMIN_SECRET) return res.status(403).json({ success: false, error: "forbidden" });
+    }
+    var dryRun = req.query.dry_run === "1" || req.query.dry_run === "true";
+
+    var allR = await fetch(SUPABASE_URL + "/rest/v1/exercise_catalog?select=id,canonical_name&limit=10000", { headers: sbHeaders() });
+    var allRows = await allR.json();
+    if (!Array.isArray(allRows)) return res.status(500).json({ success: false, error: "exercise_catalog not reachable" });
+    var startCount = allRows.length;
+    // Live index by normKey → {id, canonical_name}; maintained as we mutate.
+    var idx = {};
+    allRows.forEach(function(r) { idx[catalogNormKey(r.canonical_name)] = { id: r.id, canonical_name: r.canonical_name }; });
+    var find = function(name) { return idx[catalogNormKey(name)]; };
+
+    var report = { renamed: [], merged: [], deleted: [], family_fixed: [], not_found: [], errors: [] };
+
+    // Renames (collision → merge).
+    for (var ri = 0; ri < CATALOG_CLEANUP_PLAN.renames.length; ri++) {
+      var op = CATALOG_CLEANUP_PLAN.renames[ri];
+      var src = find(op.from);
+      if (!src) { report.not_found.push({ action: "rename", from: op.from }); continue; }
+      var tgt = find(op.to);
+      if (tgt && tgt.id !== src.id) {
+        // Target already exists → merge src into it (collision-safe).
+        if (dryRun) { report.merged.push({ dry_run: true, via: "rename-collision", winner: op.to, loser: op.from }); continue; }
+        var mres = await mergeCatalogRowsById(tgt.id, src.id, null);
+        if (!mres.ok) { report.errors.push({ action: "rename→merge", from: op.from, to: op.to, error: mres.error }); continue; }
+        delete idx[catalogNormKey(op.from)];
+        report.merged.push({ via: "rename-collision", winner: op.to, loser: op.from });
+        continue;
+      }
+      if (dryRun) { report.renamed.push({ dry_run: true, from: op.from, to: op.to }); continue; }
+      var prn = await fetch(SUPABASE_URL + "/rest/v1/exercise_catalog?id=eq." + src.id, {
+        method: "PATCH", headers: sbHeaders("return=minimal"),
+        body: JSON.stringify({ canonical_name: op.to, updated_at: new Date().toISOString() }),
+      });
+      if (!prn.ok) { report.errors.push({ action: "rename", from: op.from, to: op.to, error: await prn.text() }); continue; }
+      delete idx[catalogNormKey(op.from)];
+      idx[catalogNormKey(op.to)] = { id: src.id, canonical_name: op.to };
+      report.renamed.push({ from: op.from, to: op.to });
+    }
+
+    // Merges (sequential — later ops may depend on earlier retitles).
+    for (var mi = 0; mi < CATALOG_CLEANUP_PLAN.merges.length; mi++) {
+      var mop = CATALOG_CLEANUP_PLAN.merges[mi];
+      var w = find(mop.winner), l = find(mop.loser);
+      if (!w || !l) { report.not_found.push({ action: "merge", winner: mop.winner, loser: mop.loser, winner_found: !!w, loser_found: !!l }); continue; }
+      if (dryRun) { report.merged.push({ dry_run: true, winner: mop.winner, loser: mop.loser, retitle: mop.retitle || null }); continue; }
+      var mr = await mergeCatalogRowsById(w.id, l.id, mop.retitle);
+      if (!mr.ok) { report.errors.push({ action: "merge", winner: mop.winner, loser: mop.loser, error: mr.error }); continue; }
+      delete idx[catalogNormKey(mop.loser)];
+      if (mop.retitle) { delete idx[catalogNormKey(mop.winner)]; idx[catalogNormKey(mop.retitle)] = { id: w.id, canonical_name: mop.retitle }; }
+      report.merged.push({ winner: mop.retitle || mop.winner, loser: mop.loser });
+    }
+
+    // Deletes.
+    for (var di = 0; di < CATALOG_CLEANUP_PLAN.deletes.length; di++) {
+      var dname = CATALOG_CLEANUP_PLAN.deletes[di];
+      var drow = find(dname);
+      if (!drow) { report.not_found.push({ action: "delete", name: dname }); continue; }
+      if (dryRun) { report.deleted.push({ dry_run: true, name: dname }); continue; }
+      var dres = await fetch(SUPABASE_URL + "/rest/v1/exercise_catalog?id=eq." + drow.id, { method: "DELETE", headers: sbHeaders("return=minimal") });
+      if (!dres.ok) { report.errors.push({ action: "delete", name: dname, error: await dres.text() }); continue; }
+      delete idx[catalogNormKey(dname)];
+      report.deleted.push({ name: dname, id: drow.id });
+    }
+
+    // Family fixes.
+    for (var fi = 0; fi < CATALOG_CLEANUP_PLAN.familyFixes.length; fi++) {
+      var fop = CATALOG_CLEANUP_PLAN.familyFixes[fi];
+      var frow = find(fop.name);
+      if (!frow) { report.not_found.push({ action: "family_fix", name: fop.name }); continue; }
+      if (dryRun) { report.family_fixed.push({ dry_run: true, name: fop.name, family: fop.family }); continue; }
+      var fres = await fetch(SUPABASE_URL + "/rest/v1/exercise_catalog?id=eq." + frow.id, {
+        method: "PATCH", headers: sbHeaders("return=minimal"),
+        body: JSON.stringify({ family: fop.family, updated_at: new Date().toISOString() }),
+      });
+      if (!fres.ok) { report.errors.push({ action: "family_fix", name: fop.name, error: await fres.text() }); continue; }
+      report.family_fixed.push({ name: fop.name, family: fop.family });
+    }
+
+    var finalCount = startCount;
+    if (!dryRun) {
+      var endR = await fetch(SUPABASE_URL + "/rest/v1/exercise_catalog?select=id&limit=10000", { headers: sbHeaders() });
+      var endRows = await endR.json();
+      finalCount = Array.isArray(endRows) ? endRows.length : null;
+    }
+    res.json({
+      success: true,
+      dry_run: dryRun,
+      start_row_count: startCount,
+      final_row_count: dryRun ? null : finalCount,
+      counts: {
+        renamed: report.renamed.length, merged: report.merged.length,
+        deleted: report.deleted.length, family_fixed: report.family_fixed.length,
+        not_found: report.not_found.length, errors: report.errors.length,
+      },
+      left_as_is: ["Kreis Press DB", "Low-Cable Cross-Over - NB", "Kettlebell One Legged Deadlift"],
+      report: report,
+    });
+  } catch (e) {
+    console.error("[CatalogCleanup] fatal:", e.message);
     res.status(500).json({ success: false, error: e.message });
   }
 });
