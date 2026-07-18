@@ -4518,12 +4518,20 @@ function fetchAI(opts) {
   }
   console.log('[ApexCoach] AI prompt lengths: system=' + systemPrompt.length + ' user=' + userMessage.length + ' total=' + totalLen());
 
-  // Streamed daily_recs can take well over a minute on Render Starter (Sonnet
-  // generating the full rec). Two guards: an IDLE timer reset on every chunk
-  // (abort only if the stream stalls for 45s) and a hard total CAP of 90s.
+  // Streamed daily_recs can take well over a minute on Render (Sonnet
+  // generating the full rec over a large prompt). Two guards: an IDLE timer
+  // reset on every chunk, and a hard total CAP.
+  // NOTE (session #29): Render currently BUFFERS this response and delivers it
+  // in one burst at completion (measured: time-to-first-byte == total time), so
+  // the client gets no incremental bytes and the IDLE timer effectively counts
+  // full generation time from the start. These ceilings are therefore sized for
+  // real end-to-end generation, not for an inter-chunk stall. (The SSE change in
+  // the same session aims to restore true streaming; if it lands, the idle timer
+  // starts working as designed again and these can come back down.)
+  var reqStart = Date.now();
   var controller = new AbortController();
-  var IDLE_MS = 45000;   // abort if no chunk arrives for 45s
-  var MAX_MS = 90000;    // hard ceiling on the whole request, regardless of chunks
+  var IDLE_MS = 120000;  // abort if no chunk arrives for 120s
+  var MAX_MS = 150000;   // hard ceiling on the whole request, regardless of chunks
   var idleId = setTimeout(function() { controller.abort(); }, IDLE_MS);
   var capId = setTimeout(function() { controller.abort(); }, MAX_MS);
   var clearTimers = function() { clearTimeout(idleId); clearTimeout(capId); };
@@ -4631,7 +4639,7 @@ function fetchAI(opts) {
   })
   .catch(function(e) {
     clearTimers();
-    var msg = e.name === 'AbortError' ? 'Request timed out (90s)' : (e.message || 'Unknown error');
+    var msg = e.name === 'AbortError' ? ('Request timed out (' + Math.round((Date.now() - reqStart) / 1000) + 's)') : (e.message || 'Unknown error');
     console.error('[ApexCoach] fetchAI: error -', msg);
     if (altOpts) {
       altRecLoading = false;
