@@ -8,6 +8,23 @@
 > `wearables/`, and `migrations/` rather than transcribed. Where the original brief differed
 > from the live code, the doc follows the code and flags it with **⚠ Correction**.
 >
+> **2026-07-18 session #29** (daily_recs timeout — root-caused + fixed, report-first):
+> - **Root cause (NOT the model string):** `MODEL_SONNET="claude-sonnet-4-6"` is valid/active (a retired
+>   ID would 404 fast, not hang 90s). The real bug: Render **buffered** the daily_recs `text/plain`
+>   "stream" and delivered it in one burst at completion (measured TTFB == total == 45s). The client got
+>   no incremental bytes, so its 45s idle timer counted full generation time — a de-facto 45s total cap.
+>   The 2200-token **output** generation on Sonnet 4.6 (~40–45s) exceeded it → every attempt aborted →
+>   3 retries → `aiPermanentlyFailed` → "Unable to load." Latency driver is the output size, not the
+>   input (capped at ~6KB). resolve-batch (#28) is client-side + post-render, never in the rec path.
+> - **Fix 1 (minimal, shipped first):** `fetchAI` caps raised — IDLE 45s→120s, MAX 90s→150s; the abort
+>   message now reports real elapsed seconds (was hardcoded "(90s)", which fired even for the 45s idle).
+>   Verified: server returns a valid rec in ~45s, now inside the window.
+> - **Fix 2 (SSE, shipped + verified):** daily_recs switched `text/plain`→`text/event-stream` (scoped;
+>   coach_chat unchanged). **Measured live: TTFB 45.1s→1.4s, 93 chunks spread over 38s** — buffering
+>   defeated; client reassembly yields valid 3-option rec JSON (110 frames, 0 malformed). Idle timer now
+>   works as designed. Loading state streams the "brief" live (`updateRecLoadingProgress`).
+> - **Backlog:** prompt/generation-size management flagged in §9 (output-size + smarter context selection).
+>
 > **2026-07-18 session #27** (Exercise-detail reachability + linking + variations — all 3 jobs built):
 > - **Job 1 SHIPPED (frontend-only):** (a) **all** Exercise Guide cards clickable (`filterLibGuide`
 >   dropped the `isLogged` gate → unlogged rows open session #26's zero-history view; `logged Nx` badge
@@ -1257,6 +1274,7 @@ Macro roadmap shape (stored on `profiles.roadmap_data`):
 - [ ] **`daily_sleep.source` is hardcoded `"fitbit"` for ALL sleep writes (flagged session #23).** `upsertDailySleep` sets `source:"fitbit"` unconditionally, so Google-Health-sourced sleep is mislabeled as Fitbit in `daily_sleep`. Cosmetic (no consumer branches on `source` for sleep today), low priority — thread the real provider through when convenient. Note the session #23 Fitbit sleep fallback happens to make the label accidentally correct for *that* path only.
 - [ ] **Google Health sleep reconciliation lag has no scheduler backstop (flagged session #23).** GH ingests last night's wearable sleep session later than daily HRV/RHR/steps; session #23 added a per-metric Fitbit sleep fallback + HRV/RHR decoupling so sleep-less morning opens still persist vitals and often backfill sleep from Fitbit, but the durable fix is a periodic re-pull (the tracked-separately scheduler) that re-fetches sleep once GH has it, instead of depending on the user reopening the app.
 - [ ] **`workout_templates.exercises` jsonb is unused — latent trap (flagged session #21, do not fix now).** The schema and both write endpoints (`POST /api/profiles/:id/templates`, `PATCH /api/templates/:id`) carry an `exercises` jsonb array, but **nothing reads it**: `useTemplate()` (and the whole Use-template flow) drives the log modal purely off `notes_template` + `type`. It's currently always written `null`. The session #21 "Log past workout" template create/append flows deliberately write `notes_template` only for this reason. The trap: a future contributor may assume `exercises` is authoritative and write structured data there, silently diverging from what the app actually uses. Resolve later by either (a) wiring `useTemplate` to consume `exercises` when present (structured templates), or (b) dropping the column — don't half-populate it in the meantime.
+- [ ] **daily_recs prompt / generation-size management (flagged session #29).** The daily-rec latency that caused the timeout is dominated by the **2200-token output** generation on Sonnet 4.6 (measured ~40–45s end-to-end even with a small input), not the input prompt — which `fetchAI` already hard-caps at ~6000 chars (`public/index.html`, "Length guard"). But that 6KB cap is itself pressure: as logged history grows, more real context (historical/coaching briefs, exercise history, log days) gets truncated to fit, degrading rec quality over time. Two levers to consider, neither urgent now that SSE streaming removed the timeout: (a) reduce the 2200-token output (fewer/leaner options, or tighter JSON) to cut generation time; (b) smarter context selection instead of blunt truncation (rank/summarize history so the 6KB budget carries the most useful signal). Revisit if generation time creeps toward the new 150s client cap or rec quality visibly thins as history accumulates.
 - [ ] **`runFitbitBackfill()`'s weight fetch uses a `90d` period** (`/body/log/weight/date/today/90d.json`) — not a Fitbit-documented-valid period value for that endpoint (valid periods are `1d/7d/30d/1w/1m/3m/6m/1y`; an arbitrary span requires the by-date-range endpoint instead). Found during the full-history-backfill audit (session #17, 2026-07-17) while verifying every range endpoint's real max span against Fitbit's docs. Flagged only, not fixed — `runFitbitBackfill()` is the legacy 90-day onboarding backfill, already slated for removal post-Fitbit-shutdown (see the item above).
 
 ---
