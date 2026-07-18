@@ -3127,7 +3127,7 @@ async function fetchExerciseCatalogWithMuscleData() {
 function buildCatalogMuscleIndex(catalogRows) {
   var index = {};
   catalogRows.forEach(function(row) {
-    var entry = { family: row.family || null, muscle_groups_primary: row.muscle_groups_primary || [], muscle_groups_secondary: row.muscle_groups_secondary || [] };
+    var entry = { id: row.id, family: row.family || null, muscle_groups_primary: row.muscle_groups_primary || [], muscle_groups_secondary: row.muscle_groups_secondary || [] };
     var ck = catalogNormKey(row.canonical_name);
     if (ck) index[ck] = entry;
     (row.aliases || []).forEach(function(a) {
@@ -3744,16 +3744,28 @@ app.get("/api/profiles/:id/exercises/:name", async function(req, res) {
     // degrade philosophy as the grouped /exercises endpoint's own attach:
     // any failure just leaves these null, never blocks the response.
     var family = null, muscleP = null, muscleS = null;
+    var category = null, description = null, images = null;
     try {
       var catalogRows = await fetchExerciseCatalogWithMuscleData();
       var catalogIndex = buildCatalogMuscleIndex(catalogRows);
       var match = catalogIndex[catalogNormKey(name)];
-      if (match) { family = match.family; muscleP = match.muscle_groups_primary; muscleS = match.muscle_groups_secondary; }
+      if (match) {
+        family = match.family; muscleP = match.muscle_groups_primary; muscleS = match.muscle_groups_secondary;
+        // How-to content (description/images/category) is fetched ONLY for the
+        // matched row — a single targeted query, so the shared catalog index
+        // (used by the grouped /exercises endpoint over ~865 rows) stays lean
+        // and never carries the large description text. Non-fatal.
+        try {
+          var cr = await fetch(SUPABASE_URL + "/rest/v1/exercise_catalog?id=eq." + match.id + "&select=category,description,images", { headers: sbHeaders() });
+          var crow = ((await cr.json()) || [])[0];
+          if (crow) { category = crow.category || null; description = crow.description || null; images = Array.isArray(crow.images) ? crow.images : null; }
+        } catch (e2) { console.error("[ExerciseDetail] content fetch failed (non-fatal):", e2.message); }
+      }
     } catch (e) {
       console.error("[ExerciseDetail] catalog attach failed (non-fatal):", e.message);
     }
 
-    res.json({ success: true, exercise: name, history: history, pr: pr, family: family, muscle_groups_primary: muscleP, muscle_groups_secondary: muscleS });
+    res.json({ success: true, exercise: name, history: history, pr: pr, family: family, muscle_groups_primary: muscleP, muscle_groups_secondary: muscleS, category: category, description: description, images: images });
   } catch (e) {
     res.status(500).json({ success: false, error: e.message });
   }

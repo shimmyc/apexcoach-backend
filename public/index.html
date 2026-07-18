@@ -134,6 +134,17 @@ body.compact main{padding:20px 24px 60px}
 #log-past-panel .lp-tpl-btn{background:transparent;border:1px solid var(--border-subtle);color:var(--accent-ember);padding:6px 12px;border-radius:10px;cursor:pointer;font-size:12px;font-weight:600;white-space:nowrap}
 #log-past-panel .lp-tpl-btn:hover{border-color:var(--accent-ember)}
 #lp-status{margin-top:10px;font-size:12px;font-weight:600;color:var(--color-positive,#22c97a);background:rgba(34,201,122,0.10);border:1px solid rgba(34,201,122,0.4);border-radius:8px;padding:8px 12px}
+/* Exercise detail how-to section (Library detail only; text-first, image bonus). */
+#lib-detail .ex-howto{margin-top:16px;border-top:1px solid var(--border-subtle);padding-top:12px}
+#lib-detail .ex-howto-img{display:block;max-width:100%;max-height:240px;border-radius:12px;margin-bottom:12px;object-fit:contain}
+#lib-detail .ex-howto-desc{font-size:14px;color:var(--text-sec);line-height:1.6}
+#lib-detail .ex-howto-desc p{margin:0 0 8px}
+#lib-detail .ex-howto-desc ul,#lib-detail .ex-howto-desc ol{margin:0 0 8px;padding-left:20px}
+#lib-detail .ex-howto-desc li{margin:2px 0}
+#lib-detail .ex-howto-desc strong,#lib-detail .ex-howto-desc b{color:var(--text-primary)}
+#lib-detail .ex-howto-attr{font-size:10px;color:var(--text-dim);margin:10px 0 0}
+#lib-detail .ex-howto-attr a{color:inherit}
+#lib-detail .ex-nolog{font-size:12px;color:var(--text-muted);font-style:italic;margin:8px 0 0}
 /* Feeling check-in pills (Today-only class). Energy = ember when selected;
    soreness/severity = surface-2 when selected. */
 #feeling-checkin-card .fc-pill{background:var(--bg-base);border:1px solid var(--border-subtle);color:var(--text-muted)}
@@ -13242,6 +13253,31 @@ function filterLibGuide() {
 
 var libDetailFrom = 'exercises';
 
+// How-to section (session #26) — catalog description + image, text-first with the
+// image as a bonus. Returns '' when there's neither (the ~70% no-image case still
+// reads complete; the fully-empty non-wger rows render nothing at all). The
+// description is pre-sanitized at seed time (strict tag allowlist, no attributes)
+// so innerHTML is safe. Attribution is in-section because the Profile-footer wger
+// credit isn't visible here; license_author is shown only when an image renders.
+function renderExerciseHowTo(data, name) {
+  var desc = data && data.description ? String(data.description) : '';
+  var imgs = (data && Array.isArray(data.images)) ? data.images : [];
+  var mainImg = null;
+  for (var i = 0; i < imgs.length; i++) { if (imgs[i] && imgs[i].is_main && imgs[i].url) { mainImg = imgs[i]; break; } }
+  if (!mainImg) { for (var j = 0; j < imgs.length; j++) { if (imgs[j] && imgs[j].url) { mainImg = imgs[j]; break; } } }
+  if (!desc && !mainImg) return ''; // graceful absence — no empty block
+
+  var h = '<div class="ex-howto"><p class="clabel">how to</p>';
+  if (mainImg) h += '<img class="ex-howto-img" src="' + escAttr(mainImg.url) + '" alt="' + escAttr(name) + '" loading="lazy" onerror="this.style.display=\'none\'">';
+  if (desc) h += '<div class="ex-howto-desc">' + desc + '</div>';
+  var author = (mainImg && mainImg.license_author) ? escHtml(String(mainImg.license_author)) : '';
+  h += '<p class="ex-howto-attr">' + (mainImg ? 'Image &amp; guide' : 'Guide') +
+    ' via <a href="https://wger.de" target="_blank" rel="noopener">wger.de</a> (CC-BY-SA)' +
+    (author ? ' &middot; ' + author : '') + '</p>';
+  h += '</div>';
+  return h;
+}
+
 function showExerciseDetail(name) {
   if (!currentProfileId) return;
   // Remember which view we came from
@@ -13259,7 +13295,12 @@ function showExerciseDetail(name) {
       if (!data.success) { det.innerHTML = '<p style="color:var(--color-danger)">Error loading exercise.</p>'; return; }
       var hist = data.history || [];
       var pr = data.pr || {};
-      var cat = hist.length ? hist[0].category : 'other';
+      // Zero-history mode (session #26): an exercise reachable from the catalog
+      // (Guide / future AI-rec links) the athlete has never logged. Show catalog
+      // info (name/category/muscle diagram/how-to) WITHOUT the empty stat row,
+      // blank chart, analytics, session list, or AI insight.
+      var logged = hist.length > 0;
+      var cat = logged ? hist[0].category : (data.category || 'other');
       var cc = CAT_COLORS[cat] || '#888';
       var backLabel = libDetailFrom === 'dashboard' ? 'Dashboard' : libDetailFrom === 'records' ? 'Records' : libDetailFrom === 'guide' ? 'Guide' : 'All Exercises';
 
@@ -13267,65 +13308,73 @@ function showExerciseDetail(name) {
       html += '<div class="card" style="border-color:var(--border-subtle)">';
       html += '<div style="font-size:22px;font-weight:700;color:var(--text-primary);margin-bottom:6px">' + escHtml(name) + '</div>';
       html += '<span style="font-size:10px;color:' + cc + ';letter-spacing:1px;text-transform:uppercase;background:' + cc + '18;padding:2px 8px;border-radius:9999px">' + cat + '</span>';
+      if (!logged) html += '<p class="ex-nolog">Not in your log yet.</p>';
 
-      // Stats row
-      html += '<div style="display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-top:16px">';
-      html += statCard('Logged', hist.length, 'times');
-      html += statCard('First', hist.length ? hist[0].date.slice(5) : '-', '');
-      html += statCard('Last', hist.length ? hist[hist.length-1].date.slice(5) : '-', '');
-      var prVal = pr.max_weight ? pr.max_weight + ' lbs' : pr.max_reps ? pr.max_reps + ' reps' : pr.max_distance ? pr.max_distance + ' mi' : '-';
-      html += statCard('Best', prVal, 'PR');
-      html += '</div>';
+      if (logged) {
+        // Stats row
+        html += '<div style="display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-top:16px">';
+        html += statCard('Logged', hist.length, 'times');
+        html += statCard('First', hist[0].date.slice(5), '');
+        html += statCard('Last', hist[hist.length-1].date.slice(5), '');
+        var prVal = pr.max_weight ? pr.max_weight + ' lbs' : pr.max_reps ? pr.max_reps + ' reps' : pr.max_distance ? pr.max_distance + ' mi' : '-';
+        html += statCard('Best', prVal, 'PR');
+        html += '</div>';
 
-      // Progression chart
-      html += '<div style="margin-top:16px"><p class="clabel">progress over time</p><canvas id="lib-ex-chart" style="max-height:200px"></canvas>';
-      if (hist.length === 1) {
-        html += '<p class="mono" style="font-size:11px;color:var(--text-dim);text-align:center;margin-top:8px">Log this exercise again to see your progression</p>';
+        // Progression chart
+        html += '<div style="margin-top:16px"><p class="clabel">progress over time</p><canvas id="lib-ex-chart" style="max-height:200px"></canvas>';
+        if (hist.length === 1) {
+          html += '<p class="mono" style="font-size:11px;color:var(--text-dim);text-align:center;margin-top:8px">Log this exercise again to see your progression</p>';
+        }
+        html += '</div>';
       }
-      html += '</div>';
 
       // Per-exercise muscle diagram (Feature 2, 2026-07-16) — skips entirely
       // (no empty figure, no error) when the catalog has no muscle data for
-      // this exercise, e.g. a custom BJJ/MMA entry.
+      // this exercise, e.g. a custom BJJ/MMA entry. Works without history.
       html += renderExerciseMuscleDiagramHtml(data.muscle_groups_primary, data.muscle_groups_secondary);
 
-      // Performance analytics (date-filtered Best Set + Volume charts, stats)
-      html += '<div id="lib-ex-analytics" style="margin-top:16px;border-top:1px solid var(--border);padding-top:12px"></div>';
+      // How-to (session #26) — catalog description + image, after the muscle
+      // diagram in both modes. Returns '' when there's neither.
+      html += renderExerciseHowTo(data, name);
 
-      // Session history with PR highlighting
-      html += '<div style="margin-top:16px;border-top:1px solid var(--border-subtle);padding-top:12px"><p class="clabel">session history</p>';
-      var recent = hist.slice(-10).reverse();
-      for (var i = 0; i < recent.length; i++) {
-        var s = recent[i];
-        var detail = [];
-        if (s.sets) detail.push(s.sets + ' sets');
-        if (s.reps) detail.push(s.reps + ' reps');
-        if (s.weight_lbs) detail.push(s.weight_lbs + ' lbs');
-        if (s.distance_miles) detail.push(s.distance_miles + ' mi');
-        var isPR = (s.weight_lbs && s.weight_lbs === pr.max_weight) || (!pr.max_weight && s.reps && s.reps === pr.max_reps) || (!pr.max_weight && !pr.max_reps && s.distance_miles && s.distance_miles === pr.max_distance);
-        var rowBorder = isPR ? '1px solid rgba(245,200,66,0.33)' : '1px solid var(--border-subtle)';
-        var rowBg = isPR ? 'rgba(245,200,66,0.08)' : 'transparent';
-        html += '<div style="display:flex;justify-content:space-between;align-items:center;padding:8px;border-bottom:' + rowBorder + ';background:' + rowBg + ';border-radius:' + (isPR ? '8px' : '0') + ';font-size:13px;margin-bottom:' + (isPR ? '2px' : '0') + '">' +
-          '<span class="font-mono" style="color:var(--text-muted)">' + s.date + '</span>' +
-          '<span style="color:' + (isPR ? 'var(--color-caution)' : 'var(--text-primary)') + '">' + (detail.join(' · ') || '-') + (isPR ? ' &#x1F3C6;' : '') + '</span></div>';
+      if (logged) {
+        // Performance analytics (date-filtered Best Set + Volume charts, stats)
+        html += '<div id="lib-ex-analytics" style="margin-top:16px;border-top:1px solid var(--border);padding-top:12px"></div>';
+
+        // Session history with PR highlighting
+        html += '<div style="margin-top:16px;border-top:1px solid var(--border-subtle);padding-top:12px"><p class="clabel">session history</p>';
+        var recent = hist.slice(-10).reverse();
+        for (var i = 0; i < recent.length; i++) {
+          var s = recent[i];
+          var detail = [];
+          if (s.sets) detail.push(s.sets + ' sets');
+          if (s.reps) detail.push(s.reps + ' reps');
+          if (s.weight_lbs) detail.push(s.weight_lbs + ' lbs');
+          if (s.distance_miles) detail.push(s.distance_miles + ' mi');
+          var isPR = (s.weight_lbs && s.weight_lbs === pr.max_weight) || (!pr.max_weight && s.reps && s.reps === pr.max_reps) || (!pr.max_weight && !pr.max_reps && s.distance_miles && s.distance_miles === pr.max_distance);
+          var rowBorder = isPR ? '1px solid rgba(245,200,66,0.33)' : '1px solid var(--border-subtle)';
+          var rowBg = isPR ? 'rgba(245,200,66,0.08)' : 'transparent';
+          html += '<div style="display:flex;justify-content:space-between;align-items:center;padding:8px;border-bottom:' + rowBorder + ';background:' + rowBg + ';border-radius:' + (isPR ? '8px' : '0') + ';font-size:13px;margin-bottom:' + (isPR ? '2px' : '0') + '">' +
+            '<span class="font-mono" style="color:var(--text-muted)">' + s.date + '</span>' +
+            '<span style="color:' + (isPR ? 'var(--color-caution)' : 'var(--text-primary)') + '">' + (detail.join(' · ') || '-') + (isPR ? ' &#x1F3C6;' : '') + '</span></div>';
+        }
+        html += '</div>';
+
+        // AI Insight
+        html += '<div id="lib-ex-insight" style="margin-top:16px"></div>';
       }
-      html += '</div>';
-
-      // AI Insight
-      html += '<div id="lib-ex-insight" style="margin-top:16px"></div>';
       html += '</div>';
 
       det.innerHTML = html;
 
-      // Render progression chart
-      setTimeout(function() { renderExDetailChart(hist, pr); }, 50);
-
-      // Performance analytics — date-filtered Best Set / Volume charts + stats
-      exAnalyticsState = { name: name, range: 'All', start: null, end: null, data: null };
-      loadExAnalytics();
-
-      // Fetch AI insight
-      fetchExInsight(name, hist);
+      // Logged-only post-render work — guarded so nothing runs against elements
+      // that the zero-history branch above never rendered.
+      if (logged) {
+        setTimeout(function() { renderExDetailChart(hist, pr); }, 50);
+        exAnalyticsState = { name: name, range: 'All', start: null, end: null, data: null };
+        loadExAnalytics();
+        fetchExInsight(name, hist);
+      }
     })
     .catch(function() { det.innerHTML = '<p style="color:var(--color-danger)">Error loading exercise.</p>'; });
 }

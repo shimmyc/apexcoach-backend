@@ -8,6 +8,24 @@
 > `wearables/`, and `migrations/` rather than transcribed. Where the original brief differed
 > from the live code, the doc follows the code and flags it with **⚠ Correction**.
 >
+> **2026-07-17 session #26** (Exercise detail view — how-to rendering + zero-history mode;
+> frontend + scoped backend, plan approved before edits):
+> - **`GET /api/profiles/:id/exercises/:name` now returns `category`/`description`/`images`** via a
+>   targeted single-row fetch (by the matched catalog id) — the shared catalog index (grouped
+>   `/exercises` over ~865 rows) is left lean so it never carries the large description text. Non-fatal.
+> - **How-to section** (`renderExerciseHowTo`) in `showExerciseDetail`, mounted after the muscle
+>   diagram: text-first (sanitized `description` via `innerHTML`), `is_main` image as a bonus (capped,
+>   lazy, `onerror`-hidden), returns '' when neither exists so the ~70% no-image case reads complete.
+>   In-section wger CC-BY-SA credit (Profile footer isn't visible here) + per-image `license_author`
+>   only when an image renders.
+> - **Zero-history mode**: `showExerciseDetail` branches on `logged = hist.length>0` — unlogged shows
+>   name/category/muscle-diagram/how-to + a muted "Not in your log yet.", skipping the stat row, chart,
+>   analytics, session list, and AI insight; the post-render calls are guarded behind `if(logged)`.
+> - **No "Log this" CTA** (deferred to the AI-rec/Guide clickability session, where the view becomes
+>   reachable from unlogged exercises). Video out of scope. CSS id-scoped to `#lib-detail`.
+> - **Verified**: backend + inline JS syntax clean; live verification of the detail render is
+>   PIN-gated (Library tab) — spot-check on device.
+>
 > **2026-07-17 session #25** (Exercise how-to content seed + catalog cleanup prep — backend/data
 > only, report-first, plan approved before edits):
 > - **Built** `migrations/2026-07-17_exercise_catalog_content.sql` (adds `description` text + `images`
@@ -924,7 +942,7 @@ All verified present in `server.js`. `:id`/`:userId` = profile id.
 | POST | `/api/profiles/:id/reformat-titles` · `/api/profiles/:id/dedupe-workouts` |
 | GET/POST | `/api/profiles/:id/templates` · PATCH/DELETE `/api/templates/:id` |
 | POST | `/api/profiles/:id/extract-exercises` — now also resolves each name against `exercise_catalog` (see "Exercise Canonicalization" in `CLAUDE.md`); response's `exercises[]` includes `catalog_match:{method,typed_name}` per row for the frontend confirm chip |
-| GET | `/api/profiles/:id/exercises` · `/exercises/stats` · `/exercises/:name` · `/exercises/audit` |
+| GET | `/api/profiles/:id/exercises` · `/exercises/stats` · `/exercises/:name` (returns history + catalog `family`/muscles, and — session #26 — `category`/`description`/`images` via a targeted single-row fetch; works for unlogged names too) · `/exercises/audit` |
 | GET | `/api/exercise-catalog?q=` — search the shared catalog (not profile-scoped), for the confirm-chip "change" picker. Extended additively (2026-07-16 session #10) for the Exercise Guide: also selects `family`/`muscle_groups_primary`/`muscle_groups_secondary`/`equipment`; accepts `?all=1` (bypasses the 50-row cap up to 2000, Guide's one bulk load) or explicit `?limit=`/`?offset=`. `?q=` shape/behavior unchanged. |
 | PATCH | `/api/profiles/:id/exercises/:exerciseId` — body `{canonical_name}` or `{keep_as_typed:true, typed_name}`, the confirm-chip "change" action |
 | POST | `/api/exercise-catalog/confirm-alias` — body `{canonical_name, typed_name}`, not admin-gated; fired by the confirm chip's "✓" to persist the typed variant as an alias (see "Exercise Canonicalization" in `CLAUDE.md`) |
