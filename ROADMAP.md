@@ -8,25 +8,23 @@
 > `wearables/`, and `migrations/` rather than transcribed. Where the original brief differed
 > from the live code, the doc follows the code and flags it with **⚠ Correction**.
 >
-> **2026-07-18 session #27** (Exercise-detail reachability; Job 1 shipped, Jobs 2–3 report-first):
-> - **Job 1 SHIPPED (frontend-only, no server/schema):** (a) **all** Exercise Guide cards now
->   clickable — `filterLibGuide` dropped the `isLogged` gate on the `onclick`, so an unlogged catalog
->   row opens to session #26's zero-history detail view (the `logged Nx` badge still shows only for
->   history rows); (b) the deferred **"Log this" CTA** — `showExerciseDetail` renders an ember
->   `.ex-log-cta` button in both modes ("Log this exercise" / "Log this again") → `logThisExercise(name)`
->   → `prefillLogFromAI('', '', [name], '')` opens the Log modal prefilled with a `- <Exercise>` bullet.
->   The Exercises list needed no change (history-only, already all clickable). CSS id-scoped to `#lib-detail`.
-> - **Job 2 REPORTED, not built** (AI-rec name linking): `resolveExerciseCatalog` is server-only AND
->   has side effects (Haiku fallback CREATES `source:'custom'` rows) — must NOT be used for display-time
->   linking. AI-rec lines are freeform ("Bench Press 3x8 @ 135lbs"), so a name must first be stripped
->   from the annotation. Recommended: a read-only **exact/alias-only** resolve (the same top-confidence
->   tier as save-time `method:'exact'`/`'alias'`, NO fuzzy/Haiku — those are exactly the layers that can
->   mis-merge), miss → plain text (no link, never a dead lookup). See §7.
-> - **Job 3 REPORTED, schema choice pending approval** (wger variations): wger's grouping key is
->   `variation_group` (a UUID on each `exerciseinfo` item; members of a group share it). Recommended a
->   single `variation_group text` column seeded by `wger_id` (NOT a jsonb/id-array) — variations are
->   then resolved at read time by `WHERE variation_group = X AND id != self`, which self-heals across the
->   session-#25 merges/renames (a deleted/merged row simply drops out; no array to re-sync). See §7.
+> **2026-07-18 session #27** (Exercise-detail reachability + linking + variations — all 3 jobs built):
+> - **Job 1 SHIPPED (frontend-only):** (a) **all** Exercise Guide cards clickable (`filterLibGuide`
+>   dropped the `isLogged` gate → unlogged rows open session #26's zero-history view; `logged Nx` badge
+>   still history-only); (b) deferred **"Log this" CTA** (`.ex-log-cta` in both modes → `logThisExercise`
+>   → `prefillLogFromAI('', '', [name], '')`). Exercises list unchanged (history-only, already clickable).
+> - **Job 2 SHIPPED (AI-rec name linking, option B):** extracted `matchCatalogExactAlias()` from
+>   `resolveExerciseCatalog`'s step-1 (shared, not reimplemented); `stripExerciseAnnotation()` isolates
+>   the leading name off a freeform line; **read-only `POST /api/exercise-catalog/resolve-batch`** does
+>   exact/alias ONLY — no fuzzy, no Haiku, **no writes** (the browse surface never spawns rows). Client
+>   links a line only when it resolved (`aiRecLinkCache`); miss → plain text. **Match rate measured live:**
+>   real recovery-yoga rec 8/33 (24%, lift-sparse), strength-day probe 16/20 (80%), **0 wrong matches /53**.
+> - **Job 3 SHIPPED — code; two manual data steps pending:** `variation_group text` column (mirrors
+>   wger's own UUID grouping key), seed endpoint `POST /api/debug/seed-exercise-variations` (by `wger_id`),
+>   and read-time sibling resolution on `GET /exercises/:name` (`WHERE variation_group=X AND id≠self`,
+>   self-heals across merges/renames). Clickable "Variations" section in `showExerciseDetail`. **⚠ Not yet
+>   live:** run `migrations/2026-07-18_exercise_catalog_variation_group.sql` in Supabase, THEN the seed —
+>   until then the section just doesn't render (non-fatal). See §7.
 >
 > **2026-07-17 session #26** (Exercise detail view — how-to rendering + zero-history mode;
 > frontend + scoped backend, plan approved before edits):
@@ -1102,23 +1100,16 @@ Each item below is self-contained — no other doc/session context should be nee
    - **Coach Chat: monthly sleep aggregates / wider window** — only if a real year-scale question ("how's my sleep trended this year?") comes up and the 30-day window feels shallow. *Effort: Medium — needs a monthly-rollup aggregation query, not just a longer raw-row window, to stay inside the char budget.*
 5. **Free Exercise DB top-up** — unchanged from the previous cycle. *Value: Low-Medium, situational — one concrete gap already found (bare "Lat Pulldown" falls through to Haiku, works but not proactively). Effort: Low (free, keyless JSON source, e.g. `github.com/yuhonas/free-exercise-db`).* Default fallback if none of item 4's conditionals fire — only worth building if Haiku-fallback custom-row creation keeps firing on otherwise-common exercises.
 
-**Report-first plans awaiting approval (session #27, 2026-07-18) — reported, NOT yet built:**
+**Session #27 (2026-07-18) — all approved + BUILT. Two manual data steps remain for Job 3:**
 
-*Job 1 (clickable Guide cards + "Log this" CTA) already shipped this session — see the session #27 banner at the top of this file. The two below were reported for sign-off before writing code, per the session brief ("a wrong-match link is worse than no link").*
+*Approaches were reported and approved before writing code, per the brief ("a wrong-match link is worse than no link"). Full implementation detail in `CLAUDE.md` → "Exercise Detail Reachability…" (session #27).*
 
-- **Job 2 — AI-rec exercise names clickable.** AI rec exercise lines (`renderAI`, ~`public/index.html:4893`) are freeform strings (`"Bench Press 3x8 @ 135lbs"`, `"Incline DB Press 3x10"`), NOT clean catalog names — rendered as plain spans today.
-  - **`resolveExerciseCatalog` (server.js) can NOT be reused for this as-is, on two counts:** (1) it's **server-only** (async, hits Supabase with service creds, calls Haiku); (2) it has **side effects** — the Haiku fallback branch CREATES a `source:'custom'` catalog row (`createCustomCatalogEntry`) for anything it can't match. Display-time linking of a browse surface must be strictly read-only; it must never spawn catalog rows just because someone looked at a recommendation.
-  - **Two sub-problems:** (a) **strip the name** from the annotated string (drop a recognized trailing set/rep/weight/duration pattern — `3x8`, `@135lbs`, `x10`, `3 sets`, `30s`, `2:00` — conservatively; if a clean leading name can't be isolated, don't link); (b) **match read-only.**
-  - **Recommended match tier: exact/alias ONLY** — the same top-confidence layer as save-time `method:'exact'`/`'alias'` (`catalogNormKey` equality against `canonical_name` + `aliases`). **Explicitly NO fuzzy and NO Haiku** — those are precisely the layers that can mis-merge (`"Row"` vs `"Bow"`; the documented `"hang clean"`↛`"Dead Hang"` safety case), and a wrong-match link is worse than no link. `catalogNormKey`'s server logic is already mirrored client-side as `catalogNormKeyClient()` (built for the Guide logged-count index), so match RESULTS are identical wherever we run it.
-  - **On a miss → plain text, exactly as today. No link, never a dead lookup** (we only ever emit a link for a name we've confirmed resolves to an existing catalog row, so a click always opens a real detail view — and session #26 zero-history mode already handles an unlogged one).
-  - **Expected match rate: moderate** — clean strength lines that lead with a catalog name ("Bench Press…", "Goblet Squat…", "Push-Up…") mostly link after stripping; compound/round-based/mobility/MMA lines ("Superset: pushups + dips", "3 rounds of…", "Mobility flow") and bare names wger didn't seed (e.g. "Lat Pulldown", already flagged) won't parse to a single row and stay plain text. Graceful degradation makes a low hit-rate harmless.
-  - **Open impl decision (needs a pick):** where the catalog lives for the match — **(A)** reuse the session-cached `libGuideCatalog` client-side (zero new endpoint, but it's only loaded once Guide is opened; Today-tab recs would need a lazy load of `/api/exercise-catalog?all=1`, ~880 rows), or **(B)** a small read-only `POST /api/exercise-catalog/resolve-batch` `{names:[]}`→`{name:canonical|null}` that runs the exact/alias block server-side over the lean `fetchExerciseCatalogForMatching()` (no 880-row client payload, exact server parity, one batched call per rec, cacheable on the rec). Leaning **(B)** for correctness-parity + not shipping the catalog to Today; either is viable.
-
-- **Job 3 — wger variations (schema choice + seed + detail-view section).**
-  - **Confirmed live against wger's API (not from memory):** the grouping key on each `exerciseinfo` item is **`variation_group`** (a UUID string, nullable) — NOT a `variations` id-array. All exercises sharing a `variation_group` are variants of each other (e.g. group `c877…` = `{Barbell Lunges Walking, Lunges, Reverse lunges}`). ~22% of items carry one; many groups are singletons (no siblings). Our current seed (`seed-exercise-catalog`) reads `translations`/`muscles`/`equipment` but **discards `variation_group`**.
-  - **Recommended schema: a single `variation_group text` column** (migration, nullable, seeded per-row by `wger_id` exactly like `description`/`images`) — **NOT a jsonb blob or an explicit id-array.** Variations are then resolved at **read time** by `WHERE variation_group = <X> AND id != <self> AND variation_group IS NOT NULL`. Why the group-key over a stored array: it **self-heals across the session-#25 merges/renames** — a merged/deleted row simply drops out of its group with zero maintenance, which is exactly Job 3 point 6's "resolve against our current catalog and skip any that no longer exist," for free. An explicit per-row id-array would have to be rewritten every time any row in the group is merged/renamed/deleted (fragile, given the cleanup churn this catalog already sees).
-  - **Seed:** extend `seed-exercise-catalog` (or a small sibling endpoint, fill-if-null + `?force=`, matched by `wger_id` like the content seed) to write `variation_group` — no name-matching, UPDATE-only on wger-linked rows.
-  - **Detail-view render:** extend `GET /api/profiles/:id/exercises/:name` (the endpoint session #26 already uses for the targeted `description`/`images` fetch) — after the `match.id` lookup, if that row has a `variation_group`, one more targeted query for sibling rows (`variation_group=eq.X&id=neq.match.id&select=canonical_name`) attached as `data.variations`. Because it queries the live catalog, merged/renamed rows resolve to current names and deleted ones never appear (no dead links). Client renders a "Variations" section in `showExerciseDetail` **only when the array is non-empty**, each entry clickable → `showExerciseDetail(variantName)` (guaranteed to exist). CSS id-scoped to `#lib-detail`, matching session #26.
+- **Job 1 — clickable Guide cards + "Log this" CTA — ✅ SHIPPED, deployed, code-verified live.** Frontend-only.
+- **Job 2 — AI-rec exercise-name linking — ✅ SHIPPED, deployed, match rate measured live.** Option B (read-only `resolve-batch` endpoint). Did NOT reuse `resolveExerciseCatalog` wholesale — its Haiku fallback creates `source:'custom'` rows, and a browse surface must never spawn rows; extracted just the exact/alias block into a shared `matchCatalogExactAlias()`. Exact/alias ONLY, no fuzzy, no Haiku, no writes. Miss → plain text. **Live match rate:** real recovery-yoga rec **8/33 (24%)**, strength-day probe **16/20 (80%)**, **0 wrong matches across 53 lines** — content-dependent, always zero false links.
+- **Job 3 — wger variations — ✅ code SHIPPED + deployed; ⚠ TWO MANUAL DATA STEPS PENDING.** `variation_group text` column (mirrors wger's own UUID grouping key, confirmed live — NOT a jsonb/id-array), `POST /api/debug/seed-exercise-variations` (by `wger_id`, fill-if-null), read-time sibling resolution on `GET /exercises/:name` (`WHERE variation_group=X AND id≠self`, self-heals across merges/renames/deletes), clickable "Variations" section in the detail view. **Remaining, both user actions (I have no Supabase DDL access / admin secret):**
+  1. Run `migrations/2026-07-18_exercise_catalog_variation_group.sql` in the Supabase SQL editor (same as every prior `exercise_catalog` migration).
+  2. Then run the seed: `POST /api/debug/seed-exercise-variations?secret=<ADMIN_SECRET>` (returns coverage counts; `?force=1` to overwrite).
+  Until both run, the Variations section is a non-fatal no-op (missing column → `variations:null` → section absent); the rest of the detail view is unaffected. After seeding, spot-check a known wger group (e.g. Lunges ↔ Reverse Lunges) renders + taps through.
 
 **Parked backlog (unordered, carried forward):**
 - Onboarding §8 TODOs (checklist/progress indicator, guided first workout log, wearable-connect prompt, goal-suggestion flow, welcome email/push).
