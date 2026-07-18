@@ -23,8 +23,11 @@
 >   analytics, session list, and AI insight; the post-render calls are guarded behind `if(logged)`.
 > - **No "Log this" CTA** (deferred to the AI-rec/Guide clickability session, where the view becomes
 >   reachable from unlogged exercises). Video out of scope. CSS id-scoped to `#lib-detail`.
-> - **Verified**: backend + inline JS syntax clean; live verification of the detail render is
->   PIN-gated (Library tab) — spot-check on device.
+> - **Verified live (backend)**: `/exercises/:name` returns the new fields for both logged (Dead Hang:
+>   46 sessions + description) and **unlogged** (Barbell Bench Press: `history:[]` + category/desc/
+>   muscles) names; all three content cases confirmed — desc+images (Bench Press/Plank/Deadlift, with
+>   `license_author`), desc-only (Squats), neither (Bicep Curl → how-to renders nothing). Inline JS
+>   clean. The detail render itself is PIN-gated (Library tab) — spot-check on device.
 >
 > **2026-07-17 session #25** (Exercise how-to content seed + catalog cleanup prep — backend/data
 > only, report-first, plan approved before edits):
