@@ -1,6 +1,8 @@
 # ApexCoach — Project Context
 
 > See [`ROADMAP.md`](ROADMAP.md) for the project source of truth — full schema, all endpoints, features built (with commit refs), provider status, roadmap, onboarding flow, tech debt, and env vars. This file holds the deep implementation notes; `FORMULAS.md` holds the readiness/sleep math.
+>
+> **§0 of [`ROADMAP.md`](ROADMAP.md) holds the operating conventions (communication contract, hard guardrails, session start/close-out workflows) — read it before any session begins.**
 
 ## What This Is
 

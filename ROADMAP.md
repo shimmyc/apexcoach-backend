@@ -3,6 +3,7 @@
 > Single reference for anyone joining the project or picking it back up after a break.
 > Pairs with `CLAUDE.md` (deep implementation notes) and `FORMULAS.md` (readiness/sleep math).
 > Last updated: 2026-07-18.
+> **§0 "How We Work — Standing Conventions" is required reading before any session work begins.**
 >
 > **Doc accuracy notes:** Sections 2, 4, and 10 were verified directly against `server.js`,
 > `wearables/`, and `migrations/` rather than transcribed. Where the original brief differed
@@ -676,6 +677,141 @@
 > - **Auto-import on workout save** — `findWearableMatchOnSave()` returns the best same-day Fitbit candidate; client prompts via `#wm-modal`.
 > - **Unmatched Fitbit Activities card** — Today-tab card over the last 7 days; replaces the `fitbit_pending_imports` flow. New `dismissed_fitbit_activities` jsonb column.
 > - **Migrations added:** `2026-05-22_roadmap_data.sql`, `2026-05-22_dismissed_fitbit_activities.sql`.
+
+---
+
+## 0. How We Work — Standing Conventions
+
+> **Read this first, every session, before §1.** These rules are not preferences — they are
+> the operating contract for this project. They override any habit or default behavior.
+
+### 0.1 Communication Contract
+
+**Shimmy is the product owner, not the developer.** Claude Code is the developer. This chat
+is the design, decision, and approval layer.
+
+- **Plain language first, technical detail second.** Lead with what it means, what it costs,
+  what breaks, and what the decision is. Drop into implementation detail only as deep as the
+  decision actually requires — and say when you're switching registers.
+- **Never assume shared jargon.** If a term is project-internal (`withRefreshLock`,
+  `buildScheduleInstruction`, `resolve-batch`), say what it *does* in one clause the first
+  time it appears in a thread.
+- **Concise and direct.** No preamble, no affirmations, no filler. If the answer is two
+  sentences, give two sentences.
+- **One decision at a time**, with explicit options and a single recommendation. Don't stack
+  three open questions into one message.
+- **Correct immediately.** If Shimmy is wrong on a technical fact or a business assumption,
+  say so up front — no easing in.
+- **Push back up to two rounds** when a proposal is wrong or suboptimal. If Shimmy overrides
+  after that, execute his call without relitigating.
+- **Flag risk unprompted.** Surface problems he hasn't asked about.
+- **Keep momentum.** If a thread is bogging down, say so and name the next best step.
+
+### 0.2 Hard Guardrails
+
+These are not negotiable and apply to every session:
+
+1. **Audit-report-first.** Anything touching data flow gets a Phase 1 audit. Findings are
+   surfaced and work **STOPS** for approval before any code is written. No blind builds.
+2. **Scope lock.** One session, one scope. No scope creep mid-execution. New ideas that
+   surface get written to the roadmap, not built.
+3. **SQL migrations** are always written by the agent and executed manually by Shimmy in the
+   Supabase SQL editor. Never assume a migration has been run — confirm it.
+4. **Verification is not optional.** "Shipped" and "verified live" are different states and
+   must be tracked separately (see §0.4).
+5. **Never guess at ambiguous data.** If something's intent is unclear (a catalog name, a
+   user's meaning), flag it and leave it — don't invent a resolution.
+
+---
+
+### 0.3 Session Start Workflow
+
+**Trigger phrase: "start new session workflow"**
+
+On that phrase, run this without further prompting:
+
+1. **Read `CLAUDE.md` and `ROADMAP.md` fully.** They are the source of truth and override any
+   in-thread assumption or memory.
+2. **Report back, in this order:**
+   - **Pending verifications** — anything shipped-but-unverified from prior sessions, with the
+     exact check needed to close it out.
+   - **Open bugs** — anything in §6/§9 that is active, not parked.
+   - **This cycle's priorities** — the current agreed ordering from §7.
+   - **Anything blocked**, and what it's blocked on.
+3. **Confirm the single scope for this session** before any work begins. Get explicit approval.
+4. **If the scope touches data flow**, the first deliverable is an audit report, not code.
+
+---
+
+### 0.4 Session Close-Out Workflow
+
+**Trigger phrase: "close out session"**
+
+This produces **four artifacts**. All four, every time, even for a short session.
+
+#### Artifact 1 — Documentation Update (in-depth, not a summary)
+
+Update `ROADMAP.md` and `CLAUDE.md` to capture **everything** covered in the thread. Err
+heavily toward over-documenting; this project's failure mode is context loss between threads.
+
+- **New dated, numbered session banner** at the top of `ROADMAP.md`: what was worked on, root
+  causes found (with evidence, not guesses), what shipped, what was measured, and explicitly
+  what is verified live vs. not.
+- **`CLAUDE.md` implementation section** for anything architectural, with enough detail that a
+  cold reader could pick it up without the thread.
+- **§6 Known Limitations** — every limitation discovered, including ones deliberately not fixed.
+- **§7 Roadmap** — re-order if priorities moved; add anything newly scoped.
+- **§9 Tech Debt** — every new debt item, including ones we chose not to address.
+- **Capture all of the following, not just the code changes:**
+  - Bugs found (fixed *and* unfixed)
+  - Bugs fixed, with root cause
+  - New ideas raised, even half-formed ones
+  - Decisions made, with reasoning
+  - **Decisions deliberately declined**, with reasoning — so they don't resurface later as
+    open questions
+  - Anything tried that didn't work, and why (saves re-treading it)
+
+#### Artifact 2 — Claude Code Hygiene Prompt
+
+A paste-ready, **report-only** prompt for Claude Code (no writes, no fixes) covering:
+
+- **Dead code** — functions, endpoints, columns, or CSS with zero call sites, whether
+  introduced this session or orphaned by it.
+- **Security** — new endpoints admin-gated where appropriate? Secrets or tokens in log output?
+  RLS + `service_role_bypass` on any new table? Input validation on new query params or body
+  fields? Any user-supplied value reaching `innerHTML` unsanitized?
+- **Loose ends** — TODOs left in code, commented-out blocks, `console.log`s that should be
+  removed vs. deliberately kept as diagnostics.
+- **Doc drift** — does `CLAUDE.md`/`ROADMAP.md` still match what's actually in `server.js` and
+  `public/index.html`?
+- **Migration status** — any migration file written but not confirmed run in production.
+- **Resilience discipline** — any new `fetch()` without a timeout, any unbounded retry, any new
+  Fitbit call missing `keepAlive: false`.
+- **Scope check** — did anything land outside the session's agreed scope?
+
+#### Artifact 3 — Verification Ledger
+
+Three explicit buckets. This is the artifact that prevents the recurring
+"not yet verified live at write time" drift:
+
+| Bucket | Requirement |
+|---|---|
+| **Verified live** | State *how* it was verified — the query, the endpoint, the observed value |
+| **Shipped, NOT verified** | State the *exact* check needed to close it, ready to run |
+| **Not shipped** | Scoped but unbuilt — where it now sits in the roadmap |
+
+#### Artifact 4 — Next-Session Handoff Prompt
+
+A paste-ready block to open the next thread, containing:
+
+- Instruction to read `CLAUDE.md` + `ROADMAP.md` first
+- Pending verifications carried forward (from Artifact 3)
+- The agreed priority ordering for the next cycle
+- The single decision or check needed to start
+
+> **If the close-out output is too long to be useful in-thread**, compress Artifacts 1–3 into
+> the docs and hand over only Artifact 4. The docs carry the detail; the handoff prompt
+> carries the momentum.
 
 ---
 
