@@ -5298,24 +5298,47 @@ async function saveProfileDataField(profileId, profileData, key, value) {
 
 // Direct Anthropic call with a separate system prompt + single user message.
 // Mirrors callAI() but adds the top-level `system` field.
-async function callAISystem(system, userMsg, maxTokens, model) {
-  var response = await fetch("https://api.anthropic.com/v1/messages", {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "x-api-key": process.env.ANTHROPIC_KEY,
-      "anthropic-version": "2023-06-01",
-    },
-    body: JSON.stringify({
-      model: model || MODEL_SONNET,
-      max_tokens: maxTokens || 1500,
-      system: system,
-      messages: [{ role: "user", content: userMsg }],
-    }),
-  });
-  var data = await response.json();
-  if (data && data.error) throw new Error(data.error.message || "Anthropic error");
-  return (data.content && data.content[0]) ? data.content[0].text : "";
+// Same abort discipline as callAI() (2026-07-19). Originally rated lower risk
+// because its callers (roadmap generate/adapt) are background/fire-and-forget —
+// but once roadmap output feeds the daily rec prompt, a hung generator becomes a
+// stale roadmap becomes a wrong workout, so it needs the same ceiling.
+// NOTE: unlike callAI(), this THROWS on error rather than returning "". That is
+// deliberate and unchanged — its callers (generateGoalRoadmapForGoal,
+// maybeAdaptAllRoadmaps, parseAIJson consumers) branch on the throw to decide
+// whether to write a roadmap at all. Returning "" here would let an empty
+// generation overwrite a good roadmap.
+async function callAISystem(system, userMsg, maxTokens, model, timeoutMs) {
+  var ms = typeof timeoutMs === "number" ? timeoutMs : aiTimeoutMs(maxTokens || 1500, model);
+  var controller = new AbortController();
+  var timer = setTimeout(function() { controller.abort(); }, ms);
+  try {
+    var response = await fetch("https://api.anthropic.com/v1/messages", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "x-api-key": process.env.ANTHROPIC_KEY,
+        "anthropic-version": "2023-06-01",
+      },
+      body: JSON.stringify({
+        model: model || MODEL_SONNET,
+        max_tokens: maxTokens || 1500,
+        system: system,
+        messages: [{ role: "user", content: userMsg }],
+      }),
+      signal: controller.signal,
+    });
+    var data = await response.json();
+    if (data && data.error) throw new Error(data.error.message || "Anthropic error");
+    return (data.content && data.content[0]) ? data.content[0].text : "";
+  } catch (e) {
+    if (e && (e.name === "AbortError" || /abort/i.test(e.message || ""))) {
+      console.error("[AI] callAISystem TIMED OUT after " + ms + "ms (model=" + (model || MODEL_SONNET) + ")");
+      throw new Error("AI call timed out after " + ms + "ms");
+    }
+    throw e;
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 // Extract the first JSON value (object or array) from an AI response, tolerating

@@ -4332,15 +4332,15 @@ function fetchAI(opts) {
         }
       }
     }
-    if (!rows.length) return 'No exercises logged in the last ' + days + ' days.';
+    if (!rows.length) return 'No exercises logged in the last ' + nUnit(days, 'day') + '.';
     rows.sort(function(a, b) { return a.date < b.date ? -1 : (a.date > b.date ? 1 : 0); });
     var lines = [];
     for (var ri = 0; ri < rows.length; ri++) {
       var r = rows[ri];
       var detail = '';
-      if (r.sets && r.reps) detail = r.sets + ' sets x ' + r.reps + ' reps';
-      else if (r.reps) detail = r.reps + ' reps';
-      else if (r.sets) detail = r.sets + ' sets';
+      if (r.sets && r.reps) detail = nUnit(r.sets, 'set') + ' x ' + nUnit(r.reps, 'rep');
+      else if (r.reps) detail = nUnit(r.reps, 'rep');
+      else if (r.sets) detail = nUnit(r.sets, 'set');
       if (r.weight) detail += (detail ? ' @ ' : '') + r.weight + ' lbs';
       // Hold duration (2026-07-19). This block previously carried sets/reps/
       // weight only, so recent performance on every hold-based exercise was
@@ -4348,7 +4348,7 @@ function fetchAI(opts) {
       // how long, and therefore had nothing to progress.
       if (r.duration) {
         var secs = Math.round(Number(r.duration) * 60);
-        detail += (detail ? ', ' : '') + fmtMMSS(secs) + ' hold (' + secs + ' seconds)';
+        detail += (detail ? ', ' : '') + fmtMMSS(secs) + ' hold (' + nUnit(secs, 'second') + ')';
       }
       lines.push(r.date + ': ' + r.name + (detail ? ' (' + detail + ')' : ''));
     }
@@ -4371,12 +4371,12 @@ function fetchAI(opts) {
       // "<N>s" — so a 1-set Dead Hang read as "1s", i.e. one SECOND, on a
       // hold-based exercise where seconds are the meaningful unit. Reps were
       // "<N>r". Both are now explicit.
-      var line = '- ' + ex.name + ': ' + ex.count + ' sessions logged';
+      var line = '- ' + ex.name + ': ' + nUnit(ex.count, 'session') + ' logged';
       if (lastSess) {
         line += ', last ' + lastSess.date;
         var lastBits = [];
-        if (lastSess.sets) lastBits.push(lastSess.sets + ' sets');
-        if (lastSess.reps) lastBits.push(lastSess.reps + ' reps');
+        if (lastSess.sets) lastBits.push(nUnit(lastSess.sets, 'set'));
+        if (lastSess.reps) lastBits.push(nUnit(lastSess.reps, 'rep'));
         if (lastSess.weight_lbs) lastBits.push(lastSess.weight_lbs + ' lbs');
         if (lastBits.length) line += ' (' + lastBits.join(' x ') + ')';
       }
@@ -4388,8 +4388,8 @@ function fetchAI(opts) {
       // the /exercises payload and were simply never used.
       var bests = [];
       if (ex.best_weight) bests.push(ex.best_weight + ' lbs');
-      if (ex.best_reps) bests.push(ex.best_reps + ' reps');
-      if (ex.best_duration_seconds) bests.push(fmtMMSS(ex.best_duration_seconds) + ' hold (' + ex.best_duration_seconds + ' seconds)');
+      if (ex.best_reps) bests.push(nUnit(ex.best_reps, 'rep'));
+      if (ex.best_duration_seconds) bests.push(fmtMMSS(ex.best_duration_seconds) + ' hold (' + nUnit(ex.best_duration_seconds, 'second') + ')');
       if (bests.length) line += ' — PERSONAL BEST: ' + bests.join(', ');
       lines.push(line);
     }
@@ -4508,7 +4508,7 @@ function fetchAI(opts) {
       scheduleInstruction +
       focusOverrideContext +
       'TODAY: ' + today + '\n' +
-      'CURRENT WORKOUT STREAK: ' + currentStreak + ' days' + (currentStreak >= 7 ? ' (impressive consistency!)' : '') + '\n' +
+      'CURRENT WORKOUT STREAK: ' + nUnit(currentStreak, 'day') + (currentStreak >= 7 ? ' (impressive consistency!)' : '') + '\n' +
       dataBlock + '\n' +
       bodyCompositionBlock +
       checkinBlock +
@@ -7109,6 +7109,14 @@ function mgPeriodLabel(g) {
 // Human-readable "proven level" for an achieved milestone — M:SS for time-based
 // holds, plain value+unit otherwise. Shared by the prompt baseline block and the
 // milestone-complete CTA so the two can never disagree.
+// "1 set" / "2 sets". Used everywhere a count is rendered into the AI prompt —
+// the whole point of spelling units out is readability, and "1 sets" undercuts
+// that. Pass an explicit plural for irregulars.
+function nUnit(n, singular, plural) {
+  var v = Number(n);
+  return v + ' ' + (v === 1 ? singular : (plural || singular + 's'));
+}
+
 function mgAchievedDisplay(g) {
   var cur = Number((g && g.current_value) || 0);
   var unit = (g && g.target_unit) || '';
@@ -9078,7 +9086,7 @@ function buildMicroGoalsPromptContext() {
       var achSecs = isTimed ? mgValueToSeconds(aCur, aUnit) : null;
       // Spell the unit out both ways for a timed hold — "2:00" alone is the
       // exact ambiguity B33b exists to remove.
-      var achDisplay = isTimed ? (formatMmSs(achSecs) + ' (' + achSecs + ' seconds)')
+      var achDisplay = isTimed ? (formatMmSs(achSecs) + ' (' + nUnit(achSecs, 'second') + ')')
                                : aCur + (aUnit ? ' ' + aUnit : '');
       aLines.push('- "' + ag.title + '" — ACHIEVED, current proven level: ' + achDisplay);
       if (ag.type === 'strength_milestone' && isTimeUnit(aUnit)) {
