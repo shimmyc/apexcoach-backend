@@ -2,12 +2,144 @@
 
 > Single reference for anyone joining the project or picking it back up after a break.
 > Pairs with `CLAUDE.md` (deep implementation notes) and `FORMULAS.md` (readiness/sleep math).
-> Last updated: 2026-07-18.
+> Last updated: 2026-07-20.
 > **§0 "How We Work — Standing Conventions" is required reading before any session work begins.**
 >
 > **Doc accuracy notes:** Sections 2, 4, and 10 were verified directly against `server.js`,
 > `wearables/`, and `migrations/` rather than transcribed. Where the original brief differed
 > from the live code, the doc follows the code and flags it with **⚠ Correction**.
+>
+> **2026-07-20 session #31** (Wearable provenance + daily_recs time budget + sectioned rec
+> output. Two arcs, both audit-report-first with gated approval between phases):
+>
+> **ARC 1 — Google Health provenance.**
+> - **Google Health is ALIVE and is the serving provider for profile 1's biometrics.** This
+>   inverted the working hypothesis. Proven with a new admin-gated probe,
+>   `GET /api/debug/google-health-probe/1?allow_refresh=1` → **all 6 legs fulfilled**
+>   (hrv/rhr/sleep/steps/azm/weight), and `GET /api/profiles/1/daily` → `source:google_health`
+>   with **hrv 62.4 / rhr 57 / steps 609 / sleep 8.38h**.
+> - **Every signal that suggested GH was dead had a different cause.** (a) *Zero GH workouts*:
+>   `findWearableMatchOnSave()` is **Fitbit-first** and `getValidWearableToken()` short-circuits
+>   Fitbit to the legacy `profiles.fitbit_*` columns — so GH is never asked. (b) *`last_synced_at`
+>   null*: only `computeWearableBacklog()` writes it (the sync modal), never `/daily`. It was never
+>   a data-freshness signal. (c) *`needs_reconnect:false`*: see below — it was structurally
+>   incapable of being true.
+> - **`needs_reconnect` could NEVER turn true for Google Health.** Auth failures were swallowed by
+>   a `Promise.allSettled` in `wearables/google_health.js` (~line 418) — a 401 became `null` for
+>   that metric and never propagated out of `fetchDailyData()`, so it never reached
+>   `getValidWearableToken()`'s catch and `setNeedsReconnect()` was unreachable by construction.
+>   The `/daily` GH token step was additionally a **fully empty catch**, so a dead or absent
+>   connection skipped the whole branch with no trace at all.
+> - **The `source` mislabel was real, not theoretical.** `daily_steps` for 2026-07-20 read
+>   `steps=609, source="fitbit"` while the probe returned exactly 609 **from Google Health**.
+>
+> **ARC 2 — daily_recs time budget, extended into sectioned output.**
+> - **`duration` was model-invented, not computed.** `buildResponseShapeSpec()` hardcoded
+>   45/30/20 as literals in the JSON skeleton and **nothing** in the prompt described
+>   per-exercise time cost, so the model had no basis to derive a length. Verified live on the
+>   real cached rec: an option **stating 45 min contained ~25 min of work**. The literals were an
+>   anchor, not a spec — the model ignored them anyway (emitted 40/45/20 against a 45/30/20
+>   skeleton), and on an anchor day the skeleton's 45 sat in the same prompt as the schedule's
+>   own "MMA Class — 60 min" with nothing reconciling them.
+> - **The ~6000-char `fetchAI()` length guard was structurally unreachable.** Measured by
+>   instrumenting `fetchAI()` with an `auditOnly` path and executing the **real builders** against
+>   real profile-1 data: **protected (never-trimmable) content ~17,400 chars, untrimmed total
+>   25,817**. Every call fired all four trim steps, exhausted the ladder, and still ran ~2.8x over
+>   — reported by a bare `console.log` that read like success. Practical damage: the briefs were
+>   guillotined to 400 chars and `exerciseHistory` cut to top-5 on **every** call, silently
+>   discarding part of the session #30 (B33a) **PERSONAL BEST** progression signal.
+>   **The Phase 1 audit's ~12,000 estimate was 30% low** — it assumed no active Focus Override
+>   (profile 1 has one, **1,861 chars**) and could not measure `buildLog`/`buildExerciseHistory`/
+>   `dataBlock`, which are closures *inside* `fetchAI`. Flagged at the gate, as required.
+> - **Two contradictory goal orderings in one prompt.** `goalPriorityContext` (from `goals[]`
+>   array order) vs an embedded numbered `GOALS:` list inside the AI-authored
+>   `ai_prompt_context` prose. Measured live they were nearly **inverted** — Fix Posture #1 vs
+>   #4, Mountain Hike #4 vs #1, and Fix Pubic Osteitis absent from the prose list entirely —
+>   while the prompt simultaneously instructed *"Goal #1 should influence ~40%"*. Cause:
+>   reordering `goals[]` never regenerates the prose.
+> - **B12 Option-1 contradiction fired ~5 days a week for profile 1.** `CARRY FORWARD` in
+>   `buildVarietyAndSkipAnalysis()` was guarded by `todayHasSchedule`, which checks **anchors
+>   only** — blind to the fact that `buildScheduleInstruction()` also issues an imperative
+>   Option-1 order on a no-anchor day whenever an underserved frequency target exists. Profile 1
+>   has anchors only Tue/Thu, so this was the common case, not an edge case.
+> - **Steps card mislabeled.** The caption was hardcoded `'yesterday'` — correct for Fitbit
+>   (`buildDailyData` reads `/activities/date/{yesterday}`) but wrong for GH, which reports
+>   `ghDate = localToday()`. With GH serving, the card showed **today's partial count labeled
+>   "yesterday"**.
+>
+> **SHIPPED + VERIFIED LIVE:**
+> - **`source` now threads the real provider** on `daily_sleep` + `daily_steps`
+>   (`summary.source || "fitbit"`, mirroring the already-correct `upsertBodyMetrics`).
+>   **Verified:** 2026-07-20 rows read `google_health`, older rows still `fitbit`.
+>   Constraint state was checked live *before* writing a new value via a throwaway-date probe —
+>   both tables accept it, no CHECK constraint, no migration needed.
+> - **GH failures are no longer swallowed.** Every rejected leg is classified and logged
+>   (metric + code + HTTP status + transient flag); a **definitive** auth failure (401 **and**
+>   zero legs fulfilled) now reaches `setNeedsReconnect(..., "google_health", true)`. A 403
+>   (valid token, missing scope — the Fitbit weight/body-fat shape), 429/5xx, timeouts, and a
+>   lone 401 among successes deliberately do **not** set it, so the flag cannot flap.
+>   **Verified against 5 mocked scenarios** (all-401 → true; all-403, 1×401+5 OK, all-503,
+>   all-OK → false). The `/daily` empty catch now logs the skip.
+> - **7s per-request `AbortController` on GH legs** — they previously had no timeout at all,
+>   bounded only by `/daily`'s outer 8s cap, which collapsed one hung leg into an opaque
+>   whole-call timeout.
+> - **`last_synced_at` stamped on a successful `/daily` serve** for both providers, so it means
+>   what its name implies. **Gate confirmed nothing reads it as logic input** — and, a correction
+>   to the brief's premise, the Settings UI never rendered the field at all, so no UI change was
+>   made. **Verified:** GH went `null` → `2026-07-20T14:47:44Z`; Fitbit correctly did **not**
+>   move, because GH is the one serving.
+> - **Length guard 6000 → 28000**, set above the real observed untrimmed total. Per-section
+>   prompt lengths now log permanently; an exhausted-but-still-over state is a `console.warn`.
+>   Hold PRs are re-attached when `exerciseHistory` is trimmed, so truncation can no longer
+>   remove the progression signal. **Verified: `trims: none` on a normal day** — briefs and full
+>   exercise history now survive intact.
+> - **`stripEmbeddedGoalsList()`** removes the stale prose GOALS list at assembly time, leaving
+>   `goalPriorityContext` as the sole authoritative ordering. **Verified: zero `GOALS:`
+>   occurrences** in the assembled prompt. Stored `ai_prompt_context` and `goals[]` untouched.
+> - **Real duration targets**: user length choice → schedule → defaults (60/45/30/15), rounded
+>   to 5-minute increments, floor 10, **±15% tolerance band** (a target, never an exact minute).
+>   **Anchor days pin Option 1 to the anchor's own duration**, fixing the Tue/Thu 60-vs-45
+>   collision. Verified: a 60 choice yields `[60, 45, 30]`.
+> - **TIME BUDGET prompt block + post-parse `verifyRecTimeBudget()`** sharing ONE coarse
+>   heuristic (~1.5 min/strength set incl. rest, ~1 min/mobility set, hold + ~1 min rest, stated
+>   cardio as stated, +5 warm-up). Warn-only, never blocks, never auto-regenerates.
+>   **Caught the exact complaint live**: Option 2 stated 45, estimated 25 → OUT OF BAND.
+> - **Length + intensity controls** (Low/Medium/High), **ephemeral per-generation** (never
+>   persisted), mounted in `renderAI()` directly above the reroll button (`#rec-controls`,
+>   id-scoped CSS). These **replace the deferred temperature approach** as the mechanism that
+>   makes regeneration vary.
+> - **B12 hole closed**: `CARRY FORWARD` is now gated on *"Option 1 already claimed"* — anchor
+>   **or** frequency target — mirroring the same underserved-target pick `buildScheduleInstruction()`
+>   makes. The fallback NOTE also names the real claimant instead of printing "Flexible".
+> - **Steps caption re-sourced** from `fitData.stepsSummary.date` — a field the server already
+>   sent and the client discarded (`stepsSummary` appeared nowhere in `index.html`).
+>   Provider-agnostic and self-correcting.
+> - **Sectioned rec output.** Options now carry a flexible ordered `sections[]`
+>   (`{label, minutes, exercises[]}` — Warm-up / Main / Add-on, **emit only what applies**) with
+>   per-section minutes; the option's top-level `duration` + band remains the source of truth.
+>   `renderAI()` renders section headers; **legacy flat cached recs render byte-identical** via
+>   the `recOptionSections()` / `recOptionExerciseStrings()` normalizers. The verifier's
+>   **warm-up double-count is fixed** — no flat +5 when a Warm-up section already exists, which
+>   is why all three options had flagged over-band on the prior run.
+>   **Verified live via a real reroll**: durations `[45, 35, 25]`, section sums `45/35/25`,
+>   **all three IN BAND, zero warnings**, no empty sections, no placeholder filler, no
+>   per-exercise times.
+>
+> **DECISIONS DELIBERATELY DECLINED (recorded so they don't resurface):**
+> - **Temperature pin for `daily_recs`** — deferred, and now likely unnecessary: length +
+>   intensity give explicit, user-controlled variety. It must **never** be set to 0 ("Show me
+>   different options" would return an identical rec every reroll). Target ~0.65 if revisited.
+> - **Goal schema restructure** — declined. The drift is stale `ai_prompt_context` prose, not a
+>   schema flaw; the `goals[]` array order is already a clean priority source.
+> - **Per-exercise time estimates** — declined. Section-level granularity only; per-move times
+>   manufacture false precision on data the app does not have (no rest intervals, no tempo).
+> - **Mandatory 3-section structure** — declined. Sections are flexible; a 30-minute run is one
+>   section (Shimmy, 2026-07-20). Forcing a fixed set would repeat the `format_notes`
+>   "None provided" filler trap (§9), where mandating a section made the model pad it.
+> - **Server-side steps normalization** (making both providers mean the same calendar day) —
+>   declined for this scope. It's a provider-behavior change and belongs to its own item.
+> - **Wiring the re-merge endpoint into `PATCH /api/workouts/:id`** — still declined. It turns
+>   an admin recovery tool into a hot path and needs its own sign-off.
 >
 > **2026-07-19 session #30** (Exercise-row data loss — root-caused, stopped, and recovered;
 > plus temperature app-wide. Audit-report-first, gated approval at every step):
@@ -1318,6 +1450,8 @@ All verified present in `server.js`. `:id`/`:userId` = profile id.
 ### Debug / admin (gated by `ADMIN_SECRET` where applicable)
 | Method | Path |
 |--------|------|
+| GET | `/api/debug/google-health-probe/:userId` (`?date=&allow_refresh=1&raw=1`) — **read-only by default**; returns token state + the UNSWALLOWED per-leg outcome for all 6 GH metrics with real HTTP status, plus `would_serve_google_health` (mirrors `/daily`'s `hasData` gate). `allow_refresh=1` is the only writing path. See CLAUDE.md → "Google Health Failure Propagation" |
+| GET | `/api/debug/source-constraint-probe/:userId` — verifies live whether `daily_sleep`/`daily_steps` accept `source:"google_health"`; writes only to throwaway date `1970-01-01` and deletes both rows again. Built as a one-time gate (§9: keep or remove) |
 | POST | `/api/debug/backfill-wearable-hr/:userId` (`?provider=fitbit&max_intraday=N`) |
 | POST | `/api/debug/backfill-wearable-history/:userId` (`?start_date=&end_date=&max_calls=N&metrics=`) — full-history sleep/HRV/RHR/steps/weight/body-fat pull via Fitbit RANGE endpoints; `max_calls` defaults to 100 (not Infinity); never overwrites existing better data; see CLAUDE.md → "Fitbit History Backfill" |
 | POST | `/api/debug/seed-exercise-catalog` (`?max_calls=N`) — wger.de bulk-seed (no key needed; replaces the never-run MuscleWiki seed), resumable/idempotent, merge-safe against existing rows |
@@ -1341,12 +1475,16 @@ All verified present in `server.js`. `:id`/`:userId` = profile id.
 | **Fitbit** | ✅ Fully implemented | OAuth2 + auto-refresh, list/detail/TCX/intraday HR, full normalization |
 | **Google Health (API v4)** | ✅ Implemented (biometrics only) | Google Health API v4 (cloud REST). OAuth2, HRV, RHR, sleep stages, steps, AZM, weight, exercise activities. Fitbit + Pixel Watch supported. **September 2026 deadline** for full Fitbit migration. (`2026-05-26`) |
 
-> **⚠ Scope of the "GH is preferred" claim (corrected 2026-07-20).** GH is preferred over Fitbit in **`GET /api/profiles/:id/daily` ONLY** — and even there the preference is conditional on GH returning data for the `hasData` gate (hrv/rhr/sleep/steps), with sleep additionally falling back to Fitbit per-metric. Every other wearable path is still Fitbit-first or Fitbit-only: `findWearableMatchOnSave()` tries **Fitbit first** and only reaches GH when there is no Fitbit connection at all; `life-os-summary`'s live fallback is **Fitbit-only** (no GH branch exists); and `runFitbitBackfill()` / `backfill-wearable-history` are **Fitbit-only** — there is no GH historical backfill (§7 item 2).
->
-> **Consequence for the Sept-2026 cutover:** the activity/matching side has **no Google Health implementation in practice**. Biometrics will survive the Fitbit shutdown; workout auto-matching and all historical backfill will not, until that work is scoped separately.
 | **Apple Health** | 🔲 Stub (TODO) | Needs iOS companion app pattern + Apple Developer account |
 | **Samsung Health** | 🔲 Stub (TODO) | Galaxy devices via Samsung Health Data SDK |
 | **Garmin** | 🔲 Stub (TODO) | Public API, **OAuth 1.0a** (differs from Fitbit's 2.0) |
+
+> **⚠ Scope of the "GH is preferred" claim (corrected 2026-07-20, session #31).** GH is preferred over Fitbit in **`GET /api/profiles/:id/daily` ONLY** — and even there the preference is conditional on GH returning data for the `hasData` gate (hrv/rhr/sleep/steps), with sleep additionally falling back to Fitbit per-metric. Every other wearable path is still Fitbit-first or Fitbit-only:
+> - `findWearableMatchOnSave()` tries **Fitbit first** and only reaches GH when there is no Fitbit connection at all — and `getValidWearableToken()` short-circuits Fitbit to the legacy `profiles.fitbit_*` columns, so on a profile with those populated GH is **never asked**. This, not a GH failure, is why profile 1 has 44 Fitbit-prefixed workouts and zero `google_health` ones.
+> - `life-os-summary`'s live fallback is **Fitbit-only** — no GH branch exists in that endpoint at all.
+> - `runFitbitBackfill()` and `backfill-wearable-history` are **Fitbit-only**; there is no GH historical backfill (§7).
+>
+> **Consequence for the Sept-2026 cutover — this reframes the remaining work.** The activity/matching side has **no Google Health implementation in practice**. Biometrics already run on GH today and will survive the Fitbit shutdown untouched. Workout auto-matching, the unmatched-activities card, and all historical backfill will **not**. The hard half of the migration is therefore an **activity-side GH build**, not a user reconnect campaign — see §7.
 
 > **Universal API note:** On Android, **Google Health Connect** can unify Google/Samsung/most
 > Android-14+ device data — activating one Health Connect adapter may cover multiple providers
@@ -1377,6 +1515,27 @@ All verified present in `server.js`. `:id`/`:userId` = profile id.
 - **5 pre-existing rows had a `sets` value replaced with `null` during recovery — verified correct, recorded for transparency (session #30).** wid 71 `Push-Up`, wid 39 `Clamshell`, wid 32 `Dead Bug` + `Cat-Cow`, wid 18 `Push-Up`. In each case the notes genuinely state no set count (`"Push-ups - 10"`, `"Clamshells - 15 reps each side"`, `"Dead Bugs - 10 each side"`), so `null` is the faithful value and the prior number was stale. **One debatable case:** wid 18's `"Push-ups - 12 and then 4. Couldn't get to a full 12 for the second set"` arguably describes 2 sets; the extractor's own "omit when ambiguous" data-integrity rule produced `null`. Defensible, but flagged rather than buried.
 - **`exercises.duration_minutes` silently fails to insert for non-integer values — found live 2026-07-16, NOT fixed (out of scope for the exercise-canonicalization session that discovered it).** Reproduced directly: logging a Dead Hang or Plank with a whole-number duration (e.g. "1 minute") inserts fine; the identical save with a fractional duration (0.75 for "45 seconds", 0.5 for "30 seconds") returns `count:0` from `POST /api/profiles/:id/extract-exercises` — the row is silently never written, no error surfaced to the client or logged distinctly from a normal skip. This is unrelated to the exercise-catalog work (catalog resolution never touches `duration_minutes`) but directly contradicts the extraction prompt's own hardcoded Dead Hang rule, which explicitly instructs fractional-minute values ("45 seconds → 0.75"). Almost certainly explains the pre-existing `CLAUDE.md` caveat that `strength_milestone`'s time-based tracking "prefers `parseDurationToSeconds(raw_text||notes)` over the often-mis-populated `duration_minutes` column" — that workaround was likely built around this exact bug without ever finding the root cause. **Likely root cause** (not confirmed — would need direct schema access to verify): `exercises.duration_minutes` is probably typed as an integer column in the live database, despite the app-level code and multiple docs treating it as free-precision numeric. **Fix, not attempted this session**: either a migration to widen the column to `numeric`, or have `extract-exercises` round to the nearest whole minute before insert (lossy — would break sub-minute hold tracking, the opposite of what the Dead Hang PR feature needs) — a real design decision, not a one-line patch, and out of scope for the session that found it.
 
+- **Google Health `/daily` serve is all-or-nothing except sleep (session #31).** The `hasData`
+  gate is a single OR over hrv/rhr/sleep/steps. If GH returns only *some* metrics it still wins
+  the gate and serves, and the missing metrics come back `null` **even when Fitbit has them** —
+  only **sleep** has a per-metric Fitbit fallback (added session #23). A GH day returning steps
+  only would therefore blank HRV/RHR/sleep on the Today card. Not observed in production yet;
+  structural, found by reading the gate.
+- **`getValidWearableToken()` returns a cached GH access token whenever `now < expires_at`, with
+  no upstream validation (session #31).** Local "valid" ≠ accepted by Google. GH access tokens
+  last 1 hour, so a revoked-but-unexpired token reads healthy until its next refresh. The
+  probe endpoint reports this distinctly (`served_from: cache | refreshed | expired_not_refreshed`).
+- **Historical `daily_sleep` / `daily_steps` rows written before 2026-07-20 cannot have their
+  `source` corrected (session #31).** Nothing recorded which provider wrote them, so no backfill
+  is derivable from the data — the mislabel is permanent for those rows. Provenance is
+  **forward-looking only**. Recent rows are the ones most likely to be wrong, since GH has been
+  the serving provider while every write was hardcoded `"fitbit"`.
+- **The time-budget heuristic is coarse by design and over-estimates stacked sessions
+  (session #31).** A cardio block plus accessory work sums additively — the live reroll's
+  Option 3 estimated 34 min against a declared 25. The **section sum is the primary gate**; the
+  per-section heuristic is only a loose `>2x` / `<0.5x` sanity check, and the whole verifier is
+  warn-only. Tightening it would be false precision, not a better signal.
+
 ### Coach Chat / Timezone — Known Issues & Deferred (2026-07-15)
 
 Each item below is self-contained — no other doc/session context should be needed to pick it up.
@@ -1396,6 +1555,29 @@ Each item below is self-contained — no other doc/session context should be nee
 ## 7. Roadmap — Features To Build
 
 **Priority order (updated 2026-07-18 after the session #29 daily_recs outage).** Items 1–3 were **deprioritized during the outage firefight** (profile 1's recs were failing — see the session #29 banner) but remain the active cycle; the Sept-2026 Fitbit shutdown deadline hasn't moved.
+
+> **⚠ Sept-2026 framing corrected (session #31) — read before re-planning this list.** The
+> migration is **not** primarily a user reconnect campaign. **Biometrics already run on Google
+> Health today** (profile 1 verified serving `source:google_health`), so HRV/RHR/sleep/steps/AZM
+> survive the Fitbit shutdown with no further work. The **hard half is the activity-side GH
+> build**: `findWearableMatchOnSave()` is Fitbit-first and never asks GH, the unmatched-activities
+> card is Fitbit-only, `life-os-summary`'s live fallback is Fitbit-only, and **no GH historical
+> backfill exists**. Those are real builds, not reconsent prompts. See §5.
+
+**Newly scoped this cycle (session #31), not yet ordered against the list below:**
+- **(a) Workout-output FORMATTING redesign** — rec cards + the history/log view. Shimmy has
+  flagged this twice; deliberately deferred to its own session both times. The sectioned rec
+  shape shipped in session #31 is the **foundation** for it: options now carry real
+  `sections[]` with labels and per-section minutes, so a formatting pass has structure to render
+  rather than a flat string list. Explicitly out of scope until scoped on its own.
+- **(b) History quick-view card** — workouts-first, sectioned, notes rendered at the end.
+  **Gated on (a)** — the card is the surface the formatting work produces.
+- **(c) `ai_prompt_context` regeneration on goal change** — the real underlying fix behind
+  session #31's B13 workaround. Today `stripEmbeddedGoalsList()` removes the stale prose goal
+  list **at daily_recs assembly time only**; the stored prose is still stale everywhere else it
+  is consumed (Coach Chat snapshot, roadmap prompts, goal-progress prompts — see §9). The
+  durable fix is regenerating (or de-duplicating) `ai_prompt_context` when `goals[]` is
+  reordered or edited.
 
 1. **Rebuild all other profiles off profile 1 once it's stable** *(supersedes the old "second-profile Google Health migration" item — new direction, decided this cycle).* Profile 1 is the reference build; the plan is to reconstruct every other profile from it once profile 1 is proven stable, rather than migrating each profile's wearable connection in place. Still resolves the Sept-2026 cutover for those profiles (they come up on Google Health as part of the rebuild). Ordered first, but gated on profile 1 being stable (the #29 rec fix was a prerequisite).
 2. **Google Health historical backfill** — mirror `backfill-wearable-history` (§4 / `CLAUDE.md` → "Fitbit History Backfill") for GH's API v4. *Value: High, same Sept deadline — once Fitbit's API is gone, GH is the only remaining source for any further gap-filling. Effort: Medium.* Deprioritized by the #29 outage, still on the board. The chunking/merge/never-overwrite-worse-data design transfers directly — the real work is GH's different endpoint shapes (`:reconcile`, `dailyRollUp`, list+`page_size=1`) and confirming GH's own real per-metric range limits against Google's docs (the RHR silent-drop quirk found in session #17 is exactly what doesn't transfer safely by assumption).
@@ -1554,6 +1736,27 @@ Macro roadmap shape (stored on `profiles.roadmap_data`):
 
 - [x] **Drop the deprecated `fitbit_pending_imports` queue.** ✅ **Code + column both done 2026-07-17** — confirmed zero call sites (grep before removal), then deleted `diffAndQueueFitbitImports()`/`mapFitbitActivityType()`/`FITBIT_ACTIVITY_TYPE_MAP` and both endpoints from `server.js`. `migrations/2026-07-17_drop_fitbit_pending_imports.sql` **run in production** — column no longer exists.
 - [x] **Retire the legacy text roadmap (now unblocked).** ✅ **Code + columns both done 2026-07-17** — confirmed no external consumer reads `profiles.roadmap`/`roadmap_updated_at` (neither `life-os-summary` nor `PROFILE_SELECT_BASE` select them), then removed `GET/POST /api/profiles/:id/roadmap`, `loadRoadmap`/`renderRoadmapContent`/`generateRoadmap`, and the hidden `#roadmap-card`. `migrations/2026-07-17_drop_legacy_roadmap.sql` **run in production** — both columns gone.
+- [ ] **`ai_prompt_context` embeds a goal list that drifts from `goals[]` (found session #31).**
+  The prose carries its own numbered `GOALS:` list written at onboarding/profile-builder time;
+  reordering goals via Prioritize writes `goals[]` and never regenerates it, so the two diverge
+  permanently — measured live they were nearly inverted. `stripEmbeddedGoalsList()` removes it
+  **at daily_recs assembly time only**. The stored prose is **still stale wherever else
+  `ai_prompt_context` is consumed**: `buildChatSnapshot()` (Coach Chat), the macro/per-goal
+  roadmap prompts, and `POST /goal-progress` all read it raw (`server.js` ~2818, ~4848, ~5274,
+  ~5818, ~5900, ~6811). Durable fix is §7 item (c) — regenerate or de-duplicate on goal change.
+- [ ] **`upsertDailyVitals()` stamps `source` on the INSERT path only, never the PATCH (session
+  #31) — intentional, documented so it isn't "fixed" by mistake.** A vitals-only write must not
+  relabel an existing row whose *sleep* came from a different provider, since the column
+  describes the sleep source. On a fresh row there is no sleep yet, so the vitals provider is
+  the only honest value; the INSERT also relies on the column DEFAULT when no source is passed.
+- [ ] **Two new debug endpoints added session #31 — confirm gating, then keep or remove.**
+  `GET /api/debug/google-health-probe/:userId` (read-only by default; `allow_refresh=1` is the
+  only writing path, and a failed refresh legitimately sets `needs_reconnect`) and
+  `GET /api/debug/source-constraint-probe/:userId` (writes only to throwaway date `1970-01-01`,
+  self-cleaning). Both follow the existing `ADMIN_SECRET` pattern. The GH probe is worth keeping
+  as a permanent diagnostic — it answers a question `/daily` structurally cannot. The constraint
+  probe was built for a one-time gate and is a reasonable delete. Cover both in the next hygiene
+  pass.
 - [ ] **Drop the redundant `saveWearableTokens` call** in the `/callback` OAuth handler — `saveProfileTokens` now mirrors into `wearable_connections`, so the explicit second write is redundant (idempotent, harmless).
 - [ ] **Add `workouts.duration_minutes` column** so manual session durations count in analytics without relying on summed `exercises.duration_minutes`.
 - [ ] **Rename `?max_intraday=` → `?max_calls=`** in `/api/debug/backfill-wearable-hr` (the budget now covers TCX **+** intraday calls, not just intraday). Keep `max_intraday` as an alias for back-compat.
