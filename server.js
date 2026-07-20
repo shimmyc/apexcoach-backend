@@ -1279,6 +1279,7 @@ app.get("/api/profiles/:id/daily", async function(req, res) {
             upsertDailySteps(req.params.id, {
               date: ghDate, steps: ghData.steps,
               calories: null, distance_miles: null, floors: null,
+              source: "google_health",
             }).catch(function(e){ console.error("[google_health] steps upsert:", e.message); });
             autoTrackStepMicroGoals(req.params.id, ghData.steps)
               .catch(function(e){ console.error("[google_health] step micro-goals:", e.message); });
@@ -1297,6 +1298,13 @@ app.get("/api/profiles/:id/daily", async function(req, res) {
           // non-fatal: withTimeout REJECTS on timeout, so a slow Fitbit lands in
           // this catch exactly like an error — ghData.sleep stays null and
           // /daily proceeds without hanging (never blocks the response).
+          // Tracks WHICH provider the sleep on this row actually came from, so
+          // daily_sleep.source can be labelled truthfully below. The row can
+          // legitimately hold Fitbit sleep alongside Google Health HRV/RHR when
+          // the fallback fires; `source` is labelled by the SLEEP source, since
+          // the column lives on daily_sleep and the consumer question is where
+          // the sleep came from. Deliberately NOT a second column.
+          let ghSleepProvider = "google_health";
           if (!ghData.sleep) {
             try {
               const fbToken = await getValidProfileToken(req.params.id);
@@ -1305,6 +1313,7 @@ app.get("/api/profiles/:id/daily", async function(req, res) {
               );
               if (fbSleep && fbSleep.hours != null) {
                 ghData.sleep = fbSleep;
+                ghSleepProvider = "fitbit";
                 console.log("[google_health] sleep fell back to Fitbit for " + ghDate);
               }
             } catch (e) {
@@ -1328,6 +1337,7 @@ app.get("/api/profiles/:id/daily", async function(req, res) {
               wake_minutes: ghData.sleep.wake_minutes,
               hrv: ghData.hrv,
               rhr: ghData.rhr,
+              source: ghSleepProvider,
             }).catch(function(e){ console.error("[google_health] sleep upsert:", e.message); });
           } else if (ghData.hrv != null || ghData.rhr != null) {
             // Decouple HRV/RHR from sleep — persist vitals even when sleep is
@@ -1337,6 +1347,7 @@ app.get("/api/profiles/:id/daily", async function(req, res) {
             // upsert, so a sleep-less morning dropped HRV/RHR too.
             upsertDailyVitals(req.params.id, {
               date: ghDate, hrv: ghData.hrv, rhr: ghData.rhr,
+              source: "google_health",
             }).catch(function(e){ console.error("[google_health] vitals upsert:", e.message); });
           }
 
@@ -1397,6 +1408,13 @@ app.get("/api/profiles/:id/daily", async function(req, res) {
           };
 
           console.log("[google_health] daily served profile=" + req.params.id + " date=" + ghDate + " hrv=" + ghData.hrv + " rhr=" + ghData.rhr + " steps=" + ghData.steps + " azm=" + (ghData.activeZoneMinutes ? ghData.activeZoneMinutes.total : null));
+          // 2026-07-20: last_synced_at previously only ever moved when someone
+          // opened the Wearable Sync bulk-review modal (its sole writer was
+          // computeWearableBacklog), so Google Health read as never-synced while
+          // it was in fact the serving provider every day. Stamping it on a
+          // successful serve makes the field mean what its name implies.
+          // Fire-and-forget; stampLastSynced never throws.
+          stampLastSynced(req.params.id, "google_health");
           return res.json({ success: true, date: ghDate, data: responseData });
         }
         // This line used to read only "no data" — indistinguishable between a
@@ -1466,12 +1484,43 @@ app.get("/api/profiles/:id/daily", async function(req, res) {
     // computes unmatched activities on demand over the last 7 days instead
     // (2026-07-17: the old fitbit_pending_imports queue + its endpoints were
     // removed entirely, see ROADMAP.md §9).
+    // Same rationale as the Google Health serve above — a successful Fitbit
+    // serve is a real sync and should move last_synced_at. Not reached on the
+    // fitbitErr path, which returns emptyWearableData() earlier.
+    stampLastSynced(req.params.id, "fitbit");
     res.json({ success: true, date: result.date, data: result.data });
   } catch (err) {
     console.error("Error:", err.message);
     res.status(500).json({ success: false, error: err.message });
   }
 });
+
+// Loud failure for provenance writes (2026-07-20). daily_sleep/daily_steps
+// upserts are fire-and-forget, so a rejected write would otherwise lose the row
+// behind a generic one-line catch — the exact shape of the duration_minutes
+// data loss (session #30), where a per-row failure was logged and the endpoint
+// still reported success. A constraint rejection on `source` specifically is
+// called out by name so it can never be mistaken for "no data today".
+// 23514 = check_violation, 22P02 = invalid_text_representation (PostgREST
+// surfaces both as a 400 with the code in the JSON body).
+function logProvenanceWriteFailure(table, profileId, date, source, status, body) {
+  var txt = String(body || "");
+  var constraintish = status === 400 &&
+    (txt.indexOf("23514") !== -1 || txt.indexOf("22P02") !== -1 ||
+     txt.indexOf("check constraint") !== -1 || txt.indexOf("invalid input value") !== -1);
+  console.error(
+    "[Provenance] " + (constraintish ? "CONSTRAINT REJECTED" : "WRITE FAILED") +
+    " table=" + table + " profile=" + profileId + " date=" + date +
+    " source=\"" + source + "\" status=" + status + " body=" + txt.substring(0, 300)
+  );
+  if (constraintish) {
+    console.error(
+      "[Provenance] ROW LOST — \"" + source + "\" appears to be rejected by a constraint on " +
+      table + ".source. This write is fire-and-forget, so the data is NOT retried. " +
+      "Widen the constraint before writing this value again."
+    );
+  }
+}
 
 // ── STEP HISTORY ──────────────────────────────────────────────────────────
 async function upsertDailySteps(profileId, summary) {
@@ -1482,7 +1531,10 @@ async function upsertDailySteps(profileId, summary) {
     calories: summary.calories,
     distance_miles: summary.distance_miles,
     floors: summary.floors,
-    source: "fitbit",
+    // Threaded from the real provider (2026-07-20). Was hardcoded "fitbit",
+    // which mislabelled every Google-Health-sourced row. Defaults to "fitbit"
+    // so every caller that passes no source is byte-identical to before.
+    source: summary.source || "fitbit",
   };
   var r = await fetch(
     SUPABASE_URL + "/rest/v1/daily_steps?on_conflict=profile_id,date",
@@ -1494,6 +1546,7 @@ async function upsertDailySteps(profileId, summary) {
   );
   if (!r.ok) {
     var t = await r.text();
+    logProvenanceWriteFailure("daily_steps", profileId, summary.date, payload.source, r.status, t);
     throw new Error("daily_steps upsert " + r.status + ": " + t);
   }
   console.log("[Steps] upserted profile=" + profileId + " date=" + summary.date + " steps=" + summary.steps);
@@ -1517,7 +1570,9 @@ async function upsertDailySleep(profileId, summary) {
     wake_minutes: summary.wake_minutes,
     hrv: summary.hrv,
     rhr: summary.rhr,
-    source: "fitbit",
+    // Threaded from the real provider (2026-07-20). Was hardcoded "fitbit".
+    // Callers that pass no source still write "fitbit" — unchanged behavior.
+    source: summary.source || "fitbit",
   };
   var r = await fetch(
     SUPABASE_URL + "/rest/v1/daily_sleep?on_conflict=profile_id,date",
@@ -1529,6 +1584,7 @@ async function upsertDailySleep(profileId, summary) {
   );
   if (!r.ok) {
     var t = await r.text();
+    logProvenanceWriteFailure("daily_sleep", profileId, summary.date, payload.source, r.status, t);
     throw new Error("daily_sleep upsert " + r.status + ": " + t);
   }
   console.log("[Sleep] upserted profile=" + profileId + " date=" + summary.date + " score=" + summary.score + " hours=" + summary.hours);
@@ -1556,7 +1612,15 @@ async function upsertDailyVitals(profileId, summary) {
     });
     if (!pr.ok) { var t = await pr.text(); throw new Error("daily_sleep vitals PATCH " + pr.status + ": " + t); }
   } else {
-    var insert = Object.assign({ profile_id: profileId, date: summary.date }, patch);
+    // `source` goes on the INSERT only — deliberately NEVER into the PATCH
+    // body above. A vitals-only write must not relabel an existing row whose
+    // SLEEP came from a different provider (the column describes the sleep
+    // source). On a fresh row there is no sleep yet, so stamping the vitals
+    // provider is the only honest value available.
+    var insert = Object.assign(
+      { profile_id: profileId, date: summary.date, source: summary.source || "fitbit" },
+      patch
+    );
     var ir = await fetch(SUPABASE_URL + "/rest/v1/daily_sleep", {
       method: "POST",
       headers: sbHeaders("return=minimal"),

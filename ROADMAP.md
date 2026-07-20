@@ -1339,7 +1339,11 @@ All verified present in `server.js`. `:id`/`:userId` = profile id.
 | Provider | Status | Notes |
 |----------|--------|-------|
 | **Fitbit** | ✅ Fully implemented | OAuth2 + auto-refresh, list/detail/TCX/intraday HR, full normalization |
-| **Google Health (API v4)** | ✅ Implemented | Google Health API v4 (cloud REST). OAuth2, HRV, RHR, sleep stages, steps, AZM, weight, exercise activities. Fitbit + Pixel Watch supported. **September 2026 deadline** for full Fitbit migration. Preferred over Fitbit in `/daily`. (`2026-05-26`) |
+| **Google Health (API v4)** | ✅ Implemented (biometrics only) | Google Health API v4 (cloud REST). OAuth2, HRV, RHR, sleep stages, steps, AZM, weight, exercise activities. Fitbit + Pixel Watch supported. **September 2026 deadline** for full Fitbit migration. (`2026-05-26`) |
+
+> **⚠ Scope of the "GH is preferred" claim (corrected 2026-07-20).** GH is preferred over Fitbit in **`GET /api/profiles/:id/daily` ONLY** — and even there the preference is conditional on GH returning data for the `hasData` gate (hrv/rhr/sleep/steps), with sleep additionally falling back to Fitbit per-metric. Every other wearable path is still Fitbit-first or Fitbit-only: `findWearableMatchOnSave()` tries **Fitbit first** and only reaches GH when there is no Fitbit connection at all; `life-os-summary`'s live fallback is **Fitbit-only** (no GH branch exists); and `runFitbitBackfill()` / `backfill-wearable-history` are **Fitbit-only** — there is no GH historical backfill (§7 item 2).
+>
+> **Consequence for the Sept-2026 cutover:** the activity/matching side has **no Google Health implementation in practice**. Biometrics will survive the Fitbit shutdown; workout auto-matching and all historical backfill will not, until that work is scoped separately.
 | **Apple Health** | 🔲 Stub (TODO) | Needs iOS companion app pattern + Apple Developer account |
 | **Samsung Health** | 🔲 Stub (TODO) | Galaxy devices via Samsung Health Data SDK |
 | **Garmin** | 🔲 Stub (TODO) | Public API, **OAuth 1.0a** (differs from Fitbit's 2.0) |
