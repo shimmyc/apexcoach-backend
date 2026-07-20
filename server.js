@@ -5694,7 +5694,13 @@ async function generateGoalRoadmapForGoal(profileId, goalId, mode) {
 // POST generate the initial roadmap (Sonnet). Requires completed intake.
 app.post("/api/profiles/:id/goals/:goalId/roadmap", async function(req, res) {
   try {
-    var goal = await generateGoalRoadmapForGoal(req.params.id, req.params.goalId, "reset");
+    // Default stays "reset" (version -> 1, adaptation_log cleared) so the
+    // existing Profile-tab Generate/Regenerate button is unchanged. Opt in to
+    // "regenerate" to rebuild the phases while PRESERVING version history and
+    // the adaptation log — the right mode when a goal already has real history
+    // and only its phase content has gone stale.
+    var rmMode = req.query.mode === "regenerate" ? "regenerate" : "reset";
+    var goal = await generateGoalRoadmapForGoal(req.params.id, req.params.goalId, rmMode);
     res.json({ success: true, goal: goal });
   } catch (e) {
     console.error("[GoalRoadmap] generate error:", e.message);
