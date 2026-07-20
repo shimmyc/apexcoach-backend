@@ -8991,6 +8991,87 @@ function buildSystemPrompt(opts) {
   return persona + style + rules + EXPERT_REASONING_CORE + altInstruction + buildResponseShapeSpec(aiNumOpts, aiShowMV);
 }
 
+// ─── GOAL ROADMAP EMPHASIS (B33e, 2026-07-19) ──────────────────────────
+// Injects WHAT each top goal's current phase should stress — never HOW MANY
+// sessions. The schedule owns frequency and already tracks it with real status
+// ("Upper Body Strength 0/1 [NEEDED]"); roadmap weekly_targets carry their own
+// competing counts with no status tracking at all, so injecting both would put
+// two different weekly numbers in a prompt we are already de-conflicting.
+//
+// Reads the PRE-EXTRACTED roadmap.phases[].emphasis field (server-side, Sonnet)
+// rather than parsing weekly_targets here. A regex pass over that prose was
+// built and rejected — it leaked counts and silently ate the load/progression
+// language that is the most actionable content in the roadmap.
+function rmCurrentPhase(roadmap) {
+  var near = (roadmap.phases || []).filter(function(p) { return p.type === 'near_term'; });
+  if (!near.length) return null;
+  var today = ds(0);
+  var idx = -1;
+  for (var i = 0; i < near.length; i++) {
+    if (near[i].start_date && near[i].end_date && near[i].start_date <= today && today <= near[i].end_date) { idx = i; break; }
+  }
+  // Fall back to stored status. Some roadmaps carry MORE THAN ONE phase marked
+  // 'current' (an adapt advanced one without clearing the previous), so take the
+  // LAST such phase — the furthest along is the live one.
+  if (idx < 0) {
+    for (var j = 0; j < near.length; j++) if (near[j].status === 'current') idx = j;
+  }
+  if (idx < 0) return null;
+  // end_date is absent on roadmaps generated before it was a required field;
+  // the next phase's start_date is the best available horizon. See ROADMAP §9.
+  var ends = near[idx].end_date || (near[idx + 1] && near[idx + 1].start_date) || null;
+  return { phase: near[idx], ends: ends };
+}
+
+function rmPhaseElapsedPct(phase, ends) {
+  if (!phase.start_date || !ends) return null;
+  var s = new Date(phase.start_date + 'T12:00:00').getTime();
+  var e = new Date(ends + 'T12:00:00').getTime();
+  var n = new Date(ds(0) + 'T12:00:00').getTime();
+  if (!(e > s)) return null;
+  return Math.max(0, Math.min(99, Math.round(((n - s) / (e - s)) * 100)));
+}
+
+function buildRoadmapEmphasisContext() {
+  var goals = (currentProfileData && currentProfileData.goals) || [];
+  if (!goals.length) return '';
+  var top = goals.slice(0, 3);   // BY PRIORITY (array order) — not "those that have roadmaps"
+  var lines = [];
+  for (var i = 0; i < top.length; i++) {
+    var g = top[i];
+    if (!g.roadmap || !Array.isArray(g.roadmap.phases)) {
+      lines.push('- ' + g.title + ' — no roadmap yet (no phase guidance for this goal)');
+      continue;
+    }
+    var cp = rmCurrentPhase(g.roadmap);
+    if (!cp) { lines.push('- ' + g.title + ' — roadmap present but no current phase resolved'); continue; }
+    var emph = (cp.phase.emphasis || []).filter(function(e) { return e && String(e).trim(); });
+    var head = '- ' + g.title + ' — phase "' + (cp.phase.name || 'unnamed') + '"';
+    var meta = [];
+    var pct = rmPhaseElapsedPct(cp.phase, cp.ends);
+    if (pct !== null) meta.push(pct + '% elapsed');
+    if (cp.ends) meta.push('through ' + cp.ends);
+    if (meta.length) head += ' (' + meta.join(', ') + ')';
+    lines.push(head);
+    if (emph.length) lines.push('    Emphasize: ' + emph.slice(0, 4).join(' · '));
+    else lines.push('    Emphasize: (none recorded for this phase)');
+    var sig = (cp.phase.completion_signals || []).filter(Boolean)[0];
+    if (sig) lines.push('    Phase advances when: ' + sig);
+  }
+  if (!lines.length) return '';
+
+  // exercise_gaps from the MACRO roadmap — the only field there with no
+  // per-goal equivalent. Its weekly_targets are deliberately NOT used (they
+  // duplicate the per-goal ones).
+  var gapBlock = '';
+  var gaps = (currentRoadmapData && Array.isArray(currentRoadmapData.exercise_gaps)) ? currentRoadmapData.exercise_gaps.filter(Boolean).slice(0, 3) : [];
+  if (gaps.length) gapBlock = '\nGAPS TO ADDRESS (from the macro roadmap):\n' + gaps.map(function(x) { return '- ' + x; }).join('\n') + '\n';
+
+  return 'GOAL ROADMAP EMPHASIS (what this phase of each top goal should stress — the SCHEDULE above owns how many sessions and how long; this owns what they emphasize):\n' +
+    lines.join('\n') + '\n' + gapBlock +
+    '\nINSTRUCTION: shape today\'s options so at least one top-goal emphasis is reflected in the exercise selection, and name which one in goal_reasoning. Do NOT change session count, frequency or duration to satisfy this — those are set by the schedule above.\n\n';
+}
+
 // ─── MICRO-GOAL AI PROMPT BUILDER ──────────────────────────────────────
 function buildMicroGoalsPromptContext() {
   if (!microGoals || !microGoals.length) return '';
