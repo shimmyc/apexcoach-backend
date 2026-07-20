@@ -4573,7 +4573,17 @@ function assignNearTermDates(phases, todayStr) {
   if (isNaN(cursor)) cursor = Date.now();
   phases.forEach(function(p) {
     if (!p || p.type === "horizon") return;
-    var weeks = Number(p.duration_weeks) || 0;
+    // Tolerate a model returning a range ("4-6") or a string ("5 weeks") rather
+    // than an integer — take the first number present. A bare Number() on "4-6"
+    // is NaN, which silently collapsed weeks to 0: no end_date computed, and
+    // every phase's start_date pinned to today. Observed live 2026-07-19.
+    var weeks = Number(p.duration_weeks);
+    if (!Number.isFinite(weeks)) {
+      var m = String(p.duration_weeks == null ? "" : p.duration_weeks).match(/\d+/);
+      weeks = m ? Number(m[0]) : 0;
+      if (weeks > 0) p.duration_weeks = weeks;   // normalise in place so it stores as an integer
+    }
+    if (!Number.isFinite(weeks) || weeks < 0) weeks = 0;
     if (!p.start_date) p.start_date = ymdLocal(new Date(cursor));
     var startMs = Date.parse(String(p.start_date).slice(0, 10) + "T00:00:00");
     if (isNaN(startMs)) { startMs = cursor; p.start_date = ymdLocal(new Date(cursor)); }
@@ -5515,7 +5525,7 @@ async function backfillMissingEmphasis(goalTitle, phases) {
 async function adaptGoalRoadmap(goal, notes, workouts, trigger, goalExCtx) {
   var today = new Date().toISOString().slice(0, 10);
   var workoutsStr = (workouts || []).map(function(w) { return w.date + ": " + (w.type || "Workout"); }).join("\n");
-  var sys = "You are a fitness coach adapting an athlete's training roadmap for a specific goal based on their recent training and (optionally) a check-in. Return ONLY valid JSON with the same shape as the existing roadmap: { timeline_range: string, timeline_note: string, date_confidence: 'high'|'medium'|'low', phases: [...] }. Preserve the structure: 3 near_term phases (type: 'near_term', each with name, duration_weeks, weekly_targets, emphasis and completion_signals — never drop name or duration_weeks) followed by 2 horizon phases (type: 'horizon', milestone-based). " +
+  var sys = "You are a fitness coach adapting an athlete's training roadmap for a specific goal based on their recent training and (optionally) a check-in. Return ONLY valid JSON with the same shape as the existing roadmap: { timeline_range: string, timeline_note: string, date_confidence: 'high'|'medium'|'low', phases: [...] }. Preserve the structure: 3 near_term phases (type: 'near_term', each with name, duration_weeks, weekly_targets, emphasis and completion_signals — never drop name or duration_weeks) followed by 2 horizon phases (type: 'horizon', milestone-based). duration_weeks MUST be a single INTEGER (e.g. 5), never a string and never a range like \"4-6\" — phases are sequenced on a calendar from it. " +
     "Advance phase status (upcoming -> current -> complete) when completion_signals are met. Keep phases that are still valid — only change what the recent training or check-in justifies. Be concise.\n\n" +
     "ALSO run two checks that are NOT completion tests:\n" +
     "1. DATE ROLLOVER: if a phase's end_date has passed, it must not remain \"current\" — mark it \"complete\" and make the next phase \"current\", even if its completion_signals were never met. Exactly one near_term phase may be \"current\".\n" +
