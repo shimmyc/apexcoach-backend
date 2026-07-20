@@ -49,6 +49,56 @@ function reconnectError(msg) {
   return e;
 }
 
+// Per-request hard timeout (2026-07-20). These fetches previously had no
+// AbortController at all — the only bound was the /daily caller's outer
+// withTimeout(8s), which collapses a single hung leg into one opaque
+// whole-call timeout. This inner cap is deliberately LOWER than that outer
+// cap so a stalled leg surfaces as a real, metric-attributable TIMEOUT.
+const GH_REQUEST_TIMEOUT_MS = 7000;
+
+// Tags an error with the two fields the diagnostics layer needs:
+//   auth_failure — the TOKEN itself was rejected (401). Definitive.
+//   transient    — a blip (timeout / 429 / 5xx / network). Must NEVER be
+//                  allowed to drive needs_reconnect, or the flag will flap.
+// A 403 is deliberately NEITHER: the token is valid, the SCOPE is not. That
+// is exactly the shape of the Fitbit weight/body-fat gap (ROADMAP §6 item 3),
+// where prompting a reconnect would not have fixed anything.
+function classifyGhError(err, status) {
+  if (!err) err = new Error("unknown Google Health error");
+  err.status = status != null ? status : (err.status != null ? err.status : null);
+  if (err.status === 401) {
+    err.code = "RECONNECT_REQUIRED"; err.auth_failure = true; err.transient = false;
+  } else if (err.status === 403) {
+    err.code = "PERMISSION_DENIED"; err.auth_failure = false; err.transient = false;
+  } else if (err.status === 429 || (err.status >= 500 && err.status < 600)) {
+    err.code = "UPSTREAM_" + err.status; err.auth_failure = false; err.transient = true;
+  } else if (err.status == null) {
+    err.code = err.code || "NETWORK"; err.auth_failure = false; err.transient = true;
+  } else {
+    err.code = err.code || ("HTTP_" + err.status); err.auth_failure = false; err.transient = false;
+  }
+  return err;
+}
+
+// fetch() with a hard AbortController cap. Bounded: no retry of its own (the
+// single 429 retry lives in the callers below and is capped at one attempt).
+async function ghFetch(url, opts, label) {
+  var controller = new AbortController();
+  var timer = setTimeout(function () { controller.abort(); }, GH_REQUEST_TIMEOUT_MS);
+  try {
+    return await fetch(url, Object.assign({}, opts, { signal: controller.signal }));
+  } catch (e) {
+    if (e && (e.name === "AbortError" || e.type === "aborted")) {
+      var te = new Error("Google Health request timed out after " + GH_REQUEST_TIMEOUT_MS + "ms for " + label);
+      te.status = null; te.code = "TIMEOUT"; te.auth_failure = false; te.transient = true;
+      throw te;
+    }
+    throw classifyGhError(e, null);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 // GET ${BASE}${path}?{params}. 401 → RECONNECT_REQUIRED; 429 → wait 1s + retry
 // once; other non-2xx → throw with status + body. Returns parsed JSON.
 async function ghGet(token, path, params) {
@@ -60,18 +110,17 @@ async function ghGet(token, path, params) {
   var url = BASE + path + (qs ? "?" + qs : "");
   var opts = { headers: { "Authorization": "Bearer " + token } };
 
-  var res = await fetch(url, opts);
-  if (res.status === 401) throw reconnectError("Google Health 401 for " + path + " — reconnect required");
+  var res = await ghFetch(url, opts, path);
+  if (res.status === 401) throw classifyGhError(reconnectError("Google Health 401 for " + path + " — reconnect required"), 401);
   if (res.status === 429) {
     await sleepMs(1000);
-    res = await fetch(url, opts);
-    if (res.status === 401) throw reconnectError("Google Health 401 for " + path + " — reconnect required");
+    res = await ghFetch(url, opts, path);
+    if (res.status === 401) throw classifyGhError(reconnectError("Google Health 401 for " + path + " — reconnect required"), 401);
   }
   if (!res.ok) {
     var body = await res.text();
     var err = new Error("Google Health " + res.status + " for " + path + ": " + body.substring(0, 200));
-    err.status = res.status;
-    throw err;
+    throw classifyGhError(err, res.status);
   }
   return res.json();
 }
@@ -79,28 +128,25 @@ async function ghGet(token, path, params) {
 // POST ${BASE}${path} with a JSON body. Same error handling as ghGet.
 async function ghPost(token, path, body) {
   var url = BASE + path;
-  function doPost() {
-    return fetch(url, {
-      method: "POST",
-      headers: {
-        "Authorization": "Bearer " + token,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify(body || {}),
-    });
-  }
-  var res = await doPost();
-  if (res.status === 401) throw reconnectError("Google Health 401 for " + path + " — reconnect required");
+  var opts = {
+    method: "POST",
+    headers: {
+      "Authorization": "Bearer " + token,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(body || {}),
+  };
+  var res = await ghFetch(url, opts, path);
+  if (res.status === 401) throw classifyGhError(reconnectError("Google Health 401 for " + path + " — reconnect required"), 401);
   if (res.status === 429) {
     await sleepMs(1000);
-    res = await doPost();
-    if (res.status === 401) throw reconnectError("Google Health 401 for " + path + " — reconnect required");
+    res = await ghFetch(url, opts, path);
+    if (res.status === 401) throw classifyGhError(reconnectError("Google Health 401 for " + path + " — reconnect required"), 401);
   }
   if (!res.ok) {
     var errBody = await res.text();
     var err = new Error("Google Health " + res.status + " for " + path + ": " + errBody.substring(0, 200));
-    err.status = res.status;
-    throw err;
+    throw classifyGhError(err, res.status);
   }
   return res.json();
 }
@@ -378,7 +424,14 @@ function parseSleep(resp) {
   };
 }
 
-async function fetchDailyData(token, ymd) {
+// Leg order must stay in lockstep with the Promise.allSettled array below —
+// it is what maps a settled index back to a metric name in the diagnostics.
+const GH_DAILY_LEGS = ["hrv", "rhr", "sleep", "steps", "azm", "weight"];
+
+// opts (all optional): { label } for log attribution, { include_raw } to attach
+// a truncated upstream payload per fulfilled leg (the admin probe only).
+async function fetchDailyData(token, ymd, opts) {
+  opts = opts || {};
   var nextDay = addDay(ymd);
   var parts = String(ymd).split("-");
   var Y = parseInt(parts[0], 10);
@@ -418,6 +471,63 @@ async function fetchDailyData(token, ymd) {
   var settled = await Promise.allSettled([hrvP, rhrP, sleepP, stepsP, azmP, weightP]);
   var hrvRes = settled[0], rhrRes = settled[1], sleepRes = settled[2];
   var stepsRes = settled[3], azmRes = settled[4], weightRes = settled[5];
+
+  // ── Diagnostics (2026-07-20) ────────────────────────────────────────────
+  // Until now every rejected leg died right here: allSettled swallowed it, the
+  // caller saw `null` for that metric, and /daily's hasData gate reported the
+  // whole thing as "no data — falling through to Fitbit". A totally dead
+  // provider and a genuinely quiet day were byte-identical from outside, and a
+  // 401 never reached getValidWearableToken, so needs_reconnect for
+  // google_health was structurally incapable of ever becoming true.
+  // Legs are now classified, logged, and surfaced to the caller. This changes
+  // NOTHING about the returned metric values — degradation is unchanged.
+  var legs = settled.map(function (s, i) {
+    var metric = GH_DAILY_LEGS[i];
+    if (s.status === "fulfilled") {
+      var v = s.value || {};
+      var pts = Array.isArray(v.dataPoints) ? v.dataPoints.length
+              : (Array.isArray(v.rollupDataPoints) ? v.rollupDataPoints.length : null);
+      var leg = { metric: metric, status: "fulfilled", data_points: pts, error: null };
+      if (opts.include_raw) {
+        try { leg.raw = JSON.stringify(v).substring(0, 2000); } catch (e) { leg.raw = "<unserializable>"; }
+      }
+      return leg;
+    }
+    var e = s.reason;
+    if (!e || e.transient === undefined) e = classifyGhError(e, e && e.status);
+    return {
+      metric: metric,
+      status: "rejected",
+      data_points: null,
+      error: {
+        code: e.code || null,
+        http_status: e.status != null ? e.status : null,
+        message: String(e.message || e).substring(0, 300),
+        transient: !!e.transient,
+        auth_failure: !!e.auth_failure,
+      },
+    };
+  });
+
+  var rejectedLegs = legs.filter(function (l) { return l.status === "rejected"; });
+  var fulfilledCount = legs.length - rejectedLegs.length;
+  // DEFINITIVE auth failure only when the token was rejected AND not one leg
+  // succeeded. A lone 401 alongside successes is not a dead connection and
+  // must not flip needs_reconnect — the flag has to stay non-flapping, which
+  // is the same bar the Fitbit invalid_grant path already holds itself to.
+  var authFailure = rejectedLegs.some(function (l) { return l.error.auth_failure; }) && fulfilledCount === 0;
+
+  if (rejectedLegs.length) {
+    var tag = "[google_health]" + (opts.label ? " (" + opts.label + ")" : "");
+    rejectedLegs.forEach(function (l) {
+      console.error(tag + " leg FAILED metric=" + l.metric +
+        " code=" + l.error.code + " http=" + l.error.http_status +
+        " transient=" + l.error.transient + " auth_failure=" + l.error.auth_failure +
+        " msg=" + l.error.message);
+    });
+    console.error(tag + " fetchDailyData " + ymd + ": " + rejectedLegs.length + "/" +
+      legs.length + " legs failed, fulfilled=" + fulfilledCount + ", auth_failure=" + authFailure);
+  }
 
   // Daily records carry their calendar date either as a "YYYY-MM-DD" string or
   // a { year, month, day } object — at the dataPoint level or nested under the
@@ -510,6 +620,16 @@ async function fetchDailyData(token, ymd) {
     sleep: sleepData || null,
     weight: weightData || null,
     source: "google_health",
+    // Additive, non-breaking: every existing consumer reads the named metric
+    // fields above (server.js /daily builds its response field-by-field), so
+    // this extra key is inert to them and never reaches the client.
+    _diagnostics: {
+      date: ymd,
+      legs: legs,
+      fulfilled_count: fulfilledCount,
+      rejected_count: rejectedLegs.length,
+      auth_failure: authFailure,
+    },
   };
 }
 

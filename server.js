@@ -1223,7 +1223,16 @@ app.get("/api/profiles/:id/daily", async function(req, res) {
     let ghToken = null;
     try {
       ghToken = await getValidWearableToken(req.params.id, "google_health");
-    } catch (e) { /* not connected or expired — fall through to Fitbit */ }
+    } catch (e) {
+      // 2026-07-20: was a fully empty catch. A dead or absent Google Health
+      // connection skipped this entire branch with no trace whatsoever, which
+      // is half of why "GH is broken" and "GH was never connected" looked
+      // identical from outside. Still non-fatal — we fall through to Fitbit
+      // exactly as before; this only makes the skip visible.
+      console.warn("[google_health] token unavailable for profile " + req.params.id +
+        " (code=" + ((e && e.code) || "none") + "): " + ((e && e.message) || e) +
+        " — skipping Google Health, falling through to Fitbit");
+    }
 
     if (ghToken) {
       try {
@@ -1239,8 +1248,25 @@ app.get("/api/profiles/:id/daily", async function(req, res) {
         // hung upstream would otherwise stall the endpoint into a 504. On
         // timeout this throws and falls through to the Fitbit path below.
         const ghData = await withTimeout(
-          ghAdapter.fetchDailyData(ghToken, ghDate), 8000, "google_health fetchDailyData"
+          ghAdapter.fetchDailyData(ghToken, ghDate, { label: "daily" }), 8000, "google_health fetchDailyData"
         );
+
+        // 2026-07-20 — surface a definitive auth failure. The adapter's own
+        // Promise.allSettled means a 401 never propagates out of
+        // fetchDailyData, so it never reached getValidWearableToken's catch
+        // and setNeedsReconnect(…, "google_health", true) was unreachable by
+        // construction: the flag could not become true no matter how dead the
+        // connection was. The adapter now reports the verdict (token rejected
+        // AND zero legs succeeded); transient failures never set it.
+        // Best-effort and fire-and-forget — mirrors the Fitbit path, never
+        // blocks or fails /daily, and does not change the fallback below.
+        const ghDiag = ghData && ghData._diagnostics;
+        if (ghDiag && ghDiag.auth_failure) {
+          console.error("[google_health] DEFINITIVE auth failure for profile " + req.params.id +
+            " on " + ghDate + " (" + ghDiag.rejected_count + "/" + ghDiag.legs.length +
+            " legs rejected, 0 fulfilled) — flagging needs_reconnect");
+          setNeedsReconnect(req.params.id, "google_health", true);
+        }
 
         // Only serve Google Health if it actually returned something this day;
         // otherwise fall through to Fitbit (e.g. a brand-new GH connection with
@@ -1373,11 +1399,18 @@ app.get("/api/profiles/:id/daily", async function(req, res) {
           console.log("[google_health] daily served profile=" + req.params.id + " date=" + ghDate + " hrv=" + ghData.hrv + " rhr=" + ghData.rhr + " steps=" + ghData.steps + " azm=" + (ghData.activeZoneMinutes ? ghData.activeZoneMinutes.total : null));
           return res.json({ success: true, date: ghDate, data: responseData });
         }
-        console.log("[google_health] no data for " + ghDate + " — falling through to Fitbit");
+        // This line used to read only "no data" — indistinguishable between a
+        // genuinely quiet day and a provider that failed on every leg. The leg
+        // counts disambiguate it: rejected=0 means GH really had nothing;
+        // rejected>0 means GH failed and the per-leg errors are logged above.
+        console.log("[google_health] no data for " + ghDate + " — falling through to Fitbit" +
+          (ghDiag ? " (legs fulfilled=" + ghDiag.fulfilled_count + " rejected=" + ghDiag.rejected_count + ")" : ""));
         // No Google Health data this day → fall through to the Fitbit path below.
       } catch (e) {
-        console.error("[google_health] fetchDailyData failed:", e.message);
-        // Fall through to the Fitbit path below.
+        // Reachable via the outer 8s withTimeout or an unexpected throw — NOT
+        // via a per-leg HTTP error, which allSettled handles inside the adapter.
+        console.error("[google_health] fetchDailyData failed (falling through to Fitbit):",
+          "code=" + ((e && e.code) || "none"), e.message);
       }
     }
 
@@ -8720,6 +8753,120 @@ app.post("/api/wearables/import/:userId", async function(req, res) {
     res.json(Object.assign({ success: true }, out));
   } catch (e) {
     sendWearableError(res, e, provider);
+  }
+});
+
+// GET /api/debug/google-health-probe/:userId?secret=ADMIN_SECRET
+//     [&date=YYYY-MM-DD] [&allow_refresh=1] [&raw=1]
+//
+// Answers the one question the normal /daily path structurally cannot: is
+// Google Health actually executing for this profile? /daily can't answer it
+// because the adapter's Promise.allSettled turns every failure — including a
+// 401 — into a null metric, and the hasData gate then reports the whole thing
+// as "no data, falling through to Fitbit". This returns the UNSWALLOWED
+// result: token state, and per-leg outcome for all six metrics with the real
+// HTTP status and message.
+//
+// READ-ONLY BY DEFAULT. Writes no table and does not mutate connection state.
+// If the stored access token is expired it reports exactly that and STOPS,
+// because refreshing writes (saveWearableTokens). Pass allow_refresh=1 to opt
+// into a real refresh through the app's own getValidWearableToken path — that
+// is the ONLY option here that writes, and note that a failed refresh will
+// also set needs_reconnect=true (that is getValidWearableToken's existing,
+// correct behavior, not something this endpoint adds).
+app.get("/api/debug/google-health-probe/:userId", async function(req, res) {
+  try {
+    if (process.env.ADMIN_SECRET) {
+      var gotGhp = req.headers["x-admin-secret"] || req.query.secret;
+      if (gotGhp !== process.env.ADMIN_SECRET) return res.status(403).json({ success: false, error: "forbidden" });
+    }
+    var pid = req.params.userId;
+    var allowRefresh = req.query.allow_refresh === "1";
+    var profileTz = await getProfileTimezone(pid).catch(function() { return {}; });
+    var probeDate = req.query.date || localToday(profileTz);
+
+    // ── Step 1: token acquisition, reported rather than swallowed ──
+    var stored = await loadWearableTokens(pid, "google_health");
+    var now = Date.now();
+    var expiresAt = Number(stored.expires_at) || 0;
+    var tokenReport = {
+      connection_row_present: !!(stored.access_token || stored.refresh_token),
+      has_access_token: !!stored.access_token,
+      has_refresh_token: !!stored.refresh_token,
+      expires_at: expiresAt ? new Date(expiresAt).toISOString() : null,
+      expired: !expiresAt || now >= expiresAt,
+      seconds_until_expiry: expiresAt ? Math.round((expiresAt - now) / 1000) : null,
+      served_from: null,
+      error: null,
+    };
+    function stop(note) {
+      return res.json({
+        success: true, profile_id: pid, date: probeDate,
+        token: tokenReport, legs: null, parsed: null,
+        would_serve_google_health: false, note: note,
+      });
+    }
+    if (!tokenReport.connection_row_present) {
+      tokenReport.served_from = "none";
+      return stop("No google_health row in wearable_connections for this profile — nothing to probe.");
+    }
+
+    var token = null;
+    if (!tokenReport.expired && stored.access_token) {
+      token = stored.access_token;
+      tokenReport.served_from = "cache";
+    } else if (allowRefresh) {
+      try {
+        token = await getValidWearableToken(pid, "google_health");
+        tokenReport.served_from = "refreshed";
+      } catch (e) {
+        tokenReport.served_from = "refresh_failed";
+        tokenReport.error = { code: (e && e.code) || null, message: String((e && e.message) || e).substring(0, 300) };
+        return stop("Refresh failed — the refresh token is rejected. This is a definitive auth failure; " +
+          "getValidWearableToken will have set needs_reconnect=true. Reconnect Google Health.");
+      }
+    } else {
+      tokenReport.served_from = "expired_not_refreshed";
+      return stop("Stored access token is expired. Re-run with &allow_refresh=1 to refresh and probe " +
+        "(that path WRITES new tokens, and on failure sets needs_reconnect=true).");
+    }
+
+    // ── Step 2: the six legs, unswallowed ──
+    // Each leg is capped at 7s inside the adapter; this outer cap bounds the
+    // whole probe (six in parallel + one possible 429 retry).
+    var ghAdapter = wearables.getProviderAdapter("google_health");
+    var probe = await withTimeout(
+      ghAdapter.fetchDailyData(token, probeDate, { label: "probe", include_raw: req.query.raw === "1" }),
+      20000, "google_health probe"
+    );
+    var diag = (probe && probe._diagnostics) || {};
+    // Mirrors /daily's own hasData gate exactly, so this reports what /daily
+    // WOULD have done with this same result.
+    var wouldServe = probe.hrv !== null || probe.rhr !== null ||
+                     probe.sleep !== null || probe.steps !== null;
+
+    res.json({
+      success: true,
+      profile_id: pid,
+      date: probeDate,
+      token: tokenReport,
+      auth_failure: !!diag.auth_failure,
+      legs_fulfilled: diag.fulfilled_count,
+      legs_rejected: diag.rejected_count,
+      legs: diag.legs || null,
+      parsed: {
+        hrv: probe.hrv, rhr: probe.rhr, steps: probe.steps,
+        activeZoneMinutes: probe.activeZoneMinutes,
+        sleep: probe.sleep, weight: probe.weight,
+      },
+      would_serve_google_health: wouldServe,
+      note: wouldServe
+        ? "/daily would SERVE Google Health for this date."
+        : "/daily would fall through to Fitbit for this date. Check legs_rejected to tell a dead provider from a quiet day.",
+    });
+  } catch (e) {
+    console.error("[google_health probe] failed:", e.message);
+    res.status(500).json({ success: false, error: e.message, code: (e && e.code) || null });
   }
 });
 
