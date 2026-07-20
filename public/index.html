@@ -11498,6 +11498,11 @@ function saveWorkoutToSupabase(entry) {
       .then(function(r) { return r.json(); })
       .then(function(exData) {
         console.log('[ApexCoach] Exercises extracted:', exData.count || 0, 'from workout');
+        // Partial-save surfacing (2026-07-19). The server now reports per-row
+        // insert failures instead of dropping them silently; record them
+        // against this workout so its card shows an inline warning, and toast
+        // once so the athlete knows immediately rather than on next render.
+        noteExtractFailures(wkId, exData);
         // Refresh library data if on Library tab
         if (document.getElementById('tab-library') && document.getElementById('tab-library').classList.contains('active')) {
           loadLibrary();
@@ -14210,6 +14215,65 @@ function renderWearableStatsGrid(wd) {
 // switching profiles via switchProfile() — which doesn't reset this cache —
 // still refetches instead of showing a stale profile's chips).
 var historyChipsLoadedForProfile = null;
+// ── PARTIAL-EXTRACTION FAILURE SURFACING (2026-07-19) ─────────────────────
+// `POST /extract-exercises` can save some exercises and reject others (a row
+// whose value the column won't accept, an FK problem, etc). It used to log
+// those to the server console and still report success, so a dropped exercise
+// was invisible. It now returns { partial_failure, failed, failures[] }; this
+// records them per workout so the workout's own card can say what didn't save.
+// Session-scoped on purpose — it reflects what happened on THIS save, and a
+// later successful re-save should clear it (see noteExtractFailures).
+var extractFailuresByWorkoutId = {};
+
+var EXTRACT_FAILURE_REASONS = {
+  fractional_duration_rejected: 'the duration could not be stored',
+  possible_fractional_duration: 'the duration could not be stored',
+  duplicate: 'it was already logged',
+  fk_violation: 'the workout link was invalid',
+  check_constraint: 'a value was out of range',
+  not_null_violation: 'a required field was missing',
+  unknown: 'the database rejected it',
+};
+
+function noteExtractFailures(workoutId, exData) {
+  if (!workoutId || !exData) return;
+  var fails = (exData.partial_failure && Array.isArray(exData.failures)) ? exData.failures : [];
+  if (fails.length) {
+    extractFailuresByWorkoutId[workoutId] = fails;
+    console.warn('[ApexCoach] ' + fails.length + ' exercise(s) failed to save:',
+      fails.map(function(f) { return f.name + ' (' + f.reason + ')'; }).join(', '));
+    if (typeof showToast === 'function') {
+      showToast('⚠ ' + fails.length + ' exercise' + (fails.length > 1 ? 's' : '') + " didn't save");
+    }
+  } else {
+    // A clean re-save of the same workout clears any earlier warning.
+    delete extractFailuresByWorkoutId[workoutId];
+  }
+  if (typeof renderLog === 'function') renderLog();
+  if (typeof renderLogArea === 'function') renderLogArea();
+}
+
+// Inline warning markup for one workout's card. Returns '' when nothing failed,
+// so a healthy card is completely unchanged.
+function extractFailureHtml(workoutId) {
+  var fails = workoutId ? extractFailuresByWorkoutId[workoutId] : null;
+  if (!fails || !fails.length) return '';
+  var items = fails.map(function(f) {
+    var why = EXTRACT_FAILURE_REASONS[f.reason] || EXTRACT_FAILURE_REASONS.unknown;
+    return '<li style="margin:2px 0">' + escHtml(f.name || 'Unnamed exercise') +
+           ' <span style="color:var(--text-muted)">&mdash; ' + escHtml(why) + '</span></li>';
+  }).join('');
+  return '<div style="margin-top:8px;padding:10px 12px;border-radius:10px;' +
+    'background:rgba(239,68,68,0.10);border:1px solid rgba(239,68,68,0.35)">' +
+    '<div style="font-size:12px;font-weight:700;color:var(--color-danger);margin-bottom:4px">' +
+    '&#9888; ' + fails.length + ' exercise' + (fails.length > 1 ? 's' : '') + " didn't save</div>" +
+    '<ul style="margin:0;padding-left:16px;font-size:12px;color:var(--text-primary);line-height:1.6">' +
+    items + '</ul>' +
+    '<div style="font-size:11px;color:var(--text-muted);margin-top:6px">' +
+    'The rest of this workout saved normally. Edit the notes and save again to retry.</div>' +
+    '</div>';
+}
+
 function ensureHistoryChipsLoaded() {
   if (!currentProfileId) return;
   if (historyChipsLoadedForProfile === currentProfileId || historyChipsLoading) return;
@@ -14348,6 +14412,9 @@ function renderLog() {
       });
       html += '</div>';
     }
+    // Inline "didn't save" warning (2026-07-19) — renders only when this
+    // workout's last extraction actually dropped a row; '' otherwise.
+    html += extractFailureHtml(w.id);
     // Edit + Re-log actions
     html += '<div style="margin-top:10px;display:flex;gap:8px;flex-wrap:wrap">';
     html += '<button onclick="event.stopPropagation();editWorkoutById(\'' + editId + '\')" style="background:transparent;border:none;color:var(--accent-ember);padding:10px 14px;border-radius:8px;cursor:pointer;font-size:12px;font-weight:600;font-family:Inter,sans-serif;min-height:44px">Edit</button>';
