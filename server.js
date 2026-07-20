@@ -3295,6 +3295,41 @@ async function resolveExerciseCatalog(name, category, requestCache) {
   }
 }
 
+// The "nothing to insert" result for extract-exercises. Kept identical in shape
+// to the normal response (2026-07-19) so every caller sees one stable contract —
+// previously these early returns omitted the counters entirely, which made the
+// no-exercises case indistinguishable from an older server that couldn't report
+// failures at all.
+function emptyExtractResult() {
+  return {
+    success: true, exercises: [], count: 0,
+    attempted: 0, failed: 0, partial_failure: false, failures: [],
+  };
+}
+
+// Turns a raw PostgREST error body into a short, human-readable cause for a
+// failed exercises INSERT (2026-07-19). Purely descriptive — it never changes
+// control flow. The numeric case is the one that has actually bitten: the
+// extraction prompt emits fractional minutes (0.5 / 0.75 / 1.25) that an
+// integer duration_minutes column rejects outright.
+// See migrations/2026-07-19_exercises_duration_numeric.sql.
+function classifyInsertFailure(errText, ex) {
+  var t = String(errText || "").toLowerCase();
+  var dm = ex && ex.duration_minutes;
+  var fractional = typeof dm === "number" && isFinite(dm) && dm % 1 !== 0;
+  if (fractional && (t.indexOf("invalid input syntax for type integer") >= 0 ||
+                     t.indexOf("invalid input syntax") >= 0 ||
+                     t.indexOf("numeric") >= 0 || t.indexOf("integer") >= 0)) {
+    return "fractional_duration_rejected";
+  }
+  if (fractional) return "possible_fractional_duration";
+  if (t.indexOf("duplicate key") >= 0) return "duplicate";
+  if (t.indexOf("foreign key") >= 0) return "fk_violation";
+  if (t.indexOf("violates check constraint") >= 0) return "check_constraint";
+  if (t.indexOf("null value in column") >= 0) return "not_null_violation";
+  return "unknown";
+}
+
 app.post("/api/profiles/:id/extract-exercises", async function(req, res) {
   try {
     var profileId = req.params.id;
@@ -3317,20 +3352,27 @@ app.post("/api/profiles/:id/extract-exercises", async function(req, res) {
       var endIdx = aiText.lastIndexOf("]");
       if (startIdx < 0 || endIdx < 0 || endIdx <= startIdx) {
         console.error("[extract-exercises] No JSON array found in AI response");
-        return res.json({ success: true, exercises: [], count: 0 });
+        return res.json(emptyExtractResult());
       }
       var cleaned = aiText.substring(startIdx, endIdx + 1);
       exercises = JSON.parse(cleaned);
       if (!Array.isArray(exercises)) exercises = [];
     } catch (parseErr) {
       console.error("[extract-exercises] JSON parse error:", parseErr.message, "| Raw text:", aiText.substring(0, 200));
-      return res.json({ success: true, exercises: [], count: 0 });
+      return res.json(emptyExtractResult());
     }
 
     console.log("[extract-exercises] AI returned " + exercises.length + " exercises");
 
     // Insert into Supabase
     var inserted = 0;
+    // Per-row insert failures (2026-07-19). Previously a failed INSERT was
+    // logged to console.error and the loop continued, while the response still
+    // reported success:true with no indication a row had been dropped — so a
+    // rejected row was destroyed silently and neither the client nor the user
+    // ever learned. Failures are now collected and returned in the response.
+    // The loop still CONTINUES on failure (partial saves are intentional).
+    var failures = [];
     var catalogRequestCache = {}; // shared across this call's loop — see resolveExerciseCatalog
     for (var i = 0; i < exercises.length; i++) {
       var ex = exercises[i];
@@ -3387,10 +3429,38 @@ app.post("/api/profiles/:id/extract-exercises", async function(req, res) {
       } else {
         var errText = await insertRes.text();
         console.error("[extract-exercises] Supabase insert error for '" + ex.name + "':", insertRes.status, errText);
+        // Surface it instead of swallowing it. Marked on the exercise object
+        // too, so a caller iterating `exercises` can flag the exact entry.
+        ex.insert_failed = true;
+        failures.push({
+          name: ex.name,
+          raw_text: ex.raw_text || null,
+          duration_minutes: ex.duration_minutes == null ? null : ex.duration_minutes,
+          status: insertRes.status,
+          error: String(errText || "").slice(0, 300),
+          reason: classifyInsertFailure(errText, ex),
+        });
       }
     }
-    console.log("[extract-exercises] Inserted " + inserted + "/" + exercises.length + " exercises into Supabase");
-    res.json({ success: true, exercises: exercises, count: inserted });
+    var attempted = exercises.filter(function(e) { return e && e.name; }).length;
+    console.log(
+      "[extract-exercises] Inserted " + inserted + "/" + attempted + " exercises into Supabase" +
+      (failures.length ? " — " + failures.length + " FAILED: " + failures.map(function(f) { return f.name; }).join(", ") : "")
+    );
+    // `success` stays true on a PARTIAL save: rows did land, and both existing
+    // callers gate real work on it (the confirm chip, and Import History's
+    // running total) — flipping it would discard correct results. Total loss
+    // (something to insert, nothing landed) IS reported as success:false.
+    // `partial_failure` is the flag a caller should check to surface a warning.
+    res.json({
+      success: !(attempted > 0 && inserted === 0),
+      exercises: exercises,
+      count: inserted,
+      attempted: attempted,
+      failed: failures.length,
+      partial_failure: failures.length > 0,
+      failures: failures,
+    });
   } catch (e) {
     console.error("[extract-exercises] Error:", e);
     res.status(500).json({ success: false, error: e.message });
