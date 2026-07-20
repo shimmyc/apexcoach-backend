@@ -2542,6 +2542,32 @@ var MODEL_HAIKU  = "claude-haiku-4-5-20251001";
 // callType → model. Cheap tasks (formatting, extraction, short classification)
 // run on Haiku; intelligence-sensitive work (recs, briefs, roadmap, full profile
 // generation) stays on Sonnet.
+// Temperature by callType (2026-07-19). ONLY deterministic-intent tasks appear
+// here — identical input must produce identical output, or the feature is
+// unreliable. Everything absent keeps the Anthropic default (1.0).
+//
+// Why this exists: no temperature was ever set anywhere, so every call ran at
+// 1.0. Measured on workout 87 — 4 identical extraction calls at the default
+// returned 3 DIFFERENT results (7 / 8 / 4 rows); at temperature 0, 4 identical
+// calls returned 1 identical result. Same class of instability applies to
+// titling, note formatting and structured-JSON builders.
+//
+// DELIBERATELY ABSENT (generative — variety is a feature, not a defect):
+//   daily_recs      — "Show me different options" must actually differ; pinning
+//                     to 0 would return the identical rec on every reroll.
+//   coach_chat, coaching_brief, historical_brief, roadmap/goal/macro generators
+//                   — prose and planning, where sampling variety is wanted.
+// daily_recs' constraint-compliance (exercise count, duration budget) is a
+// Phase B decision; a mid-range value (~0.6-0.7) is the likely answer there,
+// not 0.
+var CALL_TYPE_TEMPERATURE = {
+  extract_exercises: 0,   // parse notes -> rows; also set directly in callAI
+  workout_title:     0,   // classification of notes into a fixed taxonomy
+  format_notes:      0,   // reformatting, not authoring
+  goal_estimate:     0,   // numeric estimate
+  schedule_builder:  0,   // structured JSON out of fixed answers
+};
+
 var CALL_TYPE_MODEL = {
   // Smart tasks — Sonnet
   daily_recs:        MODEL_SONNET,
@@ -5830,6 +5856,19 @@ app.post("/api/ai", async function(req, res) {
       console.log("[AI] Overriding client-requested model '" + forwarded.model + "' with server-chosen '" + chosenModel + "' for callType=" + (callType || "(none)"));
     }
     forwarded.model = chosenModel;
+
+    // Server-side temperature selection, same authority as model above: a
+    // deterministic-intent callType is pinned to 0 and the client cannot
+    // override it. Anything NOT in the map is left untouched and keeps the
+    // Anthropic default — generative call types (daily_recs, coach_chat, the
+    // brief/roadmap writers) are deliberately absent. See CALL_TYPE_TEMPERATURE.
+    var pinnedTemp = CALL_TYPE_TEMPERATURE[callType];
+    if (typeof pinnedTemp === "number") {
+      if (forwarded.temperature !== undefined && forwarded.temperature !== pinnedTemp) {
+        console.log("[AI] Overriding client temperature " + forwarded.temperature + " with server-pinned " + pinnedTemp + " for callType=" + callType);
+      }
+      forwarded.temperature = pinnedTemp;
+    }
 
     // Auto-cache the system prompt. If client sent a plain string, wrap it.
     // If client already sent a structured array, only add cache_control to the
