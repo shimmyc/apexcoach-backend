@@ -130,6 +130,24 @@ body.compact main{padding:20px 24px 60px}
 #rec-controls .rc-pill:hover{border-color:var(--accent-ember);color:var(--text-primary)}
 #rec-controls .rc-pill.rc-on{background:var(--accent-ember);border-color:var(--accent-ember);color:#fff}
 #rec-controls .rc-note{font-size:11px;color:var(--text-dim);margin:6px 0 0;line-height:1.4}
+/* Logged-workout sectioning (2026-07-20) — shared .lw-* render, scoped to the
+   two surfaces that use it (History detail + the Log-past panel); no global
+   class changes. Borrows the rec card's uppercase section-header language. */
+#tab-history .lw-groups,#log-past-panel .lw-groups{display:flex;flex-direction:column}
+#tab-history .lw-group-header,#log-past-panel .lw-group-header{font-size:10px;text-transform:uppercase;letter-spacing:0.08em;font-weight:700;color:var(--text-muted);margin:10px 0 4px}
+#tab-history .lw-group-header:first-child,#log-past-panel .lw-group-header:first-child{margin-top:0}
+#tab-history .lw-ex-line,#log-past-panel .lw-ex-line{font-size:13px;color:var(--text-primary);line-height:1.6;padding:2px 0}
+#log-past-panel .lw-ex-line{font-size:12px;color:var(--text-muted)}
+#tab-history .lw-notes-label,#log-past-panel .lw-notes-label{font-size:10px;text-transform:uppercase;letter-spacing:0.08em;font-weight:700;color:var(--text-dim);margin:12px 0 4px}
+#tab-history .lw-notes,#log-past-panel .lw-notes{font-size:13px;color:var(--text-muted);line-height:1.65;white-space:pre-wrap}
+#log-past-panel .lw-notes{font-size:12px;color:var(--text-dim)}
+/* History quick-view card */
+#history-quickview:empty{display:none}
+#history-quickview #hqv-card{background:var(--bg-surface-2);border:1px solid var(--border-subtle);border-radius:14px;padding:12px 16px;margin-bottom:14px}
+#history-quickview .hqv-label{font-size:9px;text-transform:uppercase;letter-spacing:0.12em;font-weight:700;color:var(--accent-ember);margin-bottom:4px}
+#history-quickview .hqv-title{font-size:15px;font-weight:700;color:var(--text-primary);line-height:1.3}
+#history-quickview .hqv-date{font-size:11px;color:var(--text-dim);font-family:'JetBrains Mono',monospace;margin-top:2px}
+#history-quickview .hqv-meta{font-size:12px;color:var(--text-muted);margin-top:6px}
 #log-past-card{background:var(--bg-surface-1);border:1px solid var(--border-subtle);border-radius:20px;margin-bottom:12px;padding:16px 20px}
 #log-past-btn{width:100%;background:transparent;border:1px solid var(--border-subtle);color:var(--accent-ember);padding:11px 14px;border-radius:12px;cursor:pointer;font-size:14px;font-weight:600}
 #log-past-panel{margin-top:14px}
@@ -902,6 +920,7 @@ input[type=range]{width:100%;accent-color:var(--accent)}
         </div>
       </div>
       <p class="mono" id="log-count" style="font-size:9px;color:#333;letter-spacing:3px">HISTORY - 0 SESSIONS</p>
+      <div id="history-quickview"></div>
       <div id="log-entries"></div>
     </div>
   </div>
@@ -1620,7 +1639,11 @@ var workoutLog = [];
 // same endpoint Library already uses — its `raw` field already carries
 // id/workout_id/name per row, just discarded by loadLibrary() today).
 // Cached for the session so switching History<->other tabs doesn't refetch.
-var historyChipsByWorkoutId = null; // null = not loaded yet
+// workout_id → its full exercise rows (not just names). The same /exercises
+// fetch already carries category/sets/reps/etc.; this used to be discarded down
+// to name-only chips, now retained so History detail + the quick-view card can
+// group by category (2026-07-20). null = not loaded yet.
+var historyExercisesByWorkoutId = null;
 var historyChipsLoading = false;
 var medLog = [];
 var dailyStepsLog = [];
@@ -11498,19 +11521,11 @@ function renderLogPastRowDetail(id) {
   if (!full) return '<p style="font-size:12px;color:var(--text-dim);margin:0">Loading&hellip;</p>';
   var exs = full.exercises || [];
   var w = full.workout || {};
-  var h = '';
-  if (exs.length) {
-    h += '<div style="display:flex;flex-direction:column;gap:4px">';
-    for (var i = 0; i < exs.length; i++) {
-      h += '<div style="font-size:12px;color:var(--text-muted);line-height:1.5">' + escHtml(exerciseToNotesLine(exs[i]) || (exs[i] && exs[i].name) || '') + '</div>';
-    }
-    h += '</div>';
-  }
-  if (w.notes && String(w.notes).trim()) {
-    h += '<p style="font-size:12px;color:var(--text-dim);white-space:pre-wrap;line-height:1.5;margin:' + (exs.length ? '8px 0 0' : '0') + '">' + escHtml(String(w.notes).trim()) + '</p>';
-  }
-  if (!exs.length && !(w.notes && String(w.notes).trim())) {
-    h += '<p style="font-size:12px;color:var(--text-dim);margin:0">No detail recorded.</p>';
+  // Shared grouping/render (2026-07-20) — identical to History detail.
+  var grouped = groupLoggedWorkout(exs, w.notes);
+  var h = renderLoggedGroupsHtml(grouped) + renderLoggedNotesHtml(w.notes);
+  if (!h) {
+    h = '<p style="font-size:12px;color:var(--text-dim);margin:0">No detail recorded.</p>';
   }
   h += '<div style="display:flex;flex-wrap:wrap;gap:6px;margin-top:10px">';
   h += '<button type="button" onclick="lpSaveWorkoutAsTemplate(\'' + id + '\')" class="lp-tpl-btn">&#43; Save as template</button>';
@@ -15052,34 +15067,120 @@ function ensureHistoryChipsLoaded() {
   fetch('/api/profiles/' + currentProfileId + '/exercises')
     .then(function(r) { return r.json(); })
     .then(function(data) {
+      // Retain the FULL rows per workout (was name-only). data.raw arrives
+      // ordered date.desc; within a workout, sort by id asc so grouping shows
+      // exercises in logged (insertion) order.
       var map = {};
       if (data && data.success && Array.isArray(data.raw)) {
         data.raw.forEach(function(ex) {
           if (!ex.workout_id || !ex.name) return;
-          var arr = map[ex.workout_id] || (map[ex.workout_id] = []);
-          if (arr.indexOf(ex.name) < 0) arr.push(ex.name);
+          (map[ex.workout_id] || (map[ex.workout_id] = [])).push(ex);
+        });
+        Object.keys(map).forEach(function(wid) {
+          map[wid].sort(function(a, b) { return (a.id || 0) - (b.id || 0); });
         });
       }
-      historyChipsByWorkoutId = map;
+      historyExercisesByWorkoutId = map;
       historyChipsLoadedForProfile = currentProfileId;
       historyChipsLoading = false;
       renderLog();
     })
     .catch(function(e) {
-      console.error('[History] chip data load error:', e);
+      console.error('[History] exercise data load error:', e);
       historyChipsLoading = false;
     });
 }
 
-// Opens a chip's exercise in the Library detail view (Feature 4). Switches
-// tabs cleanly via the existing showTab/showExerciseDetail machinery — the
-// existing "&larr; All Exercises" back button on the detail view (via
-// libDetailFrom) still works, it just won't point back at History since
-// that's Library-internal state; landing on the Library tab itself is
-// sane "back" behavior for a cross-tab jump.
-function openChipExercise(name) {
-  showTab('library');
-  showExerciseDetail(name);
+// ── LOGGED-WORKOUT SECTIONING (2026-07-20) ────────────────────────────────
+// Brings the rec card's Warm-up/Main/Add-on structure to LOGGED workouts. A
+// logged workout has no stored section labels, so grouping is DERIVED from
+// exercises.category, reusing CATEGORY_PRETTY (the existing label source — no
+// new map). Shared by three surfaces so they render identically: History detail
+// (renderLog), the Log-past panel (renderLogPastRowDetail), and the History
+// quick-view card. Pure functions, no I/O — every caller passes already-loaded
+// data. The rec card (renderAI) is the visual reference and is NOT touched.
+
+// exercises: exercise rows (each may carry main_category/category, name, sets,
+//            reps, weight_lbs, distance_miles, duration_minutes).
+// notes:     the workout's raw notes string.
+function groupLoggedWorkout(exercises, notes) {
+  var rows = Array.isArray(exercises) ? exercises : [];
+  var order = [];          // group keys in first-appearance order
+  var byKey = {};
+  for (var i = 0; i < rows.length; i++) {
+    var ex = rows[i];
+    if (!ex || !ex.name) continue;
+    var key = ex.main_category || ex.category || 'other';
+    if (!byKey[key]) { byKey[key] = []; order.push(key); }
+    byKey[key].push(ex);   // within a group, logged order is preserved
+  }
+  var groups = order.map(function(k) {
+    return { key: k, label: (CATEGORY_PRETTY[k] || k), exercises: byKey[k] };
+  });
+  return {
+    groups: groups,
+    multiCategory: groups.length > 1,   // single category → render flat, no headers
+    notes: String(notes == null ? '' : notes).trim()
+  };
+}
+
+// Renders the exercise groups. A small uppercase header per group ONLY when the
+// workout spans multiple categories (borrowing the rec card's section-header
+// style); a single-category workout lists flat with no header. Returns '' when
+// there are no exercises, so a notes-only or empty workout adds no structure.
+function renderLoggedGroupsHtml(grouped) {
+  if (!grouped || !grouped.groups.length) return '';
+  var h = '<div class="lw-groups">';
+  for (var g = 0; g < grouped.groups.length; g++) {
+    var grp = grouped.groups[g];
+    if (grouped.multiCategory) {
+      h += '<div class="lw-group-header">' + escHtml(grp.label) + '</div>';
+    }
+    for (var e = 0; e < grp.exercises.length; e++) {
+      var ex = grp.exercises[e];
+      var line = exerciseToNotesLine(ex) || (ex && ex.name) || '';
+      if (line) h += '<div class="lw-ex-line">' + escHtml(line) + '</div>';
+    }
+  }
+  h += '</div>';
+  return h;
+}
+
+// Notes block — rendered ONLY when non-empty after trim, and always placed LAST
+// by the caller. Never an empty "Notes" heading.
+function renderLoggedNotesHtml(notes) {
+  var t = String(notes == null ? '' : notes).trim();
+  if (!t) return '';
+  return '<div class="lw-notes-label">Notes</div>' +
+         '<div class="lw-notes">' + escHtml(t) + '</div>';
+}
+
+// One-line "Strength · 6 | Cardio · 1" summary for the quick-view card. '' when
+// there are no grouped exercises (e.g. detail not loaded yet, or a notes-only
+// session) so the card can omit the line rather than show an empty one.
+function loggedGroupSummary(grouped) {
+  if (!grouped || !grouped.groups.length) return '';
+  return grouped.groups.map(function(grp) {
+    return grp.label + ' · ' + grp.exercises.length;
+  }).join('  |  ');
+}
+
+// Duration for the quick-view card, shown ONLY when derivable (decision #3):
+// summed exercises.duration_minutes, else wearable_data.duration_minutes.
+// Returns null when neither is present — the caller omits the field entirely,
+// never estimates or shows a partial number.
+function loggedDerivedDuration(exercises, workout) {
+  var rows = Array.isArray(exercises) ? exercises : [];
+  var sum = 0, any = false;
+  for (var i = 0; i < rows.length; i++) {
+    var m = Number(rows[i] && rows[i].duration_minutes);
+    if (isFinite(m) && m > 0) { sum += m; any = true; }
+  }
+  if (any) return Math.round(sum);
+  var wd = workout && workout.wearable_data;
+  var wm = wd && Number(wd.duration_minutes);
+  if (isFinite(wm) && wm > 0) return Math.round(wm);
+  return null;
 }
 
 function renderLog() {
@@ -15118,17 +15219,14 @@ function renderLog() {
     var isOpen = logDateFilter ? true : !!expandedCards[cardId];
     var highlight = logDateFilter && w.date === logDateFilter;
 
-    // Notes formatting
-    var notesHTML = '';
-    if (w.notes) {
-      var lines = w.notes.split(/\n/).filter(function(l) { return l.trim(); });
-      if (lines.length > 1) {
-        notesHTML = '<ul style="margin-top:8px;padding-left:18px;list-style:disc">' +
-          lines.map(function(l) { return '<li style="font-size:13px;color:var(--text-primary);line-height:1.8;padding:1px 0">' + l.trim() + '</li>'; }).join('') + '</ul>';
-      } else {
-        notesHTML = '<p style="font-size:13px;color:var(--text-muted);margin-top:6px;font-style:italic;line-height:1.65">' + w.notes + '</p>';
-      }
-    }
+    // Grouped exercise rows (2026-07-20) — replaces the old name-only chip row.
+    // Data is the full exercise set already fetched by ensureHistoryChipsLoaded
+    // (no new fetch). Notes render LAST, only when non-empty. A workout with no
+    // extracted exercises (rest day / unparsed notes) shows just its notes.
+    var wExercises = (historyExercisesByWorkoutId && w.id) ? (historyExercisesByWorkoutId[w.id] || []) : [];
+    var wGrouped = groupLoggedWorkout(wExercises, w.notes);
+    var groupsHTML = renderLoggedGroupsHtml(wGrouped);
+    var notesHTML = renderLoggedNotesHtml(w.notes);
 
     var editId = w.id || '';
 
@@ -15170,19 +15268,9 @@ function renderLog() {
     if (w.wearable_data && typeof w.wearable_data === 'object') {
       html += renderWearableStatsGrid(w.wearable_data);
     }
-    // Notes
-    if (w.notes) html += notesHTML;
-    // Exercise chips (Feature 4, 2026-07-16) — the canonical layer on top of
-    // the verbatim notes above, never a replacement. Zero-extraction
-    // workouts (most Rest Days, unparsed notes) render no chip row at all.
-    var chipNames = (historyChipsByWorkoutId && w.id) ? (historyChipsByWorkoutId[w.id] || []) : [];
-    if (chipNames.length) {
-      html += '<div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:8px">';
-      chipNames.forEach(function(n) {
-        html += '<span onclick="event.stopPropagation();openChipExercise(\'' + escAttr(n) + '\')" style="font-size:11px;font-weight:600;color:var(--accent-ember);background:rgba(255,74,28,0.1);padding:3px 10px;border-radius:9999px;cursor:pointer">' + escHtml(n) + '</span>';
-      });
-      html += '</div>';
-    }
+    // Grouped exercise rows first, then notes LAST (both '' when absent).
+    html += groupsHTML;
+    html += notesHTML;
     // Inline "didn't save" warning (2026-07-19) — renders only when this
     // workout's last extraction actually dropped a row; '' otherwise.
     html += extractFailureHtml(w.id);
@@ -15195,6 +15283,42 @@ function renderLog() {
     html += '</div>';
   }
   document.getElementById('log-entries').innerHTML = html;
+  renderHistoryQuickView();
+}
+
+// Quick-view card (2026-07-20) — a compact at-a-glance summary of the athlete's
+// MOST RECENT logged session, at the top of the History list. Reuses the same
+// already-loaded exercise data as the detail cards below (no new fetch), so it
+// only fills in once ensureHistoryChipsLoaded() has resolved. Shows type, a
+// group summary ("Strength · 6 | Cardio · 1"), and duration ONLY when
+// derivable (decision #3). Hidden entirely when there are no workouts.
+function renderHistoryQuickView() {
+  var el = document.getElementById('history-quickview');
+  if (!el) return;
+  if (!Array.isArray(workoutLog) || !workoutLog.length) { el.innerHTML = ''; return; }
+  // Newest by date (ts as tiebreak) — independent of the list's filter/sort.
+  var latest = null;
+  for (var i = 0; i < workoutLog.length; i++) {
+    var w = workoutLog[i];
+    if (!latest || w.date > latest.date || (w.date === latest.date && (w.ts || 0) > (latest.ts || 0))) latest = w;
+  }
+  if (!latest) { el.innerHTML = ''; return; }
+  var exs = (historyExercisesByWorkoutId && latest.id) ? (historyExercisesByWorkoutId[latest.id] || []) : [];
+  var grouped = groupLoggedWorkout(exs, latest.notes);
+  var summary = loggedGroupSummary(grouped);
+  var dur = loggedDerivedDuration(exs, latest);
+
+  var meta = [];
+  if (dur != null) meta.push(dur + ' min');
+  if (summary) meta.push(summary);
+
+  var h = '<div id="hqv-card">';
+  h += '<div class="hqv-label">Latest session</div>';
+  h += '<div class="hqv-title">' + escHtml(latest.type || 'Workout') + '</div>';
+  h += '<div class="hqv-date">' + escHtml(latest.date) + '</div>';
+  if (meta.length) h += '<div class="hqv-meta">' + escHtml(meta.join('  ·  ')) + '</div>';
+  h += '</div>';
+  el.innerHTML = h;
 }
 
 // ── BELT SYSTEM (BELTS array moved above bootApp to avoid hoisting issue) ─
