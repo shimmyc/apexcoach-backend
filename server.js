@@ -4643,7 +4643,7 @@ var MACRO_ROADMAP_SYS = "You are an elite fitness coach building a comprehensive
 '  "goals_summary": ["Goal title A", "Goal title B"],  // REQUIRED non-empty array of SHORT strings — one entry per athlete goal this roadmap covers, using the goal titles\n' +
 '  "phases": [\n' +
 '    // EXACTLY 3 near-term phases (type "near_term") THEN EXACTLY 2 horizon phases (type "horizon"), in that order\n' +
-'    { "name": "Phase name", "type": "near_term", "duration_weeks": 5, "weekly_targets": ["2-4 concrete items spanning ALL goals"], "completion_signals": ["how you know this phase is done"], "goal_connections": ["which goals this phase advances"], "status": "upcoming" },\n' +
+'    { "name": "Phase name", "type": "near_term", "duration_weeks": 5, "weekly_targets": ["2-4 concrete items spanning ALL goals"], "emphasis": ["2-4 short imperative training-emphasis phrases, NO session counts, KEEP load/rep-scheme language"], "completion_signals": ["how you know this phase is done"], "goal_connections": ["which goals this phase advances"], "status": "upcoming" },\n' +
 '    { "name": "Phase name", "type": "horizon", "milestone": "the concrete milestone reached at this horizon (REQUIRED non-empty string)", "estimated_range": "a time range string like \\"6-12 months\\" (REQUIRED non-empty string)", "status": "upcoming" }\n' +
 "  ],\n" +
 '  "exercise_gaps": ["specific things missing from training, be direct e.g. \\"No lower body strength in 5 weeks\\""],\n' +
@@ -5410,10 +5410,23 @@ async function extractPhaseEmphasis(goalTitle, phase) {
   }
 }
 
+// Fills emphasis[] on any near_term phase that lacks it. Used after generate and
+// after adapt so the field is self-maintaining — D1's one-time backfill only
+// covers roadmaps that existed on 2026-07-19.
+async function backfillMissingEmphasis(goalTitle, phases) {
+  for (var i = 0; i < (phases || []).length; i++) {
+    var ph = phases[i];
+    if (!ph || ph.type !== "near_term") continue;
+    if (Array.isArray(ph.emphasis) && ph.emphasis.length) continue;
+    var e = await extractPhaseEmphasis(goalTitle, ph);
+    if (e) ph.emphasis = e;
+  }
+}
+
 async function adaptGoalRoadmap(goal, notes, workouts, trigger, goalExCtx) {
   var today = new Date().toISOString().slice(0, 10);
   var workoutsStr = (workouts || []).map(function(w) { return w.date + ": " + (w.type || "Workout"); }).join("\n");
-  var sys = "You are a fitness coach adapting an athlete's training roadmap for a specific goal based on their recent training and (optionally) a check-in. Return ONLY valid JSON with the same shape as the existing roadmap: { timeline_range: string, timeline_note: string, date_confidence: 'high'|'medium'|'low', phases: [...] }. Preserve the structure: 3 near_term phases (type: 'near_term', each with weekly_targets and completion_signals) followed by 2 horizon phases (type: 'horizon', milestone-based). Advance phase status (upcoming -> current -> complete) when completion_signals are met. Keep phases that are still valid — only change what the recent training or check-in justifies. Be concise.";
+  var sys = "You are a fitness coach adapting an athlete's training roadmap for a specific goal based on their recent training and (optionally) a check-in. Return ONLY valid JSON with the same shape as the existing roadmap: { timeline_range: string, timeline_note: string, date_confidence: 'high'|'medium'|'low', phases: [...] }. Preserve the structure: 3 near_term phases (type: 'near_term', each with weekly_targets, emphasis and completion_signals) followed by 2 horizon phases (type: 'horizon', milestone-based). Advance phase status (upcoming -> current -> complete) when completion_signals are met. Keep phases that are still valid — only change what the recent training or check-in justifies. Be concise.";
   var userMsg = "GOAL: " + (goal.title || "Untitled") + "\n\n" +
     "CURRENT ROADMAP:\n" + JSON.stringify(goal.roadmap) + "\n\n" +
     "EXERCISE CONTEXT FOR THIS GOAL:\n" + (goalExCtx ? JSON.stringify(goalExCtx) : "none") + "\n\n" +
@@ -5424,6 +5437,13 @@ async function adaptGoalRoadmap(goal, notes, workouts, trigger, goalExCtx) {
   var parsed = parseAIJson(text);
   if (!parsed || !Array.isArray(parsed.phases)) throw new Error("AI returned an invalid adapted roadmap");
   assignNearTermDates(parsed.phases, today); // fills only missing dates; preserves existing
+  // Keep emphasis[] in step with the adapted targets. The adapt prompt now asks
+  // for it, but the adapt model is Haiku and may omit it — and a roadmap that
+  // predates the field has none at all. Backfill any near_term phase missing it
+  // so the daily-rec block never silently loses its emphasis for a goal.
+  // Non-fatal by construction: extractPhaseEmphasis returns null on failure and
+  // the phase is simply left without emphasis rather than blocking the adapt.
+  await backfillMissingEmphasis(goal.title, parsed.phases);
 
   var prev = goal.roadmap || {};
   var now = new Date().toISOString();
@@ -5619,7 +5639,7 @@ async function generateGoalRoadmapForGoal(profileId, goalId, mode) {
   var goalExCtx = await getGoalExerciseContext(profileId, extractGoalKeywords(goal.title), 90);
   var fullEx = await getFullExerciseContext(profileId, 60);
 
-  var sys = "You are an elite fitness coach building a personalized training roadmap. Return ONLY valid JSON matching this exact shape: { timeline_range: string (e.g. '3-6 months' or '8-15 years'), timeline_note: string (1-2 sentences: realistic range for this goal type based on evidence, narrowed by their specific starting point and training frequency), date_confidence: 'high'|'medium'|'low', phases: [...] }. Use 3 near-term phases (type: 'near_term', 4-6 weeks each) and 2 horizon phases (type: 'horizon', milestone-based). Near-term phases must include weekly_targets (2-3 specific actionable items) and completion_signals (2-3 measurable achievements). Use evidence-based timelines — strength research, weight loss rates, skill acquisition data. Widen the range rather than narrow it when uncertain. Be concise — each phase description maximum 2 sentences. The first near_term phase status is 'current', rest are 'upcoming'.";
+  var sys = "You are an elite fitness coach building a personalized training roadmap. Return ONLY valid JSON matching this exact shape: { timeline_range: string (e.g. '3-6 months' or '8-15 years'), timeline_note: string (1-2 sentences: realistic range for this goal type based on evidence, narrowed by their specific starting point and training frequency), date_confidence: 'high'|'medium'|'low', phases: [...] }. Use 3 near-term phases (type: 'near_term', 4-6 weeks each) and 2 horizon phases (type: 'horizon', milestone-based). Near-term phases must include weekly_targets (2-3 specific actionable items) and completion_signals (2-3 measurable achievements). Each near_term phase must ALSO include emphasis: an array of 2-4 short imperative phrases (3-12 words) naming what the athlete's sessions should EMPHASIZE in that phase. emphasis is consumed by the daily recommendation engine, so: NEVER include session counts or weekly frequencies in it (a separate scheduling system owns those), ALWAYS preserve load, weight, rep-scheme and hold-duration language (\"weighted glute bridges 10-20 lbs\", \"bodyweight squats toward 3x20\"), and EXCLUDE anything a workout generator cannot act on (nutrition, journaling, subjective observations, life-context reminders). Use evidence-based timelines — strength research, weight loss rates, skill acquisition data. Widen the range rather than narrow it when uncertain. Be concise — each phase description maximum 2 sentences. The first near_term phase status is 'current', rest are 'upcoming'.";
   var userMsg = "GOAL: " + (goal.title || "Untitled") + " (" + (goal.type || "general") + ")\n" +
     "DESCRIPTION: " + (goal.description || "none") + "\n\n" +
     "INTAKE ANSWERS:\n" + (answersStr || "none") + "\n\n" +
@@ -5634,6 +5654,9 @@ async function generateGoalRoadmapForGoal(profileId, goalId, mode) {
   var parsed = parseAIJson(text);
   if (!parsed || !Array.isArray(parsed.phases)) throw new Error("AI returned an invalid roadmap");
   assignNearTermDates(parsed.phases, today);
+  // emphasis[] is requested natively by the generation prompt now; backfill any
+  // phase the model omitted so the daily-rec block is never missing it.
+  await backfillMissingEmphasis(goal.title, parsed.phases);
 
   var now = new Date().toISOString();
   var prevRoadmap = goal.roadmap;
