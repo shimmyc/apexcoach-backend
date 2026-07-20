@@ -1483,6 +1483,38 @@ A per-row INSERT failure used to be logged to `console.error` while the loop con
 - `emptyExtractResult()` gives the "nothing to insert" early returns the identical shape, so there is one stable contract.
 - **Client surfacing** (`public/index.html`): `noteExtractFailures(workoutId, exData)` runs in the post-save extract callback — records into `extractFailuresByWorkoutId`, `console.warn`s, fires one toast. A clean re-save clears it. `extractFailureHtml(workoutId)` renders an inline red-bordered warning inside that workout's History card beside the chip row, listing each failed exercise with a plain-English reason (`fractional_duration_rejected` → "the duration could not be stored"). Returns `''` when nothing failed, so healthy cards are unchanged.
 
+## Progression Signals in the Daily Rec Prompt (2026-07-19, session #30)
+
+The system prompt has always demanded progressive overload with specific increments ("+5-10lbs, +1-2 reps, +5-10s hold"). Until this session it supplied **nothing to increment from** for this athlete's exercise mix. Four fixes, all in `fetchAI()`'s builders:
+
+- **`buildExerciseHistory()` reads all three PR fields**, not just `best_weight` (which is `null` for every bodyweight/hold exercise). Emits `— PERSONAL BEST: 2:00 hold (120 seconds)`. `best_duration_seconds` and `best_reps` were already in the `/exercises` payload and simply never read.
+- **`buildLog()` carries hold duration.** It was sets/reps/weight only, so recent hold performance was invisible.
+- **Units are spelled out** via `nUnit(n, singular, plural)`. Sets used to render as `<N>s` — a 1-set Dead Hang read as `1s`, i.e. one SECOND, on an exercise measured in seconds. `daily_habit` lines used to compare a DAY count against a minutes target (`56/2 Minutes`).
+- **Achieved milestones are BASELINES, not deletions.** `mgIsComplete()` filtered completed goals out of the prompt, so hitting a target removed the only progression signal present. `buildMicroGoalsPromptContext()` now emits an `ACHIEVED MILESTONES` block — the proven level to work at or above, with a progression instruction anchored to it. **Never auto-escalated to a next tier**: some goals are open-ended (hold duration, load), some are terminal rehab targets where pushing past would be wrong. A milestone-complete CTA in the Profile tab asks the athlete instead.
+
+## Goal Roadmap Emphasis in the Rec Prompt (2026-07-19, session #30)
+
+`buildRoadmapEmphasisContext()` injects **what** each top-3-by-priority goal's current phase should emphasize — never **how many** sessions.
+
+**Division of labour, and why it matters:** the schedule owns frequency and duration and tracks them with real status (`Upper Body Strength 0/1 [NEEDED]`). Roadmap `weekly_targets` carry their own competing counts ("3-4 strength sessions per week") with **no status tracking at all**, so injecting both would put two different weekly numbers into a prompt that already had contradiction problems. Emphasis only.
+
+- **Source is a structured `roadmap.phases[].emphasis` field**, extracted server-side by Sonnet (`ROADMAP_EMPHASIS_SYS`), **not** parsed from prose at render time. A regex pass was built, tested and rejected: it leaked counts and silently dropped the three most actionable targets because `weighted`/`bodyweight` matched a weight-tracking filter. Pattern-matching human prose is unfixable in principle.
+- `extractPhaseEmphasis()` drops session counts, **preserves load/weight/rep-scheme/hold-duration language**, drops nutrition/tracking/subjective items, and strips stale conditional framing ("Once training resumes:").
+- Self-maintaining: `backfillMissingEmphasis()` runs after generate and adapt; both generation prompts request the field natively. `POST /api/debug/extract-roadmap-emphasis/:profileId` backfills roadmaps that predate it.
+- `rmCurrentPhase()` resolves the live phase by date, falling back to stored status and taking the **last** phase marked `current` (some roadmaps carried two). Horizon falls back to the next phase's `start_date` where `end_date` is absent.
+- **`exercise_gaps` from the macro roadmap are deliberately excluded** — only 1 of 5 was free of session counts or non-training content. Queued (ROADMAP §9).
+- Protected tier: not in the trim ladder; self-caps at 3 goals × 4 emphases + 1 completion signal (~1,500 chars).
+
+## Roadmap Adaptation — Premise Validity (2026-07-19, session #30)
+
+Adaptation could not re-evaluate whether a phase's **premise** was still true. Build Muscle sat in a phase named "Progressive Overload (Paused)" whose first target began "Once training resumes:" for weeks after training had resumed.
+
+- **`adaptGoalRoadmap` runs on Sonnet** (was Haiku). It decides whether a phase premise holds — the judgment that now steers the rec prompt. Measured ~0.39M input / 0.31M output tokens per YEAR across all goals with roadmaps; the ~3x delta is a few dollars and scales with goals, not recs.
+- **Two checks added to the adapt prompt**, with the conservative "keep phases that are still valid" bias kept verbatim and a closing "these two checks are the ONLY reasons" clause: **DATE ROLLOVER** (an expired phase cannot remain `current` even if its `completion_signals` were never met; exactly one near_term phase may be `current`) and **PREMISE VALIDITY** (a phase premised on a pause/injury/deload/travel that has ENDED must be rewritten — scoped to that named class, with an explicit leave-it-alone clause).
+- **`buildWeeklyReviewContext(workouts)`** replaces the literal `"(no notes — automatic weekly review)"` string with computed evidence: session counts this window vs prior, categories, longest gap, and a **RESUMPTION SIGNAL** line. Zero extra API calls. The `prev14 === 0` branch is gated on the data window actually reaching back 28 days — the adapt call receives only ~10 workouts, so for a consistent athlete that window is ~14 days and `prev14` would read 0 for lack of data, producing a permanent false signal.
+- **`enforceSingleCurrentPhase()`** is a deterministic invariant run after adapt AND generate. Prompt rules are probabilistic; Fix Posture carried two `current` phases for weeks while the Goals tab rendered correctly (status is derived on read, never written back). Horizon phases untouched, idempotent.
+- **`resequenceNearTermDates()`** (repair only, admin endpoint, dry-run default) rebuilds the calendar forward from the current phase and back-dates completed phases. `assignNearTermDates()` preserves existing `start_date` by design, so a bad adapt that pinned every phase to one date cannot otherwise be repaired.
+
 ## Migrations
 
 One-time data fixes that should be run in the Supabase SQL editor.

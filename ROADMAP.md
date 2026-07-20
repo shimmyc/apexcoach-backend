@@ -73,6 +73,78 @@
 >   `None provided` REMAIN** — reproducibly, because the prompt itself mandates that section.
 >   The render bug needs a prompt change too, not just temperature. See §9.
 >
+> **2026-07-19 session #30, part 2** (Progression: the recs could not get harder over time.
+> Audit-report-first, gated at every step):
+> - **Reported symptom:** "the recs don't get harder." **Confirmed — and the cause was NOT
+>   truncation**, which was the standing assumption. Even at full length the prompt had no
+>   baseline to progress from. Four independent causes, found by assembling the real prompt
+>   from the real builders against live data:
+>   1. **Roadmaps never entered the prompt at all.** Zero `roadmap` references in `fetchAI()`
+>      or any of the 8 prompt builders. `weekly_targets[]`, `completion_signals[]`,
+>      `exercise_gaps[]` — all generated, adapted weekly at real cost, rendered on the Profile
+>      tab, and invisible to the coach.
+>   2. **`buildExerciseHistory()` read only `best_weight`** — which is `null` for every
+>      bodyweight/hold exercise this athlete does. A real 2:00 Dead Hang PR sat unused in
+>      `best_duration_seconds` in the payload the client already had.
+>   3. **Completed milestones were filtered out entirely** (`mgIsComplete`), so *hitting* a
+>      target deleted the only progression signal in the prompt.
+>   4. **The 7-day log carried no duration**, so recent hold performance was invisible.
+> - **Fixed (B33a-d):** PERSONAL BEST clause reading `best_duration_seconds`/`best_reps`;
+>   duration added to the recent log; achieved milestones now render as **BASELINES to work at
+>   or above** with a progression instruction anchored to the achieved value; a
+>   milestone-complete CTA in the Profile tab asks the athlete to set the next tier.
+>   **Deliberately NOT auto-escalated** — some goals are open-ended, some are terminal rehab
+>   targets. Before: `- Dead Hang: 58x logged, last 2026-07-19 1s`. After:
+>   `- Dead Hang: 58 sessions logged, last 2026-07-19 (1 set) — PERSONAL BEST: 2:00 hold (120 seconds)`.
+> - **Unit ambiguity (B33b) — three issues, not one.** Sets rendered as `<N>s`, so a 1-set Dead
+>   Hang read as `1s` (one SECOND) on an exercise measured in seconds. Reps were `<N>r`. And a
+>   `daily_habit` compared a DAY count against a minutes target (`56/2 Minutes`). All spelled
+>   out, with `nUnit()` for correct singular/plural (the streak line had been rendering
+>   `1 days` on every single-day streak).
+> - **Roadmap emphasis (B33e) — the regex parser was built, tested and REJECTED.** Parsing
+>   `weekly_targets` prose by pattern leaked session counts ("3-4 strength sessions") and
+>   silently ate the three most actionable targets in the roadmap because `weighted` /
+>   `bodyweight` matched a weight-tracking filter. Replaced with **Sonnet extraction into a
+>   structured `roadmap.phases[].emphasis` field** (`ROADMAP_EMPHASIS_SYS`), cached once per
+>   roadmap change, self-maintaining via `backfillMissingEmphasis()` after generate and adapt,
+>   and emitted natively by both generation prompts. 9/9 phases backfilled, 0 failures.
+> - **`buildRoadmapEmphasisContext()` wired into the prompt** between GOAL PRIORITIES and
+>   ACTIVE CHALLENGES. Injects **emphasis only, never session counts** — the schedule owns
+>   frequency and tracks it with real status (`0/1 [NEEDED]`), roadmap targets carry competing
+>   counts with no status tracking at all. **Verified live:** all three generated options named
+>   the phase they acted on in `goal_reasoning`, and all three programmed Dead Hang at the
+>   proven `1×120 sec` floor with `+5-10s` progression — the ACHIEVED baseline driving real
+>   prescriptions.
+> - **Roadmap adaptation could not re-evaluate a phase PREMISE (D8).** Build Muscle sat in a
+>   phase named "Progressive Overload (Paused)" whose first target began "Once training
+>   resumes:" for weeks after training resumed. Four structural causes; all addressed — adapt
+>   moved **Haiku → Sonnet** (measured ~0.39M input / 0.31M output tokens per YEAR, a few
+>   dollars), **DATE ROLLOVER + PREMISE VALIDITY** checks added to the adapt prompt with the
+>   conservative bias sentence kept verbatim, **`buildWeeklyReviewContext()`** replacing the
+>   literal "(no notes)" string with computed evidence including a RESUMPTION SIGNAL, and
+>   **`enforceSingleCurrentPhase()`** as a deterministic code invariant after adapt and generate.
+> - **Two phases marked `current` on Fix Posture (D7)** — not a race (adapts 8 days apart). A
+>   phase whose window expired by DATE stayed `current` because its `completion_signals` were
+>   never met and the prompt had no date rule. Data corrected; invariant now enforced in code.
+> - **Bugs found by verifying rather than assuming:** the per-goal roadmap prompt never
+>   required `name` or `duration_weeks` (older roadmaps carried them by luck; adding emphasis
+>   shifted attention and the model emitted `title`/`duration:"Weeks 1-5"` instead) — fixed
+>   with an explicit JSON skeleton; the adapt prompt returned `duration_weeks: "4-6"`, a string
+>   range whose `Number()` is NaN, collapsing every phase to today with no `end_date`; and
+>   `?mode=regenerate` had to be added because the route hardcoded `"reset"`, which would have
+>   wiped v5 and five adaptation entries.
+> - **Hygiene:** `callAI()` and `callAISystem()` had **no timeout at all** — and
+>   `extract-exercises` runs `callAI` on every workout save. Real `AbortController` added
+>   (20-60s by model/output size). `max_ops` failed OPEN (`opCount > NaN` is always false).
+>   Dead `goal_estimate` mapping dropped.
+> - **DECLINED, with reasons** (so they don't resurface): (1) the regex emphasis parser —
+>   unfixable in principle, patching `/weigh/` just relocates the failure; (2) shipping
+>   `exercise_gaps` in the rec block — only 1 of 5 was free of session counts or non-training
+>   content; (3) auto-generating the next milestone tier — wrong for terminal rehab targets;
+>   (4) fixing the 6,000-char trim ladder as a progression fix — it was demoted once measurement
+>   showed truncation was not the cause; (5) wiring up `goal_estimate` — dropped instead, no
+>   feature wants it.
+>
 > **2026-07-18 session #29** (daily_recs timeout — root-caused + fixed, report-first):
 > - **Root cause (NOT the model string):** `MODEL_SONNET="claude-sonnet-4-6"` is valid/active (a retired
 >   ID would 404 fast, not hang 90s). The real bug: Render **buffered** the daily_recs `text/plain`
@@ -1490,6 +1562,7 @@ Macro roadmap shape (stored on `profiles.roadmap_data`):
 - [x] **`ON DELETE CASCADE` FK from `exercises.workout_id` → `workouts.id`.** ✅ **Migration run in production 2026-07-17** (`migrations/2026-07-17_exercises_workout_fk_cascade.sql`) — makes the orphaned-exercises bug class (fixed for `DELETE /api/workouts/:id` in session #11) structurally impossible even if a future endpoint deletes a workout some other way. The orphan report (`GET /api/debug/orphaned-exercises/:userId`) was run for every profile first, since the `ALTER TABLE` fails outright on any pre-existing orphan — profile 1 was cleaned in session #11, and its clean success confirms profiles 4/5/7/8 were orphan-free at run time too.
 - [x] **Extend the same orphan-prevention fix to `DELETE /api/profiles/:id`** — ✅ **done 2026-07-17** (deletes `exercises` for the profile, then `workouts`, then the profile row). Deliberately kept independent of the FK above — see §6.
 - [ ] **`recomputeRoadmapProgress()` / `assignNearTermDates()` run at READ time and never write back (D5/E6 — design approved, not yet built).** Both are called inside `GET /goals/:goalId`, `GET /roadmap-data`, and after `saveGoalToProfile()` in the check-in path — i.e. they mutate the in-memory object that is RETURNED while the object that was STORED keeps the raw model output. Consequence, observed live: the Goals tab rendered correct phase status while the stored `profile_data` the daily-rec prompt reads was wrong for weeks (see the two-current-phases item below). That divergence became load-bearing on 2026-07-19 when `buildRoadmapEmphasisContext()` started steering daily recs from stored phase state. **Do not create a second source of truth** — the fix is to persist the derived values, not to recompute in a second place.
+- [ ] **`resequenceNearTermDates()` uses the SERVER clock, not the athlete's timezone (found 2026-07-19, F1).** It takes `ymdLocal(new Date())` where it should take `localToday(profile)` — the exact bug class session #6 fixed everywhere else. Live consequence, observed immediately after the Fix Pubic Osteitis repair: at 03:xx UTC the server date was 2026-07-20 while the athlete's Chicago date was still 2026-07-19, so the repair started the current phase "tomorrow" and the rec prompt resolved to the phase that had just completed for the remainder of that day. Self-resolves at local midnight, and the repair is one-time, so severity is low — but the same helper must take a profile before it is used again. **Same fix applies to the `today` argument in the admin endpoint that calls it.**
 - [ ] **`assignNearTermDates()` cannot repair already-corrupted sequencing (found 2026-07-19, E7).** It sets `start_date` only `if (!p.start_date)` — deliberate ("fills only missing dates; preserves existing"), but it means once a bad adapt writes today's date onto every phase, the overlap is permanent. Live instance: Fix Pubic Osteitis' three near_term phases all carry `start_date: 2026-07-20` after an adapt returned `duration_weeks: "4-6"` (string range → `Number()` → NaN → weeks 0 → no end_date, every start pinned to today). The string-range hole is fixed both in the prompt and in `assignNearTermDates`, but the DATA needs a one-time re-sequence from the current phase forward. Needs a repair pass, not just the guard.
 - [ ] **Roadmap adaptation could not re-evaluate a phase PREMISE (D8) — mitigated 2026-07-19, watch it.** Cause was structural, four parts: the adapt prompt's only advancement rule was "advance when completion_signals are met" (a completion test, never a premise test); `adaptGoalRoadmap` ran on Haiku while generation ran on Sonnet; the weekly auto-adapt passed the literal string "(no notes — automatic weekly review based on recent training)" so it had no signal a pause had ended; and the prompt's "keep phases that are still valid" bias had no stated exception. Live consequence: Build Muscle sat in a phase named "Progressive Overload (Paused)" whose first target began "Once training resumes:" for weeks after training resumed. Addressed by E1–E4 (Sonnet, DATE ROLLOVER + PREMISE VALIDITY checks, `buildWeeklyReviewContext()`, `enforceSingleCurrentPhase()`). Left open: the premise check is a prompt rule, so it is probabilistic — only the one-current-phase invariant is enforced in code. Re-check periodically that phase names/targets track reality.
 - [ ] **Two phases marked `status:"current"` on one roadmap (D7, root cause shared with the item above).** Fix Posture carried both "Foundation & Awareness" (window 2026-05-28 → 2026-07-08) and "Strength & Integration" as `current`. NOT a race — adaptations were 8 days apart. The 2026-07-15 adapt advanced phase 2 but left phase 1 `current` because phase 1's window expired by DATE while its `completion_signals` were never met, and the prompt had no date-based rule. Stored data corrected by hand 2026-07-19; `enforceSingleCurrentPhase()` now enforces the invariant deterministically after both adapt and generate. **The data fix is not a fix for the class** — the read-time/write-time divergence above is what let it go unnoticed.
