@@ -4495,6 +4495,11 @@ function fetchAI(opts) {
   var varietyAnalysis = buildVarietyAndSkipAnalysis();
   var weeklyVolume = buildWeeklyVolumeSummary();
   var microGoalsContext = buildMicroGoalsPromptContext();
+  // B33e (2026-07-19): WHAT each top goal's current phase should emphasize.
+  // Sits between GOAL PRIORITIES (which goals matter) and ACTIVE CHALLENGES
+  // (non-negotiable dailies) — coarse to specific. Protected tier: the trim
+  // ladder never touches it, and it self-caps at top-3 goals / 4 emphases.
+  var roadmapEmphasisContext = buildRoadmapEmphasisContext();
   var muscleRecoveryBlock = buildMuscleRecoveryInstruction();
 
   // Truncatable sections (kept separate so we can shrink them if needed)
@@ -4521,6 +4526,7 @@ function fetchAI(opts) {
       muscleRecoveryBlock +
       'FULL ATHLETE PROFILE:\n' + FULL_PROFILE + '\n\n' +
       goalPriorityContext +
+      roadmapEmphasisContext +
       microGoalsContext +
       'WEEKLY SCHEDULE DEFAULTS:\n' + getScheduleText() + '\n';
   };
