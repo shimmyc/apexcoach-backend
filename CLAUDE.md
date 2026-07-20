@@ -38,7 +38,7 @@ ApexCoach is a personalized AI fitness coaching web app. Users connect their Fit
 
 - workouts: id, date, type, notes, done, mobility, med, ts, profile_id
 
-- exercises: id, profile_id, workout_id (FK → workouts.id, `ON DELETE CASCADE`, `exercises_workout_id_fkey`, added `migrations/2026-07-17_exercises_workout_fk_cascade.sql`, **run in production 2026-07-17** — nullable, `extract-exercises` can insert a null `workout_id`, which is always FK-valid and never reached by the cascade), date, name, category (strength/cardio/martial_arts/mind_body/rehab/sports/other), main_category (same as category, normalized), subcategory (specific sub-type), sets, reps, weight_lbs, distance_miles, duration_minutes, notes, raw_text, created_at
+- exercises: id, profile_id, workout_id (FK → workouts.id, `ON DELETE CASCADE`, `exercises_workout_id_fkey`, added `migrations/2026-07-17_exercises_workout_fk_cascade.sql`, **run in production 2026-07-17** — nullable, `extract-exercises` can insert a null `workout_id`, which is always FK-valid and never reached by the cascade), date, name, category (strength/cardio/martial_arts/mind_body/rehab/sports/other), main_category (same as category, normalized), subcategory (specific sub-type), sets, reps, weight_lbs, distance_miles, duration_minutes (**`numeric(6,2)` since `migrations/2026-07-19_exercises_duration_numeric.sql`, run in production 2026-07-19** — was `integer`, which silently rejected the fractional values the extraction prompt emits for sub-minute holds and destroyed those rows; see "AI Temperature Policy" / "Exercise-Row Recovery" below), notes, raw_text, created_at (**no `updated_at`; the parent `workouts` table has no audit columns at all — see ROADMAP §6**)
 
 - daily_checkins: id, profile_id, date (text, YYYY-MM-DD), energy (text), soreness (text[]), severity (text), checkin_text (text), created_at. UNIQUE(profile_id, date) for upsert.
 
@@ -1421,9 +1421,80 @@ Report-first session against four ROADMAP.md §9 items — full audit report pre
 
 **Verified live** (profile 1, production, post-deploy): confirmed via direct DOM inspection that `#roadmap-card` no longer exists while `#roadmap-data-card` renders correctly (11,979 chars of real content); ran a full `POST /api/workouts` → `POST .../extract-exercises` → `DELETE /api/workouts/:id` cycle on a throwaway workout (id 104, exercise id 318) — extraction correctly created the row, delete correctly removed both the workout and its exercise row, confirming the pre-existing session #11 cascade is unaffected by this session's changes. Swept all four tabs (Today/History/Library/Profile) with zero console errors. **Not tested live**: `DELETE /api/profiles/:id` itself — would require deleting a real profile, so item 4 was verified by code review + diff comparison against the session #11 pattern only, not exercised end-to-end.
 
+## AI Temperature Policy (2026-07-19, session #30)
+
+**Until this session no temperature was set anywhere** — the word did not appear in `server.js`. Every AI call ran at the Anthropic Messages API default (**1.0**), including tasks where identical input must produce identical output.
+
+**Measured, not assumed** (workout 87, same notes, same model, 4 calls per arm):
+
+| | rows returned | distinct results |
+|---|---|---|
+| default (1.0) | 7, 8, 4, 8 | **3 of 4** |
+| temperature 0 | 8, 8, 8, 8 | **1 of 4** (identical incl. sets/reps/durations) |
+
+Two mechanisms, deliberately separate:
+
+1. **`callAI(prompt, maxTokens, model, temperature)`** — optional 4th arg, **omitted from the request body entirely when not passed**, so every pre-existing caller is byte-for-byte unaffected. `extract-exercises` passes `0` (via `extractExercisesFromNotes()`).
+2. **`CALL_TYPE_TEMPERATURE`** — applied in the `/api/ai` proxy with the **same authority as model selection**: server-chosen, client value logged and overridden. Currently pins `extract_exercises`, `workout_title`, `format_notes`, `goal_estimate`, `schedule_builder` → `0`. Anything absent keeps the default.
+
+**Deliberately NOT pinned** — variety is a feature: `daily_recs` (pinning to 0 would make "🔄 Show me different options" return the identical rec every reroll), `coach_chat`, `coaching_brief`, `historical_brief`, and all roadmap/goal generators. `daily_recs`' constraint-compliance tuning (~0.6–0.7) is a Phase B decision, tracked in ROADMAP §9.
+
+**Readiness is unaffected and always was.** `computeReadiness()` / `estimateSleepScore()` contain zero AI calls — pure Formula V3 regression arithmetic. Identical biometrics always produce an identical score; temperature is irrelevant to that path.
+
+**`format_notes` at 0 is a partial fix for the History render bugs** (measured): output is now stable and the stray markdown `#` heading is gone, but `Notes:` / `None provided` persist because the *prompt* mandates that section. See ROADMAP §9.
+
+## Exercise-Row Recovery — Re-Merge Endpoint (2026-07-19, session #30)
+
+`POST /api/debug/remerge-workout-exercises/:profileId/:workoutId` — admin-gated. Recovers exercise rows destroyed by the pre-2026-07-19 integer `duration_minutes` column, and corrects rows left stale by a notes edit (`PATCH /api/workouts/:id` never re-extracts).
+
+- **DRY RUN by default.** `&apply=1` writes. `&max_ops=N` (default 50) refuses an unexpectedly large plan. `&stop_on_error=0` continues past a failed write (default: abort).
+- **Merge, never delete.** Keyed on `(workout_id, catalogNormKey(name))`:
+
+  | case | action |
+  |---|---|
+  | predicted key absent | INSERT |
+  | key matches, any of sets/reps/weight/distance/duration differs | PATCH in place |
+  | key matches, all equal | no-op |
+  | existing row not reproduced | **KEEP + report in `flagged_kept`** |
+
+  Delete-then-reinsert was designed and then **rejected on evidence**: at default temperature re-extraction was non-deterministic (see above), so a delete pass could destroy real rows to fix fewer. That risk is now closed by temperature 0, but the no-delete rule stays — a row whose source line was edited out of the notes is still real history.
+- **Idempotent.** Temperature 0 makes re-extraction stable, so a second run matches the rows the first wrote and reports all no-ops. Proven live on workout 106: second `apply=1` produced 7 no-ops, 0 writes, identical row ids.
+- **NOT atomic — stated rather than implied.** PostgREST exposes no multi-statement transaction, so "transactional per workout" is not achievable over this interface. Instead: dry-run default, the complete pre-state returned as `before` (manual reversal basis), fixed op order, and `stop_on_error` so a failure can't cascade.
+- **Near-duplicate guard.** `catalogNormKey` collapses plurals/hyphens/case but **NOT** spelling variants — `indoorbike` ≠ `indoorbicycle`, `hiprotation` ≠ `90/90hiprotation`, `figure4stretch` ≠ `figurefourstretch`. So a kept row and an inserted row can be the same exercise under two names. Reported as `possible_near_duplicates` (levenshtein ≥0.72 or substring) — **never auto-merged**. Deliberately over-inclusive; it only reports.
+- **Shared extraction.** `extractExercisesFromNotes(body)` is factored out of the `extract-exercises` endpoint and used by both, so recovery runs the identical prompt/model/temperature as the live save path — one implementation, no drift.
+
+**Recovery run 2026-07-19, all 17 affected workouts**, one at a time, each dry run checked against its approved projection before applying: **zero divergence, zero failures.** 269 → 297 rows; fractional-duration rows 0 → 22; Dead Hang 46 → 57; **zero duplicates**. 3 rows unrecoverable (extraction-prompt gap) and 10 preserved-and-flagged for user review — both detailed in ROADMAP §6.
+
+## Partial-Failure Reporting on extract-exercises (2026-07-19, session #30)
+
+A per-row INSERT failure used to be logged to `console.error` while the loop continued and the endpoint still returned `success:true` — the row was destroyed silently. Response now carries the truth:
+
+```json
+{ "success": true, "count": 6, "attempted": 8, "failed": 2, "partial_failure": true,
+  "failures": [ { "name": "Dead Hang", "raw_text": "Dead Hang - 2x30s",
+                  "duration_minutes": 0.5, "status": 400,
+                  "error": "invalid input syntax for type integer: \"0.5\"",
+                  "reason": "fractional_duration_rejected" } ] }
+```
+
+- `classifyInsertFailure(errText, ex)` maps a raw PostgREST error to a readable cause (`fractional_duration_rejected`, `possible_fractional_duration`, `duplicate`, `fk_violation`, `check_constraint`, `not_null_violation`, `unknown`). Descriptive only — never changes control flow.
+- Failed entries also carry `insert_failed: true` inside `exercises` so a caller can flag the exact item.
+- **`success` stays `true` on a PARTIAL save.** Both existing callers gate real work on it (the confirm chip, and Import History's running total), so flipping it would discard correct results. Only a **total** loss (something to insert, nothing landed) reports `success:false`. **`partial_failure` is the flag callers should check.**
+- `emptyExtractResult()` gives the "nothing to insert" early returns the identical shape, so there is one stable contract.
+- **Client surfacing** (`public/index.html`): `noteExtractFailures(workoutId, exData)` runs in the post-save extract callback — records into `extractFailuresByWorkoutId`, `console.warn`s, fires one toast. A clean re-save clears it. `extractFailureHtml(workoutId)` renders an inline red-bordered warning inside that workout's History card beside the chip row, listing each failed exercise with a plain-English reason (`fractional_duration_rejected` → "the duration could not be stored"). Returns `''` when nothing failed, so healthy cards are unchanged.
+
 ## Migrations
 
 One-time data fixes that should be run in the Supabase SQL editor.
+
+### `exercises.duration_minutes` → numeric (2026-07-19) — ✅ run in production
+Widens the column so fractional durations survive. The extraction prompt emits `30s`→0.5, `45s`→0.75, `1:42`→1.7; the `integer` column rejected all of them and the insert loop dropped those rows silently. Verified before (`integer/32/0`) and after (`numeric/6/2`). Existing rows unaffected in value — every stored value was already whole. Does **not** recover already-destroyed rows; that was a separate re-merge pass. See `migrations/2026-07-19_exercises_duration_numeric.sql`.
+
+```sql
+ALTER TABLE exercises
+  ALTER COLUMN duration_minutes TYPE numeric(6,2)
+  USING duration_minutes::numeric(6,2);
+```
 
 ### Drop `fitbit_pending_imports` (2026-07-17) — ✅ run in production
 Drops the deprecated Fitbit auto-import queue column. All reading/writing code was removed the same day (see "Tech Debt Batch" above) — confirmed zero call sites before deletion. See `migrations/2026-07-17_drop_fitbit_pending_imports.sql`.
