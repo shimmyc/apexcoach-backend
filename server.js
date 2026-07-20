@@ -5359,6 +5359,57 @@ function parseAIJson(text) {
 // Adapt an existing goal.roadmap via Haiku. `notes` is the athlete's check-in
 // (empty for weekly auto-adaptation). Returns the new roadmap object — version
 // incremented, generated_at preserved, adaptation_log appended.
+// ── ROADMAP EMPHASIS EXTRACTION (2026-07-19) ──────────────────────────────
+// weekly_targets[] are written for a human and mix three things: WHAT to
+// emphasize, HOW MANY sessions, and non-training admin (nutrition, tracking,
+// subjective observation). Only the first is useful to the daily rec prompt —
+// the SCHEDULE already owns session counts, and injecting a second set of
+// weekly numbers would put two contradictory frequencies in one prompt.
+//
+// A regex pass over this prose was built, tested and REJECTED: it leaked counts
+// ("3-4 strength sessions") and, worse, silently dropped the three most
+// actionable targets in the whole roadmap because "weighted" / "bodyweight"
+// matched a weight-tracking filter. Parsing human prose by pattern is
+// unfixable in principle, so the model that understands the content does it.
+//
+// Sonnet, not Haiku: deciding what counts as training emphasis is a judgment
+// call, and this runs once per goal per roadmap-change (not per rec), so the
+// cost delta is negligible.
+var ROADMAP_EMPHASIS_SYS =
+  "You extract TRAINING EMPHASIS from a coaching roadmap's weekly targets.\n\n" +
+  "Return ONLY valid JSON: {\"emphasis\": [\"...\", \"...\"]} — no prose, no markdown fences.\n\n" +
+  "For each weekly target, decide what the athlete's sessions should EMPHASIZE, and express it as a short imperative phrase (3-12 words).\n\n" +
+  "RULES:\n" +
+  "1. DROP session counts and frequencies entirely. \"3-4 strength sessions per week (posterior chain focus)\" -> \"posterior chain focus in strength work\". Never output a number of sessions, days, or times per week. A separate system owns scheduling.\n" +
+  "2. PRESERVE load, weight and progression language — this is the most actionable content. \"Progress to weighted glute bridges (10-20 lbs)\" -> \"weighted glute bridges, 10-20 lbs\". \"goblet squats with light weight\" -> \"goblet squats, light weight\". \"Achieve 3x20 bodyweight squats\" -> \"bodyweight squats toward 3x20\". Set x rep schemes, pound figures and hold durations are emphasis, NOT session counts — keep them.\n" +
+  "3. DROP anything a workout generator cannot act on: nutrition and protein targets, journaling or pain-tracking, subjective observations (\"notice improved carryover\", \"visibly larger\"), and life-context maintenance (\"posture during wedding gigs\").\n" +
+  "4. DROP stale framing. If a target is conditioned on a state that has passed (\"Once training resumes: ...\"), output the underlying instruction without the condition.\n" +
+  "5. Merge near-duplicates. Prefer fewer, sharper items. Output at most 4.\n" +
+  "6. If a phase yields nothing actionable, return an empty array.\n\n" +
+  "Output only the emphasis array for the targets given.";
+
+// Returns emphasis[] for one phase's weekly_targets. Never throws — a failure
+// yields null so the caller can leave the phase uncached and fall back.
+async function extractPhaseEmphasis(goalTitle, phase) {
+  var targets = (phase && phase.weekly_targets) || [];
+  if (!targets.length) return [];
+  try {
+    var userMsg = "GOAL: " + (goalTitle || "Untitled") + "\n" +
+      "PHASE: " + (phase.name || "Untitled phase") + "\n\n" +
+      "WEEKLY TARGETS:\n" + targets.map(function(t, i) { return (i + 1) + ". " + t; }).join("\n");
+    var text = await callAISystem(ROADMAP_EMPHASIS_SYS, userMsg, 500, MODEL_SONNET);
+    var parsed = parseAIJson(text);
+    if (!parsed || !Array.isArray(parsed.emphasis)) return null;
+    return parsed.emphasis
+      .filter(function(e) { return typeof e === "string" && e.trim(); })
+      .map(function(e) { return e.trim(); })
+      .slice(0, 4);
+  } catch (e) {
+    console.error("[RoadmapEmphasis] extraction failed for '" + goalTitle + "' / '" + (phase && phase.name) + "': " + e.message);
+    return null;
+  }
+}
+
 async function adaptGoalRoadmap(goal, notes, workouts, trigger, goalExCtx) {
   var today = new Date().toISOString().slice(0, 10);
   var workoutsStr = (workouts || []).map(function(w) { return w.date + ": " + (w.type || "Workout"); }).join("\n");
@@ -8483,6 +8534,70 @@ app.post("/api/wearables/import/:userId", async function(req, res) {
 // Verifies the clobber-safety invariant behind the GH sleep-decoupling fix:
 // writing HRV/RHR via upsertDailyVitals must NOT null out an existing sleep row.
 // Uses a throwaway date (1970-01-01, isolated from all real data) and cleans up
+// ── ADMIN: BACKFILL roadmap.phases[].emphasis ─────────────────────────────
+//   POST /api/debug/extract-roadmap-emphasis/:profileId?secret=...&apply=1
+// DRY RUN by default. Fills `emphasis` on every near_term phase of every goal
+// that has a roadmap, for roadmaps generated before emphasis became a native
+// output field. Idempotent: `&force=1` re-extracts phases that already have it.
+// Only ever writes profile_data.goals[].roadmap.phases[i].emphasis — no other
+// field is touched, so a bad run cannot damage roadmap content.
+app.post("/api/debug/extract-roadmap-emphasis/:profileId", async function(req, res) {
+  if (process.env.ADMIN_SECRET) {
+    var gotE = req.query.secret || req.headers["x-admin-secret"];
+    if (gotE !== process.env.ADMIN_SECRET) return res.status(403).json({ success: false, error: "forbidden" });
+  }
+  var pid = parseInt(req.params.profileId, 10);
+  var applyE = req.query.apply === "1" || req.query.apply === "true";
+  var force = req.query.force === "1" || req.query.force === "true";
+  try {
+    var pr = await fetch(SUPABASE_URL + "/rest/v1/profiles?id=eq." + pid + "&select=profile_data", { headers: sbHeaders() });
+    var prows = await pr.json();
+    var pdata = Array.isArray(prows) && prows[0] && prows[0].profile_data;
+    if (!pdata) return res.status(404).json({ success: false, error: "profile not found" });
+    var goals = Array.isArray(pdata.goals) ? pdata.goals : [];
+
+    var report = [], changed = 0, failed = 0;
+    for (var gi = 0; gi < goals.length; gi++) {
+      var g = goals[gi];
+      if (!g.roadmap || !Array.isArray(g.roadmap.phases)) continue;
+      var phaseOut = [];
+      for (var pi = 0; pi < g.roadmap.phases.length; pi++) {
+        var ph = g.roadmap.phases[pi];
+        if (ph.type !== "near_term") continue;
+        if (Array.isArray(ph.emphasis) && !force) {
+          phaseOut.push({ phase: ph.name, status: ph.status, skipped: "already has emphasis", emphasis: ph.emphasis });
+          continue;
+        }
+        var emph = await extractPhaseEmphasis(g.title, ph);
+        if (emph === null) {
+          failed++;
+          phaseOut.push({ phase: ph.name, status: ph.status, error: "extraction failed — left uncached" });
+          continue;
+        }
+        phaseOut.push({ phase: ph.name, status: ph.status, weekly_targets: ph.weekly_targets || [], emphasis: emph });
+        if (applyE) { ph.emphasis = emph; changed++; }
+      }
+      report.push({ goal_id: g.id, goal: g.title, phases: phaseOut });
+    }
+
+    if (!applyE) return res.json({ success: true, dry_run: true, profile_id: pid, failed: failed, goals: report });
+    if (changed) {
+      var wr = await fetch(SUPABASE_URL + "/rest/v1/profiles?id=eq." + pid, {
+        method: "PATCH", headers: sbHeaders("return=minimal"),
+        body: JSON.stringify({ profile_data: pdata }),
+      });
+      if (!wr.ok) {
+        var werr = await wr.text();
+        return res.status(500).json({ success: false, error: "write failed: " + werr.slice(0, 300), goals: report });
+      }
+    }
+    res.json({ success: true, dry_run: false, profile_id: pid, phases_written: changed, failed: failed, goals: report });
+  } catch (e) {
+    console.error("[RoadmapEmphasis] fatal:", e.message);
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
 // ── ADMIN: RE-MERGE ONE WORKOUT'S EXERCISE ROWS ───────────────────────────
 // Recovery pass for exercise rows destroyed by the pre-2026-07-19 integer
 // duration_minutes column (see migrations/2026-07-19_exercises_duration_numeric.sql),
