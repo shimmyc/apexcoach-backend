@@ -4328,7 +4328,7 @@ function fetchAI(opts) {
         for (var si = 0; si < sessions.length; si++) {
           var s = sessions[si];
           if (!s || !s.date || s.date < cutoff) continue;
-          rows.push({ date: s.date, name: lex.name, sets: s.sets, reps: s.reps, weight: s.weight_lbs });
+          rows.push({ date: s.date, name: lex.name, sets: s.sets, reps: s.reps, weight: s.weight_lbs, duration: s.duration_minutes });
         }
       }
     }
@@ -4338,10 +4338,18 @@ function fetchAI(opts) {
     for (var ri = 0; ri < rows.length; ri++) {
       var r = rows[ri];
       var detail = '';
-      if (r.sets && r.reps) detail = r.sets + ' x ' + r.reps;
+      if (r.sets && r.reps) detail = r.sets + ' sets x ' + r.reps + ' reps';
       else if (r.reps) detail = r.reps + ' reps';
       else if (r.sets) detail = r.sets + ' sets';
       if (r.weight) detail += (detail ? ' @ ' : '') + r.weight + ' lbs';
+      // Hold duration (2026-07-19). This block previously carried sets/reps/
+      // weight only, so recent performance on every hold-based exercise was
+      // invisible — the model could see that a Dead Hang happened but not for
+      // how long, and therefore had nothing to progress.
+      if (r.duration) {
+        var secs = Math.round(Number(r.duration) * 60);
+        detail += (detail ? ', ' : '') + fmtMMSS(secs) + ' hold (' + secs + ' seconds)';
+      }
       lines.push(r.date + ': ' + r.name + (detail ? ' (' + detail + ')' : ''));
     }
     return lines.join('\n');
@@ -4359,14 +4367,30 @@ function fetchAI(opts) {
     for (var ei = 0; ei < top.length; ei++) {
       var ex = top[ei];
       var lastSess = ex.sessions && ex.sessions[0];
-      var line = '- ' + ex.name + ': ' + ex.count + 'x logged';
+      // Units are spelled out (2026-07-19). The old format emitted sets as
+      // "<N>s" — so a 1-set Dead Hang read as "1s", i.e. one SECOND, on a
+      // hold-based exercise where seconds are the meaningful unit. Reps were
+      // "<N>r". Both are now explicit.
+      var line = '- ' + ex.name + ': ' + ex.count + ' sessions logged';
       if (lastSess) {
         line += ', last ' + lastSess.date;
-        if (lastSess.sets) line += ' ' + lastSess.sets + 's';
-        if (lastSess.reps) line += 'x' + lastSess.reps + 'r';
-        if (lastSess.weight_lbs) line += ' @' + lastSess.weight_lbs + 'lbs';
+        var lastBits = [];
+        if (lastSess.sets) lastBits.push(lastSess.sets + ' sets');
+        if (lastSess.reps) lastBits.push(lastSess.reps + ' reps');
+        if (lastSess.weight_lbs) lastBits.push(lastSess.weight_lbs + ' lbs');
+        if (lastBits.length) line += ' (' + lastBits.join(' x ') + ')';
       }
-      if (ex.best_weight) line += ', best ' + ex.best_weight + 'lbs';
+      // PERSONAL BESTS — the progression baseline. Previously ONLY best_weight
+      // was read, so every bodyweight or hold-based exercise (i.e. nearly all of
+      // this athlete's training) contributed no performance number at all, while
+      // the system prompt still demanded progressive overload with specific
+      // increments. best_duration_seconds and best_reps are already present in
+      // the /exercises payload and were simply never used.
+      var bests = [];
+      if (ex.best_weight) bests.push(ex.best_weight + ' lbs');
+      if (ex.best_reps) bests.push(ex.best_reps + ' reps');
+      if (ex.best_duration_seconds) bests.push(fmtMMSS(ex.best_duration_seconds) + ' hold (' + ex.best_duration_seconds + ' seconds)');
+      if (bests.length) line += ' — PERSONAL BEST: ' + bests.join(', ');
       lines.push(line);
     }
     return lines.length ? 'RECENT EXERCISE HISTORY:\n' + lines.join('\n') + '\n\n' : '';
@@ -7082,6 +7106,18 @@ function mgPeriodLabel(g) {
   return '';
 }
 
+// Human-readable "proven level" for an achieved milestone — M:SS for time-based
+// holds, plain value+unit otherwise. Shared by the prompt baseline block and the
+// milestone-complete CTA so the two can never disagree.
+function mgAchievedDisplay(g) {
+  var cur = Number((g && g.current_value) || 0);
+  var unit = (g && g.target_unit) || '';
+  if (g && g.type === 'strength_milestone' && typeof isTimeUnit === 'function' && isTimeUnit(unit)) {
+    return formatMmSs(mgValueToSeconds(cur, unit));
+  }
+  return cur + (unit ? ' ' + unit : '');
+}
+
 function mgIsComplete(g) {
   // daily_habit goals are ongoing — they never "complete" the way a target
   // goal does. Treat them as always-incomplete so the Profile-tab "DONE"
@@ -7276,6 +7312,19 @@ function renderProfileChallenges() {
     // stale memory rather than a fresh fetch.
     if (g.last_computed_at) {
       html += '<div class="mono" style="font-size:9px;color:var(--text-dim);letter-spacing:1px;margin-top:6px;text-align:right" title="' + attrEsc(g.last_computed_at) + '">Updated ' + escHtml(formatRelativeTimeAgo(g.last_computed_at)) + '</div>';
+    }
+    // MILESTONE-COMPLETE CTA (2026-07-19). An achieved milestone now stays in
+    // the AI prompt as a BASELINE to work at or above, but the app deliberately
+    // does NOT invent the next tier — some goals are open-ended (hold duration,
+    // load) and some are terminal rehab targets where auto-escalating would be
+    // wrong. So the athlete is asked instead. Only for goal types where a "next
+    // target" is a coherent idea; a daily_habit never completes by design.
+    if (done && (g.type === 'strength_milestone' || g.type === 'cumulative_volume')) {
+      html += '<div style="margin-top:10px;padding:10px 12px;border-radius:10px;background:var(--accent-08,rgba(61,220,151,0.08));border:1px solid var(--accent-33,rgba(61,220,151,0.3))">' +
+        '<div style="font-size:12px;color:var(--text-bright,var(--text-primary));line-height:1.45">' +
+        '&#127942; <b>Milestone reached.</b> Your coach now treats ' + escHtml(mgAchievedDisplay(g)) + ' as your working floor.</div>' +
+        '<button onclick="openMicroGoalModal(\'' + attrEsc(g.id) + '\')" style="margin-top:8px;background:var(--accent-ember,var(--accent));border:none;color:#fff;padding:7px 14px;border-radius:9999px;font-size:12px;font-weight:600;cursor:pointer;font-family:Inter,sans-serif">Set the next target</button>' +
+        '</div>';
     }
     html += '</div>';
   }
@@ -8938,7 +8987,20 @@ function buildSystemPrompt(opts) {
 function buildMicroGoalsPromptContext() {
   if (!microGoals || !microGoals.length) return '';
   var active = microGoals.filter(function(g) { return g.is_active !== false && !mgIsComplete(g); });
-  if (!active.length) return '';
+  // ACHIEVED milestones (2026-07-19). Previously a completed goal was filtered
+  // out of the prompt entirely, so hitting a target REMOVED the only
+  // progression signal the model had — the athlete's 2:00 Dead Hang PR became
+  // invisible the moment it was reached. They now stay in the prompt as a
+  // BASELINE ("hold this level or better"), not as an open target. Deliberately
+  // NOT auto-escalated to a next tier: some goals are open-ended (hold
+  // duration, load) and some are terminal rehab targets where pushing past the
+  // target would be wrong. Setting the next tier is a UI prompt to the athlete
+  // (see renderProfileChallenges' milestone-complete CTA).
+  var achieved = microGoals.filter(function(g) {
+    return g.is_active !== false && mgIsComplete(g) &&
+           (g.type === 'strength_milestone' || g.type === 'cumulative_volume');
+  });
+  if (!active.length && !achieved.length) return '';
 
   var lines = [];
   var instructions = [];
@@ -8956,6 +9018,13 @@ function buildMicroGoalsPromptContext() {
     var line;
     if (g.type === 'strength_milestone' && isTimeUnit(unit)) {
       line = '- "' + g.title + '" [' + (MG_TYPE_LABEL[g.type] || g.type) + ']: ' + formatMmSs(mgValueToSeconds(cur, unit)) + ' / ' + formatMmSs(mgValueToSeconds(tgt, unit)) + ' (M:SS)';
+    } else if (g.type === 'daily_habit') {
+      // current_value for a daily habit is a COUNT OF DAYS the activity was
+      // logged (see mgHabitDaySources), NOT a value in target_unit. Rendering
+      // it as "56/2 Minutes" compared days against minutes and read as
+      // nonsense. State each number in its own unit instead.
+      line = '- "' + g.title + '" [' + (MG_TYPE_LABEL[g.type] || g.type) + ']: logged on ' + cur + ' days so far' +
+             (tgt ? ' (per-day target: ' + tgt + (unit ? ' ' + unit : '') + ')' : '');
     } else {
       line = '- "' + g.title + '" [' + (MG_TYPE_LABEL[g.type] || g.type) + ']: ' + cur + '/' + tgt + (unit ? ' ' + unit : '');
     }
@@ -8996,8 +9065,36 @@ function buildMicroGoalsPromptContext() {
     lines.push(line);
   }
 
+  // ACHIEVED-MILESTONE BASELINES — what the athlete has already proven they can
+  // do. These are the floor to work at or above, never a target to re-chase.
+  var achievedBlock = '';
+  if (achieved.length) {
+    var aLines = [], aInstr = [];
+    for (var ai = 0; ai < achieved.length; ai++) {
+      var ag = achieved[ai];
+      var aCur = Number(ag.current_value || 0);
+      var aUnit = ag.target_unit || '';
+      var isTimed = (ag.type === 'strength_milestone' && isTimeUnit(aUnit));
+      var achSecs = isTimed ? mgValueToSeconds(aCur, aUnit) : null;
+      // Spell the unit out both ways for a timed hold — "2:00" alone is the
+      // exact ambiguity B33b exists to remove.
+      var achDisplay = isTimed ? (formatMmSs(achSecs) + ' (' + achSecs + ' seconds)')
+                               : aCur + (aUnit ? ' ' + aUnit : '');
+      aLines.push('- "' + ag.title + '" — ACHIEVED, current proven level: ' + achDisplay);
+      if (ag.type === 'strength_milestone' && isTimeUnit(aUnit)) {
+        aInstr.push('"' + ag.title + '": the athlete has already reached ' + achDisplay + '. Treat that as the working FLOOR, not a goal to re-reach — program holds at or above it, and when readiness allows add small, safe jumps beyond it (+5-10s). Never prescribe below the proven level without a stated recovery reason.');
+      } else {
+        aInstr.push('"' + ag.title + '": the athlete has already reached ' + achDisplay + '. Treat that as the working FLOOR, not a goal to re-reach — program at or above it, and when readiness allows add small, safe increments beyond it. Never prescribe below the proven level without a stated recovery reason.');
+      }
+    }
+    achievedBlock = 'ACHIEVED MILESTONES (already hit — these are BASELINES to work at or above, not open targets):\n' +
+      aLines.join('\n') + '\n' + aInstr.map(function(s, idx) { return (idx + 1) + '. ' + s; }).join('\n') + '\n\n';
+  }
+  if (!lines.length) return achievedBlock;
+
   return 'ACTIVE CHALLENGES (micro-goals the athlete is actively pursuing — these must shape today\'s recommendations):\n' + lines.join('\n') + '\n\n' +
     'PER-CHALLENGE INSTRUCTIONS:\n' + instructions.map(function(s, idx) { return (idx + 1) + '. ' + s; }).join('\n') + '\n\n' +
+    achievedBlock +
     'When a workout option supports one of these challenges, include the challenge title (exact string) in its goal_tags array. Multiple tags are allowed (mix regular goals and challenge titles). The UI will surface challenge tags distinctly.\n\n';
 }
 

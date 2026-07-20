@@ -2564,7 +2564,6 @@ var CALL_TYPE_TEMPERATURE = {
   extract_exercises: 0,   // parse notes -> rows; also set directly in callAI
   workout_title:     0,   // classification of notes into a fixed taxonomy
   format_notes:      0,   // reformatting, not authoring
-  goal_estimate:     0,   // numeric estimate
   schedule_builder:  0,   // structured JSON out of fixed answers
 };
 
@@ -2590,7 +2589,6 @@ var CALL_TYPE_MODEL = {
   progress_brief:    MODEL_HAIKU,
   exercise_insight:  MODEL_HAIKU,
   goal_description:  MODEL_HAIKU,
-  goal_estimate:     MODEL_HAIKU,
   schedule_builder:  MODEL_HAIKU,
   schedule_preview:  MODEL_HAIKU,
   chat_summarize:    MODEL_HAIKU,
@@ -2634,24 +2632,61 @@ function wrapSystemWithCache(system, callType) {
 // 4 identical calls produced 3 DIFFERENT results (7 / 8 / 4 / 8 rows); at
 // temperature 0, 4 identical calls produced 1 identical result (8 rows, same
 // sets/reps/durations). See ROADMAP §0.4 / session #30.
-async function callAI(prompt, maxTokens, model, temperature) {
+// Ceiling for a NON-STREAMED model call, derived from output size + model.
+// callAI() had no timeout at all before 2026-07-19, which mattered most on the
+// hot path: extract-exercises runs it on every workout save, so a hung upstream
+// call hung the save. Values are generous multiples of observed latency — this
+// is a hang guard, not a latency target.
+//   Haiku  <=200 tok  20s   (titles, goal descriptions, exercise insights)
+//   Haiku   >200 tok  30s   (extract-exercises, 1000 tok — observed ~2-4s)
+//   Sonnet <=200 tok  30s
+//   Sonnet  >200 tok  60s   (coaching/historical briefs, history search)
+// Streaming paths (daily_recs, coach_chat) are NOT affected — they have their
+// own idle/cap timers in pipeAnthropicStream and the client.
+function aiTimeoutMs(maxTokens, model) {
+  var small = (maxTokens || 1000) <= 200;
+  if (model === MODEL_HAIKU) return small ? 20000 : 30000;
+  return small ? 30000 : 60000;
+}
+
+async function callAI(prompt, maxTokens, model, temperature, timeoutMs) {
   var payload = {
     model: model || MODEL_SONNET,
     max_tokens: maxTokens || 1000,
     messages: [{ role: "user", content: prompt }],
   };
   if (typeof temperature === "number") payload.temperature = temperature;
-  var response = await fetch("https://api.anthropic.com/v1/messages", {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "x-api-key": process.env.ANTHROPIC_KEY,
-      "anthropic-version": "2023-06-01",
-    },
-    body: JSON.stringify(payload),
-  });
-  var data = await response.json();
-  return (data.content && data.content[0]) ? data.content[0].text : "";
+  // Real abort, not just a Promise.race — race leaves the upstream request
+  // running and the socket held. withTimeout() (used elsewhere for provider
+  // calls) is fine where the promise can't be cancelled; here it can be.
+  var ms = typeof timeoutMs === "number" ? timeoutMs : aiTimeoutMs(maxTokens, model);
+  var controller = new AbortController();
+  var timer = setTimeout(function() { controller.abort(); }, ms);
+  try {
+    var response = await fetch("https://api.anthropic.com/v1/messages", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "x-api-key": process.env.ANTHROPIC_KEY,
+        "anthropic-version": "2023-06-01",
+      },
+      body: JSON.stringify(payload),
+      signal: controller.signal,
+    });
+    var data = await response.json();
+    return (data.content && data.content[0]) ? data.content[0].text : "";
+  } catch (e) {
+    // Callers already treat "" as "no usable AI output" and degrade (the title
+    // falls back to "Workout", extraction returns an empty list, briefs skip).
+    // Surfacing a throw here would turn a slow upstream into a 500 on the save
+    // path, which is strictly worse than the existing empty-string contract.
+    var aborted = e && (e.name === "AbortError" || /abort/i.test(e.message || ""));
+    console.error("[AI] callAI " + (aborted ? "TIMED OUT after " + ms + "ms" : "failed") +
+      " (model=" + (model || MODEL_SONNET) + ", max_tokens=" + (maxTokens || 1000) + "): " + (e && e.message));
+    return "";
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 app.get("/api/profiles/:id/brief", async function(req, res) {
@@ -8471,8 +8506,21 @@ app.post("/api/debug/remerge-workout-exercises/:profileId/:workoutId", async fun
   var pid = parseInt(req.params.profileId, 10);
   var wid = parseInt(req.params.workoutId, 10);
   var apply = req.query.apply === "1" || req.query.apply === "true";
-  var maxOps = req.query.max_ops ? parseInt(req.query.max_ops, 10) : 50;
-  var stopOnError = req.query.stop_on_error !== "0";
+  // FAIL CLOSED on a malformed max_ops. parseInt("abc") is NaN, and
+  // `opCount > NaN` is always false — which silently DISABLED the plan-size
+  // guard entirely. A bad value must clamp to the default, never remove the cap.
+  var maxOps = 50;
+  if (req.query.max_ops !== undefined) {
+    var parsedMax = parseInt(req.query.max_ops, 10);
+    if (!Number.isFinite(parsedMax) || parsedMax < 0) {
+      return res.status(400).json({ success: false, error: "max_ops must be a non-negative integer" });
+    }
+    maxOps = parsedMax;
+  }
+  // "false"/"no" now read as false; previously ANY value except "0" was truthy,
+  // so stop_on_error=false quietly left it enabled.
+  var soe = String(req.query.stop_on_error === undefined ? "" : req.query.stop_on_error).toLowerCase();
+  var stopOnError = !(soe === "0" || soe === "false" || soe === "no");
   try {
     // 1. Workout must exist AND belong to this profile.
     var wr = await fetch(SUPABASE_URL + "/rest/v1/workouts?id=eq." + wid + "&profile_id=eq." + pid + "&select=*", { headers: sbHeaders() });

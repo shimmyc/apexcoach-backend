@@ -1057,7 +1057,7 @@ Generalizes the Dead Hang hand-fix (CANONICAL_NAMES, 18 exercises) into a catalo
 - **Reviewed backfill** — run for real against profile 1: 13 of 14 proposed merge rows applied (1 excluded on review — "Dumbbell Curl" kept distinct).
 - **Manual catalog curation via `exercise-catalog-upsert`, run 2026-07-16 (curl, undocumented until this doc-sync pass)** — `Bicep Curl` (id 9) and `Dumbbell Curl` (id 100) both curated to `family:"Bicep Curl"` (now group together on the Library rollup); `Dead Hang` (id 18) curated with real primary/secondary muscle data (was empty, per the heatmap finding in `CLAUDE.md` → Phase 2). Pre-wger custom rows only get family/muscle data from a wger merge or a manual upsert like this one — remaining gaps curated reactively.
 - **Save-time matching re-verified live, 2026-07-16** — "dumbell curlz" and "bench pres" both resolved correctly, typo persisted as an alias via the confirm-chip auto-dismiss. No code change.
-- Found live (not fixed, out of scope): `exercises.duration_minutes` silently fails to insert for non-integer values. See §6.
+- Found live here, **✅ fixed 2026-07-19 (session #30)**: `exercises.duration_minutes` silently failed to insert for non-integer values — the column was `integer`. Widened to `numeric(6,2)` and the destroyed rows recovered. See §6.
 
 ### Goals & Milestones
 - **6 goal types** — strength, distance, consistency, habit, skill, general
