@@ -4536,7 +4536,7 @@ function fetchAI(opts) {
   // JSON skeleton (buildResponseShapeSpec), the TIME BUDGET block, and the
   // post-parse verifier, so all three describe the same targets.
   var recDurations = resolveOptionDurations(aiNumOpts, opts.lengthChoice || recLengthChoice);
-  var recIntensity = opts.intensityChoice || recIntensityChoice || 'Medium';
+  var recIntensity = normalizeIntensity(opts.intensityChoice || recIntensityChoice);
   var timeBudgetContext = buildTimeBudgetContext(recDurations, recIntensity);
 
   // #5 — emit the profile prose WITHOUT its embedded, stale GOALS list so
@@ -4904,12 +4904,10 @@ function renderRecControls() {
 // AI call on every tap.
 function recSetLength(mins) {
   recLengthChoice = mins;
-  console.log('[TimeBudget] length choice ->', mins === null ? 'auto' : mins + ' min');
   if (typeof renderAI === 'function') renderAI();
 }
 function recSetIntensity(level) {
-  recIntensityChoice = level;
-  console.log('[TimeBudget] intensity choice ->', level);
+  recIntensityChoice = normalizeIntensity(level);
   if (typeof renderAI === 'function') renderAI();
 }
 
@@ -9151,7 +9149,18 @@ var REC_DEFAULT_LADDER  = [60, 45, 30, 15];
 // Ephemeral per-generation controls (#6). Deliberately NOT persisted — these
 // are a per-open choice, reset on reload, not a stored setting.
 var recLengthChoice    = null;      // minutes, or null = derive from schedule/defaults
+var REC_INTENSITY_LEVELS = ['Low', 'Medium', 'High'];
 var recIntensityChoice = 'Medium';  // 'Low' | 'Medium' | 'High'
+
+// Whitelist before the value reaches the prompt. Not exploitable today — the
+// only writer is recSetIntensity() from three hardcoded pills — but the value
+// is interpolated straight into buildTimeBudgetContext()'s prompt text, so an
+// unvalidated free string would be a prompt-injection path the moment this
+// becomes a stored setting or takes any other caller. Anything unrecognized
+// falls back to the default rather than passing through.
+function normalizeIntensity(v) {
+  return REC_INTENSITY_LEVELS.indexOf(v) >= 0 ? v : 'Medium';
+}
 
 // Today's scheduled durations, read from the SAME schedule source and the SAME
 // underserved-target pick that buildScheduleInstruction() uses, so the stated
@@ -9285,7 +9294,7 @@ function recOptionSections(o) {
   }
   if (Array.isArray(o.exercises) && o.exercises.length) {
     // Legacy flat shape — presented as one unlabeled section.
-    return [{ label: null, minutes: null, exercises: o.exercises, _legacy: true }];
+    return [{ label: null, minutes: null, exercises: o.exercises }];
   }
   return [];
 }

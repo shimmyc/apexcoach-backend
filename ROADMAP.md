@@ -1451,7 +1451,6 @@ All verified present in `server.js`. `:id`/`:userId` = profile id.
 | Method | Path |
 |--------|------|
 | GET | `/api/debug/google-health-probe/:userId` (`?date=&allow_refresh=1&raw=1`) — **read-only by default**; returns token state + the UNSWALLOWED per-leg outcome for all 6 GH metrics with real HTTP status, plus `would_serve_google_health` (mirrors `/daily`'s `hasData` gate). `allow_refresh=1` is the only writing path. See CLAUDE.md → "Google Health Failure Propagation" |
-| GET | `/api/debug/source-constraint-probe/:userId` — verifies live whether `daily_sleep`/`daily_steps` accept `source:"google_health"`; writes only to throwaway date `1970-01-01` and deletes both rows again. Built as a one-time gate (§9: keep or remove) |
 | POST | `/api/debug/backfill-wearable-hr/:userId` (`?provider=fitbit&max_intraday=N`) |
 | POST | `/api/debug/backfill-wearable-history/:userId` (`?start_date=&end_date=&max_calls=N&metrics=`) — full-history sleep/HRV/RHR/steps/weight/body-fat pull via Fitbit RANGE endpoints; `max_calls` defaults to 100 (not Infinity); never overwrites existing better data; see CLAUDE.md → "Fitbit History Backfill" |
 | POST | `/api/debug/seed-exercise-catalog` (`?max_calls=N`) — wger.de bulk-seed (no key needed; replaces the never-run MuscleWiki seed), resumable/idempotent, merge-safe against existing rows |
@@ -1749,14 +1748,21 @@ Macro roadmap shape (stored on `profiles.roadmap_data`):
   relabel an existing row whose *sleep* came from a different provider, since the column
   describes the sleep source. On a fresh row there is no sleep yet, so the vitals provider is
   the only honest value; the INSERT also relies on the column DEFAULT when no source is passed.
-- [ ] **Two new debug endpoints added session #31 — confirm gating, then keep or remove.**
-  `GET /api/debug/google-health-probe/:userId` (read-only by default; `allow_refresh=1` is the
-  only writing path, and a failed refresh legitimately sets `needs_reconnect`) and
-  `GET /api/debug/source-constraint-probe/:userId` (writes only to throwaway date `1970-01-01`,
-  self-cleaning). Both follow the existing `ADMIN_SECRET` pattern. The GH probe is worth keeping
-  as a permanent diagnostic — it answers a question `/daily` structurally cannot. The constraint
-  probe was built for a one-time gate and is a reasonable delete. Cover both in the next hygiene
-  pass.
+- [x] **✅ RESOLVED — `google-health-probe` kept, `source-constraint-probe` deleted (session #31
+  hygiene pass).** Two debug endpoints were added session #31. `GET /api/debug/google-health-probe/:userId`
+  (read-only by default; `allow_refresh=1` is the only writing path, and a failed refresh
+  legitimately sets `needs_reconnect`) is **kept as a permanent diagnostic** — it answers a
+  question `/daily` structurally cannot. `GET /api/debug/source-constraint-probe/:userId` was a
+  one-time gate for the source-threading work; its verification is done and documented, so it was
+  **removed**. Both had followed the existing `ADMIN_SECRET` pattern.
+- [ ] **`wearables/google_health.js` `refreshToken()`'s `fetch(TOKEN_URL)` has no timeout /
+  AbortController (found session #31, NOT fixed).** Every GH *data* leg is now bounded by
+  `ghFetch()`'s 7s `GH_REQUEST_TIMEOUT_MS`, but the OAuth token-refresh POST is a plain `fetch`
+  with no bound. Pre-existing, but newly reachable through the `google-health-probe?allow_refresh=1`
+  path (and always reachable via the normal refresh triggered by any expired-token `/daily`). A
+  hung Google token endpoint would hang the caller until the platform kills the request. The
+  module-level GET retry wrapper does not cover it (it's a POST, and adds retry not timeout). Fix
+  is an `AbortController` mirroring `ghFetch()`; flagged only this pass.
 - [ ] **Drop the redundant `saveWearableTokens` call** in the `/callback` OAuth handler — `saveProfileTokens` now mirrors into `wearable_connections`, so the explicit second write is redundant (idempotent, harmless).
 - [ ] **Add `workouts.duration_minutes` column** so manual session durations count in analytics without relying on summed `exercises.duration_minutes`.
 - [ ] **Rename `?max_intraday=` → `?max_calls=`** in `/api/debug/backfill-wearable-hr` (the budget now covers TCX **+** intraday calls, not just intraday). Keep `max_intraday` as an alias for back-compat.
@@ -1779,7 +1785,7 @@ Macro roadmap shape (stored on `profiles.roadmap_data`):
 - [ ] **Add `created_at` / `updated_at` to the `workouts` table.** There is no audit trail today (see §6) — `ts` is client-supplied and overwritten on every edit, so "when was this row created vs last changed?" is unanswerable without structural inference. Blocked session #30's A3 diagnostic from being a lookup. Low effort, high diagnostic value.
 - [ ] **`format_notes` render bugs need a PROMPT change, not just temperature (measured session #30).** Pinning `format_notes` to temperature 0 (`0fefbd6`) **did** stabilise output (1 distinct result across 3 identical calls) and **did** eliminate the stray markdown `#` heading. It did **NOT** remove `Notes:` / `None provided` — those are reproducibly emitted because the prompt itself says *"then a 'Notes:' section at the bottom"*, and the model fills it with a placeholder when there is no subjective content. The prompt needs "omit the Notes: section entirely when there is no subjective content". Separately, `renderLog()` (`public/index.html`) line-splits notes into `<li>` with no markdown handling at all, even though `parseMd()` already exists in the same file and is used for Coach Chat — so any markdown in stored notes leaks through verbatim.
 - [ ] **Extraction prompt over-applies its "don't extract stretches/warm-ups" rule (found session #30).** Cost 3 unrecoverable rows: wid 106 `Figure-4 Stretch`, wid 72 `Elliptical` + `Indoor bike`. Inconsistent — `Figure Four Stretch` IS extracted for wid 42 from differently-worded notes. The rule's intent is "don't record a stretch as a *weighted* exercise", but it's suppressing the row entirely. Re-running the re-merge endpoint after a prompt fix would pick these up with no other change (it's idempotent and never deletes).
-- [ ] **`goal_estimate` is a dead `CALL_TYPE_MODEL` entry (found session #30).** No call site exists in `server.js` or `public/index.html`. It was given a temperature pin in `CALL_TYPE_TEMPERATURE` for consistency, but it should either be wired up or dropped from both maps.
+- [x] **✅ RESOLVED — `goal_estimate` is fully gone (confirmed session #31).** Was flagged as a dead `CALL_TYPE_MODEL` entry in session #30. A case-insensitive grep confirms `goal_estimate` now appears **nowhere** in `server.js` or `public/index.html` — absent from `CALL_TYPE_MODEL` and `CALL_TYPE_TEMPERATURE` both, and no call site. The "drop from both maps" work described here is already done; nothing outstanding.
 - [ ] **Decide `daily_recs` temperature (Phase B).** Everything runs at the Anthropic default (1.0) unless pinned. `daily_recs` must **not** go to 0 — "Show me different options" would return the identical rec on every reroll. But 1.0 measurably loosens compliance with hard numeric constraints ("4–6 exercises MAX", and the duration budget Phase B adds); session #29's verbose-rec truncation is the same failure shape. Likely answer is ~0.6–0.7 plus client-side verification of the duration budget rather than trusting prompt compliance. Explicitly a Phase B decision, not actioned.
 - [ ] **`daily_sleep.source` is hardcoded `"fitbit"` for ALL sleep writes (flagged session #23).** `upsertDailySleep` sets `source:"fitbit"` unconditionally, so Google-Health-sourced sleep is mislabeled as Fitbit in `daily_sleep`. Cosmetic (no consumer branches on `source` for sleep today), low priority — thread the real provider through when convenient. Note the session #23 Fitbit sleep fallback happens to make the label accidentally correct for *that* path only.
 - [ ] **GH-vs-Fitbit field-shape divergence is a recurring BUG CLASS, not a one-off (sessions #23/#24).** Google Health returns different field shapes than Fitbit across metrics, and each divergence surfaces as its own blank-card / parse / persistence bug: the GH **sleep-stages** shape mismatch (session #24 — normalized + `CACHE_VERSION` bust) and GH **sleep not persisting** (session #23 — HRV/RHR decoupled + Fitbit fallback) were two separate instances of the same underlying class. The durable fix is a defensive normalization layer at the adapter boundary (`wearables/google_health.js` → a canonical internal shape) so a new GH field-shape quirk is caught structurally instead of fixed reactively one card at a time. Flagged as a class; not built.

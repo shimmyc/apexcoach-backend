@@ -1439,9 +1439,11 @@ there is no sleep yet, so the vitals provider is the only honest value available
 
 **Constraint state was verified live before writing a new value**, not assumed from the committed
 DDL — this project has a history of constraints added by hand outside migrations
-(`chat_proposals.type`, found only via a live `23514`). `GET /api/debug/source-constraint-probe/:userId`
-(admin-gated) writes `source:"google_health"` to throwaway date `1970-01-01` in both tables and
-deletes the rows again. Result: **both accept it, no CHECK constraint, no migration needed.**
+(`chat_proposals.type`, found only via a live `23514`). A one-time admin probe
+(`GET /api/debug/source-constraint-probe/:userId`, since **removed** in the session #31 hygiene
+pass) wrote `source:"google_health"` to throwaway date `1970-01-01` in both tables and deleted the
+rows again. Result: **both accept it, no CHECK constraint, no migration needed.** The endpoint was
+deleted once that verification was done — it was a gate, not ongoing infra.
 
 **Loud failure (`logProvenanceWriteFailure`).** These upserts are fire-and-forget, so a rejected
 write would lose the row behind a generic one-line catch — the `duration_minutes` data-loss shape
