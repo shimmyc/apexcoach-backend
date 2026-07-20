@@ -2582,7 +2582,11 @@ var CALL_TYPE_MODEL = {
   // Cheap tasks — Haiku
   format_notes:      MODEL_HAIKU,
   goal_intake_questions: MODEL_HAIKU,
-  goal_roadmap_adapt:    MODEL_HAIKU,
+  // E1: goal roadmap adapt moved to Sonnet — it judges phase-premise validity,
+  // which now steers the daily rec prompt. macro_roadmap_adapt stays on Haiku
+  // for now; its output (exercise_gaps) is not yet consumed by the rec prompt
+  // and is queued separately (ROADMAP §9, D9).
+  goal_roadmap_adapt:    MODEL_SONNET,
   macro_roadmap_adapt:   MODEL_HAIKU,
   workout_title:     MODEL_HAIKU,
   extract_exercises: MODEL_HAIKU,
@@ -5410,6 +5414,91 @@ async function extractPhaseEmphasis(goalTitle, phase) {
   }
 }
 
+// ── WEEKLY AUTO-ADAPT CONTEXT (E3, 2026-07-19) ────────────────────────────
+// The weekly auto-adapt previously passed the literal string "(no notes —
+// automatic weekly review based on recent training)" as the athlete check-in,
+// giving the model no way to detect that a training pause had ENDED. That is
+// precisely what let Build Muscle sit in a phase named "Progressive Overload
+// (Paused)" — with a target beginning "Once training resumes:" — for weeks
+// after training had in fact resumed.
+//
+// Computed from the workouts already fetched for the adapt call: NO extra API
+// call, no model call, ~250 chars. The resumption line is the load-bearing one.
+function buildWeeklyReviewContext(workouts) {
+  var rows = (workouts || []).filter(function(w) { return w && w.date; })
+    .slice().sort(function(a, b) { return a.date < b.date ? 1 : -1; });   // newest first
+  if (!rows.length) return "AUTOMATIC WEEKLY REVIEW — no athlete check-in. No workouts logged in the reviewed window.";
+
+  var today = new Date().toISOString().slice(0, 10);
+  var dayMs = 86400000;
+  var daysBetween = function(a, b) { return Math.round((Date.parse(b + "T00:00:00") - Date.parse(a + "T00:00:00")) / dayMs); };
+
+  var last14 = rows.filter(function(w) { return daysBetween(w.date, today) <= 14; }).length;
+  var prev14 = rows.filter(function(w) { var d = daysBetween(w.date, today); return d > 14 && d <= 28; }).length;
+
+  // Largest gap between consecutive logged sessions in the window.
+  var gap = { days: 0, from: null, to: null };
+  for (var i = 0; i < rows.length - 1; i++) {
+    var d = daysBetween(rows[i + 1].date, rows[i].date);
+    if (d > gap.days) gap = { days: d, from: rows[i + 1].date, to: rows[i].date };
+  }
+
+  var byCat = {};
+  rows.forEach(function(w) {
+    var c = inferWorkoutCategoryServer ? inferWorkoutCategoryServer(w.type) : (w.type || "other");
+    byCat[c] = (byCat[c] || 0) + 1;
+  });
+  var catStr = Object.keys(byCat).map(function(k) { return k + " x" + byCat[k]; }).join(", ") || "none";
+
+  var lines = [
+    "AUTOMATIC WEEKLY REVIEW — no athlete check-in. Recent training evidence:",
+    "- Sessions in last 14 days: " + last14 + " (previous 14 days: " + prev14 + ")",
+    "- Categories trained: " + catStr,
+  ];
+  if (gap.days >= 7) lines.push("- Longest gap in window: " + gap.days + " days (" + gap.from + " -> " + gap.to + ")");
+  // The signal the premise-validity check needs: training restarted after a break.
+  if (gap.days >= 10 && daysBetween(gap.to, today) <= 21) {
+    lines.push("- RESUMPTION SIGNAL: training resumed " + gap.to + " after a " + gap.days + "-day gap. Any phase premised on a pause, layoff or injury break is likely STALE.");
+  } else if (prev14 === 0 && last14 > 0 && daysBetween(rows[rows.length - 1].date, today) >= 28) {
+    // Only claim "nothing in the prior window" when the data actually REACHES
+    // back that far. The adapt call is given the last ~10 workouts, so for a
+    // consistent athlete that window is often ~14 days — prev14 would read 0
+    // simply because there is no older data, producing a permanent false
+    // resumption signal and inviting spurious phase rewrites. Absence of
+    // evidence is not evidence of absence.
+    lines.push("- RESUMPTION SIGNAL: no sessions in the prior 14-day window but " + last14 + " since. Any phase premised on a pause or layoff is likely STALE.");
+  }
+  return lines.join("\n");
+}
+
+// ── ONE-CURRENT-PHASE INVARIANT (E4, 2026-07-19) ──────────────────────────
+// Deterministic backstop for the DATE ROLLOVER rule added to the adapt prompt.
+// Prompt rules are probabilistic: Fix Posture sat with TWO phases marked
+// "current" for weeks (an adapt advanced phase 2 without completing phase 1,
+// because phase 1's window expired by DATE while its completion_signals were
+// never met) and nothing caught it — the Goals tab rendered correctly because
+// recomputeRoadmapProgress() derives status on read, while the stored data the
+// rec prompt reads stayed wrong. Enforced in code, not hoped for in a prompt.
+//
+// Rule: at most one near_term phase may be "current". If several are, the LAST
+// (furthest along) wins and earlier ones are marked complete. Returns a list of
+// corrections for logging; mutates phases in place.
+function enforceSingleCurrentPhase(phases) {
+  var near = (phases || []).filter(function(p) { return p && p.type === "near_term"; });
+  var currentIdx = [];
+  near.forEach(function(p, i) { if (p.status === "current") currentIdx.push(i); });
+  if (currentIdx.length <= 1) return [];
+  var keep = currentIdx[currentIdx.length - 1];
+  var fixed = [];
+  currentIdx.forEach(function(i) {
+    if (i === keep) return;
+    fixed.push({ phase: near[i].name || "(unnamed)", from: "current", to: "complete" });
+    near[i].status = "complete";
+    near[i].progress_pct = 100;
+  });
+  return fixed;
+}
+
 // Fills emphasis[] on any near_term phase that lacks it. Used after generate and
 // after adapt so the field is self-maintaining — D1's one-time backfill only
 // covers roadmaps that existed on 2026-07-19.
@@ -5426,14 +5515,26 @@ async function backfillMissingEmphasis(goalTitle, phases) {
 async function adaptGoalRoadmap(goal, notes, workouts, trigger, goalExCtx) {
   var today = new Date().toISOString().slice(0, 10);
   var workoutsStr = (workouts || []).map(function(w) { return w.date + ": " + (w.type || "Workout"); }).join("\n");
-  var sys = "You are a fitness coach adapting an athlete's training roadmap for a specific goal based on their recent training and (optionally) a check-in. Return ONLY valid JSON with the same shape as the existing roadmap: { timeline_range: string, timeline_note: string, date_confidence: 'high'|'medium'|'low', phases: [...] }. Preserve the structure: 3 near_term phases (type: 'near_term', each with name, duration_weeks, weekly_targets, emphasis and completion_signals — never drop name or duration_weeks) followed by 2 horizon phases (type: 'horizon', milestone-based). Advance phase status (upcoming -> current -> complete) when completion_signals are met. Keep phases that are still valid — only change what the recent training or check-in justifies. Be concise.";
+  var sys = "You are a fitness coach adapting an athlete's training roadmap for a specific goal based on their recent training and (optionally) a check-in. Return ONLY valid JSON with the same shape as the existing roadmap: { timeline_range: string, timeline_note: string, date_confidence: 'high'|'medium'|'low', phases: [...] }. Preserve the structure: 3 near_term phases (type: 'near_term', each with name, duration_weeks, weekly_targets, emphasis and completion_signals — never drop name or duration_weeks) followed by 2 horizon phases (type: 'horizon', milestone-based). " +
+    "Advance phase status (upcoming -> current -> complete) when completion_signals are met. Keep phases that are still valid — only change what the recent training or check-in justifies. Be concise.\n\n" +
+    "ALSO run two checks that are NOT completion tests:\n" +
+    "1. DATE ROLLOVER: if a phase's end_date has passed, it must not remain \"current\" — mark it \"complete\" and make the next phase \"current\", even if its completion_signals were never met. Exactly one near_term phase may be \"current\".\n" +
+    "2. PREMISE VALIDITY: each phase's name and targets assume a context (an injury flare, a training pause, a deload, a travel block). If the recent training evidence shows that context has ENDED — e.g. the athlete has resumed training after a documented pause — rewrite that phase's name and targets to drop the stale premise. Do not silently keep a phase whose framing is no longer true. If the premise still holds, leave the phase alone.\n\n" +
+    "These two checks are the ONLY reasons to change a phase that its completion_signals have not justified. Everything else: keep what is valid.";
   var userMsg = "GOAL: " + (goal.title || "Untitled") + "\n\n" +
     "CURRENT ROADMAP:\n" + JSON.stringify(goal.roadmap) + "\n\n" +
     "EXERCISE CONTEXT FOR THIS GOAL:\n" + (goalExCtx ? JSON.stringify(goalExCtx) : "none") + "\n\n" +
-    "ATHLETE CHECK-IN:\n" + (notes || "(no notes — automatic weekly review based on recent training)") + "\n\n" +
+    "ATHLETE CHECK-IN:\n" + (notes || buildWeeklyReviewContext(workouts)) + "\n\n" +
     "RECENT WORKOUTS (last 10):\n" + (workoutsStr || "none") + "\n\n" +
     "Today: " + today + "\n\nAdapt the roadmap based on this evidence.";
-  var text = await callAISystem(sys, userMsg, 2000, MODEL_HAIKU);
+  // E1 (2026-07-19): Sonnet, not Haiku. This call now decides whether a phase's
+  // PREMISE still holds — the judgment that steers the daily rec prompt's
+  // GOAL ROADMAP EMPHASIS block. Generation already used Sonnet; adapt running
+  // a cheaper model on a harder judgment was backwards. Measured cost: ~7.5k
+  // input + <=6k output tokens per weekly run across all goals with roadmaps
+  // (~0.39M input / 0.31M output per YEAR), so the ~3x delta is a few dollars
+  // annually and scales with goals, not with recs or users.
+  var text = await callAISystem(sys, userMsg, 2000, MODEL_SONNET);
   var parsed = parseAIJson(text);
   if (!parsed || !Array.isArray(parsed.phases)) throw new Error("AI returned an invalid adapted roadmap");
   assignNearTermDates(parsed.phases, today); // fills only missing dates; preserves existing
@@ -5444,6 +5545,14 @@ async function adaptGoalRoadmap(goal, notes, workouts, trigger, goalExCtx) {
   // Non-fatal by construction: extractPhaseEmphasis returns null on failure and
   // the phase is simply left without emphasis rather than blocking the adapt.
   await backfillMissingEmphasis(goal.title, parsed.phases);
+  // E4: deterministic one-current-phase invariant, run AFTER the model so it
+  // catches the DATE ROLLOVER prompt rule failing to fire.
+  var fixedPhases = enforceSingleCurrentPhase(parsed.phases);
+  if (fixedPhases.length) {
+    console.warn("[Roadmap] enforceSingleCurrentPhase corrected " + fixedPhases.length +
+      " phase(s) for '" + (goal.title || "?") + "': " +
+      fixedPhases.map(function(f) { return f.phase + " current->complete"; }).join("; "));
+  }
 
   var prev = goal.roadmap || {};
   var now = new Date().toISOString();
@@ -5657,6 +5766,14 @@ async function generateGoalRoadmapForGoal(profileId, goalId, mode) {
   // emphasis[] is requested natively by the generation prompt now; backfill any
   // phase the model omitted so the daily-rec block is never missing it.
   await backfillMissingEmphasis(goal.title, parsed.phases);
+  // E4: deterministic one-current-phase invariant, run AFTER the model so it
+  // catches the DATE ROLLOVER prompt rule failing to fire.
+  var fixedPhases = enforceSingleCurrentPhase(parsed.phases);
+  if (fixedPhases.length) {
+    console.warn("[Roadmap] enforceSingleCurrentPhase corrected " + fixedPhases.length +
+      " phase(s) for '" + (goal.title || "?") + "': " +
+      fixedPhases.map(function(f) { return f.phase + " current->complete"; }).join("; "));
+  }
 
   var now = new Date().toISOString();
   var prevRoadmap = goal.roadmap;
