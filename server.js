@@ -4567,6 +4567,58 @@ async function getFullExerciseContext(profileId, days) {
 // Assign sequential start/end dates to near-term phases (in order) when the AI
 // didn't supply them, so time-based progress can be computed. Horizon phases are
 // left dateless. Mutates the phases array in place.
+// opts.resequence (default OFF, 2026-07-19 F1): normal operation PRESERVES any
+// existing start_date, which is correct — but it means a bad adapt that pinned
+// every phase to the same date can never be repaired, because there is no
+// missing field left to fill. The flag rebuilds the calendar forward from the
+// CURRENT phase using duration_weeks, and back-dates already-completed phases so
+// they end before it. Repair-only: never set on the normal adapt/generate paths.
+function resequenceNearTermDates(phases, todayStr) {
+  var near = (phases || []).filter(function(p) { return p && p.type === "near_term"; });
+  if (!near.length) return [];
+  var weeksOf = function(p) {
+    var w = Number(p.duration_weeks);
+    if (!Number.isFinite(w)) { var m = String(p.duration_weeks == null ? "" : p.duration_weeks).match(/\d+/); w = m ? Number(m[0]) : 0; }
+    return Number.isFinite(w) && w > 0 ? w : 5;   // sane default so repair never stalls
+  };
+  var DAY = 86400000;
+  var ymd = function(ms) { return ymdLocal(new Date(ms)); };
+  var curIdx = near.findIndex(function(p) { return p.status === "current"; });
+  if (curIdx < 0) curIdx = 0;
+
+  var changes = [];
+  var record = function(p, s0, e0) {
+    if (p.start_date !== s0 || p.end_date !== e0) {
+      changes.push({ phase: p.name || "(unnamed)", from: (s0 || "?") + " -> " + (e0 || "?"), to: p.start_date + " -> " + p.end_date });
+    }
+  };
+
+  // Current phase onward: contiguous forward from today.
+  var cursor = Date.parse((todayStr || new Date().toISOString().slice(0, 10)) + "T00:00:00");
+  for (var i = curIdx; i < near.length; i++) {
+    var p = near[i], s0 = p.start_date, e0 = p.end_date;
+    var endMs = cursor + weeksOf(p) * 7 * DAY;
+    p.start_date = ymd(cursor);
+    p.end_date = ymd(endMs - DAY);
+    p.duration_weeks = weeksOf(p);
+    record(p, s0, e0);
+    cursor = endMs;
+  }
+  // Completed phases: back-date so each ends before the current phase begins.
+  var back = Date.parse(near[curIdx].start_date + "T00:00:00");
+  for (var j = curIdx - 1; j >= 0; j--) {
+    var q = near[j], qs0 = q.start_date, qe0 = q.end_date;
+    var qEnd = back - DAY;
+    var qStart = qEnd - (weeksOf(q) * 7 * DAY) + DAY;
+    q.end_date = ymd(qEnd);
+    q.start_date = ymd(qStart);
+    q.duration_weeks = weeksOf(q);
+    record(q, qs0, qe0);
+    back = qStart;
+  }
+  return changes;
+}
+
 function assignNearTermDates(phases, todayStr) {
   if (!Array.isArray(phases)) return;
   var cursor = Date.parse((todayStr || new Date().toISOString().slice(0, 10)) + "T00:00:00");
@@ -8690,6 +8742,49 @@ app.post("/api/wearables/import/:userId", async function(req, res) {
 // Verifies the clobber-safety invariant behind the GH sleep-decoupling fix:
 // writing HRV/RHR via upsertDailyVitals must NOT null out an existing sleep row.
 // Uses a throwaway date (1970-01-01, isolated from all real data) and cleans up
+// ── ADMIN: ONE-TIME PHASE RE-SEQUENCE REPAIR (F1) ─────────────────────────
+//   POST /api/debug/resequence-roadmap/:profileId/:goalId?secret=...&apply=1
+// DRY RUN by default. Repairs a roadmap whose near_term phases share the same
+// start_date (an adapt that returned a non-integer duration_weeks pinned every
+// phase to today — see ROADMAP §9). Only touches start_date / end_date /
+// duration_weeks; names, targets, emphasis, status and adaptation_log are not
+// modified. Deliberately NOT wired into adapt/generate — repair only.
+app.post("/api/debug/resequence-roadmap/:profileId/:goalId", async function(req, res) {
+  if (process.env.ADMIN_SECRET) {
+    var gotR = req.query.secret || req.headers["x-admin-secret"];
+    if (gotR !== process.env.ADMIN_SECRET) return res.status(403).json({ success: false, error: "forbidden" });
+  }
+  var applyR = req.query.apply === "1" || req.query.apply === "true";
+  try {
+    var loaded = await loadProfileWithGoals(req.params.profileId);
+    var found = findGoalById(loaded.profileData, req.params.goalId);
+    var goal = found.goal;
+    if (!goal || !goal.roadmap || !Array.isArray(goal.roadmap.phases)) {
+      return res.status(404).json({ success: false, error: "goal or roadmap not found" });
+    }
+    var snap = function() {
+      return goal.roadmap.phases.filter(function(p) { return p.type === "near_term"; })
+        .map(function(p) { return { name: p.name, status: p.status, start_date: p.start_date, end_date: p.end_date, duration_weeks: p.duration_weeks, emphasis_count: (p.emphasis || []).length }; });
+    };
+    var before = JSON.parse(JSON.stringify(snap()));
+    var changes = resequenceNearTermDates(goal.roadmap.phases, ymdLocal(new Date()));
+    var after = snap();
+    var payload = {
+      success: true, dry_run: !applyR, goal: goal.title,
+      roadmap_version: goal.roadmap.version,
+      adaptation_log_entries: (goal.roadmap.adaptation_log || []).length,
+      changes: changes, before: before, after: after,
+    };
+    if (!applyR) return res.json(payload);
+    await saveGoalToProfile(req.params.profileId, loaded.profileData, found.index, goal);
+    payload.applied = true;
+    res.json(payload);
+  } catch (e) {
+    console.error("[Resequence] fatal:", e.message);
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
 // ── ADMIN: BACKFILL roadmap.phases[].emphasis ─────────────────────────────
 //   POST /api/debug/extract-roadmap-emphasis/:profileId?secret=...&apply=1
 // DRY RUN by default. Fills `emphasis` on every near_term phase of every goal
