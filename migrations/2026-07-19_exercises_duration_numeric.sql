@@ -1,0 +1,78 @@
+-- 2026-07-19 — exercises.duration_minutes: integer -> numeric(6,2)
+--
+-- STATUS: ✅ RUN IN PRODUCTION 2026-07-19. Verified with the Step 0 query both
+--   before and after:
+--     BEFORE: data_type=integer, numeric_precision=32, numeric_scale=0
+--     AFTER:  data_type=numeric, numeric_precision=6,  numeric_scale=2
+--   Fractional durations now insert successfully. The inferred pre-state
+--   ("integer") was correct.
+--
+-- WHY (confirmed live, session #30 Phase A):
+--   The extract-exercises prompt (server.js, MANDATORY DEAD HANG RULE) explicitly
+--   instructs the model to emit FRACTIONAL minutes: "45 seconds" -> 0.75,
+--   "30s" -> 0.5, "1 min 15 sec" -> 1.25, "1:42" -> 1.7.
+--   The column cannot hold those values, so PostgREST rejects the INSERT. The
+--   insert loop (server.js ~3377-3390) logs the failure to console.error and
+--   CONTINUES, and the endpoint still returned success:true — so the row was
+--   silently destroyed and neither the client nor the user ever learned.
+--
+--   Evidence: across profile 1's 269 exercises rows, 59 carry a non-null
+--   duration_minutes and the distinct value set is
+--     {1, 2, 5, 10, 20, 23, 30, 35, 40, 60}
+--   i.e. ZERO non-integer values have ever survived, despite the prompt
+--   actively generating them. 23 high-confidence exercise rows across 17
+--   workouts were destroyed this way (12 of them "Dead Hang", the athlete's
+--   most-tracked exercise).
+--
+-- STEP 0 — CONFIRM THE CURRENT TYPE BEFORE ALTERING (run this first).
+--   The agent could not verify the column type directly (no service-role
+--   credential available in that session); the type below is inferred from the
+--   behaviour above. Run this and confirm data_type is an integer type:
+--
+--     SELECT column_name, data_type, numeric_precision, numeric_scale
+--     FROM information_schema.columns
+--     WHERE table_name = 'exercises' AND column_name = 'duration_minutes';
+--
+--   Expected before: data_type = 'integer' (or 'smallint'/'bigint').
+--   If it ALREADY reports 'numeric', STOP — the column is fine and the real
+--   cause is elsewhere; report back rather than running the ALTER.
+
+ALTER TABLE exercises
+  ALTER COLUMN duration_minutes TYPE numeric(6,2)
+  USING duration_minutes::numeric(6,2);
+
+-- STEP 2 — VERIFY AFTER RUNNING:
+--     SELECT column_name, data_type, numeric_precision, numeric_scale
+--     FROM information_schema.columns
+--     WHERE table_name = 'exercises' AND column_name = 'duration_minutes';
+--   Expected after: data_type = 'numeric', precision 6, scale 2.
+--
+--     SELECT count(*) AS rows_with_duration,
+--            count(*) FILTER (WHERE duration_minutes <> trunc(duration_minutes))
+--              AS fractional_rows
+--     FROM exercises WHERE duration_minutes IS NOT NULL;
+--   Expected immediately after: fractional_rows = 0 (nothing fractional has
+--   ever been stored). It should become non-zero as new duration-based
+--   exercises are logged — that is the signal the fix is working.
+--
+-- EXISTING ROWS: not affected in value. Every stored value is already a whole
+-- number, so the widening cast is lossless (1 -> 1.00). No row is rewritten in
+-- a way that changes what it means, and nothing is deleted. This ALTER only
+-- widens what the column can ACCEPT going forward; it does NOT recover the 23
+-- rows already destroyed — those are gone from `exercises` and would need a
+-- separate re-extraction pass (deliberately NOT part of this migration).
+--
+-- PRECISION NOTE: scale 2 stores the values the prompt actually emits exactly
+-- (0.50, 0.75, 1.25, 1.70). A duration that is not a clean fraction of a minute
+-- rounds to the nearest 0.6s — e.g. a 20-second hold stores 0.33 (19.8s)
+-- instead of 0.3333. That rounding is immaterial for a hold, and the exact
+-- original text is preserved verbatim in `raw_text` regardless; the
+-- strength_milestone tracker already prefers parsing raw_text over this column
+-- (see CLAUDE.md "Active Challenges"). Chosen over unconstrained `numeric` to
+-- match the schema's existing convention (body_metrics.weight_lbs numeric(6,1),
+-- daily_sleep.hrv numeric(6,2)).
+--
+-- ROLLBACK (only if something downstream breaks; loses fractional values):
+--     ALTER TABLE exercises
+--       ALTER COLUMN duration_minutes TYPE integer
+--       USING round(duration_minutes)::integer;
