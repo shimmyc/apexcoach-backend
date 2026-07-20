@@ -5171,26 +5171,49 @@ function renderAI() {
         html += '<p style="font-size:13px;color:' + (primary ? 'rgba(255,255,255,0.9)' : 'var(--accent-cornerman)') + ';font-style:italic;line-height:1.6;margin-bottom:10px">' + o.goal_reasoning + '</p>';
       }
       html += '<p style="font-size:14px;color:' + (primary ? 'rgba(255,255,255,0.9)' : 'var(--text-muted)') + ';line-height:1.75;margin-bottom:12px">' + o.reasoning + '</p>';
-      var exes = o.exercises || [];
+      // SECTIONED rendering (2026-07-20). recOptionSections() normalizes both
+      // the new sections[] shape AND the legacy flat exercises[] of any rec
+      // cached before this deploy — a legacy option comes back as one unlabeled
+      // section, so it renders exactly as it always did (no header row) with no
+      // shape check needed here. Structural change to the exercise area only;
+      // card chrome, pills and colours are untouched.
+      var sections = recOptionSections(o);
+      var exes = recOptionExerciseStrings(o);
       var exBorder = primary ? 'rgba(255,255,255,0.18)' : 'var(--border-subtle)';
       var exNumColor = primary ? 'rgba(255,255,255,0.6)' : 'var(--text-muted)';
       var exTxtColor = primary ? '#fff' : 'var(--text-primary)';
+      var secLabelColor = primary ? 'rgba(255,255,255,0.75)' : 'var(--text-muted)';
+      var secTimeColor = primary ? 'rgba(255,255,255,0.55)' : 'var(--text-dim)';
       html += '<div style="margin-bottom:10px">';
-      for (var j = 0; j < exes.length; j++) {
-        var num = j < 9 ? '0' + (j+1) : '' + (j+1);
-        var exStr = exes[j];
-        // Link the line ONLY when the string resolved to a catalog canonical
-        // (aiRecLinkCache, filled by ensureAIExerciseLinks via the exact/alias-
-        // only resolve-batch endpoint). null/undefined → plain text, unchanged.
-        var exCanon = aiRecLinkCache[exStr];
-        var exSpan;
-        if (exCanon) {
-          var uColor = primary ? 'rgba(255,255,255,0.5)' : 'var(--text-muted)';
-          exSpan = '<span onclick="event.stopPropagation();showExerciseDetail(\'' + escAttr(exCanon) + '\')" title="View ' + escAttr(exCanon) + '" style="color:' + exTxtColor + ';line-height:1.5;cursor:pointer;text-decoration:underline;text-decoration-color:' + uColor + ';text-underline-offset:2px">' + exStr + '</span>';
-        } else {
-          exSpan = '<span style="color:' + exTxtColor + ';line-height:1.5">' + exStr + '</span>';
+      var exN = 0; // continuous numbering across sections — it is one session
+      for (var si = 0; si < sections.length; si++) {
+        var sec = sections[si];
+        if (sec.label) {
+          var secMin = (isFinite(Number(sec.minutes)) && Number(sec.minutes) > 0)
+            ? '<span class="font-mono" style="font-size:10px;color:' + secTimeColor + ';letter-spacing:0.06em">~' + Number(sec.minutes) + ' MIN</span>'
+            : '';
+          html += '<div style="display:flex;align-items:baseline;justify-content:space-between;gap:10px;margin:' + (si === 0 ? '0' : '14px') + ' 0 4px">' +
+            '<span style="font-size:10px;text-transform:uppercase;letter-spacing:0.08em;font-weight:700;color:' + secLabelColor + '">' + attrEsc(sec.label) + '</span>' +
+            secMin + '</div>';
         }
-        html += '<div style="display:flex;gap:12px;padding:8px 0;border-bottom:1px solid ' + exBorder + ';font-size:14px;align-items:flex-start"><span class="font-mono" style="font-size:10px;color:' + exNumColor + ';width:20px;flex-shrink:0;padding-top:2px">' + num + '</span>' + exSpan + '</div>';
+        var secExes = sec.exercises || [];
+        for (var j = 0; j < secExes.length; j++) {
+          exN++;
+          var num = exN < 10 ? '0' + exN : '' + exN;
+          var exStr = secExes[j];
+          // Link the line ONLY when the string resolved to a catalog canonical
+          // (aiRecLinkCache, filled by ensureAIExerciseLinks via the exact/alias-
+          // only resolve-batch endpoint). null/undefined → plain text, unchanged.
+          var exCanon = aiRecLinkCache[exStr];
+          var exSpan;
+          if (exCanon) {
+            var uColor = primary ? 'rgba(255,255,255,0.5)' : 'var(--text-muted)';
+            exSpan = '<span onclick="event.stopPropagation();showExerciseDetail(\'' + escAttr(exCanon) + '\')" title="View ' + escAttr(exCanon) + '" style="color:' + exTxtColor + ';line-height:1.5;cursor:pointer;text-decoration:underline;text-decoration-color:' + uColor + ';text-underline-offset:2px">' + exStr + '</span>';
+          } else {
+            exSpan = '<span style="color:' + exTxtColor + ';line-height:1.5">' + exStr + '</span>';
+          }
+          html += '<div style="display:flex;gap:12px;padding:8px 0;border-bottom:1px solid ' + exBorder + ';font-size:14px;align-items:flex-start"><span class="font-mono" style="font-size:10px;color:' + exNumColor + ';width:20px;flex-shrink:0;padding-top:2px">' + num + '</span>' + exSpan + '</div>';
+        }
       }
       html += '</div>';
       if (o.mobility) {
@@ -5261,8 +5284,13 @@ function renderAI() {
 
   // Resolve exercise-name links (session #27) across ALL options up front, so
   // expanding a collapsed option is instant. One batched call + one re-render.
+  // Walks INTO sections now (and still handles a legacy flat option, via
+  // recOptionExerciseStrings). Behavior is otherwise unchanged: exact/alias
+  // only, no fuzzy, no writes, a miss renders as plain text.
   var allExStrings = [];
-  opts.forEach(function(o) { (o.exercises || []).forEach(function(s) { allExStrings.push(s); }); });
+  opts.forEach(function(o) {
+    recOptionExerciseStrings(o).forEach(function(s) { allExStrings.push(s); });
+  });
   ensureAIExerciseLinks(allExStrings);
 }
 
@@ -9231,11 +9259,77 @@ function estimateExerciseMinutes(line) {
   return recIsMobilityish(s) ? REC_MIN_PER_MOBILITY : REC_MIN_PER_SET;
 }
 
-function estimateOptionMinutes(exercises) {
-  var list = exercises || [];
+// Sum a plain exercise list. NO warm-up allowance — callers decide, because a
+// sectioned option that already has an explicit Warm-up section must not have a
+// second flat +5 added on top (that double-count is exactly why all three
+// options flagged over-band on the first verifier run).
+function estimateExercisesMinutes(list) {
+  var arr = list || [];
   var total = 0;
-  for (var i = 0; i < list.length; i++) total += estimateExerciseMinutes(list[i]);
-  return Math.round(total + REC_WARMUP_MIN);
+  for (var i = 0; i < arr.length; i++) total += estimateExerciseMinutes(arr[i]);
+  return total;
+}
+
+// ── OPTION SHAPE (2026-07-20) ────────────────────────────────────────────
+// Options now carry an ordered `sections[]` ({label, minutes, exercises[]}).
+// Recs generated BEFORE this deploy have a flat `exercises[]` and no sections,
+// and are still cached on the profile — so every consumer reads through these
+// two helpers rather than touching either shape directly. One normalization
+// point, no per-consumer shape checks, cached recs keep rendering.
+function recOptionSections(o) {
+  if (!o) return [];
+  if (Array.isArray(o.sections) && o.sections.length) {
+    return o.sections.filter(function(s) {
+      return s && Array.isArray(s.exercises) && s.exercises.length;
+    });
+  }
+  if (Array.isArray(o.exercises) && o.exercises.length) {
+    // Legacy flat shape — presented as one unlabeled section.
+    return [{ label: null, minutes: null, exercises: o.exercises, _legacy: true }];
+  }
+  return [];
+}
+
+// Every exercise string across every section, in order.
+function recOptionExerciseStrings(o) {
+  var out = [];
+  recOptionSections(o).forEach(function(s) {
+    (s.exercises || []).forEach(function(x) { if (x) out.push(x); });
+  });
+  return out;
+}
+
+function recHasWarmupSection(sections) {
+  for (var i = 0; i < sections.length; i++) {
+    if (/warm[\s-]?up|warmup|prep\b/i.test(sections[i].label || '')) return true;
+  }
+  return false;
+}
+
+// Heuristic estimate for a whole option, shape-agnostic. Adds the flat warm-up
+// allowance ONLY when the option doesn't already account for it as a section.
+// Accepts a bare array too, for legacy callers.
+function estimateOptionMinutes(optionOrList) {
+  if (Array.isArray(optionOrList)) {
+    return Math.round(estimateExercisesMinutes(optionOrList) + REC_WARMUP_MIN);
+  }
+  var sections = recOptionSections(optionOrList);
+  var total = 0;
+  for (var i = 0; i < sections.length; i++) total += estimateExercisesMinutes(sections[i].exercises);
+  if (!recHasWarmupSection(sections)) total += REC_WARMUP_MIN;
+  return Math.round(total);
+}
+
+// Sum of the model's OWN declared per-section minutes, or null when the option
+// is legacy / didn't declare them.
+function recDeclaredSectionMinutes(o) {
+  if (!o || !Array.isArray(o.sections) || !o.sections.length) return null;
+  var sum = 0, any = false;
+  for (var i = 0; i < o.sections.length; i++) {
+    var m = Number(o.sections[i] && o.sections[i].minutes);
+    if (isFinite(m) && m > 0) { sum += m; any = true; }
+  }
+  return any ? sum : null;
 }
 
 // #2 — the TIME BUDGET prompt block. States the target + band per option and
@@ -9258,6 +9352,7 @@ function buildTimeBudgetContext(durations, intensity) {
     '- Add ~' + REC_WARMUP_MIN + ' min per session for warm-up and transitions.\n' +
     'If the target is large, add SETS or another movement rather than inflating the number. ' +
     'If small, cut movements rather than shrinking the stated duration.\n' +
+    'ALLOCATE the target ACROSS the option\'s sections: give each section its own rough "minutes", and make those section minutes sum to the option\'s target duration, within the acceptable range above. Only include sections that genuinely apply — a short recovery session may be a single block.\n' +
     'INTENSITY: ' + (intensity || 'Medium') + '. ' + recIntensityGuidance(intensity) + '\n\n';
 }
 
@@ -9282,16 +9377,46 @@ function verifyRecTimeBudget(parsed, durations) {
     for (var i = 0; i < parsed.options.length; i++) {
       var o = parsed.options[i] || {};
       var stated = Number(o.duration);
-      var est = estimateOptionMinutes(o.exercises);
+      var sections = recOptionSections(o);
+      var declared = recDeclaredSectionMinutes(o);   // the model's own section sum
+      var est = estimateOptionMinutes(o);            // heuristic, warm-up-aware
       var d = durations && durations[i];
       var low = d ? d.low : Math.round(stated * (1 - REC_TOLERANCE_PCT));
       var high = d ? d.high : Math.round(stated * (1 + REC_TOLERANCE_PCT));
-      var inBand = est >= low && est <= high;
-      report.push({ option: i + 1, headline: o.headline || '', stated: stated, estimated: est, band: low + '-' + high, in_band: inBand });
+
+      // PRIMARY CHECK — the SECTION SUM against the option's band. When the
+      // model declared per-section minutes that sum is the thing to verify;
+      // a legacy/flat option falls back to the heuristic estimate.
+      var checkVal = declared != null ? declared : est;
+      var checkKind = declared != null ? 'section-sum' : 'heuristic';
+      var inBand = checkVal >= low && checkVal <= high;
+
+      report.push({
+        option: i + 1, headline: o.headline || '', stated: stated,
+        section_sum: declared, estimated: est, checked: checkVal, via: checkKind,
+        band: low + '-' + high, in_band: inBand, sections: sections.length,
+      });
+
       if (!inBand) {
         console.warn('[TimeBudget] Option ' + (i + 1) + ' OUT OF BAND — stated ' + stated +
-          ' min, estimated ' + est + ' min from ' + ((o.exercises || []).length) +
-          ' exercises (acceptable ' + low + '–' + high + ' min): "' + (o.headline || '') + '"');
+          ' min, ' + checkKind + ' ' + checkVal + ' min across ' + sections.length +
+          ' section(s) (acceptable ' + low + '–' + high + ' min): "' + (o.headline || '') + '"');
+      }
+
+      // SECONDARY, per-section sanity — does each section's declared minutes
+      // look plausible against the exercises it actually lists? Deliberately
+      // loose (only flags >2x or <0.5x): the heuristic is coarse on purpose and
+      // a tight threshold here would be false precision, not a signal.
+      for (var s = 0; s < sections.length; s++) {
+        var secDeclared = Number(sections[s].minutes);
+        if (!isFinite(secDeclared) || secDeclared <= 0) continue;
+        var secEst = estimateExercisesMinutes(sections[s].exercises);
+        if (secEst <= 0) continue;
+        if (secEst > secDeclared * 2 || secEst < secDeclared * 0.5) {
+          console.warn('[TimeBudget] Option ' + (i + 1) + ' section "' + (sections[s].label || '?') +
+            '" declares ' + secDeclared + ' min but its ' + sections[s].exercises.length +
+            ' exercise(s) estimate ~' + Math.round(secEst) + ' min');
+        }
       }
     }
     console.log('[TimeBudget] verification', report);
@@ -9333,8 +9458,13 @@ function buildResponseShapeSpec(aiNumOpts, aiShowMV, durations) {
   var durs = durations && durations.length
     ? durations
     : resolveOptionDurations(aiNumOpts, recLengthChoice);
+  // Sectioned option shape (2026-07-20). Exercises are grouped into an ordered
+  // set of labeled blocks each carrying its own rough minutes, instead of one
+  // flat list. Sections are FLEXIBLE — see the rules block below; mandating a
+  // fixed set would reproduce the format_notes "None provided" filler trap
+  // (ROADMAP §9), where the prompt required a section and the model padded it.
   var optTmpl = function(dur) {
-    return '{"type":"workout category","headline":"punchy name","duration":' + dur + ',"intensity":"descriptor","goal_tags":["exact goal title or challenge title"],"goal_reasoning":"one sentence explaining how this advances that goal/challenge","reasoning":"why this fits today based on readiness and data","exercises":["ex + sets/reps","ex + sets/reps","ex + sets/reps"],"mobility":"specific focus"}';
+    return '{"type":"workout category","headline":"punchy name","duration":' + dur + ',"intensity":"descriptor","goal_tags":["exact goal title or challenge title"],"goal_reasoning":"one sentence explaining how this advances that goal/challenge","reasoning":"why this fits today based on readiness and data","sections":[{"label":"Warm-up","minutes":5,"exercises":["ex + sets/reps"]},{"label":"Main","minutes":20,"exercises":["ex + sets/reps","ex + sets/reps"]},{"label":"Add-on","minutes":8,"exercises":["ex + sets/reps"]}],"mobility":"specific focus"}';
   };
   var arr = [];
   for (var oi = 0; oi < (aiNumOpts || 3); oi++) {
@@ -9345,14 +9475,21 @@ function buildResponseShapeSpec(aiNumOpts, aiShowMV, durations) {
   // JSON, and drive generation latency up. Keep every option tight while still
   // usable. The uniform/canonical naming also cleans up AI-rec exercise lines so
   // more of them resolve to catalog entries (session #28 linking).
+  var sectionRules = 'WORKOUT SECTIONS — each option\'s exercises are grouped into "sections":\n' +
+    '- Each section is { "label", "minutes", "exercises" } — a short label, a ROUGH whole-minute estimate for that block, and the exercises in it.\n' +
+    '- Sections are FLEXIBLE. Emit ONLY the sections that genuinely apply. Typical labels are "Warm-up", "Main", "Add-on" (PT / mobility / yoga), but choose whatever fits the session.\n' +
+    '- Do NOT force all three. A 20-minute recovery bike is a single "Main" section with no warm-up block and no add-on. NEVER emit an empty section, a placeholder, or a section whose exercises list is empty — omit it entirely instead.\n' +
+    '- "minutes" is per-section and approximate. The section minutes must ADD UP to the option\'s "duration", within the tolerance range given in the TIME BUDGET block.\n' +
+    '- Do NOT put a time estimate on individual exercises — section level only.\n\n';
+
   var conciseness = 'OUTPUT LENGTH — CRITICAL (keep it tight: ' + aiNumOpts + ' usable options, NOT an essay):\n' +
-    '- Each option lists 4–6 exercises MAX (fewer is fine). Do not exceed 6.\n' +
+    '- Each option lists 4–6 exercises MAX across ALL of its sections combined (fewer is fine). Do not exceed 6.\n' +
     '- Each exercise is ONE short line: "Exercise Name sets×reps" or "Exercise Name sets×duration"' +
     ' (add "@weight" only when relevant). A brief form cue is allowed ONLY if safety-critical — ≤6 words,' +
     ' one short parenthetical — otherwise NO parenthetical. Never write multi-clause coaching descriptions inside an exercise line.\n' +
     '- Use standard, fully spelled-out exercise names (e.g. "Dumbbell Bench Press" not "DB Bench Press", "Romanian Deadlift" not "RDL") so lines read uniformly.\n' +
     '- "reasoning" ≤ 2 sentences. "goal_reasoning" ≤ 1 sentence. Do not pad any field.\n\n';
-  return conciseness +
+  return conciseness + sectionRules +
     'Respond ONLY with raw JSON, no markdown:\n' +
     '{"brief":"ONE short sentence (max ~25 words) of overall context based on goal priorities and today\'s schedule — even with a long Focus Override or many injuries/goals to weigh, summarize in one punchy sentence, never a list or paragraph","options":[' + arr.join(',') + ']' +
     (aiShowMV ? ',"minimum_viable":"genuine 10-15 min fallback that still includes every daily-habit micro-goal"' : '') +
