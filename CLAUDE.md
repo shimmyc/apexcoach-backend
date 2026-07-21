@@ -543,6 +543,46 @@ Captures wger's OWN variation model (confirmed live: each `exerciseinfo` item ca
 - **Client** — `renderExerciseVariations(variations)` renders a clickable "Variations" chip section in `showExerciseDetail` (both modes, after the how-to), each chip → `showExerciseDetail(sibling)`; returns '' when empty (no section, never an empty block). CSS id-scoped: `#lib-detail .ex-variations`/`.ex-var-chips`/`.ex-var-chip`(+`:hover`).
 - **DONE — migration applied + seed run, re-verified live 2026-07-18** (doc-sync pass, real production reads): `GET /api/profiles/1/exercises/Lunges` → 5 siblings (`Barbell/Dumbbell Lunges Standing/Walking`, `Reverse Lunge`), `Romanian Deadlift` → 6 (`Deadlifts`, `Deficit/Rack/Speed/Sumo Deadlift`, `Stiff-legged Deadlifts`), `Bench Press` → 10 — the read path returns real current-catalog sibling names, confirming both the column and the seed are live. (The `variations:null` non-fatal degrade path only applied pre-migration.)
 
+## Logged-Workout Sectioning + Inline Exercise Quick-Views (2026-07-20, session #32)
+
+Frontend-only (`public/index.html`). Grouped History rendering, clickable exercise names that expand an inline quick-view (how-to on the rec card, stats in History), and follow-up polish. No schema, no endpoints, no writes; the two data endpoints are reused as-is.
+
+### Round 1 — grouped logged-workout render + quick-view card
+
+Three **pure** helpers, shared across the History surfaces (replacing the old name-only chip row):
+- **`groupLoggedWorkout(exercises, notes)`** → `{ groups:[{key,label,exercises[]}], multiCategory, notes }`. Group key = `main_category || category || 'other'`; group order is **first-appearance**; logged order is **preserved within** a group; labels come from the reused `CATEGORY_PRETTY` map (no new map). `multiCategory` is `groups.length > 1`.
+- **`renderLoggedGroupsHtml(grouped, opts)`** — one `.lw-groups` block; a small uppercase `.lw-group-header` per group **only** when `multiCategory` (a single-category workout lists flat, no header); returns `''` when there are no exercises. Each line is `exerciseToNotesLine(ex)`. (`opts` — `{surface, workoutId}` — was added in Round 2 for the name-tap wrapping; a call with no `opts` renders plain, unchanged.)
+- **`renderLoggedNotesHtml(notes)`** — a `.lw-notes` block rendered **only** when non-empty after trim, always placed **LAST** by the caller. Never an empty "Notes" heading.
+
+Two consumers share them: **`renderLogPastRowDetail`** (`#log-past-panel`) and **`renderLog`** (`#tab-history`), the latter having replaced its name-only chips with grouped rows + notes-last.
+
+**Full exercise rows are now retained.** `ensureHistoryChipsLoaded()` used to discard the fetched rows down to bare names; it now keeps the full objects in **`historyExercisesByWorkoutId`**, so the grouped render (and the quick-view stats gate) read them with **no new fetch**.
+
+**Quick-view card `#history-quickview`** — mounted at the top of the History list by `renderHistoryQuickView()` (called at the end of `renderLog`). Shows the **latest** session's type + a group summary (`loggedGroupSummary` → `"Strength · 6 | Cardio · 1"`) + duration **only when derivable** (`loggedDerivedDuration`: summed `exercises.duration_minutes`, else `wearable_data.duration_minutes`; returns `null` → the field is omitted, **never estimated**). Hidden entirely when there are no workouts. Reuses the same already-loaded data — no fetch. CSS id-scoped to `#history-quickview`.
+
+**Dead code removed:** `openChipExercise()` (the old name-chip click handler).
+
+**Decisions:** sections are **derived from category, never inferred** — a log is a *record*, not a plan, so there is no Warm-up/Main/Add-on guessing (that only applies to the AI *rec* shape). Notes render only if present. The quick-view mounts on **History, not Today** — a Today card would need a new fetch, **declined**.
+
+### Round 2 — clickable exercise names → inline quick-view (ONE component, two modes)
+
+- **`exerciseQuickViewHtml(mode, name, key)`** + **`toggleExerciseQuickView(mode, name, key, surface)`**, backed by module state **`exQuickOpen`** (`key → true`; survives each surface's wholesale re-render so an open row re-expands on every paint) and **`exQuickCache = { howto:{}, stats:{} }`** (`name → payload | 'loading' | 'error'`). **Lazy fetch on first expand only** (`fetchExerciseQuickData`), cached per name; the surface re-renders once immediately (spinner) and again on resolve. `surface` is `'ai' | 'hist' | 'lp:<id>'` and drives `rerenderQuickSurface` (→ `renderAI` / `renderLog` / `refreshLogPastDetail`).
+- **Surface 1 — rec card (`renderAI`):** the exercise **NAME only** is the tap target, split off via **`splitExerciseName(raw)`** (a client mirror of the server `stripExerciseAnnotation` cut rule at `server.js:3404` — cut at the first digit/`@`/`(`/spaced separator); the set/rep remainder trails as plain text and `exN` continuous numbering is untouched. Tap → **how-to** quick-view, which reuses **`renderExerciseHowTo(payload, name)`** verbatim (image + description + wger CC-BY-SA, empty-return intact). `showExerciseDetail` moved out of the name and into a **"Go to exercise →"** link inside the quick-view (`gotoExerciseDetail` = `showTab('library')` + `showExerciseDetail(name)`, so it works from any origin tab).
+- **Surface 2 — History detail + Log-past (`renderLoggedGroupsHtml`):** wraps the **structured `ex.name`** (no string parsing). Tap → **stats** quick-view (`renderExerciseStatsMini`).
+- **CORRECTNESS (load-bearing).** The stats fetch and the go-to link key off the **stored `ex.name`**, **not** the catalog canonical. `GET /api/analytics/exercise-stats/:userId/:exerciseName` matches `exercises.name` **exactly**; a legacy/pre-canonicalization row's stored name can alias-resolve to a *different* canonical, so fetching by canonical would return an empty series. The catalog canonical is used **only** as the clickability gate.
+- **Clickability gate = `matchCatalogExactAlias`** via the existing `POST /api/exercise-catalog/resolve-batch` (exact/alias only — no fuzzy, no Haiku, no writes). Rec card keeps `aiRecLinkCache`/`ensureAIExerciseLinks`; the History surfaces use **`ensureExerciseLinks(strings, rerender)`** (a generalized resolver writing the **same** `aiRecLinkCache`, guarded by an `exLinkInFlight` set so the resolve-then-rerender loop is bounded). A miss caches `null` → plain, non-clickable text on both surfaces.
+- **Rename (display only).** The daily **"Full override today"** button + **"Today: Full Override"** pill → **"Mix Focus Today" / "Today: Mix Focus"**. The `focusOverrideDaily('total')` argument, the `resolveFocusOverride`/`mode==='total'` logic (`~:8896`), stored values, and the separate standing-config **'Total'** mode selector are all untouched — pure UI text.
+
+### Round 3 — quick-view follow-ups
+
+- **Bubbling fix.** The History name-tap now runs `event.stopPropagation()` so it toggles only the quick-view and no longer reaches the workout card's `toggleLogCard`. (Log-past was already fine — its toggle lives on the header row, not the detail div.)
+- **Single-open per panel family.** On open, `toggleExerciseQuickView` clears any other open key in the same family (`quickViewFamily` → `ai` / `hist` / `lp`), then re-renders every surface a collapse touched (`keySurface` reconstructs each cleared key's surface, so cross-row Log-past collapses repaint correctly). A second tap on the same key still just collapses it.
+- **Stats fields (`renderExerciseStatsMini(data, name, key)`).** `Best set`/`Best hold` relabeled to **`PR`**; added **`Average`** (`avg_reps_per_set`, or `avg_seconds_per_set` as m:ss for duration moves; omitted when null). Final six: **Last performed** (from the `daily_data` tail) **· Total sessions · PR · Average · Est. 1RM** (weight-based only) **· Trend** (`exStatsTrend` — a last-vs-previous-session delta from `daily_data`, `▲`/`▼`/`▬`, omitted with < 2 sessions; no fake delta). Duration moves show seconds (`fmtMMSS`), never reps.
+- **Mini Progress-Over-Time chart (STATS mode only).** Reuses `renderExDetailChart`'s single-line logic via **`quickViewChartSeries(data)`** (built off the `exercise-stats` `daily_data` already in the payload — **no new fetch**) → **`buildQuickViewChart(canvas, data)`**. Duration-aware (seconds axis + m:ss tooltip), weight/reps otherwise, PR point gold. 140px fixed-height wrapper + `maintainAspectRatio:false` (no resize loop); own instance per canvas id in **`quickViewCharts`**; **`flushQuickViewCharts()`** (called after every stats-surface paint) mounts open canvases and destroys orphaned ones — no leaked charts across taps. Skipped when there are **< 2 real points** (also covers pure-distance moves `daily_data` can't aggregate). **Never** rendered in the rec-card how-to.
+- **Escaping fix.** The chart canvas `data-exname` (read back via `getAttribute` to look up the cache) must use **`attrEsc`** (HTML-entity escaper), not `escAttr` (which backslash-escapes quotes for JS-string context) — otherwise an apostrophe name like `"Child's Pose"` fails the cache lookup.
+
+**CSS** for all of the above is id-scoped to `#ai-content` / `#tab-history` / `#log-past-panel` / `#history-quickview` (the how-to markup is re-styled compactly under `.ex-qv` per surface so the `#lib-detail .ex-howto*` rules are untouched). No global class changes; `renderAI` card chrome/colors untouched.
+
 ## Exercise Canonicalization Phase 2 — Library Rollups, Muscle Filter, Muscle Heatmap (2026-07-16)
 
 The queued phase-2 consumer of `exercise_catalog.family`/`muscle_groups_primary`/`muscle_groups_secondary` (ROADMAP.md §7 priority 4) — the columns have existed and been populated since the wger seed, but nothing read them until this session. No schema changes; `resolveExerciseCatalog()`, `extract-exercises`, the confirm chip, and `normalizeExerciseName()` are all untouched.
@@ -1571,6 +1611,31 @@ Tue/Thu 60-vs-45 collision.
 Each entry is `{minutes, low, high, minimumViable}` with `low`/`high` at ±`REC_TOLERANCE_PCT`
 (0.15). Resolved **once per call** in `fetchAI()` and reused by the skeleton, the TIME BUDGET
 block, and the verifier, so all three describe the same targets.
+
+**⚠ Correction (2026-07-20, session #32) — "Auto" no longer collapses to the frequency target.**
+The source order above is now **explicit user choice → anchor → default ladder** — a **non-anchor
+frequency target's duration (`sd.target`) no longer drives the base.** Root cause of the bug:
+`base = userLength || sd.anchor || sd.target || REC_DEFAULT_LADDER[0]` meant that under **Auto**
+(`userLength = null`) on a non-anchor day, `sd.target` (e.g. 30, the underserved weekly target's
+duration) won the fallback and collapsed the **whole ladder** to 30/25/15 instead of 60/45/30; the
+Auto pill echoed the same collapsed base → **"Auto (30m)"**. Fixes:
+- `base = userLength || sd.anchor || REC_DEFAULT_LADDER[0]` (drop `sd.target`). Auto non-anchor →
+  base 60 → **60/45/30**. The **anchor pin** (`ladder[0] = sd.anchor`) and **explicit-choice**
+  (`userLength` wins) are both preserved — the Tue/Thu exception above is unchanged.
+- `buildScheduleInstruction()` now drops the **`— N min` stamp from the frequency-target label
+  only** (`tLabel = best.target.activity`), so a non-anchor day no longer states "— 30 min" while
+  the TIME BUDGET says 60 — the `§1566` "never disagree" invariant is now honored the other way for
+  non-anchor days. The **anchor branch keeps its `— N min`** (a scheduled class *is* a fixed-length
+  commitment). `optionOneClaimed` still detects the frequency target via its duration-less fallback
+  (B12 no regress). `recScheduleDurations()` itself is unchanged — it still returns `.target` for
+  `optionOneClaimed`; only its role in the *duration base* and the instruction *label* was removed.
+- **Label:** `renderRecControls`'s `autoLabel` is now the static string **`"Auto"`** (dropped the
+  `derived = resolveOptionDurations(...)[0]` echo). The anchor note ("Option 1 is a fixed
+  commitment today (N min)…") is unchanged.
+- **Settings deep-link:** a small **⚙ Settings** link in `#rec-controls`
+  (`openRecLengthSettings()` → `openSettings()` + `switchSettingsTab('ai')`) opens the AI Coaching
+  settings tab, reusing the existing settings overlay. There is **no editable-defaults control
+  there yet** — that is queued in ROADMAP §7 item (d).
 
 ### The coarse heuristic — ONE implementation, two consumers
 `estimateExerciseMinutes(line)` parses a freeform exercise string in priority order: explicit

@@ -9,6 +9,106 @@
 > `wearables/`, and `migrations/` rather than transcribed. Where the original brief differed
 > from the live code, the doc follows the code and flags it with **⚠ Correction**.
 >
+> **2026-07-20 session #32** (Logged-workout sectioning + clickable exercise names with inline
+> quick-views + Auto rec-length fix. **Frontend-only — every change is in `public/index.html`;
+> no schema, no endpoints, no writes.** Four build rounds, each audit-or-report-gated where it
+> touched a data path):
+>
+> **ROUND 1 — Logged-workout sectioning (grouped history render + quick-view card).**
+> - **New shared pure helpers** replace the old name-only chip render across History surfaces:
+>   `groupLoggedWorkout(exercises, notes)` → `{groups[], multiCategory, notes}` (group key =
+>   `main_category || category || 'other'`, group order = first appearance, logged order
+>   preserved within a group, labels via the reused `CATEGORY_PRETTY` — no new map);
+>   `renderLoggedGroupsHtml(grouped)` (uppercase per-group header **only** when `multiCategory`,
+>   single-category renders flat/no header, `''` when no exercises); `renderLoggedNotesHtml(notes)`
+>   (renders only when non-empty after trim, always placed **LAST**).
+> - **Two surfaces share them:** `renderLogPastRowDetail` (Log-past panel) and `renderLog`
+>   (History detail), which replaced its name-only chip row with grouped rows + notes-last.
+> - **`ensureHistoryChipsLoaded` now RETAINS the full exercise rows** in
+>   `historyExercisesByWorkoutId` (it was discarding down to bare names) — the grouped render
+>   reads them with **no new fetch**.
+> - **New quick-view card `#history-quickview`** at the top of the History list: latest
+>   session's type + a group summary (`"Strength · 6 | Cardio · 1"`) + duration **only when
+>   derivable** (summed `exercises.duration_minutes`, else `wearable_data.duration_minutes`;
+>   omitted, never estimated). Reuses the same already-loaded data — no fetch.
+> - **Dead code removed:** `openChipExercise()`.
+> - **Decisions:** sections are **derived from category, never inferred** (a log is a record,
+>   not a plan — no Warm-up/Main/Add-on guessing); notes render only if present; the quick-view
+>   mounts on **History, not Today** (Today would need a new fetch — **declined**).
+>
+> **ROUND 2 — Clickable exercise names → inline quick-view.**
+> - **One shared component, two data modes:** `exerciseQuickViewHtml(mode, name, key)` +
+>   `toggleExerciseQuickView(mode, name, key, surface)`, backed by `exQuickOpen` (per-row open
+>   state that survives each surface's wholesale re-render) and
+>   `exQuickCache = {howto:{}, stats:{}}` (`payload | 'loading' | 'error'`). **Lazy fetch on
+>   first expand only, cached per name.**
+> - **Surface 1 — rec card (`renderAI`):** the exercise NAME (name only) is the tap target via
+>   `splitExerciseName` (a client mirror of the server `stripExerciseAnnotation` cut rule), the
+>   set/rep remainder trails as plain text, `exN` numbering untouched. Tap → **howto** quick-view
+>   (reuses `renderExerciseHowTo`: image + description + wger CC-BY-SA). `showExerciseDetail`
+>   moved into a **"Go to exercise →"** link inside the quick-view.
+> - **Surface 2 — History detail + Log-past (`renderLoggedGroupsHtml`):** wraps the **structured
+>   `ex.name`** (no string parsing). Tap → **stats** quick-view (`renderExerciseStatsMini`).
+> - **CORRECTNESS (load-bearing):** the stats fetch and the go-to link key off the **stored
+>   `ex.name`**, NOT the catalog canonical — `exercise-stats` matches `exercises.name` exactly,
+>   and a legacy/pre-canonicalization row's stored name can alias-resolve to a *different*
+>   canonical (fetching by canon would return an empty series). The catalog canonical is used
+>   **only** as the clickability gate.
+> - **Gate = `matchCatalogExactAlias`** via the existing `resolve-batch` path on both surfaces
+>   (no fuzzy, no Haiku, no writes); a miss renders plain, non-clickable text.
+> - **Rename (display only):** the daily "Full override today" button + "Today: Full Override"
+>   pill → **"Mix Focus Today" / "Today: Mix Focus"**. `focusOverrideDaily('total')` argument and
+>   the `mode === 'total'` logic untouched; the separate standing-config **'Total'** mode selector
+>   untouched.
+>
+> **ROUND 3 — Quick-view follow-ups.**
+> - **Bubbling fix:** the History name-tap now runs `event.stopPropagation()` so it toggles only
+>   the inline quick-view and no longer collapses the parent workout card. (Log-past was already
+>   unaffected — its toggle lives on the header row, not the detail div.)
+> - **Single-open per family (`ai` / `hist` / `lp`):** opening a quick-view auto-collapses any
+>   other open one in the same panel family (re-rendering every surface a collapse touched,
+>   including across different Log-past rows); a second tap on the same name still collapses it.
+> - **Stats relabel + field:** `Best set`/`Best hold` → **`PR`**; added **`Average`**
+>   (`avg_reps_per_set`, or `avg_seconds_per_set` as m:ss for duration moves; omitted when null).
+>   Final six fields: **Last performed · Total sessions · PR · Average · Est. 1RM (weight-based
+>   only) · Trend** (client last-vs-previous-session delta from `daily_data`, omitted with < 2
+>   sessions — no fake delta).
+> - **Mini Progress-Over-Time chart (STATS mode only):** reuses `renderExDetailChart`'s
+>   single-line logic (`quickViewChartSeries` → `buildQuickViewChart`) driven off the
+>   `exercise-stats` `daily_data` already in the payload (**no new fetch**). 140px fixed-height
+>   wrapper + `maintainAspectRatio:false` (no resize loop), duration-aware (seconds axis + m:ss
+>   tooltip), PR point gold, destroy/recreate via `flushQuickViewCharts` (no leaked canvases),
+>   **skipped when < 2 real points** (also covers pure-distance moves `daily_data` can't
+>   aggregate). **Never** on the rec-card howto.
+> - **Escaping fix:** the chart canvas `data-exname` (read back to look up the cache) needed
+>   `attrEsc` (entity escaper), not `escAttr`, or apostrophe names ("Child's Pose") failed the
+>   lookup.
+>
+> **ROUND 4 — Auto rec-length fix + settings deep-link** (commit `074f1db`; **audit-report-first,
+> gated**).
+> - **Root cause:** `resolveOptionDurations`'s base was
+>   `userLength || sd.anchor || sd.target || REC_DEFAULT_LADDER[0]`. On a **non-anchor day under
+>   Auto** (`userLength = null`, `sd.anchor = null`), `sd.target` — the underserved
+>   frequency-target's duration (e.g. 30) — won the fallback and collapsed the **whole ladder** to
+>   30/25/15 instead of 60/45/30. The Auto pill echoed the same collapsed base → **"Auto (30m)"**.
+>   Ladder indexing itself was correct; the **base** collapsed.
+> - **Fix 1 (label):** `autoLabel = 'Auto'` always — a mode label, not Option 1's derived
+>   minutes; removed the `derived` echo.
+> - **Fix 2 (behavior):** `base = userLength || sd.anchor || REC_DEFAULT_LADDER[0]` (dropped
+>   `sd.target`). Auto non-anchor → base 60 → **60/45/30**. Anchor pin (`ladder[0] = sd.anchor`)
+>   and explicit-choice (`userLength` wins) both preserved.
+> - **Fix 3 (reconciliation):** `buildScheduleInstruction` dropped the `— N min` stamp from the
+>   **frequency-target** label only (`tLabel = best.target.activity`) — otherwise Option 1's TIME
+>   BUDGET would say 60 while the schedule instruction still said "— 30 min", a *new* prompt
+>   contradiction (the exact `§1566` "never disagree" invariant, now honored the other way for
+>   non-anchor days). The activity is still ordered into Option 1; the **anchor branch is
+>   untouched** (a scheduled class keeps its "— 60 min"). `optionOneClaimed` and its
+>   **duration-less fallback** still detect the frequency target (**B12 no regress** — verified in
+>   code).
+> - **Settings deep-link:** a small **⚙ Settings** link in `#rec-controls` →
+>   `openRecLengthSettings()` → `openSettings()` + `switchSettingsTab('ai')`, reusing the existing
+>   settings overlay path (no new panel).
+>
 > **2026-07-20 session #31** (Wearable provenance + daily_recs time budget + sectioned rec
 > output. Two arcs, both audit-report-first with gated approval between phases):
 >
@@ -1534,6 +1634,35 @@ All verified present in `server.js`. `:id`/`:userId` = profile id.
   Option 3 estimated 34 min against a declared 25. The **section sum is the primary gate**; the
   per-section heuristic is only a loose `>2x` / `<0.5x` sanity check, and the whole verifier is
   warn-only. Tightening it would be false precision, not a better signal.
+- **`format_notes` writes a literal `"Notes: None"` placeholder into the notes column when the
+  raw notes are empty (session #32).** The Haiku `format_notes` prompt (temp 0) emits the
+  placeholder string rather than leaving the field blank, so the *stored* content is junk even
+  though the render is correct (`renderLoggedNotesHtml` trims + suppresses it at display time).
+  This is a data-flow write bug, not a render bug — **needs its own audit session** before any
+  fix (must not corrupt legitimately-empty vs. populated notes).
+- **Notes-only logged workouts exist where `extract-exercises` never produced rows (session
+  #32).** Real structured data is trapped in the free-text `notes` column with no corresponding
+  `exercises` rows — confirmed on a genuine 2026-06-22 session whose notes contain
+  `"2×10 single-hand Dumbbell Rows 22.5lb"` and similar, none of which were extracted. This is a
+  **silent extraction miss**, distinct from session #30's insert-*destruction* (that was rows
+  written then killed by the integer-column bug; this is rows never written at all). **Needs an
+  audit**: is it a one-off or a pattern, and can a safe re-extract backfill the trapped data
+  without duplicating rows that DID extract?
+- **The `'other'` category bucket collects exercises with no `main_category` (session #32).** In
+  the grouped History render, catalog-thin moves like `Tabletop Lumbrical Curl` and
+  `Pinky Abduction` fall into an `'other'` group because they carry no category. This is a
+  **catalog data-completeness gap, not a code bug** — the grouping logic is correct; the source
+  rows simply lack a category to group on.
+- **Digit/paren-containing catalog names strip to a miss and render as plain, non-clickable text
+  (session #32).** `splitExerciseName` (and the server `stripExerciseAnnotation` cut rule it
+  mirrors) cut at the first digit/`@`/`(`, so a legitimate name like `"90/90 Hip Rotation"`
+  strips to empty → no exact/alias match → not clickable. **Accepted parser limitation** — the
+  same conservative rule is what guarantees a link is never a wrong match; the trade-off is a
+  handful of digit-leading names stay plain.
+- **"Mix Focus" (ex-"Full Override") rec quality — user reports the recs under that mode "aren't
+  what I want" (session #32, PARKED).** This is separate from the session #32 display rename
+  (which changed only the label, not the `mode:'total'` logic). May need a look at how the
+  prompt generates workouts in total-override mode. **Parked — not yet scoped.**
 
 ### Coach Chat / Timezone — Known Issues & Deferred (2026-07-15)
 
@@ -1577,6 +1706,15 @@ Each item below is self-contained — no other doc/session context should be nee
   is consumed (Coach Chat snapshot, roadmap prompts, goal-progress prompts — see §9). The
   durable fix is regenerating (or de-duplicating) `ai_prompt_context` when `goals[]` is
   reordered or edited.
+
+**Newly scoped this cycle (session #32), not yet ordered against the list below:**
+- **(d) Editable default rec durations** — a control in **Settings → AI Coaching** to set the
+  three default session lengths (currently hardcoded `REC_DEFAULT_LADDER = [60,45,30,15]`),
+  persisted per-profile and read by `resolveOptionDurations`. The session #32 **⚙ deep-link
+  already lands on the AI Coaching tab, but there is no control there yet** — this is the missing
+  control. Touches the rec-generation data path (durations feed the skeleton, TIME BUDGET, and
+  verifier), so **audit-first**. Would also need a persistence seam (per-profile setting) that
+  the ephemeral `recLengthChoice` deliberately is not.
 
 1. **Rebuild all other profiles off profile 1 once it's stable** *(supersedes the old "second-profile Google Health migration" item — new direction, decided this cycle).* Profile 1 is the reference build; the plan is to reconstruct every other profile from it once profile 1 is proven stable, rather than migrating each profile's wearable connection in place. Still resolves the Sept-2026 cutover for those profiles (they come up on Google Health as part of the rebuild). Ordered first, but gated on profile 1 being stable (the #29 rec fix was a prerequisite).
 2. **Google Health historical backfill** — mirror `backfill-wearable-history` (§4 / `CLAUDE.md` → "Fitbit History Backfill") for GH's API v4. *Value: High, same Sept deadline — once Fitbit's API is gone, GH is the only remaining source for any further gap-filling. Effort: Medium.* Deprioritized by the #29 outage, still on the board. The chunking/merge/never-overwrite-worse-data design transfers directly — the real work is GH's different endpoint shapes (`:reconcile`, `dailyRollUp`, list+`page_size=1`) and confirming GH's own real per-metric range limits against Google's docs (the RHR silent-drop quirk found in session #17 is exactly what doesn't transfer safely by assumption).
@@ -1748,6 +1886,20 @@ Macro roadmap shape (stored on `profiles.roadmap_data`):
   relabel an existing row whose *sleep* came from a different provider, since the column
   describes the sleep source. On a fresh row there is no sleep yet, so the vitals provider is
   the only honest value; the INSERT also relies on the column DEFAULT when no source is passed.
+- [ ] **`format_notes` writes a literal `"Notes: None"` placeholder into the notes column when
+  raw notes are empty (found session #32) — needs its own audit.** The Haiku `format_notes`
+  prompt (temp 0) emits the placeholder string instead of leaving the field blank, so the
+  *stored* notes are junk (the render is fine — `renderLoggedNotesHtml` trims + suppresses it).
+  This is a write-side data-flow bug: a fix must distinguish a legitimately-empty notes field
+  from a populated one and must not clobber existing good notes. **Audit-first, not a one-liner.**
+- [ ] **Notes-only logged workouts where `extract-exercises` silently produced no rows (found
+  session #32) — needs an audit.** Confirmed on a genuine 2026-06-22 session: real structured
+  data (`"2×10 single-hand Dumbbell Rows 22.5lb"` and more) sits only in the free-text `notes`
+  with **zero** corresponding `exercises` rows. Distinct from session #30's insert-*destruction*
+  (rows written then killed by the integer-column bug) — this is rows **never written**. Audit
+  scope: is it a one-off or a pattern across history, and can a safe re-extract backfill the
+  trapped rows **without duplicating** rows that already extracted (no `updated_at` on `exercises`
+  to lean on — see the audit-trail debt item)?
 - [x] **✅ RESOLVED — `google-health-probe` kept, `source-constraint-probe` deleted (session #31
   hygiene pass).** Two debug endpoints were added session #31. `GET /api/debug/google-health-probe/:userId`
   (read-only by default; `allow_refresh=1` is the only writing path, and a failed refresh
