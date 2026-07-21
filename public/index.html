@@ -130,6 +130,9 @@ body.compact main{padding:20px 24px 60px}
 #rec-controls .rc-pill:hover{border-color:var(--accent-ember);color:var(--text-primary)}
 #rec-controls .rc-pill.rc-on{background:var(--accent-ember);border-color:var(--accent-ember);color:#fff}
 #rec-controls .rc-note{font-size:11px;color:var(--text-dim);margin:6px 0 0;line-height:1.4}
+#rec-controls .rc-head{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:6px}
+#rec-controls .rc-settings-link{font-size:11px;font-weight:600;color:var(--text-muted);text-decoration:none;font-family:DM Sans,sans-serif;white-space:nowrap}
+#rec-controls .rc-settings-link:hover{color:var(--accent-ember)}
 /* Logged-workout sectioning (2026-07-20) — shared .lw-* render, scoped to the
    two surfaces that use it (History detail + the Log-past panel); no global
    class changes. Borrows the rec card's uppercase section-header language. */
@@ -4922,11 +4925,16 @@ function recLengthOptions() {
 
 function renderRecControls() {
   var sd = recScheduleDurations();
-  var derived = resolveOptionDurations(1, recLengthChoice)[0];
-  var autoLabel = 'Auto' + (derived ? ' (' + derived.minutes + 'm)' : '');
+  // "Auto" reads as a plain mode label — it resolves to the default 60/45/30
+  // ladder (or the anchor pin on an anchor day), never a single pinned number,
+  // so it must NOT echo Option 1's derived minutes as a suffix.
+  var autoLabel = 'Auto';
   var lens = recLengthOptions();
   var h = '<div id="rec-controls">';
-  h += '<p class="clabel" style="margin-bottom:6px">session length</p><div class="rc-row">';
+  // "session length" heading with a small Settings deep-link to the AI Coaching
+  // tab (openSettings + switchSettingsTab), reusing the existing settings path.
+  h += '<div class="rc-head"><p class="clabel" style="margin:0">session length</p>' +
+    '<a href="javascript:void(0)" class="rc-settings-link" onclick="openRecLengthSettings()" title="Coaching settings">&#9881; Settings</a></div><div class="rc-row">';
   h += '<button type="button" class="rc-pill' + (recLengthChoice === null ? ' rc-on' : '') + '" onclick="recSetLength(null)">' + autoLabel + '</button>';
   for (var i = 0; i < lens.length; i++) {
     h += '<button type="button" class="rc-pill' + (recLengthChoice === lens[i] ? ' rc-on' : '') + '" onclick="recSetLength(' + lens[i] + ')">' + lens[i] + 'm</button>';
@@ -4955,6 +4963,13 @@ function recSetLength(mins) {
 function recSetIntensity(level) {
   recIntensityChoice = normalizeIntensity(level);
   if (typeof renderAI === 'function') renderAI();
+}
+
+// #rec-controls Settings deep-link → the AI Coaching settings tab. Reuses the
+// existing settings overlay path; no new panel.
+function openRecLengthSettings() {
+  if (typeof openSettings === 'function') openSettings();
+  if (typeof switchSettingsTab === 'function') switchSettingsTab('ai');
 }
 
 // User tapped "🔄 Show me different options" — ask Claude for fresh
@@ -9156,7 +9171,12 @@ function buildScheduleInstruction(opts) {
     }
     if (best) {
       hasPlanned = true;
-      var tLabel = best.target.activity + (best.target.duration ? ' — ' + best.target.duration + ' min' : '');
+      // Order the activity into Option 1 but do NOT stamp its minutes — unlike an
+      // anchored class, a weekly frequency target is not a fixed-duration
+      // commitment, and pinning "— 30 min" here would fight the resolved 60-min
+      // TIME BUDGET target (resolveOptionDurations no longer uses sd.target).
+      // The TIME BUDGET block governs the length; this just names the activity.
+      var tLabel = best.target.activity;
       out += 'NO FIXED COMMITMENT TODAY. SUGGESTED FOCUS: ' + tLabel + '.\n';
       out += 'INSTRUCTION: "' + best.target.activity + '" is your most underserved weekly target (' + best.done + ' of ' + best.needed + ' done so far this week';
       if (best.target.suggested_day === todayKey) out += '; today is its suggested day';
@@ -9542,7 +9562,14 @@ function recScheduleDurations() {
 // Tue/Thu collision where the schedule said 60 and the skeleton stamped 45.
 function resolveOptionDurations(aiNumOpts, userLength) {
   var sd = recScheduleDurations();
-  var base = userLength || sd.anchor || sd.target || REC_DEFAULT_LADDER[0];
+  // Base source order: explicit user choice → anchor → default ladder head (60).
+  // A non-anchor frequency target (sd.target) deliberately does NOT drive the
+  // base: "Auto" must yield the full 60/45/30 ladder, not collapse to the
+  // target's duration. The frequency-target activity is still ordered into
+  // Option 1 by buildScheduleInstruction, just without a pinned minute count, so
+  // the resolved 60 governs and nothing contradicts. The anchor pin below
+  // (ladder[0] = sd.anchor) preserves the Tue/Thu fixed-commitment exception.
+  var base = userLength || sd.anchor || REC_DEFAULT_LADDER[0];
   // Round the derived options to 5-minute increments — "23 min" reads like
   // false precision on a number that is a target with a ±15% band anyway.
   // With the default base of 60 this reproduces the specified ladder exactly:
