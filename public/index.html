@@ -195,6 +195,9 @@ body.compact main{padding:20px 24px 60px}
 #ai-content .ex-qv .ex-howto-attr,#tab-history .ex-qv .ex-howto-attr,#log-past-panel .ex-qv .ex-howto-attr{font-size:10px;color:var(--text-dim);margin:8px 0 0}
 #ai-content .ex-qv .ex-howto-attr a,#tab-history .ex-qv .ex-howto-attr a,#log-past-panel .ex-qv .ex-howto-attr a{color:inherit}
 #tab-history .lw-ex-name,#log-past-panel .lw-ex-name{cursor:pointer;text-decoration:underline;text-decoration-color:var(--text-dim);text-underline-offset:2px}
+/* Progress-Over-Time chart inside the stats quick-view (History + Log-past only;
+   NOT the rec-card howto). Fixed height + maintainAspectRatio:false = no resize loop. */
+#tab-history .ex-qv-chartwrap,#log-past-panel .ex-qv-chartwrap{position:relative;height:140px;margin-top:10px}
 /* Feeling check-in pills (Today-only class). Energy = ember when selected;
    soreness/severity = surface-2 when selected. */
 #feeling-checkin-card .fc-pill{background:var(--bg-base);border:1px solid var(--border-subtle);color:var(--text-muted)}
@@ -5108,6 +5111,7 @@ function ensureAIExerciseLinks(strings) {
 var exQuickOpen = {};                       // key -> true while that row is open
 var exQuickCache = { howto: {}, stats: {} };// name -> payload | 'loading' | 'error'
 var exLinkInFlight = {};                     // name -> true while a resolve covers it
+var quickViewCharts = {};                    // canvas id -> Chart (stats mode; destroyed on collapse/re-render)
 
 // Generalized clickability resolver — the History surfaces' analogue of
 // ensureAIExerciseLinks. Writes into the SAME aiRecLinkCache (raw string ->
@@ -5157,18 +5161,43 @@ function splitExerciseName(raw) {
   return { name: name, rest: rest };
 }
 
-// Toggle one row's quick-view. Lazy-fetches on first open (cached per name +
-// mode), re-renders the originating surface both immediately (to show the
-// spinner) and again on fetch-resolve. surface: 'ai' | 'hist' | 'lp:<id>'.
+// Which panel a key belongs to (rec card / History / Log-past) — used to keep
+// only ONE quick-view open per panel. Log-past keys carry a per-row surface
+// ('lp:<id>'), so its family collapses the family across rows too.
+function quickViewFamily(key) {
+  if (key.indexOf('ai|') === 0) return 'ai';
+  if (key.indexOf('hist|') === 0) return 'hist';
+  if (key.indexOf('lp:') === 0) return 'lp';
+  return key;
+}
+// The originating surface encoded in a key (everything before the first '|'):
+// 'ai' | 'hist' | 'lp:<id>'. Lets us re-render the exact surface a collapsed
+// key lived on.
+function keySurface(key) {
+  var bar = key.indexOf('|');
+  return bar >= 0 ? key.slice(0, bar) : key;
+}
+
+// Toggle one row's quick-view. On open, auto-collapse any other open view in
+// the same panel (one at a time). Lazy-fetches on first open (cached per name +
+// mode), re-renders the originating surface — plus any surface a collapse
+// touched — immediately (spinner) and again on fetch-resolve. A second tap on
+// the SAME key still just collapses it.
 function toggleExerciseQuickView(mode, name, key, surface) {
   if (exQuickOpen[key]) { delete exQuickOpen[key]; rerenderQuickSurface(surface); return; }
+  var fam = quickViewFamily(key);
+  var touched = {};
+  Object.keys(exQuickOpen).forEach(function(k) {
+    if (quickViewFamily(k) === fam) { touched[keySurface(k)] = 1; delete exQuickOpen[k]; }
+  });
   exQuickOpen[key] = true;
   var cache = (mode === 'howto') ? exQuickCache.howto : exQuickCache.stats;
   if (!(name in cache)) {
     cache[name] = 'loading';
     fetchExerciseQuickData(mode, name, surface);
   }
-  rerenderQuickSurface(surface);
+  touched[surface] = 1;
+  Object.keys(touched).forEach(function(s) { rerenderQuickSurface(s); });
 }
 
 function rerenderQuickSurface(surface) {
@@ -5215,38 +5244,114 @@ function exerciseQuickViewHtml(mode, name, key) {
   } else if (mode === 'howto') {
     inner = renderExerciseHowTo(payload, name) || '<p class="ex-qv-empty">No how-to guide for this exercise yet.</p>';
   } else {
-    inner = renderExerciseStatsMini(payload);
+    inner = renderExerciseStatsMini(payload, name, key);
   }
   var goto = '<a class="ex-qv-goto" href="javascript:void(0)" onclick="event.stopPropagation();gotoExerciseDetail(\'' + escAttr(name) + '\')">Go to exercise &rarr;</a>';
   return '<div class="ex-qv" onclick="event.stopPropagation()">' + inner + goto + '</div>';
 }
 
-// Condensed six-field stats read (session #33). Fields map to the
-// exercise-stats aggregate; "Last performed" is derived from the daily_data
-// tail (sorted asc) and "Trend" from a last-vs-previous-session delta — both
-// derived, never invented. Duration moves show seconds (fmtMMSS), never reps.
-function renderExerciseStatsMini(data) {
+// Condensed stats read (session #33). Fields map to the exercise-stats
+// aggregate; "Last performed" is derived from the daily_data tail (sorted asc)
+// and "Trend" from a last-vs-previous-session delta — both derived, never
+// invented. Duration moves show seconds (fmtMMSS), never reps. Final fields:
+// Last performed · Total sessions · PR · Average · Est. 1RM (weight-based only)
+// · Trend (<2 sessions omitted). Ends with a small Progress-Over-Time chart
+// when >=2 real data points exist.
+function renderExerciseStatsMini(data, name, key) {
   var agg = (data && data.aggregate) || {};
   var daily = (data && Array.isArray(data.daily_data)) ? data.daily_data : [];
+  var dur = !!agg.is_duration_based;
   var rows = [];
   if (daily.length) rows.push(['Last performed', daily[daily.length - 1].date]);
   if (agg.total_sessions != null) rows.push(['Total sessions', String(agg.total_sessions)]);
-  if (agg.is_duration_based) {
-    if (agg.best_hold_seconds) rows.push(['Best hold', fmtMMSS(agg.best_hold_seconds)]);
-  } else {
-    if (agg.best_single_set) rows.push(['Best set', agg.best_single_set + ' reps']);
-  }
+  // PR — best single set (reps) or best hold (m:ss).
+  if (dur) { if (agg.best_hold_seconds) rows.push(['PR', fmtMMSS(agg.best_hold_seconds)]); }
+  else { if (agg.best_single_set) rows.push(['PR', agg.best_single_set + ' reps']); }
+  // Average — per-set reps or per-set hold (m:ss). Omitted when its source is null.
+  if (dur) { if (agg.avg_seconds_per_set != null) rows.push(['Average', fmtMMSS(agg.avg_seconds_per_set)]); }
+  else { if (agg.avg_reps_per_set != null) rows.push(['Average', agg.avg_reps_per_set + ' reps']); }
   if (agg.is_weight_based && agg.estimated_1rm != null) rows.push(['Est. 1RM', agg.estimated_1rm + ' lbs']);
-  var trend = exStatsTrend(daily, !!agg.is_duration_based);
+  var trend = exStatsTrend(daily, dur);
   if (trend) rows.push(['Trend', trend]);
 
-  if (!rows.length) return '<p class="ex-qv-empty">No stats logged yet.</p>';
-  var h = '<div class="ex-qv-stats">';
-  rows.forEach(function(r) {
-    h += '<div class="ex-qv-stat"><span class="ex-qv-stat-k">' + escHtml(r[0]) + '</span><span class="ex-qv-stat-v">' + escHtml(r[1]) + '</span></div>';
-  });
-  h += '</div>';
+  var h = '';
+  if (rows.length) {
+    h += '<div class="ex-qv-stats">';
+    rows.forEach(function(r) {
+      h += '<div class="ex-qv-stat"><span class="ex-qv-stat-k">' + escHtml(r[0]) + '</span><span class="ex-qv-stat-v">' + escHtml(r[1]) + '</span></div>';
+    });
+    h += '</div>';
+  }
+  // Progress-Over-Time chart (stats mode only) — emitted only when there are
+  // >=2 real plottable points. The canvas is mounted post-paint by
+  // flushQuickViewCharts() (Chart.js needs the element in the DOM first).
+  if (quickViewChartSeries(data)) {
+    var cid = 'exqv-chart-' + String(key || name).replace(/[^a-zA-Z0-9_-]/g, '_');
+    h += '<div class="ex-qv-chartwrap"><canvas id="' + cid + '" class="ex-qv-chart" data-exname="' + attrEsc(name) + '"></canvas></div>';
+  }
+  if (!h) return '<p class="ex-qv-empty">No stats logged yet.</p>';
   return h;
+}
+
+// Progress-Over-Time series from daily_data — the single-line-chart logic of
+// renderExDetailChart (§1900) driven off the exercise-stats payload we already
+// have (no new fetch). Duration-aware: seconds axis + m:ss tooltip for holds,
+// weight for weighted moves, else reps. Returns null when there aren't >=2 real
+// points to plot (also covers pure-distance/cardio moves, which daily_data
+// doesn't aggregate — no empty canvas).
+function quickViewChartSeries(data) {
+  var agg = (data && data.aggregate) || {};
+  var daily = (data && Array.isArray(data.daily_data)) ? data.daily_data : [];
+  if (daily.length < 2) return null;
+  var labels = daily.map(function(d) { return String(d.date).slice(5); });
+  var values, ylabel, isTime = false, maxVal;
+  if (agg.is_duration_based) { values = daily.map(function(d) { return d.highest_hold || null; }); ylabel = 'Seconds'; isTime = true; maxVal = agg.best_hold_seconds; }
+  else if (agg.is_weight_based) { values = daily.map(function(d) { return d.max_weight || null; }); ylabel = 'Weight (lbs)'; maxVal = agg.max_weight_ever; }
+  else { values = daily.map(function(d) { return d.highest_set || null; }); ylabel = 'Reps'; maxVal = agg.best_single_set; }
+  if (values.filter(function(v) { return v != null; }).length < 2) return null;
+  return { labels: labels, values: values, ylabel: ylabel, isTime: isTime, maxVal: maxVal };
+}
+
+// Build (destroy+recreate) one quick-view chart into its canvas. maintainAspect
+// Ratio:false + a fixed-height wrapper avoids the Chart.js resize loop; the PR
+// point is highlighted gold, matching renderExDetailChart.
+function buildQuickViewChart(canvas, data) {
+  if (typeof Chart === 'undefined' || !canvas) return;
+  if (quickViewCharts[canvas.id]) { try { quickViewCharts[canvas.id].destroy(); } catch (e) {} delete quickViewCharts[canvas.id]; }
+  var series = quickViewChartSeries(data);
+  if (!series) return;
+  var pointColors = series.values.map(function(v) { return v === series.maxVal ? '#f5c842' : '#22c97a'; });
+  var pointSizes = series.values.map(function(v) { return v === series.maxVal ? 7 : 3; });
+  var tooltipCfg = series.isTime ? { callbacks: { label: function(ctx) { return fmtMMSS(ctx.parsed.y); } } } : {};
+  quickViewCharts[canvas.id] = new Chart(canvas, {
+    type: 'line',
+    data: { labels: series.labels, datasets: [{ data: series.values, borderColor: '#22c97a', backgroundColor: '#22c97a22', fill: true, tension: 0.3, pointBackgroundColor: pointColors, pointRadius: pointSizes, spanGaps: true }] },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      plugins: { legend: { display: false }, tooltip: tooltipCfg },
+      scales: {
+        x: { ticks: { color: '#555', font: { size: 9 } }, grid: { display: false } },
+        y: { ticks: { color: '#555', font: { size: 9 } }, grid: { color: '#1a1c22' }, title: { display: true, text: series.ylabel, color: '#555', font: { size: 9 } } }
+      }
+    }
+  });
+}
+
+// Post-paint chart reconciler: mount charts for any open stats quick-view canvas
+// currently in the DOM, and destroy any instance whose canvas is gone (collapse
+// / navigate-away). Idempotent — safe to call after every stats-surface paint.
+function flushQuickViewCharts() {
+  if (typeof Chart === 'undefined') return;
+  Object.keys(quickViewCharts).forEach(function(id) {
+    if (!document.getElementById(id)) { try { quickViewCharts[id].destroy(); } catch (e) {} delete quickViewCharts[id]; }
+  });
+  var list = document.querySelectorAll('canvas.ex-qv-chart');
+  for (var i = 0; i < list.length; i++) {
+    var cv = list[i];
+    var nm = cv.getAttribute('data-exname');
+    var d = nm ? exQuickCache.stats[nm] : null;
+    if (d && d !== 'loading' && d !== 'error') buildQuickViewChart(cv, d);
+  }
 }
 
 // Last-vs-previous-session delta from daily_data (each entry is one day).
@@ -5276,7 +5381,7 @@ function gotoExerciseDetail(name) {
 // exercise names to links once resolve-batch answers.
 function refreshLogPastDetail(id) {
   var el = document.getElementById('lp-detail-' + id);
-  if (el && fullWorkoutCache[id]) el.innerHTML = renderLogPastRowDetail(id);
+  if (el && fullWorkoutCache[id]) { el.innerHTML = renderLogPastRowDetail(id); flushQuickViewCharts(); }
 }
 function resolveLogPastRowLinks(id) {
   var full = fullWorkoutCache[id];
@@ -11759,11 +11864,11 @@ function toggleLogPastRow(id) {
   logPastExpanded[id] = true;
   detail.style.display = 'block';
   if (chev) chev.style.transform = 'rotate(90deg)';
-  if (fullWorkoutCache[id]) { detail.innerHTML = renderLogPastRowDetail(id); resolveLogPastRowLinks(id); return; }
+  if (fullWorkoutCache[id]) { detail.innerHTML = renderLogPastRowDetail(id); resolveLogPastRowLinks(id); flushQuickViewCharts(); return; }
   detail.innerHTML = '<p style="font-size:12px;color:var(--text-dim);margin:0">Loading&hellip;</p>';
   lpLoadFull(id).then(function(full) {
     if (!logPastExpanded[id]) return; // collapsed again while loading
-    if (full) { detail.innerHTML = renderLogPastRowDetail(id); resolveLogPastRowLinks(id); }
+    if (full) { detail.innerHTML = renderLogPastRowDetail(id); resolveLogPastRowLinks(id); flushQuickViewCharts(); }
     else detail.innerHTML = '<p style="font-size:12px;color:var(--color-danger,#e5484d);margin:0">Could not load detail.</p>';
   });
 }
@@ -15369,7 +15474,7 @@ function renderLoggedGroupsHtml(grouped, opts) {
       if (canon) {
         var suffix = line.slice(nm.length);              // '' or ': 3x8 @135lbs'
         var qkey = surface + '|' + wid + '|' + (ex.id != null ? ex.id : e);
-        var nameSpan = '<span class="lw-ex-name" onclick="toggleExerciseQuickView(\'stats\',\'' + escAttr(nm) + '\',\'' + escAttr(qkey) + '\',\'' + escAttr(surface) + '\')">' + escHtml(nm) + '</span>';
+        var nameSpan = '<span class="lw-ex-name" onclick="event.stopPropagation();toggleExerciseQuickView(\'stats\',\'' + escAttr(nm) + '\',\'' + escAttr(qkey) + '\',\'' + escAttr(surface) + '\')">' + escHtml(nm) + '</span>';
         h += '<div class="lw-ex-line">' + nameSpan + escHtml(suffix) + '</div>';
         h += exerciseQuickViewHtml('stats', nm, qkey);
       } else {
@@ -15524,6 +15629,8 @@ function renderLog() {
   // Resolve exercise-name links across the painted rows, then re-render once so
   // matched names become tappable (session #33). Miss/failure → plain text.
   ensureExerciseLinks(histLinkNames, renderLog);
+  // Mount/tear-down any open stats quick-view chart now that rows are painted.
+  flushQuickViewCharts();
 }
 
 // Quick-view card (2026-07-20) — a compact at-a-glance summary of the athlete's
