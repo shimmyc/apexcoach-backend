@@ -175,6 +175,26 @@ body.compact main{padding:20px 24px 60px}
 #lib-detail .ex-var-chips{display:flex;flex-wrap:wrap;gap:8px}
 #lib-detail .ex-var-chip{font-size:13px;color:var(--text-primary);background:var(--bg-surface-1);border:1px solid var(--border-subtle);border-radius:9999px;padding:7px 14px;cursor:pointer;font-family:Inter,sans-serif}
 #lib-detail .ex-var-chip:hover{border-color:var(--accent-ember);color:var(--accent-ember)}
+/* Inline exercise quick-view (2026-07-20, session #33) — tap an exercise NAME
+   to expand a howto (rec card) / stats (History + Log-past) block underneath the
+   row. Scoped to the three surfaces that host it; reuses renderExerciseHowTo's
+   .ex-howto* markup with compact overrides so the #lib-detail rules are untouched. */
+#ai-content .ex-qv,#tab-history .ex-qv,#log-past-panel .ex-qv{background:var(--bg-surface-2);border:1px solid var(--border-subtle);border-radius:12px;padding:10px 12px;margin:4px 0 8px}
+#ai-content .ex-qv-loading,#tab-history .ex-qv-loading,#log-past-panel .ex-qv-loading,#ai-content .ex-qv-empty,#tab-history .ex-qv-empty,#log-past-panel .ex-qv-empty{font-size:12px;color:var(--text-dim);margin:0}
+#ai-content .ex-qv-goto,#tab-history .ex-qv-goto,#log-past-panel .ex-qv-goto{display:inline-block;margin-top:8px;font-size:12px;font-weight:600;color:var(--accent-ember);text-decoration:none;cursor:pointer}
+#ai-content .ex-qv-stats,#tab-history .ex-qv-stats,#log-past-panel .ex-qv-stats{display:flex;flex-direction:column;gap:4px}
+#ai-content .ex-qv-stat,#tab-history .ex-qv-stat,#log-past-panel .ex-qv-stat{display:flex;justify-content:space-between;gap:12px;font-size:12px}
+#ai-content .ex-qv-stat-k,#tab-history .ex-qv-stat-k,#log-past-panel .ex-qv-stat-k{color:var(--text-dim)}
+#ai-content .ex-qv-stat-v,#tab-history .ex-qv-stat-v,#log-past-panel .ex-qv-stat-v{color:var(--text-primary);font-weight:600}
+#ai-content .ex-qv .ex-howto,#tab-history .ex-qv .ex-howto,#log-past-panel .ex-qv .ex-howto{margin-top:0;border-top:none;padding-top:0}
+#ai-content .ex-qv .ex-howto-img,#tab-history .ex-qv .ex-howto-img,#log-past-panel .ex-qv .ex-howto-img{display:block;max-width:100%;max-height:200px;border-radius:10px;margin-bottom:10px;object-fit:contain}
+#ai-content .ex-qv .ex-howto-desc,#tab-history .ex-qv .ex-howto-desc,#log-past-panel .ex-qv .ex-howto-desc{font-size:13px;color:var(--text-sec);line-height:1.55}
+#ai-content .ex-qv .ex-howto-desc p,#tab-history .ex-qv .ex-howto-desc p,#log-past-panel .ex-qv .ex-howto-desc p{margin:0 0 6px}
+#ai-content .ex-qv .ex-howto-desc ul,#ai-content .ex-qv .ex-howto-desc ol,#tab-history .ex-qv .ex-howto-desc ul,#tab-history .ex-qv .ex-howto-desc ol,#log-past-panel .ex-qv .ex-howto-desc ul,#log-past-panel .ex-qv .ex-howto-desc ol{margin:0 0 6px;padding-left:18px}
+#ai-content .ex-qv .ex-howto-desc strong,#ai-content .ex-qv .ex-howto-desc b,#tab-history .ex-qv .ex-howto-desc strong,#tab-history .ex-qv .ex-howto-desc b,#log-past-panel .ex-qv .ex-howto-desc strong,#log-past-panel .ex-qv .ex-howto-desc b{color:var(--text-primary)}
+#ai-content .ex-qv .ex-howto-attr,#tab-history .ex-qv .ex-howto-attr,#log-past-panel .ex-qv .ex-howto-attr{font-size:10px;color:var(--text-dim);margin:8px 0 0}
+#ai-content .ex-qv .ex-howto-attr a,#tab-history .ex-qv .ex-howto-attr a,#log-past-panel .ex-qv .ex-howto-attr a{color:inherit}
+#tab-history .lw-ex-name,#log-past-panel .lw-ex-name{cursor:pointer;text-decoration:underline;text-decoration-color:var(--text-dim);text-underline-offset:2px}
 /* Feeling check-in pills (Today-only class). Energy = ember when selected;
    soreness/severity = surface-2 when selected. */
 #feeling-checkin-card .fc-pill{background:var(--bg-base);border:1px solid var(--border-subtle);color:var(--text-muted)}
@@ -5080,6 +5100,191 @@ function ensureAIExerciseLinks(strings) {
     });
 }
 
+// ── Inline exercise quick-view (session #33) ───────────────────────────────
+// Tapping a resolved exercise NAME expands a small block underneath the row:
+// a how-to (rec card) or condensed stats (History + Log-past). ONE shared
+// component across both data modes. State survives the wholesale re-renders
+// these surfaces use, so open rows re-expand on every paint.
+var exQuickOpen = {};                       // key -> true while that row is open
+var exQuickCache = { howto: {}, stats: {} };// name -> payload | 'loading' | 'error'
+var exLinkInFlight = {};                     // name -> true while a resolve covers it
+
+// Generalized clickability resolver — the History surfaces' analogue of
+// ensureAIExerciseLinks. Writes into the SAME aiRecLinkCache (raw string ->
+// canonical|null) via the exact/alias-only resolve-batch endpoint, so a name
+// resolved by one surface is instantly linkable on the other. Only requests
+// names not already cached AND not already in flight, so the caller's
+// resolve-then-rerender loop is naturally bounded (second pass finds nothing
+// pending). Fully non-fatal: any failure caches null -> plain text.
+function ensureExerciseLinks(strings, rerender) {
+  var pending = [];
+  var seen = {};
+  (strings || []).forEach(function(s) {
+    if (s && typeof s === 'string' && !(s in aiRecLinkCache) && !exLinkInFlight[s] && !seen[s]) {
+      seen[s] = 1; pending.push(s);
+    }
+  });
+  if (!pending.length) return;
+  pending.forEach(function(s) { exLinkInFlight[s] = true; });
+  fetch('/api/exercise-catalog/resolve-batch', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ names: pending })
+  })
+    .then(function(r) { return r.json(); })
+    .then(function(data) {
+      var results = (data && data.results) || {};
+      pending.forEach(function(s) { aiRecLinkCache[s] = (s in results) ? results[s] : null; });
+    })
+    .catch(function() { pending.forEach(function(s) { aiRecLinkCache[s] = null; }); })
+    .then(function() {
+      pending.forEach(function(s) { delete exLinkInFlight[s]; });
+      if (typeof rerender === 'function') rerender();
+    });
+}
+
+// Client mirror of server.js stripExerciseAnnotation (server.js:3404). Returns
+// { name, rest } so the leading NAME can be wrapped as a tap target while the
+// set/rep/weight remainder trails as plain text. Same conservative cut rule as
+// the server (which is what produced the exact/alias match), so `name` equals
+// the matched portion and `rest` preserves everything after it verbatim.
+function splitExerciseName(raw) {
+  var s = String(raw == null ? '' : raw).trim();
+  var cut = s.search(/[\d@(]|\s[-–—:]\s/);
+  var rawName = (cut >= 0 ? s.slice(0, cut) : s);
+  var name = rawName.replace(/[\s,;:+\-–—]+$/, '');
+  var rest = s.slice(name.length);
+  return { name: name, rest: rest };
+}
+
+// Toggle one row's quick-view. Lazy-fetches on first open (cached per name +
+// mode), re-renders the originating surface both immediately (to show the
+// spinner) and again on fetch-resolve. surface: 'ai' | 'hist' | 'lp:<id>'.
+function toggleExerciseQuickView(mode, name, key, surface) {
+  if (exQuickOpen[key]) { delete exQuickOpen[key]; rerenderQuickSurface(surface); return; }
+  exQuickOpen[key] = true;
+  var cache = (mode === 'howto') ? exQuickCache.howto : exQuickCache.stats;
+  if (!(name in cache)) {
+    cache[name] = 'loading';
+    fetchExerciseQuickData(mode, name, surface);
+  }
+  rerenderQuickSurface(surface);
+}
+
+function rerenderQuickSurface(surface) {
+  if (surface === 'ai') { if (typeof renderAI === 'function') renderAI(); return; }
+  if (surface === 'hist') { if (typeof renderLog === 'function') renderLog(); return; }
+  if (surface && surface.indexOf('lp:') === 0) { refreshLogPastDetail(surface.slice(3)); return; }
+}
+
+// Lazy fetch on first expand ONLY — reuses the two existing endpoints as-is,
+// no new endpoint. howto -> /exercises/:name (description + images, session
+// #26 shape); stats -> /analytics/exercise-stats/:userId/:name.
+function fetchExerciseQuickData(mode, name, surface) {
+  if (!currentProfileId) { (mode === 'howto' ? exQuickCache.howto : exQuickCache.stats)[name] = 'error'; return; }
+  var url = (mode === 'howto')
+    ? '/api/profiles/' + currentProfileId + '/exercises/' + encodeURIComponent(name)
+    : '/api/analytics/exercise-stats/' + currentProfileId + '/' + encodeURIComponent(name);
+  fetch(url)
+    .then(function(r) { return r.json(); })
+    .then(function(data) {
+      var cache = (mode === 'howto') ? exQuickCache.howto : exQuickCache.stats;
+      cache[name] = (data && data.success) ? data : 'error';
+    })
+    .catch(function() {
+      var cache = (mode === 'howto') ? exQuickCache.howto : exQuickCache.stats;
+      cache[name] = 'error';
+    })
+    .then(function() { rerenderQuickSurface(surface); });
+}
+
+// Shared inline block. Returns '' unless this row is open. howto reuses
+// renderExerciseHowTo (empty-return + wger CC-BY-SA attribution intact); stats
+// uses renderExerciseStatsMini. Both append a "Go to exercise ->" link that
+// opens the full Library detail view. Container stops click propagation so a
+// tap inside never toggles the parent rec/log card.
+function exerciseQuickViewHtml(mode, name, key) {
+  if (!exQuickOpen[key]) return '';
+  var cache = (mode === 'howto') ? exQuickCache.howto : exQuickCache.stats;
+  var payload = cache[name];
+  var inner;
+  if (payload === undefined || payload === 'loading') {
+    inner = '<p class="ex-qv-loading">Loading&hellip;</p>';
+  } else if (payload === 'error') {
+    inner = '<p class="ex-qv-loading">Couldn\'t load details.</p>';
+  } else if (mode === 'howto') {
+    inner = renderExerciseHowTo(payload, name) || '<p class="ex-qv-empty">No how-to guide for this exercise yet.</p>';
+  } else {
+    inner = renderExerciseStatsMini(payload);
+  }
+  var goto = '<a class="ex-qv-goto" href="javascript:void(0)" onclick="event.stopPropagation();gotoExerciseDetail(\'' + escAttr(name) + '\')">Go to exercise &rarr;</a>';
+  return '<div class="ex-qv" onclick="event.stopPropagation()">' + inner + goto + '</div>';
+}
+
+// Condensed six-field stats read (session #33). Fields map to the
+// exercise-stats aggregate; "Last performed" is derived from the daily_data
+// tail (sorted asc) and "Trend" from a last-vs-previous-session delta — both
+// derived, never invented. Duration moves show seconds (fmtMMSS), never reps.
+function renderExerciseStatsMini(data) {
+  var agg = (data && data.aggregate) || {};
+  var daily = (data && Array.isArray(data.daily_data)) ? data.daily_data : [];
+  var rows = [];
+  if (daily.length) rows.push(['Last performed', daily[daily.length - 1].date]);
+  if (agg.total_sessions != null) rows.push(['Total sessions', String(agg.total_sessions)]);
+  if (agg.is_duration_based) {
+    if (agg.best_hold_seconds) rows.push(['Best hold', fmtMMSS(agg.best_hold_seconds)]);
+  } else {
+    if (agg.best_single_set) rows.push(['Best set', agg.best_single_set + ' reps']);
+  }
+  if (agg.is_weight_based && agg.estimated_1rm != null) rows.push(['Est. 1RM', agg.estimated_1rm + ' lbs']);
+  var trend = exStatsTrend(daily, !!agg.is_duration_based);
+  if (trend) rows.push(['Trend', trend]);
+
+  if (!rows.length) return '<p class="ex-qv-empty">No stats logged yet.</p>';
+  var h = '<div class="ex-qv-stats">';
+  rows.forEach(function(r) {
+    h += '<div class="ex-qv-stat"><span class="ex-qv-stat-k">' + escHtml(r[0]) + '</span><span class="ex-qv-stat-v">' + escHtml(r[1]) + '</span></div>';
+  });
+  h += '</div>';
+  return h;
+}
+
+// Last-vs-previous-session delta from daily_data (each entry is one day).
+// reps moves compare highest_set; duration moves compare highest_hold. Returns
+// '' with < 2 sessions (no fake delta on a single session, per decision).
+function exStatsTrend(daily, isDuration) {
+  if (!daily || daily.length < 2) return '';
+  var lastD = daily[daily.length - 1], prevD = daily[daily.length - 2];
+  var mkey = isDuration ? 'highest_hold' : 'highest_set';
+  var delta = (Number(lastD[mkey]) || 0) - (Number(prevD[mkey]) || 0);
+  if (delta === 0) return '▬ no change vs last session';
+  var mag = Math.abs(delta);
+  var val = isDuration ? (mag + 's') : (mag + ' reps');
+  return (delta > 0 ? '▲ +' : '▼ -') + val + ' vs last session';
+}
+
+// "Go to exercise ->" from a quick-view: switch to Library and open the full
+// detail view. Reuses the existing showExerciseDetail open path; the showTab
+// first makes it work from any origin tab (mirrors navigateToMuscleFilter).
+function gotoExerciseDetail(name) {
+  showTab('library');
+  showExerciseDetail(name);
+}
+
+// Log-past detail refresh (re-injects one row's detail HTML in place) + its
+// link resolver. Used both to paint quick-view state changes and to upgrade
+// exercise names to links once resolve-batch answers.
+function refreshLogPastDetail(id) {
+  var el = document.getElementById('lp-detail-' + id);
+  if (el && fullWorkoutCache[id]) el.innerHTML = renderLogPastRowDetail(id);
+}
+function resolveLogPastRowLinks(id) {
+  var full = fullWorkoutCache[id];
+  if (!full || !Array.isArray(full.exercises)) return;
+  var names = full.exercises.map(function(ex) { return ex && ex.name; }).filter(Boolean);
+  ensureExerciseLinks(names, function() { refreshLogPastDetail(id); });
+}
+
 function renderAI() {
   var viewingAlt = !!(altRec || altRecLoading);
   var activeRec = (altRec && !altRecLoading) ? altRec : aiRec;
@@ -5222,18 +5427,25 @@ function renderAI() {
           exN++;
           var num = exN < 10 ? '0' + exN : '' + exN;
           var exStr = secExes[j];
-          // Link the line ONLY when the string resolved to a catalog canonical
+          // Link the NAME ONLY when the string resolved to a catalog canonical
           // (aiRecLinkCache, filled by ensureAIExerciseLinks via the exact/alias-
           // only resolve-batch endpoint). null/undefined → plain text, unchanged.
+          // Tapping the name expands an inline how-to quick-view under the row
+          // (session #33); the full detail view moved to the "Go to exercise ->"
+          // link inside it. exN numbering is untouched (separate cell).
           var exCanon = aiRecLinkCache[exStr];
-          var exSpan;
-          if (exCanon) {
+          var exSplit = exCanon ? splitExerciseName(exStr) : null;
+          var exSpan, exQv = '';
+          if (exCanon && exSplit && exSplit.name) {
             var uColor = primary ? 'rgba(255,255,255,0.5)' : 'var(--text-muted)';
-            exSpan = '<span onclick="event.stopPropagation();showExerciseDetail(\'' + escAttr(exCanon) + '\')" title="View ' + escAttr(exCanon) + '" style="color:' + exTxtColor + ';line-height:1.5;cursor:pointer;text-decoration:underline;text-decoration-color:' + uColor + ';text-underline-offset:2px">' + exStr + '</span>';
+            var exKey = 'ai|' + i + '|' + exN + '|' + exCanon;   // include name so an open row can't collide across primary/alt rec switches
+            var nameTap = '<span onclick="event.stopPropagation();toggleExerciseQuickView(\'howto\',\'' + escAttr(exCanon) + '\',\'' + escAttr(exKey) + '\',\'ai\')" title="Quick view: ' + escAttr(exCanon) + '" style="cursor:pointer;text-decoration:underline;text-decoration-color:' + uColor + ';text-underline-offset:2px">' + exSplit.name + '</span>';
+            exSpan = '<span style="color:' + exTxtColor + ';line-height:1.5">' + nameTap + exSplit.rest + '</span>';
+            exQv = exerciseQuickViewHtml('howto', exCanon, exKey);
           } else {
             exSpan = '<span style="color:' + exTxtColor + ';line-height:1.5">' + exStr + '</span>';
           }
-          html += '<div style="display:flex;gap:12px;padding:8px 0;border-bottom:1px solid ' + exBorder + ';font-size:14px;align-items:flex-start"><span class="font-mono" style="font-size:10px;color:' + exNumColor + ';width:20px;flex-shrink:0;padding-top:2px">' + num + '</span>' + exSpan + '</div>';
+          html += '<div style="display:flex;gap:12px;padding:8px 0;border-bottom:1px solid ' + exBorder + ';font-size:14px;align-items:flex-start"><span class="font-mono" style="font-size:10px;color:' + exNumColor + ';width:20px;flex-shrink:0;padding-top:2px">' + num + '</span>' + exSpan + '</div>' + exQv;
         }
       }
       html += '</div>';
@@ -5263,7 +5475,7 @@ function renderAI() {
     var foDailyState = activeRec.daily_override_state || null;
     var foInRangeToday = !!resolveFocusOverride(null);
     if (foDailyState) {
-      var foPillLabel = foDailyState === 'forced' ? 'Today: Full Focus' : (foDailyState === 'total' ? 'Today: Full Override' : 'Today: Focus Off');
+      var foPillLabel = foDailyState === 'forced' ? 'Today: Full Focus' : (foDailyState === 'total' ? 'Today: Mix Focus' : 'Today: Focus Off');
       html += '<div style="display:flex;justify-content:space-between;align-items:center;gap:10px;background:var(--bg-surface-2);border-radius:9999px;padding:6px 14px;margin-bottom:10px">';
       html += '<span style="font-size:12px;font-weight:600;color:var(--accent-ember)">' + foPillLabel + '</span>';
       html += '<a href="#" onclick="event.preventDefault();resetFocusOverrideDaily()" style="font-size:12px;color:var(--text-muted);text-decoration:underline;font-family:DM Sans,sans-serif">Reset to normal</a>';
@@ -5271,7 +5483,7 @@ function renderAI() {
     } else if (foInRangeToday) {
       html += '<div style="display:flex;gap:8px;margin-bottom:10px">';
       html += '<button type="button" onclick="focusOverrideDaily(\'force\')" style="flex:1;background:var(--accent-ember);border:none;color:#fff;padding:9px 12px;font-size:12px;font-weight:600;cursor:pointer;border-radius:9999px;font-family:DM Sans,sans-serif">Focus fully today</button>';
-      html += '<button type="button" onclick="focusOverrideDaily(\'total\')" style="flex:1;background:transparent;border:1px solid var(--accent-ember);color:var(--accent-ember);padding:9px 12px;font-size:12px;font-weight:600;cursor:pointer;border-radius:9999px;font-family:DM Sans,sans-serif">Full override today</button>';
+      html += '<button type="button" onclick="focusOverrideDaily(\'total\')" style="flex:1;background:transparent;border:1px solid var(--accent-ember);color:var(--accent-ember);padding:9px 12px;font-size:12px;font-weight:600;cursor:pointer;border-radius:9999px;font-family:DM Sans,sans-serif">Mix Focus Today</button>';
       html += '<button type="button" onclick="focusOverrideDaily(\'skip\')" style="flex:1;background:transparent;border:1px solid var(--border-subtle);color:var(--text-muted);padding:9px 12px;font-size:12px;font-weight:600;cursor:pointer;border-radius:9999px;font-family:DM Sans,sans-serif">Skip focus today</button>';
       html += '</div>';
     }
@@ -11523,7 +11735,7 @@ function renderLogPastRowDetail(id) {
   var w = full.workout || {};
   // Shared grouping/render (2026-07-20) — identical to History detail.
   var grouped = groupLoggedWorkout(exs, w.notes);
-  var h = renderLoggedGroupsHtml(grouped) + renderLoggedNotesHtml(w.notes);
+  var h = renderLoggedGroupsHtml(grouped, { surface: 'lp:' + id, workoutId: id }) + renderLoggedNotesHtml(w.notes);
   if (!h) {
     h = '<p style="font-size:12px;color:var(--text-dim);margin:0">No detail recorded.</p>';
   }
@@ -11547,12 +11759,12 @@ function toggleLogPastRow(id) {
   logPastExpanded[id] = true;
   detail.style.display = 'block';
   if (chev) chev.style.transform = 'rotate(90deg)';
-  if (fullWorkoutCache[id]) { detail.innerHTML = renderLogPastRowDetail(id); return; }
+  if (fullWorkoutCache[id]) { detail.innerHTML = renderLogPastRowDetail(id); resolveLogPastRowLinks(id); return; }
   detail.innerHTML = '<p style="font-size:12px;color:var(--text-dim);margin:0">Loading&hellip;</p>';
   lpLoadFull(id).then(function(full) {
     if (!logPastExpanded[id]) return; // collapsed again while loading
-    detail.innerHTML = full ? renderLogPastRowDetail(id)
-      : '<p style="font-size:12px;color:var(--color-danger,#e5484d);margin:0">Could not load detail.</p>';
+    if (full) { detail.innerHTML = renderLogPastRowDetail(id); resolveLogPastRowLinks(id); }
+    else detail.innerHTML = '<p style="font-size:12px;color:var(--color-danger,#e5484d);margin:0">Could not load detail.</p>';
   });
 }
 
@@ -15128,8 +15340,11 @@ function groupLoggedWorkout(exercises, notes) {
 // workout spans multiple categories (borrowing the rec card's section-header
 // style); a single-category workout lists flat with no header. Returns '' when
 // there are no exercises, so a notes-only or empty workout adds no structure.
-function renderLoggedGroupsHtml(grouped) {
+function renderLoggedGroupsHtml(grouped, opts) {
   if (!grouped || !grouped.groups.length) return '';
+  opts = opts || {};
+  var surface = opts.surface || null;                    // 'hist' | 'lp:<id>' | null
+  var wid = (opts.workoutId != null) ? opts.workoutId : '';
   var h = '<div class="lw-groups">';
   for (var g = 0; g < grouped.groups.length; g++) {
     var grp = grouped.groups[g];
@@ -15139,7 +15354,27 @@ function renderLoggedGroupsHtml(grouped) {
     for (var e = 0; e < grp.exercises.length; e++) {
       var ex = grp.exercises[e];
       var line = exerciseToNotesLine(ex) || (ex && ex.name) || '';
-      if (line) h += '<div class="lw-ex-line">' + escHtml(line) + '</div>';
+      if (!line) continue;
+      // Tap the NAME (session #33) → inline stats quick-view. Gate: the name
+      // resolved to a catalog canonical via the same exact/alias resolve-batch
+      // path as the rec card (aiRecLinkCache). Miss/unresolved → plain text.
+      // The structured ex.name is exactly line's prefix, so the "3x8 @135lbs"
+      // suffix splits off with no string parsing.
+      var nm = (ex && ex.name) ? ex.name : '';
+      // Gate on catalog-resolvability (canon truthy), but drive the stats fetch
+      // + detail link off the STORED nm: exercise-stats matches exercises.name
+      // exactly, and a legacy/pre-canonicalization row's stored name can differ
+      // from its canonical — fetching by canon would then miss the user's rows.
+      var canon = (surface && nm) ? aiRecLinkCache[nm] : null;
+      if (canon) {
+        var suffix = line.slice(nm.length);              // '' or ': 3x8 @135lbs'
+        var qkey = surface + '|' + wid + '|' + (ex.id != null ? ex.id : e);
+        var nameSpan = '<span class="lw-ex-name" onclick="toggleExerciseQuickView(\'stats\',\'' + escAttr(nm) + '\',\'' + escAttr(qkey) + '\',\'' + escAttr(surface) + '\')">' + escHtml(nm) + '</span>';
+        h += '<div class="lw-ex-line">' + nameSpan + escHtml(suffix) + '</div>';
+        h += exerciseQuickViewHtml('stats', nm, qkey);
+      } else {
+        h += '<div class="lw-ex-line">' + escHtml(line) + '</div>';
+      }
     }
   }
   h += '</div>';
@@ -15212,6 +15447,7 @@ function renderLog() {
   }
 
   var html = '';
+  var histLinkNames = [];   // exercise names to exact/alias-resolve for name-tap linking
   var limit = Math.min(filtered.length, 60);
   for (var i = 0; i < limit; i++) {
     var w = filtered[i];
@@ -15225,7 +15461,8 @@ function renderLog() {
     // extracted exercises (rest day / unparsed notes) shows just its notes.
     var wExercises = (historyExercisesByWorkoutId && w.id) ? (historyExercisesByWorkoutId[w.id] || []) : [];
     var wGrouped = groupLoggedWorkout(wExercises, w.notes);
-    var groupsHTML = renderLoggedGroupsHtml(wGrouped);
+    var groupsHTML = renderLoggedGroupsHtml(wGrouped, { surface: 'hist', workoutId: w.id });
+    for (var hx = 0; hx < wExercises.length; hx++) { if (wExercises[hx] && wExercises[hx].name) histLinkNames.push(wExercises[hx].name); }
     var notesHTML = renderLoggedNotesHtml(w.notes);
 
     var editId = w.id || '';
@@ -15284,6 +15521,9 @@ function renderLog() {
   }
   document.getElementById('log-entries').innerHTML = html;
   renderHistoryQuickView();
+  // Resolve exercise-name links across the painted rows, then re-render once so
+  // matched names become tappable (session #33). Miss/failure → plain text.
+  ensureExerciseLinks(histLinkNames, renderLog);
 }
 
 // Quick-view card (2026-07-20) — a compact at-a-glance summary of the athlete's
