@@ -1385,6 +1385,8 @@ Remembers a user's "these are separate sessions" decision so a rejected pairing 
 - `migrations/2026-07-22_v2_training_tables.sql` — **⚠ NOT RUN.** Engine v2: creates `training_blocks` + `planned_sessions` (RLS + `service_role_bypass`, `UNIQUE(profile_id,date,slot)`, partial unique index enforcing one active block per profile, `planned_sessions.workout_id` FK `ON DELETE SET NULL` so deleting a logged workout cannot erase the record that the session was planned). New tables only — no existing table touched. Nothing in Phase 2 reads them; needed from Phase 3 (planner) onward, so applying early is safe and inert.
 - `migrations/2026-07-22_v2_profile_columns.sql` — **⚠ NOT RUN.** Engine v2: adds `profiles.v2_daily_cache` (jsonb) + `v2_daily_cache_date` (date) + `dossier` (jsonb) + `dossier_updated_at` (timestamptz). Deliberately NOT reusing `daily_recommendations` with an engine marker — see the §7 Engine v2 section. Invisible to v1 (`PROFILE_SELECT_BASE` is an explicit list and no `select=*` on `profiles` exists anywhere).
 - `migrations/2026-07-22_v2_workouts_session_effort.sql` — **⚠ NOT RUN.** Engine v2: adds `workouts.session_effort` (text, nullable) + CHECK (`more_in_tank`|`about_right`|`brutal`). The one Phase 2 migration touching a shared table; additive and nullable. **No endpoint change is needed** — `POST /api/workouts` and `PATCH /api/workouts/:id` forward `req.body` verbatim to PostgREST, so the column is writable the moment it exists.
+- `migrations/2026-07-22_v2_profile4_tiers_and_schedule_v3.sql` — **✅ RUN.** Engine v2 Phase 3: sets profile 4's goal tiers (2 drivers), `profile_data.schedule_v3` (`fill_policy`/`anchor_meta`, sibling of `schedule` so v1's `loadSchedule` reconstruction can't strip it) and `defaults`. Profile-4-scoped, idempotent.
+- `migrations/2026-07-22_chat_proposals_v2_types.sql` — **⚠ NOT RUN.** Engine v2 Phase 7: adds `modify_planned_session`/`skip_planned_session`/`set_standing_preference` to `chat_proposals.type`'s CHECK. The Coach Chat propose→confirm→apply cycle for v2 session edits is gated on this — refusals and the read-side work without it (they never insert), but a valid session-edit proposal 23514-fails until it runs.
 - `migrations/2026-07-22_clone_p1_to_p4_{wipe,copy,flags,verify}.sql` — **✅ RUN IN PRODUCTION 2026-07-22, verified.** Not schema migrations: a 4-file **data** operation seeding profile 4 (the designated Engine v2 test profile) with a clone of profile 1's training history. Run order is **verify §A (baseline) → wipe → copy → flags → verify §B–E**. Profile 1 is read-only throughout; wearable credentials/connections, `rejected_wearable_matches`, `dismissed_fitbit_activities`, chat tables and identity fields are all deliberately **not** copied, `workouts.wearable_activity_id` is forced NULL (UNIQUE partial index), the v1 rec caches are cleared, and the 6 malformed-date workouts (§6) are skipped. Cloned rows use a deterministic `+100000` id offset, so the pair is re-runnable; the copy script **aborts** if profile 4 is non-empty. Its `setval()` section is **mandatory** — skipping it eventually collides the shared identity sequences with profile 1's real inserts. **Verification result:** §B row parity OK on all 8 tables (workouts 76 vs 82 — the 6 malformed-date rows correctly skipped, everything else exact); §D 310 exercise rows / 69 distinct names / 65 distinct workouts / 0 null `workout_id`, FK check and both leak checks returned no rows; §E1 PASS on all 8 tables (profile 1 unchanged); §E3 profile 1 untouched, profile 4 correctly flagged. Baseline also corrected two API-derived figures: `daily_steps` and `daily_sleep` are **736** rows each (the REST endpoint had clamped steps to a 365-day window, and no listing endpoint exists for sleep at all), and `daily_checkins` is 12.
 
 > Most other tables/columns were created ad-hoc via the Supabase SQL editor (the `CREATE TABLE`/`ALTER TABLE` snippets are documented inline in `CLAUDE.md`). Only the wearables + the 2026-05-22 / 2026-05-24 / 2026-05-26 migrations are committed as files.
@@ -1928,6 +1930,38 @@ Each item below is self-contained — no other doc/session context should be nee
 
 ### Engine v2 — Planner / Autoregulator (parallel build, feature-flagged)
 
+> **✅ ENGINE v2 COMPLETE (all 7 phases, 2026-07-22).** A feature-flagged two-cadence coaching
+> engine running on profile 4, with profile 1 / all v1 profiles byte-identical throughout.
+> **What it is:** a weekly **planner** (Sonnet) reconciles goals/tiers/schedule/roadmap-emphasis/
+> injuries/rules into a persisted training block + a week of `planned_sessions`; a nightly
+> **autoregulator** (Haiku) edits today's session against readiness + mat load + effort; an
+> on-demand **variant** endpoint (Haiku, streamed) transforms today's session on request
+> (cache/code/model routing); a flagged **UI** renders it all as a pure DB read; and **Coach Chat**
+> is a concierge that sees all v2 state and proposes plan edits (confirm-first). Everything is
+> rules-driven (`server/coachingRules.js`, one source consumed as prompt text AND code) with
+> deterministic **invariants enforced in code** (97 unit tests across the rules/planner/variant
+> harnesses).
+>
+> **The seven phases:** (1) audit; (2) migrations + rules module + progression/dossier builders +
+> audit endpoint; (3) planner + block/session persistence + the first real plan; (3.5) correctness
+> pass (computed recency, `time_seconds` schema fix, time-budget verifier, invariant proofs);
+> (4) nightly job + autoregulator + ≤4-object alternate cache; (5) variant endpoint + conversational
+> constraints; (6) flagged Today UI (today card, variant surface, week view, effort tap, defaults,
+> tiers); (7) Coach Chat concierge.
+>
+> **Migrations to run (files in `migrations/`, all UNRUN except where noted):** the profile-4 clone
+> set (✅ RUN + verified), `2026-07-22_v2_training_tables.sql`, `2026-07-22_v2_profile_columns.sql`,
+> `2026-07-22_v2_workouts_session_effort.sql`, `2026-07-22_v2_profile4_tiers_and_schedule_v3.sql`
+> (all ✅ RUN during the build), and `2026-07-22_chat_proposals_v2_types.sql` (**⚠ NOT RUN** — the
+> Phase 7 propose→confirm→apply cycle is gated on it).
+>
+> **Remaining logged follow-ups** (all in §6/§9, none blocking): sub-5s variant model paths need
+> diff-generation not full-session generation (§6); `goal_tags` are model-labelled and under-report
+> — derive in code from prescribed exercises (§9); the v1 `duration_minutes` overload (hold vs
+> session length) is unfixed in v1 (§6); `refusals_preferences` capture is now DONE (Phase 7);
+> the alternate-cache category swap needs a review after Phase 5 rewired it (resolved); one
+> unexercised gap-decay floor is provably unreachable (documented, kept).
+
 Replaces the single per-day "AI does everything" rec call with a two-cadence engine, for
 `profile_data.engine_v2 = true` profiles only. **v1 stays live and byte-identical for every other
 profile.** All v2 generation is server-side; the client renders cached output. Phase 1 (audit) is
@@ -2008,7 +2042,17 @@ produced 2026-07-22 and approved; see that session's report. Phasing:
   contraindication. **Sub-5s met for the deterministic paths; model paths run ~15s** (output
   generation of a full session, not prompt size — see §6).
 - **Phase 6 — Flagged UI**: week view, today card, variant surface, effort tap, defaults, tier selector. ✅ **Done 2026-07-22 — all six surfaces rendered live for profile 4 (state-injected past the PIN), zero console errors.** Behind `isV2Profile()` at the 7 audited seams; **the entire diff deletes exactly ONE v1 line** (the day-nav `fetchAI`, byte-identical on the v1 branch). New `GET /api/v2/today/:profileId` (pure DB read, un-gated); `POST /api/v2/variant` un-gated too (flagged shared-surface change — user-facing generation like `/api/ai`; CRON stays admin-gated). Today card renders the autoregulated session via the existing section renderer with the decision tag surfaced honestly ("VOLUME REDUCED TODAY"); variant surface replaces reroll+category+focus as one surface with instant-vs-generated handling and an ephemeral banner; week view marks anchors; effort tap **verified writing `session_effort` to the DB**; defaults + tier selector write `profile_data` with max-2-drivers enforced in the UI. CSS scoped to `#v2-*`/`.v2-*`, no global class redefined, no migration.
-- **Phase 7 — Coach Chat v2 integration. DESIGN NOT STARTED — DO NOT BUILD.** Explicitly out of
+- **Phase 7 — Coach Chat concierge. ✅ Done 2026-07-22** (read-side, refusals, and v1-untouched
+  verified live; the propose→confirm→**apply** cycle is **pending the unrun migration**
+  `2026-07-22_chat_proposals_v2_types.sql` — see the completion note below). Extends the existing
+  propose→confirm→apply pattern: a v2-aware snapshot section (tiers, today's session, the week's
+  `planned_sessions` with `[id]`s + FIXED markers, dossier, recency, progression — 5,484 chars,
+  total snapshot 10,461/20,000), three v2-only tools (`propose_session_change`,
+  `propose_skip_session`, `propose_standing_preference`) offered only to flagged profiles, and
+  code-enforced guards (future-only → prevents cache/plan desync; anchors immovable; injury
+  contraindications; the Phase 3.5 invariant set re-run at apply time). Standing preferences write
+  `profile_data.v2_preferences[]` and the dossier builder folds them into `refusals_preferences`,
+  closing the Phase 2 deferred item. **Original design note (kept for the record):** Explicitly out of
   scope for Phases 1–6, recorded here so it isn't rediscovered as a surprise. **The gap:**
   `buildChatSnapshot()` currently reads only `daily_recommendations_readiness` and
   `daily_recommendations_date` off the profile row — it has **no visibility into any v2 state**.

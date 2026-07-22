@@ -2252,6 +2252,59 @@ All new CSS scoped under `#v2-today` / `#v2-week-card` / `#v2-variant` / `#v2-sh
 (valid, applies document-wide; confirmed rendering correctly in the live app). No migration — every
 field already exists.
 
+## Engine v2 — Phase 7 Implementation (2026-07-22): Coach Chat concierge
+
+Extends the existing Coach Chat propose→confirm→apply pattern for flagged profiles. **v1 Coach Chat
+is byte-identical** — verified: profile 1's `?debug=1` snapshot has no v2 section, no persona
+addendum, and the original 4,968 chars; a v1 send resolves `isV2Chat=false` and every branch below
+is the original. The only added cost for v1 is one small profile fetch to read the flag.
+
+### v2-aware snapshot (`buildV2ChatSnapshotSection`, pure append)
+Appended to `buildChatSnapshot`'s output only when `pd.engine_v2 === true` (its own fetches are
+separate from the v1 query). Carries: goal tiers, today's autoregulated session + decision tag +
+why, the block focus, **this week's `planned_sessions` each with an `[id]` and a FIXED marker on
+anchors**, the stored dossier, recency (with the open/closed-gap framing), and progression (capped
+at 10 signals here since it shares the chat budget). Plus the SOURCING RULE and a goal-tag caveat.
+**Measured on profile 4: v2 section 5,484 chars, total snapshot 10,461 vs the 20,000 char guard.**
+
+### v2 tools (`buildCoachChatTools(isV2)` — flagged profiles only)
+`propose_session_change`, `propose_skip_session`, `propose_standing_preference`. A v1 profile gets
+the exact original `COACH_CHAT_TOOLS` array. A v2-specific persona addendum
+(`CHAT_PERSONA_V2_ADDENDUM`, appended to the stable/cached persona, not the snapshot) states the
+rules: future-only, anchors immovable, no re-planning, confirm-first.
+
+### Guards enforced IN CODE (not just prompt)
+All at proposal-compute time, before a card can even be created (`_loadPlannedSessionForProposal`
+throws a `noop` → the model gets a plain refusal, no `chat_proposals` row):
+- **FUTURE-ONLY.** A change to today's session is refused with a pointer to the ephemeral variant
+  surface. **This is how today's-cache vs `planned_sessions` desync is prevented** — chat never
+  writes today's `planned_sessions` row (which today's cache is derived from), so the two can't
+  diverge; the next nightly run re-derives the cache from the (chat-edited) future rows.
+- **ANCHORS immovable** — a `movable:false` session is rejected at compute time.
+- **INJURY conflicts** — `v2Variant.contraindications` against the stored dossier refuses in prose.
+- **AT APPLY TIME** (the confirm endpoint) the future/anchor rules are re-checked against FRESH
+  data (the row could have changed between propose and confirm), then the **Phase 3.5 invariant set
+  + injury check** run against the confirmed session; a violation throws before the write, leaving
+  the proposal pending (same failure mode as the roadmap-regen path).
+
+### No re-planning, no new apply surface
+The tools PATCH individual `planned_sessions` rows only — nothing calls the planner or regenerates
+the block. `applyProposal` gained the three new type branches; the **confirmation enforcement is
+inherited unchanged** — `applyProposal` is still only reachable from
+`POST .../chat/proposals/:id/confirm`, so a proposal cannot write without explicit confirmation.
+
+### Standing preferences close the Phase 2 deferred item
+`propose_standing_preference` writes `profile_data.v2_preferences[]`; `v2Dossier.buildDossier` now
+folds those into `refusals_preferences` (which Phase 2 deliberately left empty for exactly this),
+and `renderDossierForPrompt` surfaces them — so a stated preference flows into every future prompt.
+
+### goal_tags decision (LEFT logged, §9)
+Deriving `goal_tags` in code from prescribed exercises is planner-side and larger than this phase.
+Instead the v2 snapshot exposes the actual exercises in each planned session, and the persona tells
+chat to reason from the exercises, not the tags — so goal-reasoning degrades **honestly** (it never
+claims a goal was untrained when exercises that serve it are present). Verified live: "what am I
+neglecting" reasoned correctly from exercises ("no rows, presses, or pull work"), not tags.
+
 ## Migrations
 
 One-time data fixes that should be run in the Supabase SQL editor.
