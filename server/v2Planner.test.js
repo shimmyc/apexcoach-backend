@@ -94,6 +94,24 @@ test("INVARIANT anchor_present: a correctly reproduced anchor does NOT fire", fu
   assert.strictEqual(fired(res, "anchor_unmodified").length, 0);
 });
 
+test("INVARIANT movable_only_for_anchors: a non-anchor marked immovable is REPAIRED to movable", function () {
+  // The real Phase 4 finding: the planner marked strength days movable:false,
+  // which made the autoregulator refuse to touch them.
+  var res = run([session({ category: "strength", movable: false })]);
+  var v = fired(res, "movable_only_for_anchors");
+  assert.strictEqual(v.length, 1);
+  assert.strictEqual(res.sessions[0].movable, true, "a non-anchor must be autoregulatable");
+});
+
+test("INVARIANT movable_only_for_anchors: a real anchor stays immovable", function () {
+  var c = ctx({ anchors: [{ date: "2026-07-23", dayKey: "thu", dayLabel: "Thursday", slot: 1, activity: "MMA Class", duration_min: 60, category: "martial_arts" }] });
+  var anchor = session({ date: "2026-07-23", category: "martial_arts", duration_min: 60, movable: false,
+    segments: [{ type: "skill", duration_min: 60, intent: "MMA Class", exercises: [] }] });
+  var res = run([anchor], c);
+  assert.strictEqual(fired(res, "movable_only_for_anchors").length, 0);
+  assert.strictEqual(res.sessions.filter(function (s) { return s.date === "2026-07-23"; })[0].movable, false);
+});
+
 // ── 2. Unique (date, slot) ──────────────────────────────────────────────────
 
 test("INVARIANT unique_date_slot: a collision is REPAIRED by reassigning the slot", function () {

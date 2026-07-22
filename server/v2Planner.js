@@ -390,6 +390,13 @@ function enforceInvariants(plan, ctx) {
   });
 
   // 1. ANCHORS PRESENT AND UNMODIFIED.
+  //    Also: movable:false means "immovable anchor" and NOTHING ELSE. The model
+  //    set it on strength days in the first Phase 4 run, which made the
+  //    autoregulator refuse to touch them — defeating nightly autoregulation on
+  //    exactly the days it matters most. So a session is authoritatively
+  //    movable:false ONLY if it matches a real anchor; every other session is
+  //    forced movable:true regardless of what the model labelled.
+  var anchorSessionKeys = {};
   ctx.anchors.forEach(function (a) {
     var match = sessions.filter(function (s) {
       return s.date === a.date && String(s.category || "").length >= 0 &&
@@ -417,6 +424,18 @@ function enforceInvariants(plan, ctx) {
         repairs.push("restored anchor duration on " + a.date);
       }
       match.movable = false;
+      anchorSessionKeys[match.date + "#" + (match.slot || 1)] = true;
+    }
+  });
+  // Force movable:true on every non-anchor. A restored anchor (_restored) is
+  // exempt — it was just pushed with movable:false intentionally.
+  sessions.forEach(function (s) {
+    if (s._restored) return;
+    var isAnchor = anchorSessionKeys[s.date + "#" + (s.slot || 1)];
+    if (!isAnchor && s.movable === false) {
+      violations.push({ invariant: "movable_only_for_anchors", severity: "repaired", detail: s.date + " (" + s.category + ") was marked immovable but is not an anchor — set movable:true so it can be autoregulated" });
+      s.movable = true;
+      repairs.push("cleared bogus movable:false on " + s.date);
     }
   });
 
