@@ -12332,7 +12332,17 @@ async function v2PersistPlan(shaped, ctx) {
   return out;
 }
 
-/** GET /api/v2/plan/:profileId — read back the active block + its sessions. */
+/**
+ * GET /api/v2/plan/:profileId — read back the active block + its sessions,
+ * AND report readiness so a caller can tell WHY a plan is missing.
+ *
+ * `{block:null, sessions:[]}` alone is ambiguous — it reads identically whether
+ * the tables exist and are empty or the migration has not been run at all
+ * (PostgREST returns an error OBJECT for a missing relation, which
+ * Array.isArray() rejects the same way as an empty result). `ready` therefore
+ * reports each precondition separately, so "not planned yet" is never confused
+ * with "cannot plan yet".
+ */
 app.get("/api/v2/plan/:profileId", async function(req, res) {
   try {
     if (process.env.ADMIN_SECRET) {
@@ -12340,14 +12350,44 @@ app.get("/api/v2/plan/:profileId", async function(req, res) {
       if (got !== process.env.ADMIN_SECRET) return res.status(403).json({ success: false, error: "forbidden" });
     }
     var pid = req.params.profileId;
+
     var br = await fetch(SUPABASE_URL + "/rest/v1/training_blocks?profile_id=eq." + encodeURIComponent(pid) +
       "&status=eq.active&order=start_date.desc&limit=1", { headers: sbHeaders() });
     var brows = await br.json();
-    var block = Array.isArray(brows) && brows.length ? brows[0] : null;
+    var blocksTablePresent = Array.isArray(brows);
+    var block = blocksTablePresent && brows.length ? brows[0] : null;
+
     var sr = await fetch(SUPABASE_URL + "/rest/v1/planned_sessions?profile_id=eq." + encodeURIComponent(pid) +
       (block ? "&block_id=eq." + block.id : "") + "&order=date.asc,slot.asc", { headers: sbHeaders() });
     var srows = await sr.json();
-    res.json({ success: true, block: block, sessions: Array.isArray(srows) ? srows : [] });
+    var sessionsTablePresent = Array.isArray(srows);
+
+    // Profile-side preconditions.
+    var pr = await fetch(SUPABASE_URL + "/rest/v1/profiles?id=eq." + encodeURIComponent(pid) +
+      "&select=profile_data", { headers: sbHeaders() });
+    var prows = await pr.json();
+    var pd = (Array.isArray(prows) && prows.length && prows[0].profile_data) || {};
+    var goals = Array.isArray(pd.goals) ? pd.goals : [];
+    var drivers = goals.filter(function(g) { return g && g.tier === "driver"; }).length;
+
+    var ready = {
+      training_blocks_table: blocksTablePresent,
+      planned_sessions_table: sessionsTablePresent,
+      engine_v2_flag: pd.engine_v2 === true,
+      goals_tiered: goals.filter(function(g) { return g && g.tier; }).length + "/" + goals.length,
+      drivers: drivers,
+      schedule_v3: !!pd.schedule_v3,
+      defaults: !!pd.defaults,
+    };
+    ready.can_generate = blocksTablePresent && sessionsTablePresent && ready.engine_v2_flag;
+    ready.will_be_meaningful = ready.can_generate && drivers > 0 && !!pd.schedule_v3;
+
+    res.json({
+      success: true,
+      ready: ready,
+      block: block,
+      sessions: sessionsTablePresent ? srows : [],
+    });
   } catch (e) {
     res.status(500).json({ success: false, error: e.message });
   }

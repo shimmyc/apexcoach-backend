@@ -1844,6 +1844,19 @@ produced 2026-07-22 and approved; see that session's report. Phasing:
 - **Phase 2 — Rules module + progression/dossier builders + audit endpoint.** ✅ **Done 2026-07-22, deployed, run live against profile 4.** Delivered: three unrun migration files (above); `server/coachingRules.js` (one source, consumed as prompt text AND as callable pure functions, every rule carrying an evidence marker); `server/v2Progression.js` (progression state in code, no table); `server/v2Dossier.js` (code-derived flags first, one small Haiku pass for prose only); `GET /api/v2/audit/:profileId` (admin-gated, read-only); and `v2CurrentPhase()`, the server-side roadmap phase resolver. **v1 isolation held** — the only `server.js` edits are three additive requires and one new route; no v1 function, prompt or endpoint changed, and a post-deploy smoke test of profile 1's workouts/exercises/daily-recs/micro-goals/providers endpoints all returned 200.
 - **Phase 3 — Planner** (weekly, Sonnet) + block/session persistence + admin trigger. **NEXT — not started.**
 - **Phase 4 — Nightly job + autoregulator** (Haiku) + alternate cache. **Not started.**
+  - **⚠ Render is on the Hobby (free) plan and spins down after ~15 minutes idle** (confirmed by
+    Shimmy 2026-07-22). The in-process interval therefore **cannot be the primary nightly
+    mechanism** — the service will usually be asleep when it should fire. Design from this
+    assumption: the **admin-gated endpoint driven by an external cron is the real trigger** (the
+    inbound request also wakes the service); the interval is a secondary path for when the service
+    happens to already be warm.
+  - **RE-TIERING ON PHASE COMPLETION — captured 2026-07-22 so it is not lost between sessions.**
+    The current profile-4 tiering (drivers = Fix Posture + Fix Pubic Osteitis) is **temporary by
+    design, not permanent**. Once a driver clears its current roadmap phase — or no longer needs to
+    structure the whole week — the next planner run must **promote the highest-priority
+    maintenance-tier goal to driver (Build Muscle is first in line) and demote the completed rehab
+    goal to maintenance**. This belongs with the re-plan triggers (driver-tier goal change / phase
+    completion), NOT with the planner itself. Deliberately not built in Phase 3.
 - **Phase 5 — Variant endpoint** (Haiku, streamed) + conversational constraints. **Not started.**
 - **Phase 6 — Flagged UI**: week view, today card, variant surface, effort tap, defaults, tier selector. **Not started.**
 - **Phase 7 — Coach Chat v2 integration. DESIGN NOT STARTED — DO NOT BUILD.** Explicitly out of
