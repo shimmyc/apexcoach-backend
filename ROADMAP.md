@@ -2194,6 +2194,18 @@ Macro roadmap shape (stored on `profiles.roadmap_data`):
   hung Google token endpoint would hang the caller until the platform kills the request. The
   module-level GET retry wrapper does not cover it (it's a POST, and adds retry not timeout). Fix
   is an `AbortController` mirroring `ghFetch()`; flagged only this pass.
+- [ ] **Engine v2: `goal_tags` are model-labelled and under-report (found 2026-07-22, Phase 3.5).**
+  The planner prescribes work for a goal and then omits that goal from the session's `goal_tags`.
+  Confirmed on a real generation: four pinky-rehab exercises across two days, with the pinky goal
+  absent from both sessions' tags. The `tiered_goal_prescribed` invariant catches the symptom but
+  cannot distinguish "prescribed but mis-tagged" from "genuinely dropped", and deliberately does
+  not try — it flags, a human reads it.
+  **Durable fix: derive `goal_tags` in CODE from the prescribed exercises rather than trusting the
+  model to label its own output.** This is the same lesson as the roadmap-emphasis work, where a
+  regex over model prose was built, tested and rejected in favour of structured extraction — asking
+  a model to label its own output is a weaker contract than deriving the label from what it
+  actually produced. Not built. **Must be resolved when Phase 7 (Coach Chat) or any goal-progress
+  work starts reading `goal_tags`** — every such consumer will silently under-report until then.
 - [ ] **Drop the redundant `saveWearableTokens` call** in the `/callback` OAuth handler — `saveProfileTokens` now mirrors into `wearable_connections`, so the explicit second write is redundant (idempotent, harmless).
 - [ ] **Add `workouts.duration_minutes` column** so manual session durations count in analytics without relying on summed `exercises.duration_minutes`.
 - [ ] **Rename `?max_intraday=` → `?max_calls=`** in `/api/debug/backfill-wearable-hr` (the budget now covers TCX **+** intraday calls, not just intraday). Keep `max_intraday` as an alias for back-compat.

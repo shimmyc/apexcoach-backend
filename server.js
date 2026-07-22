@@ -14,6 +14,8 @@ const v2Rules       = require("./server/coachingRules");
 const v2Progression = require("./server/v2Progression");
 const v2Dossier     = require("./server/v2Dossier");
 const v2Planner     = require("./server/v2Planner");
+const v2Readiness   = require("./server/v2Readiness");
+const v2Autoregulator = require("./server/v2Autoregulator");
 
 // Forces a fresh TCP/TLS connection — Render's node-fetch pool has a
 // compatibility issue with Fitbit's token endpoint that causes Premature
@@ -4278,32 +4280,63 @@ app.get("/api/profiles/:id/life-os-summary", async function(req, res) {
     var readinessFresh = false;
     var planned = [];
     try {
+      // v2 columns are selected too, but tolerated-absent: an unrun v2 migration
+      // makes PostgREST return an error OBJECT, so fall back to the v1-only
+      // select. This keeps the external Life OS feed working through the
+      // deploy/migration window regardless of ordering.
+      var v2Select = "daily_recommendations,daily_recommendations_date,daily_recommendations_readiness,profile_data,v2_daily_cache,v2_daily_cache_date";
       var pr = await fetch(
-        SUPABASE_URL + "/rest/v1/profiles?id=eq." + encodeURIComponent(pid) +
-          "&select=daily_recommendations,daily_recommendations_date,daily_recommendations_readiness",
+        SUPABASE_URL + "/rest/v1/profiles?id=eq." + encodeURIComponent(pid) + "&select=" + v2Select,
         { headers: sbHeaders() }
       );
       var prows = await pr.json();
+      if (!Array.isArray(prows)) {
+        pr = await fetch(
+          SUPABASE_URL + "/rest/v1/profiles?id=eq." + encodeURIComponent(pid) +
+            "&select=daily_recommendations,daily_recommendations_date,daily_recommendations_readiness,profile_data",
+          { headers: sbHeaders() }
+        );
+        prows = await pr.json();
+      }
       if (!prows || !prows.length) return res.status(404).json({ error: "Profile not found" });
       var prow = prows[0];
-      // Stale (date != today) → readiness/plan are nulled, readiness_fresh=false.
-      readinessFresh = prow.daily_recommendations_date === today;
-      if (readinessFresh) {
-        readiness = (typeof prow.daily_recommendations_readiness === "number")
-          ? prow.daily_recommendations_readiness : null;
-        var opts = (prow.daily_recommendations && Array.isArray(prow.daily_recommendations.options))
-          ? prow.daily_recommendations.options : [];
-        planned = opts.map(function(o) {
-          // Stored option shape: { type:<category>, headline, duration, ... }.
-          // Map to Life OS's {headline, category, duration}; tolerate a literal
-          // `category`/`duration_minutes` field if the rec schema ever changes.
-          return {
-            headline: o.headline || null,
-            category: o.category || o.type || null,
-            duration: (typeof o.duration === "number") ? o.duration
-              : (typeof o.duration_minutes === "number" ? o.duration_minutes : null),
-          };
-        });
+      var isV2 = prow.profile_data && prow.profile_data.engine_v2 === true;
+
+      if (isV2) {
+        // ENGINE v2 branch (approved Phase 1 decision). A v2 profile's
+        // daily_recommendations columns are intentionally EMPTY, so reading them
+        // would serve the external app a stale/blank plan. Read the v2 cache
+        // instead. Read-only; no shape leak — planned[] stays {headline,category,
+        // duration}. readiness stays null: v2 readiness is baseline-relative and
+        // has no single 0-100 score to hand out here, and inventing one would be
+        // worse than null (Life OS already treats readiness as optional).
+        var freshV2 = prow.v2_daily_cache_date === today;
+        readinessFresh = freshV2;
+        if (freshV2 && prow.v2_daily_cache && prow.v2_daily_cache.today) {
+          var t = prow.v2_daily_cache.today;
+          planned = [{
+            headline: t.headline || (t.category ? (String(t.category) + " session") : null),
+            category: t.category || null,
+            duration: (typeof t.duration_min === "number") ? t.duration_min : null,
+          }];
+        }
+      } else {
+        // v1 path — unchanged.
+        readinessFresh = prow.daily_recommendations_date === today;
+        if (readinessFresh) {
+          readiness = (typeof prow.daily_recommendations_readiness === "number")
+            ? prow.daily_recommendations_readiness : null;
+          var opts = (prow.daily_recommendations && Array.isArray(prow.daily_recommendations.options))
+            ? prow.daily_recommendations.options : [];
+          planned = opts.map(function(o) {
+            return {
+              headline: o.headline || null,
+              category: o.category || o.type || null,
+              duration: (typeof o.duration === "number") ? o.duration
+                : (typeof o.duration_minutes === "number" ? o.duration_minutes : null),
+            };
+          });
+        }
       }
     } catch (e) {
       console.error("[LifeOS] profile read failed:", e.message);
@@ -12399,8 +12432,383 @@ app.get("/api/v2/plan/:profileId", async function(req, res) {
   }
 });
 
+// ══════════════════════════════════════════════════════════════════════════
+// ENGINE v2 — PHASE 4: nightly job + autoregulator + alternate cache
+// ══════════════════════════════════════════════════════════════════════════
+
+// Concurrency lock for the nightly job — deliberately a SEPARATE map from
+// _refreshLocks (the OAuth token map), same shape. The interval tick and a
+// manual admin trigger must never double-generate for one profile.
+var _v2Locks = {};
+function withV2Lock(key, fn) {
+  if (_v2Locks[key]) return _v2Locks[key];
+  var p = Promise.resolve().then(fn);
+  _v2Locks[key] = p;
+  return p.finally(function () { if (_v2Locks[key] === p) delete _v2Locks[key]; });
+}
+
+/**
+ * Run one Haiku call, non-streamed to the client (this is a server-side batch
+ * job, not a user-facing request), with a capped single retry on unparseable
+ * JSON. Returns { obj, usage, raw, attempts }.
+ */
+async function v2HaikuJSON(system, user, maxTokens, label) {
+  var attempts = 0, obj = null, usage = null, raw = "";
+  while (attempts < 2 && !obj) {
+    attempts++;
+    var u = attempts > 1 ? user + "\n\nRETRY: return ONLY the JSON object, nothing before '{' or after '}'." : user;
+    var resp = await fetch("https://api.anthropic.com/v1/messages", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "x-api-key": process.env.ANTHROPIC_KEY, "anthropic-version": "2023-06-01" },
+      body: JSON.stringify({
+        model: MODEL_HAIKU, max_tokens: maxTokens,
+        system: wrapSystemWithCache(system, label),
+        messages: [{ role: "user", content: u }],
+      }),
+      agent: anthropicStreamAgent,
+    });
+    if (!resp.ok) {
+      var et = await resp.text().catch(function () { return "err " + resp.status; });
+      console.warn("[" + label + "] upstream " + resp.status + ": " + et.slice(0, 200));
+      break;
+    }
+    var data = await resp.json();
+    usage = data.usage || usage;
+    raw = (data.content && data.content[0] && data.content[0].text) || "";
+    obj = v2Autoregulator.extractJSON(raw);
+  }
+  return { obj: obj, usage: usage, raw: raw, attempts: attempts };
+}
+
+/**
+ * Autoregulate today's planned session for one profile. Returns the adjusted
+ * session + decision + the invariant/modification report. Pure orchestration —
+ * all the rules live in the modules.
+ */
+async function v2Autoregulate(ctx) {
+  var planned = ctx.plannedSession;     // the .session jsonb
+  var plannedRow = ctx.plannedRow;      // the full planned_sessions row (for movable)
+  var isAnchor = plannedRow && plannedRow.movable === false;
+
+  // Yesterday's effort, and a mat-load note, from recent workouts.
+  var yEffort = ctx.yesterdayEffort || null;
+  var matNote = ctx.matLoadNote || null;
+
+  var rulesText = v2Rules.renderRulesForPrompt(["readiness", "progression", "deload", "interference", "gap_decay"]);
+  var prompt = v2Autoregulator.buildAutoregulatorPrompt({
+    plannedSession: planned, isAnchor: isAnchor,
+    readinessText: ctx.readinessText, recencyText: ctx.recencyText,
+    dossierText: ctx.dossierText, progressionText: ctx.progressionText,
+    yesterdayEffort: yEffort, matLoadNote: matNote, rulesText: rulesText,
+  });
+
+  console.log("[v2Autoreg] profile " + ctx.profileId + " sections " + JSON.stringify(prompt.sections));
+
+  var res = await v2HaikuJSON(prompt.system, prompt.user, 3000, "v2_autoregulate");
+  if (!res.obj || !res.obj.session) {
+    // Non-fatal: fall back to the planned session UNCHANGED. Serving the plan is
+    // always better than serving nothing or something invented.
+    return {
+      decision: "kept", why: "Autoregulator produced no usable output; today's planned session is used as written.",
+      session: planned, usage: res.usage, sections: prompt.sections,
+      fell_back: true, problems: [{ check: "autoregulator_output", severity: "flagged", detail: "no parseable session after " + res.attempts + " attempt(s)" }],
+    };
+  }
+
+  var adjusted = res.obj.session;
+  var decision = String(res.obj.decision || "kept");
+  var problems = [];
+
+  // Anchor integrity — structural, not trusting the prompt.
+  if (isAnchor) {
+    var ap = v2Autoregulator.assertAnchorUntouched(planned, adjusted);
+    if (ap.some(function (p) { return p.severity === "rejected"; })) {
+      return { decision: "kept", why: "Fixed commitment — kept exactly as planned.", session: planned, usage: res.usage, sections: prompt.sections, reverted: true, problems: ap };
+    }
+    problems = problems.concat(ap);
+  }
+
+  // Modification-not-replacement.
+  var mod = v2Autoregulator.assertIsModification(planned, adjusted, decision);
+  problems = problems.concat(mod.problems);
+  if (mod.hardReject) {
+    return { decision: "kept", why: "Autoregulator output was a replacement, not a modification; reverted to the planned session.", session: planned, usage: res.usage, sections: prompt.sections, reverted: true, problems: problems, retention: mod.retention };
+  }
+
+  // Reuse the Phase 3.5 invariant set on the single adjusted session.
+  var enforced = v2Planner.enforceInvariants(
+    { sessions: [Object.assign({}, plannedRow, { session: undefined, date: plannedRow.date, slot: plannedRow.slot, movable: plannedRow.movable, category: adjusted.category, duration_min: adjusted.duration_min, intensity: adjusted.intensity, why: adjusted.why, goal_tags: adjusted.goal_tags, segments: adjusted.segments })], block: {} },
+    { profileId: ctx.profileId, weekDates: [{ date: plannedRow.date }], tiers: { goals: [] }, schedule: { fill_policy: "ai_assigned" }, anchors: [] }
+  );
+  var cleaned = enforced.sessions[0] || {};
+  problems = problems.concat(enforced.violations);
+
+  return {
+    decision: decision,
+    why: res.obj.why || adjusted.why || "adjusted",
+    session: {
+      category: cleaned.category, duration_min: cleaned.duration_min, intensity: cleaned.intensity,
+      why: cleaned.why, goal_tags: cleaned.goal_tags, segments: cleaned.segments,
+    },
+    usage: res.usage, sections: prompt.sections, problems: problems, retention: mod.retention,
+  };
+}
+
+/**
+ * Build the <=4 alternate cache objects. Duration variants are derived in CODE
+ * (the rules module's time-compression order fully determines the outcome); the
+ * category swap is the ONE that needs model judgment.
+ */
+async function v2BuildAlternates(ctx, primarySession) {
+  var out = { primary: null, alternates: [], model_calls: 0, code_derived: 0, usage: [] };
+
+  var defaultMin = (ctx.defaults && ctx.defaults.duration_min) || 45;
+  out.primary = { key: "primary", label: "As planned (" + (primarySession.duration_min || defaultMin) + " min)", source: "autoregulator", session: primarySession };
+
+  // Neighboring durations relative to the DEFAULT (e.g. 45 -> 30 and 60), not
+  // relative to today's possibly-anchored duration.
+  var neighbors = [defaultMin - 15, defaultMin + 15].filter(function (m) { return m >= 15 && m !== primarySession.duration_min; });
+  neighbors.forEach(function (target) {
+    if (out.alternates.length >= 3) return;
+    if (target < (primarySession.duration_min || defaultMin)) {
+      var c = v2Autoregulator.compressSessionToDuration(primarySession, target);
+      out.alternates.push({ key: "dur_" + target, label: target + " min (compressed)", source: "code:time_compression", steps: c.steps, session: c.session });
+      out.code_derived++;
+    } else {
+      // Extending is NOT a mechanical inverse of compression (adding volume is a
+      // judgment call the code should not fake). A longer variant just restates
+      // the primary with a note; a real longer session is Phase 5 variant work.
+      out.alternates.push({ key: "dur_" + target, label: target + " min (primary as-is; extend on request)", source: "code:noop_extend", session: Object.assign({}, primarySession) });
+      out.code_derived++;
+    }
+  });
+
+  // One category swap — the judgment call. Only if there is budget for a 4th
+  // object AND today is not an immovable anchor (you cannot swap a fixed class).
+  if (out.alternates.length < 3 && !ctx.isAnchorToday) {
+    var swapSys = "You produce ONE alternate workout in a DIFFERENT category from today's planned session, " +
+      "for an athlete who wants to train something else. Same duration, same schema. Respect injuries and the rules. " +
+      "STRICT JSON: {\"category\":\"...\",\"session\":{...same session schema with time_seconds...}}. No prose.";
+    var swapUser = "TODAY'S PLANNED SESSION (category: " + (primarySession.category || "?") + ", " + (primarySession.duration_min || defaultMin) + " min):\n" +
+      JSON.stringify(primarySession, null, 1) + "\n\n" + ctx.dossierText + "\n\n" +
+      "Pick a sensible DIFFERENT category (if today is strength, offer mobility or conditioning; if today is cardio, offer strength or mobility) and program a full session of the SAME duration.";
+    var swap = await v2HaikuJSON(swapSys, swapUser, 2500, "v2_alt_swap");
+    out.model_calls++;
+    if (swap.usage) out.usage.push({ call: "category_swap", usage: swap.usage });
+    if (swap.obj && swap.obj.session) {
+      out.alternates.push({ key: "cat_swap", label: "Different focus: " + (swap.obj.category || "alternate"), source: "model:category_swap", session: swap.obj.session });
+    }
+  }
+
+  return out;
+}
+
+/**
+ * Flatten the primary + alternates to renderer-ready strings and assemble the
+ * cache object written to profiles.v2_daily_cache.
+ */
+function v2AssembleCache(alt, decision, today) {
+  var flat = function (s) { return v2Planner.flattenSessionForCache(s); };
+  return {
+    v: 1,
+    date: today,
+    generated_at: new Date().toISOString(),
+    decision_tag: decision.decision,
+    why: decision.why,
+    today: flat(decision.session),
+    alternates: alt.alternates.slice(0, 3).map(function (a) {
+      return { key: a.key, label: a.label, source: a.source, session: flat(a.session) };
+    }),
+  };
+}
+
+/**
+ * The full nightly pipeline for ONE profile. Serialised by withV2Lock.
+ * Ordering: recency -> progression -> dossier -> today's planned row ->
+ * autoregulate -> alternates -> single cache write.
+ */
+async function v2NightlyForProfile(pid, opts) {
+  opts = opts || {};
+  var t0 = Date.now();
+  var out = { profile_id: Number(pid), stages: {}, usage: {}, tokens: { input: 0, output: 0 } };
+
+  return withV2Lock("nightly:" + pid, async function () {
+    var ctxData = await loadV2Context(pid);
+    if (!ctxData) { out.status = "error"; out.reason = "profile not found"; return out; }
+    if (!ctxData.engineV2) { out.status = "skipped"; out.reason = "engine_v2 not true"; return out; }
+
+    var today = ctxData.today;
+    out.today = today;
+
+    // Idempotency — athlete-local date, not the server's UTC date.
+    if (!opts.force && ctxData.profileRow.v2_daily_cache_date === today) {
+      out.status = "skipped"; out.reason = "cache already fresh for " + today;
+      out.elapsed_ms = Date.now() - t0;
+      return out;
+    }
+
+    var deps = { fetch: fetch, SUPABASE_URL: SUPABASE_URL, sbHeaders: sbHeaders, localToday: localToday, callAISystem: callAISystem, MODEL_HAIKU: MODEL_HAIKU };
+
+    // recency + progression already computed in loadV2Context; readiness is new.
+    var readiness = await v2Readiness.buildReadinessState(deps, pid, { today: today }).catch(function (e) { return { available: false, error: e.message }; });
+    out.stages.readiness = { available: readiness.available, tag: readiness.modification && readiness.modification.tag };
+
+    var progressionText = v2Progression.renderProgressionTable(ctxData.progression);
+    var recencyText = v2Progression.renderRecencyBlock(ctxData.recency);
+    var dossierText = v2Dossier.renderDossierForPrompt(ctxData.dossier);
+    var readinessText = v2Readiness.renderReadinessBlock(readiness);
+
+    // Today's planned session.
+    var psr = await fetch(SUPABASE_URL + "/rest/v1/planned_sessions?profile_id=eq." + pid +
+      "&date=eq." + today + "&order=slot.asc", { headers: sbHeaders() });
+    var pRows = await psr.json();
+    var todayRow = Array.isArray(pRows) && pRows.length ? pRows[0] : null;
+    out.stages.planned_session = todayRow ? { found: true, slot: todayRow.slot, category: todayRow.session && todayRow.session.category, movable: todayRow.movable } : { found: false };
+
+    var cacheObj, decision;
+    if (!todayRow) {
+      // No planned session -> explicit rest state. NEVER generate one.
+      decision = { decision: "recovery", why: "No session was planned for today — this is a rest day.", session: { category: "rest", duration_min: 0, intensity: "low", why: "Rest day — nothing planned.", goal_tags: [], segments: [] } };
+      cacheObj = { v: 1, date: today, generated_at: new Date().toISOString(), decision_tag: "recovery", why: decision.why, today: { category: "rest", duration_min: 0, intensity: "low", headline: "Rest day", why: decision.why, goal_tags: [], sections: [] }, alternates: [], no_planned_session: true };
+      out.stages.autoregulator = { skipped: "no planned session" };
+      out.stages.alternates = { skipped: "no planned session" };
+    } else {
+      // Yesterday's effort + mat-load.
+      var yEffort = null, matNote = null;
+      try {
+        var yr = await fetch(SUPABASE_URL + "/rest/v1/workouts?profile_id=eq." + pid + "&date=eq." +
+          v2YesterdayLocal(ctxData.profileRow) + "&select=session_effort,type", { headers: sbHeaders() });
+        var yRows = await yr.json();
+        if (Array.isArray(yRows) && yRows.length) {
+          yEffort = yRows[0].session_effort || null;
+          if (yRows.some(function (w) { return /mma|spar|bjj|grappl|jiu|kickbox|box|martial/i.test(String(w.type || "")); })) {
+            matNote = "MAT LOAD: a hard combat-sports session was logged yesterday. Reduce next-day lower-body strength volume by ~2 sets and do not stack another high-CNS session today.";
+          }
+        }
+      } catch (e) { /* non-fatal */ }
+
+      var autoreg = await v2Autoregulate({
+        profileId: pid, plannedSession: todayRow.session, plannedRow: todayRow,
+        readinessText: readinessText, recencyText: recencyText, dossierText: dossierText,
+        progressionText: progressionText, yesterdayEffort: yEffort, matLoadNote: matNote,
+      });
+      decision = autoreg;
+      out.stages.autoregulator = { decision: autoreg.decision, why: autoreg.why, retention: autoreg.retention, fell_back: !!autoreg.fell_back, reverted: !!autoreg.reverted, problems: autoreg.problems, sections: autoreg.sections };
+      if (autoreg.usage) { out.usage.autoregulator = autoreg.usage; out.tokens.input += autoreg.usage.input_tokens || 0; out.tokens.output += autoreg.usage.output_tokens || 0; }
+
+      var isAnchorToday = todayRow.movable === false;
+      var alt = await v2BuildAlternates({ profileId: pid, defaults: ctxData.profileData.defaults, dossierText: dossierText, isAnchorToday: isAnchorToday }, decision.session);
+      out.stages.alternates = { count: alt.alternates.length, model_calls: alt.model_calls, code_derived: alt.code_derived, breakdown: alt.alternates.map(function (a) { return { key: a.key, source: a.source }; }) };
+      (alt.usage || []).forEach(function (u) { out.tokens.input += (u.usage.input_tokens || 0); out.tokens.output += (u.usage.output_tokens || 0); });
+      out.usage.alternates = alt.usage;
+
+      cacheObj = v2AssembleCache(alt, decision, today);
+    }
+
+    // SINGLE cache write.
+    var wr = await fetch(SUPABASE_URL + "/rest/v1/profiles?id=eq." + pid, {
+      method: "PATCH", headers: sbHeaders("return=minimal"),
+      body: JSON.stringify({ v2_daily_cache: cacheObj, v2_daily_cache_date: today }),
+    });
+    out.stages.cache_write = { ok: wr.ok, status: wr.status };
+    if (!wr.ok) { out.status = "error"; out.reason = "cache write failed: " + (await wr.text().catch(function () { return wr.status; })); return out; }
+
+    out.status = "succeeded";
+    out.elapsed_ms = Date.now() - t0;
+    return out;
+  });
+}
+
+function v2YesterdayLocal(profileRow) {
+  var d = new Date(localToday(profileRow) + "T12:00:00");
+  d.setDate(d.getDate() - 1);
+  return d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0");
+}
+
+/**
+ * POST /api/v2/cron/nightly — admin-gated. The PRIMARY nightly mechanism, since
+ * Render's Hobby plan spins the interval's host down; an external cron hits this.
+ * ?profile_id= scopes; default = every engine_v2 profile. ?force=1 bypasses the
+ * per-profile idempotency guard.
+ */
+app.post("/api/v2/cron/nightly", async function (req, res) {
+  var t0 = Date.now();
+  try {
+    if (process.env.ADMIN_SECRET) {
+      var got = req.query.secret || req.get("X-Admin-Secret");
+      if (got !== process.env.ADMIN_SECRET) return res.status(403).json({ success: false, error: "forbidden" });
+    }
+    var ids = [];
+    if (req.query.profile_id) {
+      ids = [req.query.profile_id];
+    } else {
+      // Every engine_v2 profile. profile_data->>engine_v2 filter via PostgREST.
+      var pr = await fetch(SUPABASE_URL + "/rest/v1/profiles?profile_data->>engine_v2=eq.true&select=id", { headers: sbHeaders() });
+      var rows = await pr.json();
+      ids = Array.isArray(rows) ? rows.map(function (r) { return r.id; }) : [];
+    }
+
+    var force = req.query.force === "1";
+    var results = [];
+    // Per-profile isolation: one failure must not abort the others.
+    for (var i = 0; i < ids.length; i++) {
+      try {
+        var r = await v2NightlyForProfile(ids[i], { force: force });
+        results.push(r);
+      } catch (e) {
+        results.push({ profile_id: Number(ids[i]), status: "error", reason: e.message });
+      }
+    }
+
+    var summary = {
+      processed: results.length,
+      succeeded: results.filter(function (r) { return r.status === "succeeded"; }).length,
+      skipped: results.filter(function (r) { return r.status === "skipped"; }).length,
+      failed: results.filter(function (r) { return r.status === "error"; }).length,
+      total_input_tokens: results.reduce(function (a, r) { return a + ((r.tokens && r.tokens.input) || 0); }, 0),
+      total_output_tokens: results.reduce(function (a, r) { return a + ((r.tokens && r.tokens.output) || 0); }, 0),
+      wall_ms: Date.now() - t0,
+    };
+    console.log("[v2Cron] nightly summary " + JSON.stringify(summary));
+    res.json({ success: true, summary: summary, results: results });
+  } catch (e) {
+    console.error("[v2Cron] failed:", e && e.message);
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+// In-process hourly interval — SECONDARY only. On Render's Hobby plan the host
+// spins down when idle, so this frequently will not fire; the system is fully
+// correct without it (the admin endpoint is the real trigger). Each tick runs
+// the same per-profile pipeline, which is idempotent on the athlete-local date
+// and serialised by withV2Lock, so a tick that overlaps a manual trigger cannot
+// double-generate.
+var _v2IntervalStarted = false;
+function startV2NightlyInterval() {
+  if (_v2IntervalStarted) return;
+  _v2IntervalStarted = true;
+  setInterval(async function () {
+    try {
+      var pr = await fetch(SUPABASE_URL + "/rest/v1/profiles?profile_data->>engine_v2=eq.true&select=id", { headers: sbHeaders() });
+      var rows = await pr.json();
+      var ids = Array.isArray(rows) ? rows.map(function (r) { return r.id; }) : [];
+      for (var i = 0; i < ids.length; i++) {
+        // force:false — the idempotency guard skips a profile already fresh for
+        // its own local date, so most hourly ticks are cheap no-ops.
+        await v2NightlyForProfile(ids[i], { force: false }).catch(function (e) {
+          console.warn("[v2Interval] profile " + ids[i] + " failed (non-fatal): " + e.message);
+        });
+      }
+    } catch (e) {
+      console.warn("[v2Interval] tick failed (non-fatal): " + e.message);
+    }
+  }, 3600000); // hourly
+  console.log("[v2Interval] hourly nightly interval armed (secondary path; Render Hobby spin-down makes the admin cron primary)");
+}
+
 const httpServer = app.listen(PORT, function() {
   console.log("ApexCoach running on port " + PORT);
+  startV2NightlyInterval();
 });
 // Standard mitigation for Node apps behind a reverse proxy (Render): the
 // proxy's own idle-connection timeout is commonly ~60s. If Node's keep-alive

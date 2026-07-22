@@ -657,8 +657,80 @@ function extractPlanJSON(raw) {
   try { return JSON.parse(t.slice(s, e + 1)); } catch (err) { return null; }
 }
 
+// ── Flatten structured session -> display strings (cache-write boundary) ────
+/**
+ * Approved Phase 1 decision: structured exercise OBJECTS live in
+ * planned_sessions.session; they are flattened to STRINGS at the cache-write
+ * boundary so the existing sectioned renderer (recOptionSections /
+ * recOptionExerciseStrings in public/index.html) consumes them byte-identically
+ * and stays untouched. This is the ONE place the object->string conversion
+ * happens.
+ *
+ * The output shape mirrors a v1 rec option's `sections[]`:
+ *   { label, minutes, exercises: [ "Name — 3 x 8 @ 135 lb", ... ] }
+ */
+function flattenExercise(ex) {
+  if (!ex || !ex.name) return null;
+  var bits = [];
+  if (ex.sets && ex.reps) bits.push(ex.sets + " x " + ex.reps);
+  else if (ex.reps) bits.push(ex.reps + " reps");
+  else if (ex.sets) bits.push(ex.sets + " sets");
+  if (ex.time_seconds) bits.push(ex.time_seconds + "s");   // always seconds — schema guarantees it
+  if (ex.distance) bits.push(String(ex.distance));
+  var detail = bits.join(", ");
+  var s = ex.name;
+  if (detail) s += " — " + detail;
+  if (ex.load && String(ex.load).toLowerCase() !== "bodyweight") s += " @ " + ex.load;
+  if (ex.rest) s += " (rest " + ex.rest + ")";
+  return s;
+}
+
+/**
+ * A structured session -> a flat, renderer-ready object.
+ * SEGMENT_TYPES map to the section renderer's label + minutes shape.
+ */
+function flattenSessionForCache(session) {
+  var segs = (session && session.segments) || [];
+  var sections = segs.map(function (seg) {
+    return {
+      label: prettySegmentLabel(seg.type, seg.intent),
+      minutes: Number(seg.duration_min) || null,
+      exercises: (seg.exercises || []).map(flattenExercise).filter(Boolean),
+    };
+  }).filter(function (s) { return s.exercises.length || s.label; });
+
+  return {
+    category: session.category || "other",
+    duration_min: Number(session.duration_min) || null,
+    intensity: session.intensity || "medium",
+    headline: session.headline || sessionHeadline(session),
+    why: session.why || "",
+    goal_tags: Array.isArray(session.goal_tags) ? session.goal_tags : [],
+    sections: sections,
+  };
+}
+
+var SEGMENT_LABELS = {
+  warmup: "Warm-up", cooldown: "Cool-down", straight_sets: "Main",
+  superset: "Superset", cluster: "Clusters", circuit: "Circuit",
+  emom: "EMOM", amrap: "AMRAP", interval_long: "Intervals",
+  interval_short: "Intervals", sprint: "Sprints", steady_state: "Steady state",
+  complex: "Complex", skill: "Skill", mobility: "Mobility",
+  active_recovery: "Active recovery",
+};
+function prettySegmentLabel(type, intent) {
+  // A single unlabeled block renders flat (no header) in the v1 renderer, which
+  // is correct for e.g. a lone steady-state ride. Only label when it adds info.
+  return SEGMENT_LABELS[type] || (type ? type.replace(/_/g, " ") : null);
+}
+function sessionHeadline(session) {
+  var cat = String(session.category || "session").replace(/_/g, " ");
+  return cat.charAt(0).toUpperCase() + cat.slice(1) + " — " + (session.duration_min || "?") + " min";
+}
+
 module.exports = {
   resolveTiers, resolveScheduleV3, anchorsForWeek, buildWeekDates,
+  flattenSessionForCache, flattenExercise,
   buildPlannerPrompt, enforceInvariants, toPersistenceShape, extractPlanJSON,
   renderTierBlock, renderScheduleBlock, renderEmphasisBlock,
   DAY_KEYS, DAY_LABELS, SESSION_TOTAL_SET_CAP, HIGH_CNS_CATEGORIES,
