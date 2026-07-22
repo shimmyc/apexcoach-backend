@@ -452,8 +452,151 @@ function renderProgressionTable(state, opts) {
   return lines.join("\n");
 }
 
+// ── RECENCY STATE ───────────────────────────────────────────────────────────
+/**
+ * Computed training-recency facts, derived in CODE so the model never has to
+ * infer one.
+ *
+ * WHY THIS EXISTS. On the first real plan the model asserted a "22-day gap" and
+ * framed the week as "post-gap day 1", cutting load 10-20% on that basis. The
+ * number was correct against the database — and derivable from NOTHING in the
+ * prompt (the progression table's own instance dates imply ~32 days; the
+ * dossier carries only `consistency`). A right answer reached unverifiably is
+ * the same failure mode as a confidently wrong one. Worse, the gap had CLOSED
+ * 9 days and 7 sessions earlier, so the plan treated resolved history as
+ * current.
+ *
+ * Every figure below is computed from `workouts` and handed to the model
+ * explicitly, and the planner system prompt forbids stating any training-history
+ * number that is not in the prompt.
+ *
+ * @param {object} deps { fetch, SUPABASE_URL, sbHeaders }
+ * @param {number|string} profileId
+ * @param {object} opts { today, windowDays }
+ */
+async function buildRecencyState(deps, profileId, opts) {
+  opts = opts || {};
+  var today = opts.today;
+  if (!today) throw new Error("buildRecencyState requires opts.today (athlete-local date)");
+  var windowDays = opts.windowDays || 60;
+
+  var rows = [];
+  try {
+    var r = await deps.fetch(deps.SUPABASE_URL + "/rest/v1/workouts?profile_id=eq." +
+      encodeURIComponent(profileId) + "&select=date,done,type&order=date.desc&limit=2000",
+      { headers: deps.sbHeaders() });
+    var data = await r.json();
+    rows = Array.isArray(data) ? data : [];
+  } catch (e) {
+    return { error: e.message, available: false };
+  }
+
+  // workouts.date is a TEXT column and is known to contain malformed values on
+  // some profiles (6 rows on profile 1 hold time strings — ROADMAP §6). Anything
+  // that is not a real date-key is excluded rather than silently sorted as text.
+  var dates = [];
+  var seen = {};
+  rows.forEach(function (w) {
+    if (!w || !/^\d{4}-\d{2}-\d{2}$/.test(String(w.date || ""))) return;
+    if (seen[w.date]) return;               // one entry per calendar day
+    seen[w.date] = true;
+    dates.push(w.date);
+  });
+  dates.sort();                              // oldest first
+
+  if (!dates.length) {
+    return {
+      available: true, today: today, total_days_logged: 0,
+      days_since_last_workout: null, last_workout_date: null,
+      sessions_last_7: 0, sessions_last_14: 0, current_streak_days: 0,
+      longest_gap_60d: null,
+    };
+  }
+
+  var last = dates[dates.length - 1];
+  var within = function (d, n) {
+    var diff = daysBetween(d, today);
+    return diff != null && diff >= 0 && diff < n;
+  };
+
+  // Current streak: consecutive calendar days with a logged session, counting
+  // back from today (or from yesterday if nothing is logged today yet).
+  var haveToday = seen[today];
+  var streak = 0;
+  var cursor = new Date(String(today) + "T12:00:00");
+  if (!haveToday) cursor.setDate(cursor.getDate() - 1);
+  for (var guard = 0; guard < 400; guard++) {
+    var key = cursor.getFullYear() + "-" +
+      String(cursor.getMonth() + 1).padStart(2, "0") + "-" +
+      String(cursor.getDate()).padStart(2, "0");
+    if (!seen[key]) break;
+    streak++;
+    cursor.setDate(cursor.getDate() - 1);
+  }
+
+  // Longest gap inside the window, and whether it is still open.
+  var windowStart = new Date(String(today) + "T12:00:00");
+  windowStart.setDate(windowStart.getDate() - (windowDays - 1));
+  var wsKey = windowStart.getFullYear() + "-" +
+    String(windowStart.getMonth() + 1).padStart(2, "0") + "-" +
+    String(windowStart.getDate()).padStart(2, "0");
+  var inWindow = dates.filter(function (d) { return d >= wsKey; });
+
+  var longest = null;
+  for (var i = 1; i < inWindow.length; i++) {
+    var gap = daysBetween(inWindow[i - 1], inWindow[i]);
+    if (gap != null && (!longest || gap > longest.days)) {
+      longest = { days: gap, from: inWindow[i - 1], to: inWindow[i], open: false };
+    }
+  }
+  // A gap that runs from the last logged session to today is still OPEN.
+  var trailing = daysBetween(last, today);
+  if (trailing != null && (!longest || trailing > longest.days)) {
+    longest = { days: trailing, from: last, to: today, open: true };
+  }
+
+  return {
+    available: true,
+    today: today,
+    last_workout_date: last,
+    days_since_last_workout: daysBetween(last, today),
+    sessions_last_7: dates.filter(function (d) { return within(d, 7); }).length,
+    sessions_last_14: dates.filter(function (d) { return within(d, 14); }).length,
+    current_streak_days: streak,
+    total_days_logged: dates.length,
+    days_logged_in_window: inWindow.length,
+    window_days: windowDays,
+    longest_gap_60d: longest,
+  };
+}
+
+/** Prompt block. Deliberately blunt — these are the ONLY history figures allowed. */
+function renderRecencyBlock(rec) {
+  if (!rec || !rec.available) return "TRAINING RECENCY: unavailable.";
+  if (!rec.total_days_logged) {
+    return "TRAINING RECENCY: no workouts logged at all. Treat this athlete as a complete beginner starting fresh.";
+  }
+  var L = ["TRAINING RECENCY (computed from the log — these are the ONLY training-history numbers you may state):"];
+  L.push("- Last workout: " + rec.last_workout_date + " (" + rec.days_since_last_workout + " day(s) ago)");
+  L.push("- Sessions in the last 7 days: " + rec.sessions_last_7 + "; last 14 days: " + rec.sessions_last_14);
+  L.push("- Current streak: " + rec.current_streak_days + " consecutive day(s)");
+  L.push("- Days with a logged session in the last " + rec.window_days + ": " + rec.days_logged_in_window);
+  if (rec.longest_gap_60d) {
+    var g = rec.longest_gap_60d;
+    L.push("- Longest gap in the last " + rec.window_days + " days: " + g.days + " days (" + g.from + " -> " + g.to + "), " +
+      (g.open
+        ? "STILL OPEN — the athlete has not trained since " + g.from + "."
+        : "CLOSED — training resumed on " + g.to + " and this gap is HISTORY, not the current state."));
+  }
+  L.push("- Framing rule: base any 'returning from a layoff' / 'post-gap' language on THIS block only. " +
+    "If the longest gap is CLOSED, do not describe the athlete as returning from it.");
+  return L.join("\n");
+}
+
 module.exports = {
   buildProgressionState,
+  buildRecencyState,
+  renderRecencyBlock,
   renderProgressionTable,
   inferModality,
   topSetOf,

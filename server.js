@@ -12070,6 +12070,11 @@ async function loadV2Context(pid, opts) {
   var progression = await v2Progression.buildProgressionState(deps, pid, {
     today: today, effortByWorkoutId: effortByWorkoutId,
   });
+  // Computed recency — the ONLY sanctioned source of training-history figures.
+  // See buildRecencyState() for why this exists (the model fabricated a
+  // "22-day gap" that was correct but underivable from its inputs).
+  var recency = await v2Progression.buildRecencyState(deps, pid, { today: today })
+    .catch(function(e) { return { available: false, error: e.message }; });
   var fullCtx = await getFullExerciseContext(pid, 90).catch(function() { return null; });
 
   var checkins = [];
@@ -12117,7 +12122,7 @@ async function loadV2Context(pid, opts) {
     v2ColumnsPresent: v2ColumnsPresent,
     progression: progression, fullExerciseContext: fullCtx,
     checkins: checkins, microGoals: microGoals,
-    dossier: dossierObj, dossierBuilt: dossierBuilt,
+    dossier: dossierObj, dossierBuilt: dossierBuilt, recency: recency,
     phaseResolutions: phaseResolutions,
     engineV2: pd.engine_v2 === true,
   };
@@ -12164,13 +12169,14 @@ app.post("/api/v2/plan/:profileId", async function(req, res) {
 
     var rulesText = v2Rules.renderRulesForPrompt();
     var progressionText = v2Progression.renderProgressionTable(ctxData.progression);
+    var recencyText = v2Progression.renderRecencyBlock(ctxData.recency);
     var dossierText = v2Dossier.renderDossierForPrompt(ctxData.dossier);
 
     var prompt = v2Planner.buildPlannerPrompt({
       athleteName: ctxData.profileRow.name,
       tiers: tiers, schedule: schedule, weekDates: weekDates, anchors: anchors,
       phaseResolutions: ctxData.phaseResolutions,
-      dossierText: dossierText, progressionText: progressionText,
+      dossierText: dossierText, progressionText: progressionText, recencyText: recencyText,
       microGoals: ctxData.microGoals,
       defaults: ctxData.profileData.defaults,
       rulesText: rulesText,

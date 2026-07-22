@@ -33,6 +33,24 @@ var HIGH_CNS_INTENSITY = "high";
 // this is a proxy rather than the real per-muscle cap.
 var SESSION_TOTAL_SET_CAP = 30;
 
+/**
+ * SCHEMA DECISION — exercise time is `time_seconds`, a separate field.
+ *
+ * Chosen over a single `time` + required `time_unit` pair. At the renderer
+ * boundary (Phase 6) and in the autoregulator (Phase 4), a field named
+ * `time_seconds` needs no sibling lookup and cannot be half-populated: a
+ * consumer either has seconds or has nothing. A value+unit pair puts the burden
+ * on every consumer to branch, and a MISSING unit degrades silently back into
+ * exactly the ambiguity being fixed — which is how `duration_minutes` became a
+ * two-meaning column in the first place.
+ *
+ * It also matches the vocabulary already in use: progression state exposes
+ * `best_hold_seconds`, and the rules module's isometric increments are in
+ * seconds. A cardio block's LENGTH is not an exercise property at all — it
+ * belongs on the segment's `duration_min`.
+ */
+var EXERCISE_TIME_FIELD = "time_seconds";
+
 // ── Tier resolution ─────────────────────────────────────────────────────────
 
 /**
@@ -259,7 +277,7 @@ var OUTPUT_CONTRACT =
   '          "duration_min": 10, "intent": "one line",\n' +
   '          "params": { "work_rest": "optional", "rounds": null, "stations": null },\n' +
   '          "exercises": [\n' +
-  '            { "name": "Canonical Exercise Name", "sets": 3, "reps": 8, "time": null, "distance": null, "load": "135 lb", "rest": "90 s", "notes": "optional short cue" }\n' +
+  '            { "name": "Canonical Exercise Name", "sets": 3, "reps": 8, "time_seconds": null, "distance": null, "load": "135 lb", "rest": "90 s", "notes": "optional short cue" }\n' +
   "          ]\n" +
   "        }\n" +
   "      ]\n" +
@@ -269,10 +287,14 @@ var OUTPUT_CONTRACT =
   "SEGMENT RULES:\n" +
   "- Emit ONLY the segments that actually apply. A 60-minute steady ride is ONE steady_state segment with no warmup and no cooldown. Do NOT pad a session with empty or token segments.\n" +
   "- A fixed commitment (an anchored class) is ONE segment of type 'skill' naming the activity, with NO exercise breakdown. Do not invent drills for it.\n" +
-  "- Use `reps` OR `time` OR `distance` per exercise — whichever the movement is actually measured in. Leave the others null.\n" +
+  "- Use `reps` OR `time_seconds` OR `distance` per exercise — whichever the movement is actually measured in. Leave the others null.\n" +
+  "- **`time_seconds` IS ALWAYS SECONDS.** A 30-second dead hang is `time_seconds: 30`. A 2-minute plank is `time_seconds: 120`. There is NO minutes field on an exercise — never put minutes in it.\n" +
+  "- For a TIMED BLOCK such as a 20-minute bike or a 30-minute run, the duration belongs on the SEGMENT's `duration_min`, and the exercise carries `time_seconds: null`. Do not express a cardio block's length as an exercise time.\n" +
   "- `load` is a string so it can carry bodyweight/band/RPE (\"bodyweight\", \"red band\", \"135 lb\").\n" +
   "- Every session MUST carry a non-empty `why`.\n" +
-  "- Exercise names must be spelled out canonically (\"Dumbbell Bench Press\", never \"DB Bench\").\n";
+  "- A session's segment `duration_min` values MUST sum to the session's own `duration_min`. Check this before returning.\n" +
+  "- Exercise names must be spelled out canonically (\"Dumbbell Bench Press\", never \"DB Bench\").\n" +
+  "- Every goal listed under GOALS BY TIER must either appear in some session's `goal_tags` with real prescribed work, or be named explicitly in `block.tradeoff_notes` as deliberately not addressed this week. Mentioning a goal only inside a segment's `intent` text does NOT count as prescribing it.\n";
 
 /**
  * Assemble the planner prompt. Returns { system, user, sections } — `sections`
@@ -300,6 +322,15 @@ function buildPlannerPrompt(ctx) {
     "prescribing conservatively — never invent a load for a movement with no logged baseline.\n" +
     "- Never program around an injury by ignoring it.\n" +
     "- You are not diagnosing anything. Never name a medical condition.\n\n" +
+    "SOURCING RULE — NON-NEGOTIABLE:\n" +
+    "State NO numeric fact about this athlete's training history that is not present in this prompt. " +
+    "Do not compute gaps, streaks, session counts, week counts or elapsed time from the dates in the " +
+    "progression table — that table shows only a sample of instances and any figure you derive from it " +
+    "will be wrong. The TRAINING RECENCY block is the ONLY source for how recently and how consistently " +
+    "this athlete has trained; if a number you want is not there, describe the situation in words instead " +
+    "of producing a figure. In particular, any 'returning from a layoff' / 'post-gap' / 're-establishing " +
+    "cadence' framing must be justified by the TRAINING RECENCY block: if it reports a gap as CLOSED, the " +
+    "athlete is NOT currently returning from it.\n\n" +
     ctx.rulesText + "\n\n" + OUTPUT_CONTRACT;
 
   var parts = [];
@@ -312,6 +343,7 @@ function buildPlannerPrompt(ctx) {
 
   add("athlete", "ATHLETE: " + (ctx.athleteName || "this athlete") + ". Planning week starts " +
     weekDates[0].date + " (" + weekDates[0].dayLabel + ") and runs through " + weekDates[6].date + ".");
+  add("recency", ctx.recencyText);
   add("tiers", renderTierBlock(tiers));
   add("schedule", renderScheduleBlock(schedule, weekDates, anchors));
   add("emphasis", renderEmphasisBlock(ctx.phaseResolutions));
@@ -459,6 +491,108 @@ function enforceInvariants(plan, ctx) {
         seg.type = "straight_sets";
         repairs.push("coerced segment type on " + s.date);
       }
+    });
+  });
+
+  // 7. TIME VALUES MUST CARRY A RESOLVABLE UNIT.
+  //    The first real plan emitted a bare `time` field meaning MINUTES on
+  //    Indoor Bike (20) and SECONDS on Dead Hang/Plank (30) — the same key,
+  //    the same type, two different units, 18 occurrences. That is the
+  //    `duration_minutes` overload reproducing itself in the new schema, so it
+  //    is fixed AT THE SCHEMA and guarded here rather than patched per consumer.
+  //
+  //    A legacy/unqualified `time` is REPAIRED only where the intent is
+  //    unambiguous: a value on an exercise inside a timed cardio-style segment
+  //    belongs on the SEGMENT (minutes), and anywhere else it is a hold in
+  //    seconds. Anything that cannot be resolved is FLAGGED rather than guessed.
+  var TIMED_BLOCK_SEGMENTS = ["steady_state", "interval_long", "interval_short", "sprint", "active_recovery"];
+  sessions.forEach(function (s) {
+    (s.segments || []).forEach(function (seg) {
+      (seg.exercises || []).forEach(function (ex) {
+        if (ex.time === undefined || ex.time === null) return;   // nothing legacy present
+        var v = Number(ex.time);
+        if (!isFinite(v)) {
+          violations.push({ invariant: "time_unit_resolvable", severity: "flagged", detail: s.date + " " + ex.name + ": non-numeric `time` value " + JSON.stringify(ex.time) + " — cannot resolve a unit" });
+          delete ex.time;
+          return;
+        }
+        if (TIMED_BLOCK_SEGMENTS.indexOf(seg.type) >= 0) {
+          // A timed block's length lives on the segment, in minutes.
+          if (!seg.duration_min) seg.duration_min = v;
+          violations.push({ invariant: "time_unit_resolvable", severity: "repaired", detail: s.date + " " + ex.name + ": bare `time` on a " + seg.type + " segment resolved to segment duration " + v + " min" });
+          repairs.push("moved a timed-block length to the segment on " + s.date);
+        } else {
+          ex.time_seconds = v;
+          violations.push({ invariant: "time_unit_resolvable", severity: "repaired", detail: s.date + " " + ex.name + ": bare `time` resolved to time_seconds=" + v });
+          repairs.push("resolved a bare time value to seconds on " + s.date);
+        }
+        delete ex.time;
+      });
+    });
+  });
+
+  // 8. SESSION SEGMENTS MUST SUM TO THE SESSION'S STATED DURATION.
+  //    v1 has verifyRecTimeBudget() for exactly this; v2 had no equivalent, and
+  //    4 of 7 sessions in the first real plan disagreed with themselves.
+  //
+  //    Tolerance: max(2, floor(10% of stated)). Tight, because unlike a v1 rec
+  //    (where minutes are ESTIMATED from exercise text by a coarse heuristic)
+  //    the planner states segment durations explicitly — a mismatch is the model
+  //    contradicting its own arithmetic, not estimation noise. The 2-minute floor
+  //    stops churn on small rounding.
+  //
+  //    Repair DIRECTION matters: for an immovable anchor the stated duration is
+  //    the real-world truth (a 60-minute class is 60 minutes) so the SEGMENT is
+  //    corrected; everywhere else the segments are the concrete content and the
+  //    header number is the derived one, so `duration_min` is corrected to match.
+  sessions.forEach(function (s) {
+    var segs = s.segments || [];
+    if (!segs.length) return;
+    var sum = segs.reduce(function (a, g) { return a + (Number(g.duration_min) || 0); }, 0);
+    var stated = Number(s.duration_min) || 0;
+    if (!stated || !sum) return;
+    var tol = Math.max(2, Math.floor(stated * 0.10));
+    var delta = sum - stated;
+    if (Math.abs(delta) <= tol) return;
+
+    if (s.movable === false && segs.length === 1) {
+      segs[0].duration_min = stated;
+      violations.push({ invariant: "session_time_budget", severity: "repaired", detail: s.date + ": anchored session segments summed " + sum + " vs stated " + stated + " min (tol " + tol + "); segment corrected to the anchor duration" });
+      repairs.push("corrected anchored segment duration on " + s.date);
+    } else {
+      s.duration_min = sum;
+      violations.push({ invariant: "session_time_budget", severity: "repaired", detail: s.date + ": segments summed " + sum + " vs stated " + stated + " min (tol " + tol + "); duration_min corrected to " + sum });
+      repairs.push("corrected duration_min on " + s.date + " (" + stated + " -> " + sum + ")");
+    }
+  });
+
+  // 9. EVERY TIERED GOAL MUST ACTUALLY BE PRESCRIBED.
+  //    `Daily Meditation` (accessory) appeared in the first plan ONLY inside a
+  //    segment's `intent` STRING and was never prescribed — acknowledged in
+  //    prose, dropped in practice, and nothing caught it.
+  //
+  //    Deliberately a PRESENCE check, not a volume-adequacy judgment: a goal is
+  //    satisfied by appearing in some session's goal_tags (on a session that has
+  //    at least one segment), OR by being named in the block's tradeoff_notes,
+  //    which is the legitimate "deliberately not addressed this week" escape.
+  //    FLAGGED, never repaired — inventing work for an unaddressed goal is
+  //    exactly the kind of content fabrication a mechanical repair must not do.
+  var tradeoffs = String((plan.block && plan.block.tradeoff_notes) || "").toLowerCase();
+  var taggedGoals = {};
+  sessions.forEach(function (s) {
+    if (!(s.segments || []).length) return;
+    (s.goal_tags || []).forEach(function (t) { taggedGoals[String(t).toLowerCase().trim()] = true; });
+  });
+  (ctx.tiers.goals || []).forEach(function (g) {
+    var title = String(g.title || "").toLowerCase().trim();
+    if (!title) return;
+    if (taggedGoals[title]) return;
+    // Tolerate a partial name match in tradeoff_notes — goal titles can be long.
+    var key = title.length > 28 ? title.slice(0, 28) : title;
+    if (tradeoffs.indexOf(key) >= 0) return;
+    violations.push({
+      invariant: "tiered_goal_prescribed", severity: "flagged",
+      detail: g.tier + "-tier goal \"" + g.title + "\" was neither tagged on any session nor named in tradeoff_notes — acknowledged nowhere, prescribed nowhere",
     });
   });
 
