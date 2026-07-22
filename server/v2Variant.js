@@ -114,9 +114,12 @@ function matchCachedAlternate(intent, cache) {
   if (intent.category || intent.intensity || intent.style_change || intent.readiness_signal) return null;
   if (intent.duration_min == null) return null;
   var hit = cache.alternates.filter(function (a) {
-    return a.session && Number(a.session.duration_min) === Number(intent.duration_min);
+    var s = a.session_structured || a.session;
+    return s && Number(s.duration_min) === Number(intent.duration_min);
   })[0];
-  return hit ? hit.session : null;
+  // Prefer the structured form so the caller can re-flatten uniformly; fall
+  // back to the flattened one for older caches.
+  return hit ? (hit.session_structured || hit.session) : null;
 }
 
 // ── Contraindication check (dossier injury flags) ───────────────────────────

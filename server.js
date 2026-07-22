@@ -12630,9 +12630,14 @@ function v2AssembleCache(alt, decision, today) {
     generated_at: new Date().toISOString(),
     decision_tag: decision.decision,
     why: decision.why,
+    // `today` is the FLATTENED display shape (sections[] of strings) that the v1
+    // renderer and morning-open read. `today_session` is the STRUCTURED session
+    // (segments[] with exercise objects) that the variant endpoint transforms —
+    // compression and the model both need structure, not display strings.
     today: flat(decision.session),
+    today_session: decision.session,
     alternates: alt.alternates.slice(0, 3).map(function (a) {
-      return { key: a.key, label: a.label, source: a.source, session: flat(a.session) };
+      return { key: a.key, label: a.label, source: a.source, session: flat(a.session), session_structured: a.session };
     }),
   };
 }
@@ -12713,7 +12718,7 @@ async function v2NightlyForProfile(pid, opts) {
 
       var isAnchorToday = todayRow.movable === false;
       var alt = await v2BuildAlternates({ profileId: pid, defaults: ctxData.profileData.defaults, dossierText: dossierText, dossierObj: ctxData.dossier, readinessText: readinessText, recencyText: recencyText, today: today, isAnchorToday: isAnchorToday }, decision.session);
-      out.stages.alternates = { count: alt.alternates.length, model_calls: alt.model_calls, code_derived: alt.code_derived, breakdown: alt.alternates.map(function (a) { return { key: a.key, source: a.source }; }) };
+      out.stages.alternates = { count: alt.alternates.length, model_calls: alt.model_calls, code_derived: alt.code_derived, swap_error: alt.swap_error || null, breakdown: alt.alternates.map(function (a) { return { key: a.key, source: a.source, problems: (a.problems || []).length }; }) };
       (alt.usage || []).forEach(function (u) { out.tokens.input += (u.usage.input_tokens || 0); out.tokens.output += (u.usage.output_tokens || 0); });
       out.usage.alternates = alt.usage;
 
@@ -12854,8 +12859,13 @@ app.post("/api/v2/variant/:profileId", async function (req, res) {
     if (!cacheObj || !cacheObj.today || ctxData.profileRow.v2_daily_cache_date !== ctxData.today) {
       return res.status(409).json({ success: false, error: "no fresh v2_daily_cache for today — run the nightly job first", cache_date: ctxData.profileRow.v2_daily_cache_date, today: ctxData.today });
     }
-    var primary = cacheObj.today;
-    var isAnchor = primary.category === "martial_arts" || primary.category === "sports" || cacheObj.no_planned_session === false && primary.movable === false;
+    // Transform the STRUCTURED autoregulated session (compression + the model
+    // need segments, not the flattened display strings). Older caches without
+    // today_session fall back to the flattened shape (degrades to model-only,
+    // since compression can't operate on it — logged, not silently wrong).
+    var primary = cacheObj.today_session || cacheObj.today;
+    if (!cacheObj.today_session) console.warn("[v2Variant] cache lacks today_session (pre-Phase-5 cache) — code compression unavailable until the next nightly run");
+    var isAnchor = primary.category === "martial_arts" || primary.category === "sports";
     // The cache doesn't carry movable; re-derive anchor status from today's planned row.
     try {
       var psr = await fetch(SUPABASE_URL + "/rest/v1/planned_sessions?profile_id=eq." + pid + "&date=eq." + ctxData.today + "&order=slot.asc&select=movable", { headers: sbHeaders() });
