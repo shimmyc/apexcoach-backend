@@ -16,6 +16,7 @@ const v2Dossier     = require("./server/v2Dossier");
 const v2Planner     = require("./server/v2Planner");
 const v2Readiness   = require("./server/v2Readiness");
 const v2Autoregulator = require("./server/v2Autoregulator");
+const v2Variant     = require("./server/v2Variant");
 
 // Forces a fresh TCP/TLS connection — Render's node-fetch pool has a
 // compatibility issue with Fitbit's token endpoint that causes Premature
@@ -12588,20 +12589,26 @@ async function v2BuildAlternates(ctx, primarySession) {
     }
   });
 
-  // One category swap — the judgment call. Only if there is budget for a 4th
-  // object AND today is not an immovable anchor (you cannot swap a fixed class).
+  // One category swap — the judgment call, now via the SHARED variant path
+  // (Phase 5), not a second inline prompt. The Phase 4 inline version produced
+  // nothing and wasted a call; routing through v2GenerateVariant means the swap
+  // gets the same dossier/readiness context, contraindication check and
+  // invariants as the user-facing endpoint. Only if there is budget for a 4th
+  // object AND today is not an immovable anchor (a fixed class can't be swapped).
   if (out.alternates.length < 3 && !ctx.isAnchorToday) {
-    var swapSys = "You produce ONE alternate workout in a DIFFERENT category from today's planned session, " +
-      "for an athlete who wants to train something else. Same duration, same schema. Respect injuries and the rules. " +
-      "STRICT JSON: {\"category\":\"...\",\"session\":{...same session schema with time_seconds...}}. No prose.";
-    var swapUser = "TODAY'S PLANNED SESSION (category: " + (primarySession.category || "?") + ", " + (primarySession.duration_min || defaultMin) + " min):\n" +
-      JSON.stringify(primarySession, null, 1) + "\n\n" + ctx.dossierText + "\n\n" +
-      "Pick a sensible DIFFERENT category (if today is strength, offer mobility or conditioning; if today is cardio, offer strength or mobility) and program a full session of the SAME duration.";
-    var swap = await v2HaikuJSON(swapSys, swapUser, 2500, "v2_alt_swap");
+    var swapCategory = ctx.swapCategory || (primarySession.category === "strength" ? "mind_body" : (primarySession.category === "cardio" ? "strength" : "mind_body"));
+    var swap = await v2GenerateVariant({
+      profileId: ctx.profileId, body: { category: swapCategory }, dossier: ctx.dossierObj,
+      cacheObj: null, primary: primarySession, isAnchor: false, today: ctx.today,
+      readinessText: ctx.readinessText, recencyText: ctx.recencyText, dossierText: ctx.dossierText,
+      stream: false,
+    });
     out.model_calls++;
     if (swap.usage) out.usage.push({ call: "category_swap", usage: swap.usage });
-    if (swap.obj && swap.obj.session) {
-      out.alternates.push({ key: "cat_swap", label: "Different focus: " + (swap.obj.category || "alternate"), source: "model:category_swap", session: swap.obj.session });
+    if (swap.session && !swap.error) {
+      out.alternates.push({ key: "cat_swap", label: "Different focus: " + (swap.session.category || swapCategory), source: "model:category_swap", session: swap.session, why: swap.why, problems: swap.problems });
+    } else {
+      out.swap_error = swap.error || "no session";
     }
   }
 
@@ -12702,7 +12709,7 @@ async function v2NightlyForProfile(pid, opts) {
       if (autoreg.usage) { out.usage.autoregulator = autoreg.usage; out.tokens.input += autoreg.usage.input_tokens || 0; out.tokens.output += autoreg.usage.output_tokens || 0; }
 
       var isAnchorToday = todayRow.movable === false;
-      var alt = await v2BuildAlternates({ profileId: pid, defaults: ctxData.profileData.defaults, dossierText: dossierText, isAnchorToday: isAnchorToday }, decision.session);
+      var alt = await v2BuildAlternates({ profileId: pid, defaults: ctxData.profileData.defaults, dossierText: dossierText, dossierObj: ctxData.dossier, readinessText: readinessText, recencyText: recencyText, today: today, isAnchorToday: isAnchorToday }, decision.session);
       out.stages.alternates = { count: alt.alternates.length, model_calls: alt.model_calls, code_derived: alt.code_derived, breakdown: alt.alternates.map(function (a) { return { key: a.key, source: a.source }; }) };
       (alt.usage || []).forEach(function (u) { out.tokens.input += (u.usage.input_tokens || 0); out.tokens.output += (u.usage.output_tokens || 0); });
       out.usage.alternates = alt.usage;
@@ -12729,6 +12736,170 @@ function v2YesterdayLocal(profileRow) {
   d.setDate(d.getDate() - 1);
   return d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0");
 }
+
+/**
+ * Shared variant logic — ONE implementation used by BOTH the on-demand endpoint
+ * and the nightly category-swap alternate (Phase 5 replaces Phase 4's inline
+ * swap prompt that produced nothing). Resolves cache-first, then code-only,
+ * then the model. Ephemeral: it NEVER writes v2_daily_cache or planned_sessions.
+ *
+ * @param {object} args { profileId, body, ctxData, readinessText, dossierText,
+ *                        progressionText, recencyText, cacheObj, primary,
+ *                        isAnchor }
+ * @returns {Promise<object>} { session, why, path, refused, problems, usage,
+ *                              sections, intent }
+ */
+async function v2GenerateVariant(args) {
+  var primary = args.primary;
+  var intent = v2Variant.classifyRequest(args.body || {}, primary);
+  var dossier = args.ctxData ? args.ctxData.dossier : args.dossier;
+
+  // 1. CACHE-FIRST — a pure duration swap matching a cached alternate: zero call.
+  var cached = v2Variant.matchCachedAlternate(intent, args.cacheObj);
+  if (cached) {
+    var cCheck = v2Variant.checkVariant(cached, intent, dossier, { isAnchor: args.isAnchor });
+    return { session: cached, why: "Served from today's cache — this duration was already prepared.", path: "cache", refused: false, problems: cCheck.problems, usage: null, sections: { _total: 0 }, intent: intent };
+  }
+
+  // 2. CODE-ONLY — a pure duration REDUCTION: the time-compression order fully
+  //    determines it, so no model judgment is needed. An anchor can't be
+  //    reshaped, so this path is skipped for an anchored session.
+  if (!args.isAnchor && v2Variant.isCodeOnly(intent, primary)) {
+    var comp = v2Variant.compress(primary, intent.duration_min);
+    var codeCheck = v2Variant.checkVariant(comp.session, intent, dossier, { isAnchor: false });
+    return {
+      session: comp.session,
+      why: "Shortened to ~" + intent.duration_min + " min in code: " + comp.steps.join("; ") + ". The primary compound and prehab were kept.",
+      path: "code", refused: false, problems: codeCheck.problems, usage: null,
+      sections: { _total: 0 }, intent: intent, steps: comp.steps,
+    };
+  }
+
+  // 3. MODEL — everything else (intensity, category, style, free-text, readiness
+  //    signal, or a duration increase). Streamed Haiku, small context.
+  var prompt = v2Variant.buildVariantPrompt({
+    intent: intent, primary: primary, isAnchor: args.isAnchor,
+    readinessText: args.readinessText, recencyText: args.recencyText, dossierText: args.dossierText,
+  });
+  console.log("[v2Variant] profile " + args.profileId + " sections " + JSON.stringify(prompt.sections));
+
+  var gen;
+  if (args.stream && args.res) {
+    // User path — stream to the client.
+    var upstream = await fetch("https://api.anthropic.com/v1/messages", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "x-api-key": process.env.ANTHROPIC_KEY, "anthropic-version": "2023-06-01" },
+      body: JSON.stringify({ model: MODEL_HAIKU, max_tokens: 3000, stream: true, system: wrapSystemWithCache(prompt.system, "v2_variant"), messages: [{ role: "user", content: prompt.user }] }),
+      signal: args.controller.signal, agent: anthropicStreamAgent,
+    });
+    if (!upstream.ok) {
+      var et = await upstream.text().catch(function () { return "err " + upstream.status; });
+      return { error: "upstream " + upstream.status + ": " + et.slice(0, 200), path: "model", sections: prompt.sections };
+    }
+    var leg = await pumpAnthropicLeg(upstream, args.controller, args.res, "v2_variant", true);
+    gen = { obj: v2Variant.extractJSON(leg.legText), usage: leg.usage, raw: leg.legText };
+  } else {
+    // Nightly path — non-streamed Haiku, capped single retry.
+    gen = await v2HaikuJSON(prompt.system, prompt.user, 3000, "v2_variant");
+  }
+
+  if (!gen.obj || !gen.obj.session) {
+    return { error: "no parseable variant", path: "model", usage: gen.usage, sections: prompt.sections, intent: intent };
+  }
+
+  var session = gen.obj.session;
+  var refused = gen.obj.refused === true;
+
+  // Reuse the planner's structural invariants on the single variant session.
+  var enforced = v2Planner.enforceInvariants(
+    { sessions: [{ date: args.today, slot: 1, movable: args.isAnchor ? false : true, category: session.category, duration_min: session.duration_min, intensity: session.intensity, why: session.why || gen.obj.why, goal_tags: session.goal_tags, segments: session.segments }], block: {} },
+    { profileId: args.profileId, weekDates: [{ date: args.today }], tiers: { goals: [] }, schedule: { fill_policy: "ai_assigned" }, anchors: args.isAnchor ? [{ date: args.today, slot: 1, activity: (primary.headline || primary.category || ""), duration_min: primary.duration_min, category: primary.category }] : [] }
+  );
+  var cleaned = enforced.sessions.filter(function (s) { return !s._restored; })[0] || enforced.sessions[0];
+  var vCheck = v2Variant.checkVariant(cleaned, intent, dossier, { isAnchor: args.isAnchor, refused: refused });
+
+  return {
+    session: { category: cleaned.category, duration_min: cleaned.duration_min, intensity: cleaned.intensity, why: cleaned.why, goal_tags: cleaned.goal_tags, segments: cleaned.segments },
+    why: gen.obj.why || session.why || "adjusted",
+    path: "model", refused: refused,
+    problems: enforced.violations.concat(vCheck.problems),
+    usage: gen.usage, sections: prompt.sections, intent: intent,
+  };
+}
+
+/**
+ * POST /api/v2/variant/:profileId — admin-gated, streaming, Haiku.
+ * Ephemeral: never writes v2_daily_cache or planned_sessions.
+ */
+app.post("/api/v2/variant/:profileId", async function (req, res) {
+  var t0 = Date.now();
+  var pid = req.params.profileId;
+  var controller = new AbortController();
+  var streaming = false;
+  try {
+    if (process.env.ADMIN_SECRET) {
+      var got = req.query.secret || req.get("X-Admin-Secret");
+      if (got !== process.env.ADMIN_SECRET) return res.status(403).json({ success: false, error: "forbidden" });
+    }
+    var ctxData = await loadV2Context(pid);
+    if (!ctxData) return res.status(404).json({ success: false, error: "Profile not found" });
+    if (!ctxData.engineV2) return res.status(400).json({ success: false, error: "engine_v2 not true for this profile" });
+
+    // The variant transforms the AUTOREGULATED primary from the cache, not the
+    // raw planned_sessions row.
+    var cacheObj = ctxData.profileRow.v2_daily_cache || null;
+    if (!cacheObj || !cacheObj.today || ctxData.profileRow.v2_daily_cache_date !== ctxData.today) {
+      return res.status(409).json({ success: false, error: "no fresh v2_daily_cache for today — run the nightly job first", cache_date: ctxData.profileRow.v2_daily_cache_date, today: ctxData.today });
+    }
+    var primary = cacheObj.today;
+    var isAnchor = primary.category === "martial_arts" || primary.category === "sports" || cacheObj.no_planned_session === false && primary.movable === false;
+    // The cache doesn't carry movable; re-derive anchor status from today's planned row.
+    try {
+      var psr = await fetch(SUPABASE_URL + "/rest/v1/planned_sessions?profile_id=eq." + pid + "&date=eq." + ctxData.today + "&order=slot.asc&select=movable", { headers: sbHeaders() });
+      var pRows = await psr.json();
+      if (Array.isArray(pRows) && pRows.length) isAnchor = pRows[0].movable === false;
+    } catch (e) { /* fall back to the category heuristic */ }
+
+    var progressionText = v2Progression.renderProgressionTable(ctxData.progression);
+    var recencyText = v2Progression.renderRecencyBlock(ctxData.recency);
+    var dossierText = v2Dossier.renderDossierForPrompt(ctxData.dossier);
+    var deps = { fetch: fetch, SUPABASE_URL: SUPABASE_URL, sbHeaders: sbHeaders };
+    var readiness = await v2Readiness.buildReadinessState(deps, pid, { today: ctxData.today }).catch(function () { return null; });
+    var readinessText = v2Readiness.renderReadinessBlock(readiness);
+
+    // Resolve. Cache/code paths return WITHOUT streaming; only the model path streams.
+    var body = req.body || {};
+    var intent = v2Variant.classifyRequest(body, primary);
+    var cachedHit = v2Variant.matchCachedAlternate(intent, cacheObj);
+    var codeHit = !isAnchor && v2Variant.isCodeOnly(intent, primary);
+
+    if (cachedHit || codeHit) {
+      // Non-model path — plain JSON, no stream.
+      var result0 = await v2GenerateVariant({ profileId: pid, body: body, ctxData: ctxData, cacheObj: cacheObj, primary: primary, isAnchor: isAnchor, today: ctxData.today });
+      return res.json({ success: true, path: result0.path, why: result0.why, refused: !!result0.refused, session: v2Planner.flattenSessionForCache(result0.session), problems: result0.problems, intent: result0.intent, elapsed_ms: Date.now() - t0, ephemeral: true });
+    }
+
+    // Model path — stream.
+    v2StartStream(res, "v2_variant");
+    streaming = true;
+    var result = await v2GenerateVariant({
+      profileId: pid, body: body, ctxData: ctxData, cacheObj: cacheObj, primary: primary,
+      isAnchor: isAnchor, today: ctxData.today,
+      readinessText: readinessText, recencyText: recencyText, dossierText: dossierText, progressionText: progressionText,
+      stream: true, res: res, controller: controller,
+    });
+
+    var payload = result.error
+      ? { success: false, error: result.error, ephemeral: true }
+      : { success: true, path: result.path, why: result.why, refused: !!result.refused, session: v2Planner.flattenSessionForCache(result.session), problems: result.problems, intent: result.intent, prompt_sections: result.sections, usage: result.usage, elapsed_ms: Date.now() - t0, ephemeral: true };
+    try { res.write(sseFrame("\n[[APEXCOACH_V2_VARIANT_RESULT]]\n" + JSON.stringify(payload) + "\n[[/APEXCOACH_V2_VARIANT_RESULT]]")); } catch (e) {}
+    finalizeAnthropicStream(res, "v2_variant", result.usage, true, true);
+  } catch (e) {
+    console.error("[v2Variant] failed:", e && e.message);
+    if (streaming) { try { res.write(sseFrame("\n[[APEXCOACH_V2_VARIANT_RESULT]]\n" + JSON.stringify({ success: false, error: e.message }) + "\n[[/APEXCOACH_V2_VARIANT_RESULT]]")); res.end(); } catch (e2) {} }
+    else res.status(500).json({ success: false, error: e.message });
+  }
+});
 
 /**
  * POST /api/v2/cron/nightly — admin-gated. The PRIMARY nightly mechanism, since
