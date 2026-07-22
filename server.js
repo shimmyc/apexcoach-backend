@@ -12076,7 +12076,10 @@ async function loadV2Context(pid, opts) {
   // it the guard reads undefined and every non-forced run (including every
   // hourly interval tick) does a full 2-call generation instead of a cheap
   // no-op. Found by testing: a non-force run took 25s instead of skipping.
-  var v2Cols = ",dossier,dossier_updated_at,v2_daily_cache_date";
+  // v2_daily_cache (the object) is needed by the variant endpoint, which
+  // transforms the autoregulated primary; v2_daily_cache_date by the nightly
+  // idempotency guard. Both must be selected or their readers get undefined.
+  var v2Cols = ",dossier,dossier_updated_at,v2_daily_cache,v2_daily_cache_date";
   var v2ColumnsPresent = true;
   var pr = await fetch(SUPABASE_URL + "/rest/v1/profiles?id=eq." + encodeURIComponent(pid) +
     "&select=" + baseSelect + v2Cols, { headers: sbHeaders() });
