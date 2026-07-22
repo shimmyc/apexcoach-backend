@@ -13,6 +13,7 @@ const wearables = require("./wearables");
 const v2Rules       = require("./server/coachingRules");
 const v2Progression = require("./server/v2Progression");
 const v2Dossier     = require("./server/v2Dossier");
+const v2Planner     = require("./server/v2Planner");
 
 // Forces a fresh TCP/TLS connection — Render's node-fetch pool has a
 // compatibility issue with Fitbit's token endpoint that causes Premature
@@ -12023,6 +12024,331 @@ app.get("/api/v2/audit/:profileId", async function(req, res) {
     });
   } catch (e) {
     console.error("[v2Audit] failed:", e && e.message);
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+/**
+ * Shared v2 context loader — everything the planner (and later the
+ * autoregulator) needs about a profile. Read-only.
+ *
+ * Reads the profile via direct PostgREST, NEVER `GET /api/profiles/:id`
+ * (ensureGoalIds write-on-read, ROADMAP §6).
+ */
+async function loadV2Context(pid, opts) {
+  opts = opts || {};
+  var baseSelect = "id,name,timezone,profile_data,gym_access,gym_type,roadmap_data";
+  var v2ColumnsPresent = true;
+  var pr = await fetch(SUPABASE_URL + "/rest/v1/profiles?id=eq." + encodeURIComponent(pid) +
+    "&select=" + baseSelect + ",dossier,dossier_updated_at", { headers: sbHeaders() });
+  var prows = await pr.json();
+  if (!Array.isArray(prows)) {
+    v2ColumnsPresent = false;
+    var pr2 = await fetch(SUPABASE_URL + "/rest/v1/profiles?id=eq." + encodeURIComponent(pid) +
+      "&select=" + baseSelect, { headers: sbHeaders() });
+    prows = await pr2.json();
+  }
+  if (!Array.isArray(prows) || !prows.length) return null;
+
+  var profileRow = prows[0];
+  var pd = profileRow.profile_data || {};
+  var today = localToday(profileRow);
+
+  var effortByWorkoutId = {};
+  try {
+    var wr = await fetch(SUPABASE_URL + "/rest/v1/workouts?profile_id=eq." + encodeURIComponent(pid) +
+      "&select=id,session_effort&limit=5000", { headers: sbHeaders() });
+    var wrows = await wr.json();
+    if (Array.isArray(wrows)) wrows.forEach(function(w) { if (w && w.session_effort) effortByWorkoutId[w.id] = w.session_effort; });
+  } catch (e) { /* session_effort migration may be unrun */ }
+
+  var deps = {
+    fetch: fetch, SUPABASE_URL: SUPABASE_URL, sbHeaders: sbHeaders,
+    localToday: localToday, callAISystem: callAISystem, MODEL_HAIKU: MODEL_HAIKU,
+  };
+
+  var progression = await v2Progression.buildProgressionState(deps, pid, {
+    today: today, effortByWorkoutId: effortByWorkoutId,
+  });
+  var fullCtx = await getFullExerciseContext(pid, 90).catch(function() { return null; });
+
+  var checkins = [];
+  try {
+    var cr = await fetch(SUPABASE_URL + "/rest/v1/daily_checkins?profile_id=eq." + encodeURIComponent(pid) +
+      "&order=date.desc&limit=14", { headers: sbHeaders() });
+    var crows = await cr.json();
+    if (Array.isArray(crows)) checkins = crows;
+  } catch (e) { /* non-fatal */ }
+
+  var microGoals = [];
+  try {
+    var mr = await fetch(SUPABASE_URL + "/rest/v1/micro_goals?profile_id=eq." + encodeURIComponent(pid) +
+      "&is_active=eq.true&limit=50", { headers: sbHeaders() });
+    var mrows = await mr.json();
+    if (Array.isArray(mrows)) microGoals = mrows;
+  } catch (e) { /* non-fatal */ }
+
+  // Prefer the STORED dossier (built nightly); rebuild only if absent, and
+  // never with the prose pass on a planning path — prose is the nightly job's
+  // job, not something to pay for on every plan.
+  var dossierObj = profileRow.dossier || null;
+  var dossierBuilt = null;
+  if (!dossierObj) {
+    dossierBuilt = await v2Dossier.buildDossier(deps, pid, {
+      today: today, profileRow: profileRow, progressionState: progression,
+      fullExerciseContext: fullCtx, checkins: checkins, withProse: false,
+    });
+    dossierObj = dossierBuilt.dossier;
+  }
+
+  var goals = Array.isArray(pd.goals) ? pd.goals : [];
+  var phaseResolutions = goals.filter(function(g) { return g && g.roadmap; }).map(function(g) {
+    var r = v2CurrentPhase(g.roadmap, today);
+    return {
+      goal: g.title, goal_id: g.id, tier: g.tier || null,
+      basis: r.basis, disagreement: r.disagreement,
+      phase_name: r.phase ? (r.phase.name || r.phase.title || null) : null,
+      emphasis: r.phase ? (r.phase.emphasis || null) : null,
+    };
+  });
+
+  return {
+    profileRow: profileRow, profileData: pd, today: today,
+    v2ColumnsPresent: v2ColumnsPresent,
+    progression: progression, fullExerciseContext: fullCtx,
+    checkins: checkins, microGoals: microGoals,
+    dossier: dossierObj, dossierBuilt: dossierBuilt,
+    phaseResolutions: phaseResolutions,
+    engineV2: pd.engine_v2 === true,
+  };
+}
+
+/**
+ * POST /api/v2/plan/:profileId — admin-gated, STREAMING, Sonnet.
+ *
+ * Generates one training block plus a full week of planned sessions, enforces
+ * the code invariants, and persists both. Streaming is required: Render kills a
+ * non-streamed request at 25s and a full week of Sonnet output runs well past
+ * that. Reuses the same stream helpers as daily_recs/coach_chat.
+ *
+ * The persistence RESULT is appended to the stream inside an
+ * [[APEXCOACH_V2_PLAN_RESULT]] marker — the same server-authored-marker pattern
+ * coach_chat uses for tool proposals, because once the response is streaming we
+ * can no longer send a JSON body.
+ *
+ * ?dry_run=1  generate + validate but DO NOT persist.
+ * ?start=YYYY-MM-DD  override the week start (default: the athlete's today).
+ */
+app.post("/api/v2/plan/:profileId", async function(req, res) {
+  var started = Date.now();
+  var pid = req.params.profileId;
+  var controller = new AbortController();
+  var streaming = false;
+  try {
+    if (process.env.ADMIN_SECRET) {
+      var got = req.query.secret || req.get("X-Admin-Secret");
+      if (got !== process.env.ADMIN_SECRET) return res.status(403).json({ success: false, error: "forbidden" });
+    }
+
+    var ctxData = await loadV2Context(pid);
+    if (!ctxData) return res.status(404).json({ success: false, error: "Profile not found" });
+    if (!ctxData.engineV2) {
+      return res.status(400).json({ success: false, error: "profile_data.engine_v2 is not true for this profile — the planner refuses to run against a v1 profile" });
+    }
+
+    var startDate = /^\d{4}-\d{2}-\d{2}$/.test(String(req.query.start || "")) ? String(req.query.start) : ctxData.today;
+    var weekDates = v2Planner.buildWeekDates(startDate);
+    var tiers = v2Planner.resolveTiers(ctxData.profileData.goals);
+    var schedule = v2Planner.resolveScheduleV3(ctxData.profileData);
+    var anchors = v2Planner.anchorsForWeek(schedule, weekDates);
+
+    var rulesText = v2Rules.renderRulesForPrompt();
+    var progressionText = v2Progression.renderProgressionTable(ctxData.progression);
+    var dossierText = v2Dossier.renderDossierForPrompt(ctxData.dossier);
+
+    var prompt = v2Planner.buildPlannerPrompt({
+      athleteName: ctxData.profileRow.name,
+      tiers: tiers, schedule: schedule, weekDates: weekDates, anchors: anchors,
+      phaseResolutions: ctxData.phaseResolutions,
+      dossierText: dossierText, progressionText: progressionText,
+      microGoals: ctxData.microGoals,
+      defaults: ctxData.profileData.defaults,
+      rulesText: rulesText,
+    });
+
+    console.log("[v2Plan] profile " + pid + " week " + weekDates[0].date + ".." + weekDates[6].date +
+      " promptSections " + JSON.stringify(prompt.sections));
+
+    var ctx = {
+      profileId: Number(pid), weekDates: weekDates, tiers: tiers,
+      schedule: schedule, anchors: anchors,
+    };
+
+    // ── Stream, with a CAPPED retry (max 2 attempts total, no storms) ───────
+    var MAX_ATTEMPTS = 2;
+    var attempt = 0, plan = null, usage = null, wroteAny = false, rawLen = 0;
+    v2StartStream(res, "v2_plan");
+    streaming = true;
+
+    while (attempt < MAX_ATTEMPTS && !plan) {
+      attempt++;
+      var userMsg = prompt.user;
+      if (attempt > 1) {
+        userMsg += "\n\nRETRY: the previous response could not be parsed as JSON. Return ONLY the JSON object described in the output contract — no prose, no markdown fences, nothing before '{' or after '}'.";
+        try { res.write(": retry " + attempt + "\n\n"); } catch (e) {}
+      }
+      var upstream = await fetch("https://api.anthropic.com/v1/messages", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "x-api-key": process.env.ANTHROPIC_KEY,
+          "anthropic-version": "2023-06-01",
+        },
+        body: JSON.stringify({
+          model: MODEL_SONNET,
+          max_tokens: 8000,
+          stream: true,
+          system: wrapSystemWithCache(prompt.system, "v2_plan"),
+          messages: [{ role: "user", content: userMsg }],
+        }),
+        signal: controller.signal,
+        agent: anthropicStreamAgent,
+      });
+      if (!upstream.ok) {
+        var errTxt = await upstream.text().catch(function() { return "upstream error " + upstream.status; });
+        console.error("[v2Plan] upstream error " + upstream.status + ": " + errTxt.slice(0, 300));
+        break;
+      }
+      var leg = await pumpAnthropicLeg(upstream, controller, res, "v2_plan", true);
+      usage = leg.usage || usage;
+      wroteAny = wroteAny || leg.wroteAny;
+      rawLen = leg.legText.length;
+      plan = v2Planner.extractPlanJSON(leg.legText);
+      if (!plan) console.warn("[v2Plan] attempt " + attempt + " produced unparseable JSON (" + rawLen + " chars)");
+    }
+
+    var result;
+    if (!plan) {
+      result = { success: false, error: "could not parse a plan after " + attempt + " attempt(s)", attempts: attempt };
+    } else {
+      var enforced = v2Planner.enforceInvariants(plan, ctx);
+      var shaped = v2Planner.toPersistenceShape(plan, enforced, ctx);
+      console.log("[v2Plan] invariants: " + enforced.violations.length + " violation(s), " +
+        enforced.repairs.length + " repair(s) — " + JSON.stringify(enforced.violations));
+
+      var persisted = { block_id: null, sessions_written: 0, skipped: req.query.dry_run === "1" };
+      if (req.query.dry_run !== "1") {
+        persisted = await v2PersistPlan(shaped, ctx);
+      }
+      result = {
+        success: true,
+        attempts: attempt,
+        week: { start: weekDates[0].date, end: weekDates[6].date },
+        block: shaped.block_row.block,
+        sessions: shaped.session_rows,
+        invariants: { violations: enforced.violations, repairs: enforced.repairs },
+        persisted: persisted,
+        prompt_sections: prompt.sections,
+        usage: usage,
+        raw_chars: rawLen,
+        elapsed_ms: Date.now() - started,
+      };
+    }
+
+    try {
+      res.write(sseFrame("\n[[APEXCOACH_V2_PLAN_RESULT]]\n" + JSON.stringify(result) + "\n[[/APEXCOACH_V2_PLAN_RESULT]]"));
+    } catch (e) {}
+    finalizeAnthropicStream(res, "v2_plan", usage, wroteAny, true);
+  } catch (e) {
+    console.error("[v2Plan] failed:", e && e.message);
+    if (streaming) {
+      try { res.write(sseFrame("\n[[APEXCOACH_V2_PLAN_RESULT]]\n" + JSON.stringify({ success: false, error: e.message }) + "\n[[/APEXCOACH_V2_PLAN_RESULT]]")); } catch (e2) {}
+      try { res.end(); } catch (e3) {}
+    } else {
+      res.status(500).json({ success: false, error: e.message });
+    }
+  }
+});
+
+/** Headers for a v2 SSE stream — thin wrapper so the label is consistent. */
+function v2StartStream(res, label) {
+  startAnthropicStreamResponse(res, label, true);
+}
+
+/**
+ * Persist a generated plan. Supersedes any existing active block for the
+ * profile, then writes the new block + its sessions.
+ *
+ * Idempotency: planned sessions are keyed UNIQUE(profile_id, date, slot), so
+ * re-planning the same week must clear that window first rather than collide.
+ * Only 'planned' rows are cleared — a session already completed/modified is
+ * history and is never destroyed by a re-plan.
+ */
+async function v2PersistPlan(shaped, ctx) {
+  var out = { block_id: null, sessions_written: 0, superseded_blocks: 0, cleared_sessions: 0, errors: [] };
+
+  try {
+    var sup = await fetch(SUPABASE_URL + "/rest/v1/training_blocks?profile_id=eq." + ctx.profileId +
+      "&status=eq.active", {
+        method: "PATCH", headers: sbHeaders("return=representation"),
+        body: JSON.stringify({ status: "superseded", updated_at: new Date().toISOString() }),
+      });
+    var supRows = await sup.json();
+    if (Array.isArray(supRows)) out.superseded_blocks = supRows.length;
+  } catch (e) { out.errors.push("supersede: " + e.message); }
+
+  try {
+    var del = await fetch(SUPABASE_URL + "/rest/v1/planned_sessions?profile_id=eq." + ctx.profileId +
+      "&date=gte." + ctx.weekDates[0].date + "&date=lte." + ctx.weekDates[6].date +
+      "&status=eq.planned", { method: "DELETE", headers: sbHeaders("return=representation") });
+    var delRows = await del.json();
+    if (Array.isArray(delRows)) out.cleared_sessions = delRows.length;
+  } catch (e) { out.errors.push("clear: " + e.message); }
+
+  try {
+    var br = await fetch(SUPABASE_URL + "/rest/v1/training_blocks", {
+      method: "POST", headers: sbHeaders("return=representation"),
+      body: JSON.stringify(shaped.block_row),
+    });
+    var brows = await br.json();
+    if (!Array.isArray(brows) || !brows.length) {
+      out.errors.push("block insert: " + JSON.stringify(brows).slice(0, 300));
+      return out;
+    }
+    out.block_id = brows[0].id;
+  } catch (e) { out.errors.push("block insert: " + e.message); return out; }
+
+  try {
+    var rows = shaped.session_rows.map(function(r) { return Object.assign({}, r, { block_id: out.block_id }); });
+    var sr = await fetch(SUPABASE_URL + "/rest/v1/planned_sessions", {
+      method: "POST", headers: sbHeaders("return=representation"),
+      body: JSON.stringify(rows),
+    });
+    var srows = await sr.json();
+    if (Array.isArray(srows)) out.sessions_written = srows.length;
+    else out.errors.push("session insert: " + JSON.stringify(srows).slice(0, 400));
+  } catch (e) { out.errors.push("session insert: " + e.message); }
+
+  return out;
+}
+
+/** GET /api/v2/plan/:profileId — read back the active block + its sessions. */
+app.get("/api/v2/plan/:profileId", async function(req, res) {
+  try {
+    if (process.env.ADMIN_SECRET) {
+      var got = req.query.secret || req.get("X-Admin-Secret");
+      if (got !== process.env.ADMIN_SECRET) return res.status(403).json({ success: false, error: "forbidden" });
+    }
+    var pid = req.params.profileId;
+    var br = await fetch(SUPABASE_URL + "/rest/v1/training_blocks?profile_id=eq." + encodeURIComponent(pid) +
+      "&status=eq.active&order=start_date.desc&limit=1", { headers: sbHeaders() });
+    var brows = await br.json();
+    var block = Array.isArray(brows) && brows.length ? brows[0] : null;
+    var sr = await fetch(SUPABASE_URL + "/rest/v1/planned_sessions?profile_id=eq." + encodeURIComponent(pid) +
+      (block ? "&block_id=eq." + block.id : "") + "&order=date.asc,slot.asc", { headers: sbHeaders() });
+    var srows = await sr.json();
+    res.json({ success: true, block: block, sessions: Array.isArray(srows) ? srows : [] });
+  } catch (e) {
     res.status(500).json({ success: false, error: e.message });
   }
 });

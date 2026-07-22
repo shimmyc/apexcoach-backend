@@ -301,6 +301,7 @@ async function buildProgressionState(deps, profileId, opts) {
       consecutiveMetSessions: consecutiveMet,
       recentEfforts: efforts,
       trend: trendInfo.trend,
+      sessionsInWindow: dated.length,
     });
 
     out.push({
@@ -353,18 +354,48 @@ async function buildProgressionState(deps, profileId, opts) {
 }
 
 /**
- * Compact prompt table. One line per exercise — this is what the planner and
- * autoregulator actually see, so it must stay dense.
+ * Compact prompt table, SPLIT BY SIGNAL rather than truncated by recency.
+ *
+ * Sizing rationale (measured, not guessed): rendering all 40 of profile 4's
+ * exercises in full cost 9,989 chars, of which the 34 with fewer than 3
+ * sessions contributed most of the bulk and none of the signal — their "trend
+ * flat, hold" lines are noise the planner cannot act on. Capping by RECENCY
+ * would have thrown away real signal from a lift trained consistently but not
+ * lately, which is exactly the thing progression logic exists to notice.
+ *
+ * So: exercises with resolvable signal render in FULL, and the rest collapse
+ * into a compact tail (name + how long ago only). The tail still matters — it
+ * is what tells the planner a movement exists and has been neglected — it just
+ * does not need set detail to say so.
+ *
  * @param {object} state
- * @param {number} [limit]
+ * @param {object} [opts] { maxSignal, includeTail }
  */
-function renderProgressionTable(state, limit) {
+function renderProgressionTable(state, opts) {
+  opts = opts || {};
+  if (typeof opts === "number") opts = { maxSignal: opts };   // back-compat
+  var maxSignal = opts.maxSignal || 20;
+  var includeTail = opts.includeTail !== false;
+
   if (!state || !state.exercises || !state.exercises.length) {
     return "PROGRESSION STATE: no exercises logged in the last " +
       ((state && state.window_days) || DEFAULT_WINDOW_DAYS) + " days.";
   }
-  var list = limit ? state.exercises.slice(0, limit) : state.exercises;
-  var lines = ["PROGRESSION STATE (last " + state.window_days + " days, " + state.exercise_count + " exercises):"];
+
+  var signal = [], tail = [];
+  state.exercises.forEach(function (e) {
+    if (e.insufficient_data) tail.push(e); else signal.push(e);
+  });
+
+  var lines = ["PROGRESSION STATE (last " + state.window_days + " days, " +
+    state.exercise_count + " exercises: " + signal.length + " with a resolvable trend, " +
+    tail.length + " with limited history):"];
+
+  if (signal.length) {
+    lines.push("");
+    lines.push("TRAINED CONSISTENTLY ENOUGH TO PROGRESS FROM (>=" + rules.MIN_SESSIONS_FOR_SIGNAL + " sessions):");
+  }
+  var list = signal.slice(0, maxSignal);
   list.forEach(function (e) {
     var bits = [];
     bits.push(e.name);
@@ -392,6 +423,32 @@ function renderProgressionTable(state, limit) {
     bits.push("-> " + e.progression.action + ": " + e.progression.detail);
     lines.push("- " + bits.join(" · "));
   });
+  if (signal.length > maxSignal) {
+    lines.push("- (+" + (signal.length - maxSignal) + " more with signal, omitted for length)");
+  }
+
+  // Compact tail. Name + how long ago only — enough for the planner to know the
+  // movement exists and has been neglected, without set-level detail it cannot
+  // act on. These map to progression action 'establish_baseline', NOT 'hold':
+  // "we don't know yet" is a different instruction from "hold the load steady".
+  if (includeTail && tail.length) {
+    lines.push("");
+    lines.push("LIMITED HISTORY — treat as baseline-finding, prescribe conservatively, do NOT " +
+      "progress from a single data point (" + tail.length + " exercises, <" +
+      rules.MIN_SESSIONS_FOR_SIGNAL + " sessions each):");
+    var parts = tail.map(function (e) {
+      var ago = e.days_since_last == null ? "?" : (e.days_since_last + "d");
+      return e.name + " (" + e.sessions_in_window + "x, " + ago + ")";
+    });
+    // Wrapped into a few dense lines rather than one per exercise.
+    var line = "";
+    parts.forEach(function (p) {
+      if (line.length + p.length + 2 > 150) { lines.push("  " + line); line = ""; }
+      line += (line ? "; " : "") + p;
+    });
+    if (line) lines.push("  " + line);
+  }
+
   return lines.join("\n");
 }
 

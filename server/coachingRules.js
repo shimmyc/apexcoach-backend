@@ -161,6 +161,10 @@ var PROGRESSION = {
   },
 };
 
+// Below this many sessions in the window there is no resolvable trend, and
+// progressionDecision returns 'establish_baseline' instead of 'hold'.
+var MIN_SESSIONS_FOR_SIGNAL = 3;
+
 var EFFORT_PROGRESSION = {
   more_in_tank_consecutive_to_progress: 2,
   brutal_response: "hold the load, or reduce it — do not progress",
@@ -178,7 +182,9 @@ var EFFORT_PROGRESSION = {
  * @param {number}  o.consecutiveMetSessions — how many consecutive sessions met it
  * @param {string[]} o.recentEfforts         — most recent first: 'more_in_tank'|'about_right'|'brutal'|null
  * @param {'up'|'flat'|'down'} o.trend
- * @returns {{action:'progress'|'hold'|'regress', detail:string, reason:string}}
+ * @param {number} [o.sessionsInWindow] — below MIN_SESSIONS_FOR_SIGNAL this
+ *        returns 'establish_baseline' rather than 'hold'
+ * @returns {{action:'progress'|'hold'|'regress'|'establish_baseline', detail:string, reason:string}}
  */
 function progressionDecision(o) {
   o = o || {};
@@ -186,12 +192,29 @@ function progressionDecision(o) {
   var rule = PROGRESSION[o.modality] || PROGRESSION.dumbbell_machine_bodyweight;
 
   // 'brutal' vetoes progression outright — the athlete's own report of the
-  // session outranks a completion counter.
+  // session outranks a completion counter. Checked FIRST, ahead of the
+  // data-density rule: a strain report is real information even when the
+  // history is thin, and "hold" is the safe answer either way.
   if (efforts[0] === "brutal") {
     return {
       action: "hold",
       detail: EFFORT_PROGRESSION.brutal_response,
       reason: "last session reported 'brutal'",
+    };
+  }
+
+  // NOT ENOUGH HISTORY TO KNOW — a first-class outcome, deliberately NOT 'hold'.
+  // Measured on real data (profile 4, 2026-07-22): 34 of 40 exercises have
+  // fewer than 3 sessions in a 60-day window, so this is the COMMON case, not
+  // an edge case. Collapsing it into 'hold' would make "we have no idea yet"
+  // indistinguishable from "we are deliberately keeping the load steady" —
+  // two states that call for opposite coaching language, and that the
+  // autoregulator and Coach Chat both have to explain differently.
+  if ((o.sessionsInWindow || 0) < MIN_SESSIONS_FOR_SIGNAL) {
+    return {
+      action: "establish_baseline",
+      detail: "treat this as baseline-finding: prescribe conservatively, log it properly, and let a real trend accumulate before progressing",
+      reason: "only " + (o.sessionsInWindow || 0) + " session(s) in the window — insufficient history to resolve a trend",
     };
   }
 
@@ -252,8 +275,17 @@ var GAP_DECAY = [
     action: "no decay — resume as prescribed", evidence: "established" },
 ];
 
-// Separate, per-EXERCISE rule from the brief. Applies on top of the banded
-// decay above and is deliberately blunt.
+// Separate, per-EXERCISE rule. Applies on top of the banded decay above.
+//
+// ⚠ THE MULTIPLIER FLOOR IS CURRENTLY UNREACHABLE — proven by test, documented
+// rather than deleted. It only binds when a band multiplier is LOOSER than
+// 0.90, but staleness requires >30 days and every band from 29 days upward is
+// already <= 0.85 (or null for a restart). So the two conditions can never both
+// hold. It is kept because it costs nothing and would immediately start
+// mattering if the band thresholds are retuned — but it is defensive code, not
+// an active rule, and must not be read as one. The `per_exercise_stale` FLAG
+// itself IS reachable and is used: it appends the -10% note to the action text
+// and is surfaced in the progression state.
 var PER_EXERCISE_STALE_DAYS = 30;
 var PER_EXERCISE_STALE_MULTIPLIER = 0.90;
 
@@ -727,6 +759,7 @@ module.exports = {
   NOVELTY_PREFS, DECISION_TAGS,
   // constants
   MAINTENANCE_MED, ACCESSORY_COST, PROGRESSION, EFFORT_PROGRESSION,
+  MIN_SESSIONS_FOR_SIGNAL,
   GAP_DECAY, PER_EXERCISE_STALE_DAYS, PER_EXERCISE_STALE_MULTIPLIER,
   DELOAD, STALL_WEEKS_FOR_STALLED_FLAG, NEGLECT_WEEKS_FOR_FLAG,
   MISSED_SESSIONS_FOR_REPLAN, READINESS, PAIN, INTERFERENCE, MAT_LOAD,
