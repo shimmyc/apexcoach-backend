@@ -2197,6 +2197,61 @@ swap) — the Phase 4 failure was the same structured-vs-flattened bug.
   model generation isn't achievable; closing it would need generating a diff rather than a whole
   session, a design change deferred. Streaming means the user sees progress meanwhile.
 
+## Engine v2 — Phase 6 Implementation (2026-07-22)
+
+The flagged Today UI, rendered ONLY for `profile_data.engine_v2 === true` (profile 4). Profile 1
+and every other profile see the unchanged v1 Today tab. **Frontend + one small server read
+endpoint.** Verified with live browser renders (state-injected past the PIN) — no console errors,
+all surfaces styled with the existing token system.
+
+### The 7 v1 seams (branch-and-return; v1 body untouched)
+Each branches on `isV2Profile()` (`currentProfileData.engine_v2 === true`) as its FIRST statement:
+`resolveAIRecs` (→ `resolveV2Today`), `renderAI` (→ `renderV2Today`; this also bypasses the
+cycling-UI reroll/category/focus block, SEAM 3), `maybeRegenForReadiness` (no-op — the nightly job
+owns regeneration), `regenerateAIForContextChange` + `invalidateDailyRecsAndRefresh` (→ refresh
+from cache), the day-nav `fetchAI` call, and `bootApp` (loads the v2 cache + week). **Verified: the
+entire diff deletes exactly ONE line** — the day-nav `fetchAI()`, whose replacement runs
+`fetchAI()` under the identical condition on the v1 branch (`else fetchAI()`), byte-identical for
+v1. Every other seam is a guard inserted above the original first line (kept as context).
+
+### `GET /api/v2/today/:profileId` — the browser read path
+**Pure DB read, no model call, NOT admin-gated** (user-facing, same posture as v1 `/daily-recs`).
+Returns the fresh `v2_daily_cache` (today's autoregulated session + alternates + decision tag) plus
+the planned week. A non-v2 profile gets `{engine_v2:false}` so the client falls back to v1 without a
+second call. **`POST /api/v2/variant` was also un-gated** (user-facing generation, like `/api/ai`);
+the nightly CRON stays admin-gated. **This is the flagged shared-surface change** — the real guard
+is the internal `engine_v2` check, and the app is PIN-gated at the profile selector, not per-API.
+
+### Surfaces
+- **Today card** (`renderV2Today` → `#ai-content`): the autoregulated session via the existing
+  `recOptionSections` renderer (so `time_seconds` shows as "45s", never a bare number), the
+  one-line `why` in cornerman/purple AI treatment, goal-tag pills, and — the "feels coached"
+  payoff — the decision tag surfaced honestly ("VOLUME REDUCED TODAY") only when the session was
+  actually adjusted, never a silent edit.
+- **Variant surface** (`#v2-variant`): ONE surface replacing v1's reroll + category pills + focus
+  buttons. Free-text box + 5 chips ("Different style, same focus" / "Not feeling it" / "Shorter" /
+  "Harder" / "Easier"). Detects the endpoint's plain-JSON (cache/code, instant) vs SSE (model)
+  response so a cached duration swap renders without a spinner-gate. Ephemeral "SHOWING A
+  VARIATION" banner + "Back to today" link (mirrors v1's `altRec` pattern); **never overwrites the
+  cache** — proven in Phase 5.
+- **Week view** (`#v2-week-card`): the block's `planned_sessions` with status + duration; anchors
+  marked with a ◆ and ember. Tap a day → a scoped bottom sheet (`#v2-sheet`) with its detail.
+- **Effort tap** (`#v2-effort`): after a v2 save, a skippable 3-button prompt ("Had more in me" /
+  "About right" / "Brutal") writing `session_effort` via the existing verbatim-body
+  `PATCH /api/workouts/:id` — no endpoint change. **Verified writing to the DB.**
+- **Defaults picker** (Settings → AI Coaching, `v2DefaultsSettingsHtml`): duration + intensity →
+  `profile_data.defaults`. Copy notes that the two shortcut variations are prepared 15 min either
+  side of the default.
+- **Tier selector** (goal cards, `v2GoalTierHtml`): driver/maintenance/accessory →
+  `profile_data.goals[i].tier`, with the **max-2-drivers rule enforced in the UI** (blocks a 3rd
+  with a message; the planner also demotes server-side).
+
+### CSS scope
+All new CSS scoped under `#v2-today` / `#v2-week-card` / `#v2-variant` / `#v2-sheet` / `#v2-effort`
+/ `.v2-def` / `.v2-tier`. **No global class redefined.** The `<style>` block sits in `<body>`
+(valid, applies document-wide; confirmed rendering correctly in the live app). No migration — every
+field already exists.
+
 ## Migrations
 
 One-time data fixes that should be run in the Supabase SQL editor.
