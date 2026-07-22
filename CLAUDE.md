@@ -1829,6 +1829,101 @@ Adaptation could not re-evaluate whether a phase's **premise** was still true. B
 - **`enforceSingleCurrentPhase()`** is a deterministic invariant run after adapt AND generate. Prompt rules are probabilistic; Fix Posture carried two `current` phases for weeks while the Goals tab rendered correctly (status is derived on read, never written back). Horizon phases untouched, idempotent.
 - **`resequenceNearTermDates()`** (repair only, admin endpoint, dry-run default) rebuilds the calendar forward from the current phase and back-dates completed phases. `assignNearTermDates()` preserves existing `start_date` by design, so a bad adapt that pinned every phase to one date cannot otherwise be repaired.
 
+## Engine v2 — Phase 2 Implementation (2026-07-22)
+
+Parallel, feature-flagged replacement for the v1 daily-rec engine. Routed by
+`profile_data.engine_v2 === true` — **only profile 4 ("Test #3", the designated test profile,
+seeded with a verified clone of profile 1's training history)**. Every other profile, profile 1
+included, runs the existing v1 path byte-identically.
+
+**v1 isolation, and exactly what was touched.** The only edits to `server.js` are (a) three
+additive `require`s and (b) one new route. No v1 function, prompt builder, endpoint, or column
+was modified. Post-deploy smoke test of profile 1's `workouts` / `exercises` / `daily-recs` /
+`micro-goals` / `wearables/providers` endpoints: all 200.
+
+### `server/coachingRules.js`
+ONE source of truth for the rule set, consumed two ways so the model and the code can never
+disagree: `renderRulesForPrompt(sections)` emits prompt text, and the same constants back pure
+functions used directly by the builders (`gapDecay`, `progressionDecision`, `deloadDecision`,
+`readinessModification`, `painCheck`, `timeCompressionPlan`, `rotationPolicy`,
+`assessAccessoryCost`). 12 sections, 6,654 chars rendered in full;
+`rulesSectionLengths()` returns per-section counts for the `promptSections` logging discipline.
+
+**Evidence marking is load-bearing, not decoration.** Every rule carries
+`evidence: 'established' | 'contested'`, and `renderRulesForPrompt` prints contested rules with an
+explicit `[CONTESTED GUIDANCE — …]` marker plus the reason. Currently marked contested: the
+**MV/MEV/MAV/MRV weekly volume landmarks** (useful planning vocabulary, genuinely disputed
+numbers, high inter-individual variance), the **3-consecutive-day HRV threshold** (HRV-guided
+training beats fixed programming in several trials, but that specific cutoff is convention),
+the **mat-load −2 sets figure** (direction well supported, the number is a convention chosen for
+this athlete), the **mobility MED** (retention timelines for passive range are poorly
+characterised), and the **10–14 day gap-decay band** (detraining evidence at that timescale is
+weak and highly individual). Silbernagel's pain model is marked established but annotated that it
+was validated for tendinopathy specifically and is applied here more broadly.
+
+### `server/v2Progression.js`
+Progression state computed **in code at generation time — no table**, so it can never go stale
+relative to the log. 60-day window; per exercise: last 3–5 instances (one per date, the day's top
+set), trend (`up|flat|down`, first-half vs second-half, comparing only rows sharing the dominant
+metric), `days_since_last`, all three PR fields, the gap-decay adjustment from the rules module,
+inferred modality, and a progression decision. `renderProgressionTable()` emits the compact
+prompt table.
+
+**The aggregation is deliberately duplicated** rather than extracted from
+`GET /api/profiles/:id/exercises` (approved Phase 1 decision): v1 isolation outranks DRY, and the
+windows differ anyway (v2 wants 60 days, ordered instances and a trend; v1 aggregates all
+history).
+
+**Session length vs hold duration** — `exercises.duration_minutes` means both, and nothing in the
+schema distinguishes them. v2 disambiguates by `main_category`: cardio / martial_arts / sports /
+mind_body are **session length** (tracked as `best_session_minutes`, modality `conditioning`);
+everything else is a **hold** (`best_duration_seconds`, modality `isometric`). Found by running
+the audit against real data — before the fix it reported `MMA Sparring PB 60:00 hold` and
+prescribed `+5-10 s hold` on a sparring session. v1 still has the ambiguity (see ROADMAP §6).
+
+### `server/v2Dossier.js`
+Builds the compact dossier for `profiles.dossier`. **Every derived FLAG is computed in code from
+the log; the model is used for exactly one thing — phrasing two prose fields — and only after the
+flags are settled.** The prose prompt is explicitly told to add no facts. That split is what makes
+the human-feel strings trustworthy: code detected it, the model only phrased it.
+
+Flags: injury/pain (profile injuries merged with recent check-in soreness), equipment/time
+reality, `novelty_pref` (explicit if set, else inferred from exercise-variety count and labelled
+as inferred), stalled lifts (>3 wk no progression, driven off the progression state so the two
+cannot disagree), neglected movements (>6 wk, from `getFullExerciseContext()`, reused not
+rewritten), notable PBs, standing schedule constraints.
+
+**Size discipline:** injury DESCRIPTIONS are shortened before any list is trimmed, and an injury
+is **never dropped for size** — an injury removed for length is a safety problem. Measured 2,401
+chars on real data against a ~2,000 target, under the 2,600 hard cap, warning emitted.
+
+**Notable PBs require ≥2 sessions in the window and are ranked by magnitude.** A single logged
+instance is not a personal best — that is how "Pinky Abduction with Rubber Band 15 reps" was
+initially billed alongside real lifts. Session lengths are excluded entirely.
+
+### `GET /api/v2/audit/:profileId`
+Admin-gated (`ADMIN_SECRET`), **read-only, writes nothing** — the Phase 2 proof that the builders
+work before any generation exists. Returns the assembled progression state, the dossier the
+builder *would* write (never persisted), resolved roadmap phases, the rendered rules, and
+per-section character counts. `?prose=1` runs the single Haiku prose pass (the only thing here
+that costs money); `?window=N`, `?sections=a,b`.
+
+Reads the profile via **direct PostgREST**, deliberately not `GET /api/profiles/:id` — that
+endpoint fire-and-forget PATCHes `profile_data` via `ensureGoalIds()` (a read with a write side
+effect, ROADMAP §6), which must never fire from an audit path. Tolerates the unrun
+`dossier`/`dossier_updated_at` migration by falling back to a column-less select and reporting
+`storage_columns_migrated` — without that, PostgREST's 400-on-unknown-column made the audit report
+a misleading "Profile not found" on a profile that exists.
+
+### `v2CurrentPhase(roadmap, todayYmd)`
+Server-side roadmap phase resolver — `rmCurrentPhase()` in `public/index.html` is client-only, and
+the planner runs server-side. Resolution order: the near_term phase whose date window contains
+today → else the last phase stored `status:'current'` → else an open-ended started phase.
+**Prefers the DATE window over the stored status** and reports `basis`, `disagreement` and
+`stored_current_count`, because `recomputeRoadmapProgress()`/`assignNearTermDates()` run at read
+time and never write back (ROADMAP §9 D5) — the stored `phases[]` this reads can disagree with
+what the Goals tab renders, which is what let two phases sit marked `current` for weeks.
+
 ## Migrations
 
 One-time data fixes that should be run in the Supabase SQL editor.

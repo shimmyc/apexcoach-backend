@@ -9,6 +9,54 @@
 > `wearables/`, and `migrations/` rather than transcribed. Where the original brief differed
 > from the live code, the doc follows the code and flags it with **⚠ Correction**.
 >
+> **2026-07-22 session #33** (Profile-4 clone + Engine v2 Phases 1–2. Audit-report-first and
+> gated at every step; Phase 1 was audit-only, Phase 2 ends here with no Phase 3 work started):
+>
+> **ARC 1 — Engine v2 Phase 1 audit (no code).** Mapped every producer and consumer of the daily
+> rec. **The single structural finding: the entire v1 rec prompt is assembled in the BROWSER** —
+> `server.js` never builds it, `/api/ai` is a routing proxy only. So v2 is not "moving" the prompt
+> server-side; there is nothing server-side to move. 7 client seams must branch on the flag, 4
+> consumers are shape-dependent (including `life-os-summary`, an EXTERNAL app). **Confirmed no
+> scheduler of any kind exists** (`setInterval`/`cron`/`nightly` return nothing in `server.js`).
+>
+> **ARC 2 — Profile-4 clone (data operation, 4 SQL files, run manually by Shimmy, verified).**
+> Profile 4 now holds a verified clone of profile 1's training history. Three findings worth
+> carrying forward: **6 of profile 1's workouts hold a TIME STRING in `workouts.date`** (proving
+> the column is `text`, not `date` — see §6, skipped by the clone, not repaired);
+> **`micro_goals.id` is an INTEGER, not a uuid** (both docs and the Phase 1 audit said uuid — all
+> three were wrong); and **`GET /api/profiles/:id` writes on read** via `ensureGoalIds`, so profile
+> 1 was inspected by SQL SELECT only throughout. The REST API also under-reported two baselines
+> badly — `daily_steps` is 736 rows, not the 366 the endpoint returned (it clamps to 365 days),
+> and `daily_sleep` (736) has no listing endpoint at all. Running the baseline query rather than
+> trusting the API is what caught both.
+>
+> **ARC 3 — Engine v2 Phase 2 (shipped, deployed, run live).** `server/coachingRules.js` +
+> `server/v2Progression.js` + `server/v2Dossier.js` + `GET /api/v2/audit/:profileId` +
+> `v2CurrentPhase()`, plus three UNRUN migration files. **v1 untouched**: three additive requires
+> and one new route in `server.js`, nothing else; profile 1's endpoints all verified 200
+> post-deploy. Measured live on profile 4: rules 6,654 chars, progression table 9,989 (40
+> exercises), dossier 2,401 serialized — 17,798 total before any planner context.
+>
+> **THREE BUGS FOUND BY RUNNING IT, NOT BY READING IT** (all fixed):
+> - The audit endpoint selected `dossier`/`dossier_updated_at` before their migration was run;
+>   PostgREST 400s an unknown column and returns an error OBJECT, not an array, so the handler
+>   reported **"Profile not found" on a profile that exists.** Now falls back to a column-less
+>   select and reports `storage_columns_migrated`.
+> - **`duration_minutes` is overloaded** — hold duration AND session length, with nothing in the
+>   schema distinguishing them. A 60-minute MMA class was classified `modality: isometric` with
+>   `PB 60:00 hold`, and the rules then prescribed **"+5-10 s hold" on a sparring session**. v2 now
+>   disambiguates by category. **v1 still has this and is unfixed** (§6).
+> - A single logged instance was being reported as a **notable PB**. PBs now require ≥2 sessions
+>   and are ranked by magnitude.
+>
+> **Honest gaps carried into Phase 3:** 34 of 40 exercises have <3 sessions in 60 days, so most of
+> this athlete's log carries **no usable progression signal** — the planner must treat "no signal"
+> as a first-class case. The dossier sits at 2,401 chars against a ~2,000 target (injury histories
+> dominate; injuries are shortened, never dropped). The progression table at 9,989 chars is the
+> elastic section and will need a cap. **Render's plan/spin-down behavior could not be determined
+> from the repo or the API** — it decides whether the nightly interval is viable, and needs a
+> dashboard check.
+>
 > **2026-07-20 session #32** (Logged-workout sectioning + clickable exercise names with inline
 > quick-views + Auto rec-length fix. **Frontend-only — every change is in `public/index.html`;
 > no schema, no endpoints, no writes.** Four build rounds, each audit-or-report-gated where it
@@ -1321,7 +1369,10 @@ Remembers a user's "these are separate sessions" decision so a rejected pairing 
 - `migrations/2026-07-17_exercises_workout_fk_cascade.sql` — adds `exercises_workout_id_fkey` (`exercises.workout_id → workouts.id`, `ON DELETE CASCADE`). **✅ Applied to production** — the orphan check ran clean across every profile first (a pre-existing orphan would have made the `ALTER TABLE` itself fail); see §9.
 - `migrations/2026-07-17_wearable_needs_reconnect.sql` — adds `wearable_connections.needs_reconnect` (boolean, `NOT NULL DEFAULT false`) for the connection-health flag (session #19). **⚠ Run manually in the Supabase SQL editor.** Code is resilient to its absence — writes are best-effort and the providers endpoint falls back to a column-less select — so it can be applied just before/with the deploy without a broken window, but the flag only persists/reports once it's run.
 - `migrations/2026-07-17_exercise_catalog_content.sql` — adds `exercise_catalog.description` (text) + `images` (jsonb), both nullable, for the exercise how-to content seed (session #25). **⚠ Run manually.** Populated by `POST /api/debug/seed-exercise-content` (fill-if-null, keyed by `wger_id`). Endpoint 500s cleanly if the columns are absent.
-- `migrations/2026-07-22_clone_p1_to_p4_{wipe,copy,flags,verify}.sql` — **⚠ NOT RUN.** Not schema migrations: a 4-file **data** operation seeding profile 4 (the designated Engine v2 test profile) with a clone of profile 1's training history. Run order is **verify §A (baseline) → wipe → copy → flags → verify §B–E**. Profile 1 is read-only throughout; wearable credentials/connections, `rejected_wearable_matches`, `dismissed_fitbit_activities`, chat tables and identity fields are all deliberately **not** copied, `workouts.wearable_activity_id` is forced NULL (UNIQUE partial index), the v1 rec caches are cleared, and the 6 malformed-date workouts (§6) are skipped. Cloned rows use a deterministic `+100000` id offset, so the pair is re-runnable; the copy script **aborts** if profile 4 is non-empty. Its `setval()` section is **mandatory** — skipping it eventually collides the shared identity sequences with profile 1's real inserts.
+- `migrations/2026-07-22_v2_training_tables.sql` — **⚠ NOT RUN.** Engine v2: creates `training_blocks` + `planned_sessions` (RLS + `service_role_bypass`, `UNIQUE(profile_id,date,slot)`, partial unique index enforcing one active block per profile, `planned_sessions.workout_id` FK `ON DELETE SET NULL` so deleting a logged workout cannot erase the record that the session was planned). New tables only — no existing table touched. Nothing in Phase 2 reads them; needed from Phase 3 (planner) onward, so applying early is safe and inert.
+- `migrations/2026-07-22_v2_profile_columns.sql` — **⚠ NOT RUN.** Engine v2: adds `profiles.v2_daily_cache` (jsonb) + `v2_daily_cache_date` (date) + `dossier` (jsonb) + `dossier_updated_at` (timestamptz). Deliberately NOT reusing `daily_recommendations` with an engine marker — see the §7 Engine v2 section. Invisible to v1 (`PROFILE_SELECT_BASE` is an explicit list and no `select=*` on `profiles` exists anywhere).
+- `migrations/2026-07-22_v2_workouts_session_effort.sql` — **⚠ NOT RUN.** Engine v2: adds `workouts.session_effort` (text, nullable) + CHECK (`more_in_tank`|`about_right`|`brutal`). The one Phase 2 migration touching a shared table; additive and nullable. **No endpoint change is needed** — `POST /api/workouts` and `PATCH /api/workouts/:id` forward `req.body` verbatim to PostgREST, so the column is writable the moment it exists.
+- `migrations/2026-07-22_clone_p1_to_p4_{wipe,copy,flags,verify}.sql` — **✅ RUN IN PRODUCTION 2026-07-22, verified.** Not schema migrations: a 4-file **data** operation seeding profile 4 (the designated Engine v2 test profile) with a clone of profile 1's training history. Run order is **verify §A (baseline) → wipe → copy → flags → verify §B–E**. Profile 1 is read-only throughout; wearable credentials/connections, `rejected_wearable_matches`, `dismissed_fitbit_activities`, chat tables and identity fields are all deliberately **not** copied, `workouts.wearable_activity_id` is forced NULL (UNIQUE partial index), the v1 rec caches are cleared, and the 6 malformed-date workouts (§6) are skipped. Cloned rows use a deterministic `+100000` id offset, so the pair is re-runnable; the copy script **aborts** if profile 4 is non-empty. Its `setval()` section is **mandatory** — skipping it eventually collides the shared identity sequences with profile 1's real inserts. **Verification result:** §B row parity OK on all 8 tables (workouts 76 vs 82 — the 6 malformed-date rows correctly skipped, everything else exact); §D 310 exercise rows / 69 distinct names / 65 distinct workouts / 0 null `workout_id`, FK check and both leak checks returned no rows; §E1 PASS on all 8 tables (profile 1 unchanged); §E3 profile 1 untouched, profile 4 correctly flagged. Baseline also corrected two API-derived figures: `daily_steps` and `daily_sleep` are **736** rows each (the REST endpoint had clamped steps to a 365-day window, and no listing endpoint exists for sleep at all), and `daily_checkins` is 12.
 
 > Most other tables/columns were created ad-hoc via the Supabase SQL editor (the `CREATE TABLE`/`ALTER TABLE` snippets are documented inline in `CLAUDE.md`). Only the wearables + the 2026-05-22 / 2026-05-24 / 2026-05-26 migrations are committed as files.
 
@@ -1664,6 +1715,33 @@ All verified present in `server.js`. `:id`/`:userId` = profile id.
   what I want" (session #32, PARKED).** This is separate from the session #32 display rename
   (which changed only the label, not the `mode:'total'` logic). May need a look at how the
   prompt generates workouts in total-override mode. **Parked — not yet scoped.**
+- **Engine v2 progression state: 34 of 40 exercises have <3 sessions in a 60-day window (found
+  2026-07-22, Phase 2 audit against real cloned data).** 27 appear exactly once, 7 twice. They are
+  flagged `insufficient_data` and their trend defaults to `flat`, which is honest — but it means
+  **the majority of this athlete's logged exercises carry no usable progression signal at all.**
+  The consequence for Phase 3: a planner that leans on measured progression will have real data
+  for roughly 6 exercises and nothing for the rest. Not a bug — it is what the training history
+  actually contains (a wide, rotating set of rehab/mobility movements plus a few consistent
+  lifts). It does argue for the planner treating "no signal" as a first-class case rather than an
+  edge case, and it is the strongest argument yet for the rotation rules' insistence that primary
+  lifts stay fixed long enough to become measurable.
+- **Engine v2 dossier lands at ~2,400 chars against a ~2,000 target (found 2026-07-22, accepted).**
+  Driven almost entirely by 5 injury entries carrying long clinical histories. The builder now
+  shortens injury DESCRIPTIONS before trimming any list, and never drops an injury for size (an
+  injury removed for length is a safety problem, not a formatting one). It stays under the 2,600
+  hard cap and warns explicitly when over target. Revisit if a profile with more injuries pushes
+  past the hard cap.
+- **`exercises.duration_minutes` is overloaded: it means BOTH hold duration and session length
+  (found 2026-07-22 by running the v2 audit, worked around in v2 only).** For a Dead Hang it is a
+  2-minute hold; for an MMA class it is a 60-minute session. Nothing in the schema distinguishes
+  them. The v2 progression builder now disambiguates by `main_category`
+  (cardio/martial_arts/sports/mind_body = session length; everything else = hold) — before that
+  fix it reported "MMA Sparring PB 60:00 hold" and prescribed "+5-10 s hold" on a sparring
+  session. **v1 is NOT fixed and still has this ambiguity**: `buildExerciseHistory()` and
+  `buildLog()` in `public/index.html` both render any `duration_minutes` as a hold, so profile 1's
+  daily-rec prompt currently describes MMA classes and bike sessions as holds too. Low severity
+  (the model mostly infers the truth from the exercise name) but it is real, it is in the live v1
+  prompt today, and the durable fix is a schema-level split rather than per-consumer heuristics.
 - **6 of profile 1's workouts hold a TIME STRING in `workouts.date` (found 2026-07-22, profile-4
   clone audit) — production data bug, NOT fixed.** Workout ids **110 (`"10:12"`), 97 (`"12:52"`),
   95 (`"13:00"`), 88 (`"19:37"`), 82 (`"10:07"`), 77 (`"10:20"`)** — types Martial arts / Workout /
@@ -1763,8 +1841,8 @@ complete — full current-state map, schema proposal, reuse inventory and shared
 produced 2026-07-22 and approved; see that session's report. Phasing:
 
 - **Phase 1 — Audit.** ✅ Done 2026-07-22 (audit only, no code).
-- **Phase 2 — Migrations (files only) + `server/coachingRules.js` + progression-state and dossier builders**, with a dry-run/audit endpoint proving their output on the test profile. **Not started.**
-- **Phase 3 — Planner** (weekly, Sonnet) + block/session persistence + admin trigger. **Not started.**
+- **Phase 2 — Rules module + progression/dossier builders + audit endpoint.** ✅ **Done 2026-07-22, deployed, run live against profile 4.** Delivered: three unrun migration files (above); `server/coachingRules.js` (one source, consumed as prompt text AND as callable pure functions, every rule carrying an evidence marker); `server/v2Progression.js` (progression state in code, no table); `server/v2Dossier.js` (code-derived flags first, one small Haiku pass for prose only); `GET /api/v2/audit/:profileId` (admin-gated, read-only); and `v2CurrentPhase()`, the server-side roadmap phase resolver. **v1 isolation held** — the only `server.js` edits are three additive requires and one new route; no v1 function, prompt or endpoint changed, and a post-deploy smoke test of profile 1's workouts/exercises/daily-recs/micro-goals/providers endpoints all returned 200.
+- **Phase 3 — Planner** (weekly, Sonnet) + block/session persistence + admin trigger. **NEXT — not started.**
 - **Phase 4 — Nightly job + autoregulator** (Haiku) + alternate cache. **Not started.**
 - **Phase 5 — Variant endpoint** (Haiku, streamed) + conversational constraints. **Not started.**
 - **Phase 6 — Flagged UI**: week view, today card, variant surface, effort tap, defaults, tier selector. **Not started.**
@@ -1785,11 +1863,27 @@ produced 2026-07-22 and approved; see that session's report. Phasing:
   flags that any snapshot change invalidates the whole cached system block); and whether a
   session-mutating tool needs a stricter confirm than a goal edit does.
 
-**Prerequisite, in progress:** profile 4 is the designated `engine_v2` test profile. The clone
-scripts that seed it with profile 1's real training history
-(`migrations/2026-07-22_clone_p1_to_p4_{wipe,copy,flags,verify}.sql`) are **written but NOT run**.
-Profile 4 deliberately gets **no wearable connection** — readiness comes from cloned historical
-`daily_sleep` rows plus manual check-ins.
+**Prerequisite: ✅ done.** Profile 4 is the designated `engine_v2` test profile and now holds a
+verified clone of profile 1's training history (see §2 Migrations). Profile 4 deliberately has
+**no wearable connection** — readiness comes from cloned historical `daily_sleep` rows plus
+manual check-ins.
+
+**Phase 2 measured output (profile 4, live, 2026-07-22)** — the numbers Phase 3 plans against:
+
+| Section | Chars | Note |
+|---|---|---|
+| Rules (all 12 sections) | 6,654 | fixed cost, identical for every profile |
+| Progression table | 9,989 | 40 exercises — the elastic section, will need a cap |
+| Dossier (rendered) | 1,155 | serialized 2,401 vs a ~2,000 target |
+| **Total** | **17,798** | before any planner-specific context |
+
+Progression state: **40 exercises** from 89 rows in the 60-day window. Gap-decay branches that
+actually fire on the cloned history: `<10 days` ×18, `4-6 weeks` ×11, `>6 weeks` ×11 — the
+`2-3 weeks` and `10-14 days` bands did **not** fire at all. 22 exercises are >30 days stale.
+Progression actions: 32 hold / 6 regress / 2 progress. Dossier flags: 5 injury, 4 stalled lifts,
+8 neglected movements, 3 notable PBs, 2 fixed commitments, `novelty_pref` inferred `mostly_same`.
+All 3 per-goal roadmaps plus the macro roadmap resolved cleanly via `date_window` with exactly one
+stored `current` phase each — **the §9 D5/D7 divergence does not currently manifest on this data.**
 
 1. **Rebuild all other profiles off profile 1 once it's stable** *(supersedes the old "second-profile Google Health migration" item — new direction, decided this cycle).* Profile 1 is the reference build; the plan is to reconstruct every other profile from it once profile 1 is proven stable, rather than migrating each profile's wearable connection in place. Still resolves the Sept-2026 cutover for those profiles (they come up on Google Health as part of the rebuild). Ordered first, but gated on profile 1 being stable (the #29 rec fix was a prerequisite).
 2. **Google Health historical backfill** — mirror `backfill-wearable-history` (§4 / `CLAUDE.md` → "Fitbit History Backfill") for GH's API v4. *Value: High, same Sept deadline — once Fitbit's API is gone, GH is the only remaining source for any further gap-filling. Effort: Medium.* Deprioritized by the #29 outage, still on the board. The chunking/merge/never-overwrite-worse-data design transfers directly — the real work is GH's different endpoint shapes (`:reconcile`, `dailyRollUp`, list+`page_size=1`) and confirming GH's own real per-metric range limits against Google's docs (the RHR silent-drop quirk found in session #17 is exactly what doesn't transfer safely by assumption).
