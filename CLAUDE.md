@@ -2059,6 +2059,74 @@ proven against a deliberately corrupted fixture: dropped anchor, modified anchor
 under-budget sessions, anchored-vs-movable repair direction, goal-in-intent-only, goal on an empty
 session, and out-of-week dates — plus a clean-plan case asserting **zero** false positives.
 
+## Engine v2 — Phase 4 Implementation (2026-07-22)
+
+Nightly job + autoregulator + alternate cache. v1 untouched (additive requires + new routes +
+one flagged branch inside `life-os-summary`, v1 path byte-identical inside its `else`).
+
+### Nightly job — `POST /api/v2/cron/nightly` (+ hourly interval)
+Admin-gated. **The admin endpoint is the PRIMARY trigger** — Render's Hobby plan spins the
+interval's host down when idle, so an external cron hitting this endpoint (which also wakes the
+service) is the real mechanism. The in-process hourly `setInterval` is a **secondary** warm-path
+only; the system is fully correct if it never fires.
+
+`?profile_id=` scopes; default is every `profile_data->>engine_v2=eq.true` profile. `?force=1`
+bypasses the idempotency guard. Per-profile isolation — one failure never aborts the run.
+
+**Concurrency**: a NEW `_v2Locks` map + `withV2Lock('nightly:'+pid, fn)`, the exact shape of
+`withRefreshLock` but a separate map (never overload the token map). Proven: two concurrent
+same-profile calls share one generation; different profiles run independently; the lock releases
+after settle.
+
+**Idempotency**: keyed on the athlete-LOCAL date via `localToday(profile)`, not the server's UTC
+date (Render runs UTC, so "nightly" must mean the athlete's night). Skips when
+`v2_daily_cache_date === today` unless forced. `loadV2Context` MUST select `v2_daily_cache_date`
+or the guard reads undefined and every tick does a full generation — a real bug found by testing.
+
+**Per-profile pipeline** (`v2NightlyForProfile`), ordered: recency → progression → dossier →
+readiness → today's `planned_sessions` row → autoregulate → alternates → **single** cache write.
+No planned session for today → an explicit rest state is written; a session is NEVER invented.
+
+### Autoregulator — `server/v2Autoregulator.js` (Haiku)
+**Edits a plan; never invents one.** Inputs: today's planned session, readiness, recency, dossier,
+progression, yesterday's `session_effort`, and a mat-load note. Output: the adjusted session in the
+same schema (`time_seconds`, never bare `time`) + a decision tag
+(`kept|reduced_volume|reduced_intensity|swapped|recovery`) + a one-line why.
+
+**"Modification, not replacement" is enforced mechanically** (`assertIsModification`): exercise-name
+RETENTION between planned and returned, keyed to the decision tag — `kept`=100%, `reduced_*`=60%,
+`swapped`=25%, `recovery` exempt but must be low-intensity and not longer. A **category change or a
+total replacement HARD-REJECTS** to the planned session (serving the plan always beats serving
+something invented). The tag must also match the actual change (e.g. `reduced_volume` requires
+total sets to fall). **Anchor integrity is checked structurally** (`assertAnchorUntouched`:
+segments byte-identical + duration unchanged), not by trusting the prompt. The Phase 3.5 invariant
+set is reused on the adjusted session.
+
+### Readiness — `server/v2Readiness.js`
+**Personal-baseline-relative, never population absolutes.** Built from stored `daily_sleep`
+(30-day rolling baseline for HRV/RHR/sleep-score) + the freshest `daily_checkins` — **no live
+wearable call**, so it runs correctly on profile 4's no-connection setup. The rules verdict is
+computed in code (`readinessModification`); a subjective "brutal"/"wrecked"/"terrible" report
+vetoes a green wearable score.
+
+### Alternate cache — ≤4 objects, mostly code-derived
+Primary (the autoregulated session) + the two neighboring durations relative to the profile
+DEFAULT + one category swap. **Duration variants are derived IN CODE** (`compressSessionToDuration`)
+via the rules module's time-compression order (drop tertiary accessories → shorten rest → NEVER
+drop the primary compound or a prehab/mobility segment). Extending is a no-op restatement (adding
+volume is a judgment the code won't fake — that's Phase 5). The **category swap is the ONE model
+call**. Everything is flattened to renderer-ready strings at the cache boundary
+(`flattenSessionForCache` → the v1 sectioned-renderer shape `{label, minutes, exercises:[str]}`),
+so the renderer is untouched. **Morning open is a pure DB read — zero model calls.**
+
+### life-os-summary v2 branch (flagged shared-surface edit)
+`GET /api/profiles/:id/life-os-summary` now selects `profile_data` + `v2_daily_cache*` and, for a
+`engine_v2` profile, reads `v2_daily_cache.today` instead of the now-empty
+`daily_recommendations.options[]`. `readiness` stays `null` for v2 (baseline-relative, no single
+0-100 score; inventing one is worse than null — Life OS treats it as optional). The v1 path is
+byte-identical inside the `else`. Tolerates an unrun v2 migration via a column-less fallback
+select.
+
 ## Migrations
 
 One-time data fixes that should be run in the Supabase SQL editor.

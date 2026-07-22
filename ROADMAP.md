@@ -1774,6 +1774,15 @@ All verified present in `server.js`. `:id`/`:userId` = profile id.
   since, including the day of generation), yet the plan treats it as current. Two fixes, both real:
   surface a computed `days_since_last_workout` + recent-session-count explicitly so the model never
   has to infer one, and instruct it not to state training-history figures that are not given to it.
+- **Engine v2: the alternate-cache category swap silently produced no usable alternate on the
+  first real nightly run (found 2026-07-22, Phase 4, NOT fixed — non-fatal).** The swap Haiku call
+  ran (`model_calls:1`) but returned no parseable `session`, so the cache holds 3 objects (primary
+  + two duration variants) instead of 4 — within the ≤4 budget, so nothing broke, but a Haiku call
+  was spent for nothing. The two duration variants are code-derived and always succeed; only the
+  swap depends on the model. Root cause not chased (parse vs shape vs the swap prompt). The natural
+  place to harden it is Phase 5, where the on-demand variant endpoint reworks category-swap logic
+  anyway — the nightly swap should likely call that shared path once it exists rather than its own
+  inline prompt.
 - **Engine v2: the planner prescribes work for a goal but omits it from `goal_tags` (found
   2026-07-22 on the Phase 3.5 regeneration, NOT fixed).** The `tiered_goal_prescribed` invariant
   fired correctly against the accessory-tier pinky-rehab goal — and inspection shows the work IS
@@ -1940,7 +1949,23 @@ produced 2026-07-22 and approved; see that session's report. Phasing:
   `tiered_goal_prescribed` correctly caught the pinky-rehab goal being prescribed across 4
   exercises on 2 days but never tagged in any session's `goal_tags`. Remaining open item: that
   mis-tagging is a model behaviour a prompt change may not fully fix (§6).
-- **Phase 4 — Nightly job + autoregulator** (Haiku) + alternate cache. **Not started.**
+- **Phase 4 — Nightly job + autoregulator** (Haiku) + alternate cache. ✅ **Done 2026-07-22 — a
+  real nightly run against profile 4 produced a rules-driven autoregulation and wrote the cache.**
+  `POST /api/v2/cron/nightly` (admin-gated primary trigger; hourly interval secondary because
+  Render Hobby spins the interval host down), `server/v2Autoregulator.js`, `server/v2Readiness.js`,
+  the ≤4-object alternate cache, and the `life-os-summary` v2 branch. **Autoregulator result:**
+  decision `reduced_volume`, retention 1.0, 0 invariant problems, why = *"MAT LOAD rule: hard
+  combat-sports session logged yesterday reduces next-day lower-body strength volume by ~2 sets;
+  readiness at baseline so intensity and exercise selection unchanged"* — grounded in a real
+  60-min MMA session logged 2026-07-21. Autoregulator prompt 15,890 chars (planner was ~19k),
+  ~7,461 in / 2,735 out tokens, ~25 s. **Three bugs found by running it** (all fixed): the planner
+  marked strength days `movable:false` (→ new `movable_only_for_anchors` invariant), the
+  idempotency guard never fired because `loadV2Context` didn't select `v2_daily_cache_date`, and
+  the category-swap alternate silently produced nothing (non-fatal, within budget — hardening
+  deferred to Phase 5). **Verified:** idempotency skips in 1.4 s when the cache is fresh; the
+  `withV2Lock` double-generate guard proven deterministically; morning-open is a pure DB read;
+  v1/profile 1 byte-identical (life-os still serves readiness 72 + its `daily_recommendations`
+  options).
   - **⚠ Render is on the Hobby (free) plan and spins down after ~15 minutes idle** (confirmed by
     Shimmy 2026-07-22). The in-process interval therefore **cannot be the primary nightly
     mechanism** — the service will usually be asleep when it should fire. Design from this
