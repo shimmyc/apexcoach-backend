@@ -12836,7 +12836,71 @@ async function v2GenerateVariant(args) {
 }
 
 /**
- * POST /api/v2/variant/:profileId — admin-gated, streaming, Haiku.
+ * GET /api/v2/today/:profileId — the browser's v2 read path. PURE DB READ, no
+ * model call, NOT admin-gated (it is user-facing, exactly like the v1
+ * /daily-recs read). Returns the cached autoregulated session + alternates +
+ * the planned week for the flagged Today UI. A non-v2 profile gets
+ * {engine_v2:false} so the client can fall back to v1 without a second call.
+ */
+app.get("/api/v2/today/:profileId", async function (req, res) {
+  try {
+    var pid = req.params.profileId;
+    var pr = await fetch(SUPABASE_URL + "/rest/v1/profiles?id=eq." + encodeURIComponent(pid) +
+      "&select=profile_data,timezone,v2_daily_cache,v2_daily_cache_date", { headers: sbHeaders() });
+    var prows = await pr.json();
+    if (!Array.isArray(prows)) {
+      // v2 columns not migrated — behave as a non-v2 profile.
+      return res.json({ success: true, engine_v2: false });
+    }
+    if (!prows.length) return res.status(404).json({ success: false, error: "Profile not found" });
+    var prow = prows[0];
+    var pd = prow.profile_data || {};
+    if (pd.engine_v2 !== true) return res.json({ success: true, engine_v2: false });
+
+    var today = localToday(prow);
+    var fresh = prow.v2_daily_cache_date === today;
+
+    // The planned week (active block) — pure read, same as GET /api/v2/plan.
+    var block = null, sessions = [];
+    try {
+      var br = await fetch(SUPABASE_URL + "/rest/v1/training_blocks?profile_id=eq." + encodeURIComponent(pid) +
+        "&status=eq.active&order=start_date.desc&limit=1", { headers: sbHeaders() });
+      var brows = await br.json();
+      block = Array.isArray(brows) && brows.length ? brows[0] : null;
+      if (block) {
+        var sr = await fetch(SUPABASE_URL + "/rest/v1/planned_sessions?profile_id=eq." + encodeURIComponent(pid) +
+          "&block_id=eq." + block.id + "&order=date.asc,slot.asc", { headers: sbHeaders() });
+        var srows = await sr.json();
+        if (Array.isArray(srows)) sessions = srows;
+      }
+    } catch (e) { /* non-fatal — the today card still renders from the cache */ }
+
+    res.json({
+      success: true, engine_v2: true, today: today,
+      cache_fresh: fresh,
+      cache: fresh ? (prow.v2_daily_cache || null) : null,
+      cache_date: prow.v2_daily_cache_date || null,
+      defaults: pd.defaults || null,
+      block: block ? { id: block.id, start_date: block.start_date, end_date: block.end_date, block: block.block } : null,
+      sessions: sessions.map(function (s) {
+        return { date: s.date, slot: s.slot, status: s.status, movable: s.movable, priority: s.priority,
+          category: s.session && s.session.category, duration_min: s.session && s.session.duration_min,
+          intensity: s.session && s.session.intensity, why: s.session && s.session.why,
+          session: s.session };
+      }),
+    });
+  } catch (e) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+/**
+ * POST /api/v2/variant/:profileId — streaming, Haiku. NOT admin-gated: it is a
+ * user-facing generation endpoint, the same posture as the v1 /api/ai proxy and
+ * /daily-recs (open generation endpoints; the app is PIN-gated at the profile
+ * selector, not per-API). The real guard is the engine_v2 check below — this
+ * refuses any profile not flagged for v2. The nightly CRON endpoint stays
+ * admin-gated (server-to-server).
  * Ephemeral: never writes v2_daily_cache or planned_sessions.
  */
 app.post("/api/v2/variant/:profileId", async function (req, res) {
@@ -12845,10 +12909,6 @@ app.post("/api/v2/variant/:profileId", async function (req, res) {
   var controller = new AbortController();
   var streaming = false;
   try {
-    if (process.env.ADMIN_SECRET) {
-      var got = req.query.secret || req.get("X-Admin-Secret");
-      if (got !== process.env.ADMIN_SECRET) return res.status(403).json({ success: false, error: "forbidden" });
-    }
     var ctxData = await loadV2Context(pid);
     if (!ctxData) return res.status(404).json({ success: false, error: "Profile not found" });
     if (!ctxData.engineV2) return res.status(400).json({ success: false, error: "engine_v2 not true for this profile" });

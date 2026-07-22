@@ -857,6 +857,11 @@ input[type=range]{width:100%;accent-color:var(--accent)}
       <p class="clabel">ai recommendation</p>
       <div id="ai-content"></div>
     </div>
+    <!-- Engine v2 week view (flagged profiles only; hidden for v1). Populated by
+         renderV2Week(); sits alongside the today card in #ai-content. -->
+    <div id="v2-week-card" class="card" style="display:none">
+      <div id="v2-week-content"></div>
+    </div>
     <!-- Log past workout (Today) — deeper scrollable history (from workoutLog,
          no new query) + reused templates render. Tapping either prefills the
          existing Log Workout modal; it never logs immediately. -->
@@ -2460,6 +2465,10 @@ function bootApp() {
     if (typeof renderRecentAndTemplates === 'function') renderRecentAndTemplates();
     syncFitbit();
   });
+  // ENGINE v2 SEAM 7: a flagged profile loads the v2 cache + planned week on
+  // boot. (resolveAIRecs also routes to v2, but this ensures the week view and
+  // the today card are populated even before the readiness/rec flow runs.)
+  if (isV2Profile()) { if (typeof loadV2Today === 'function') loadV2Today(); }
   if (typeof loadTemplates === 'function') loadTemplates();
   // Renders instantly from today's cache if present; otherwise fetches.
   if (typeof loadUnmatchedFitbit === 'function') loadUnmatchedFitbit();
@@ -4200,6 +4209,10 @@ function tryLoadCachedAI() {
 // Primary entry point used at boot / after readiness changes.
 // Paints from local cache instantly if available, then reconciles with server.
 function resolveAIRecs() {
+  // ENGINE v2 SEAM 1: a flagged profile renders from the v2 daily cache (a pure
+  // DB read, zero model call on open) instead of the v1 daily-recs path. The v1
+  // body below is untouched.
+  if (isV2Profile()) return resolveV2Today();
   if (aiPermanentlyFailed) { console.warn('[ApexCoach] resolveAIRecs: suppressed — recs permanently failed'); return Promise.resolve(); }
   var today = ds(0);
   var local = JSON.parse(localStorage.getItem('ac_cache') || '{}');
@@ -4221,6 +4234,9 @@ function resolveAIRecs() {
 // the cached recs were generated with. If they diverge by more than 10 points
 // (or no baseline exists) silently regenerate in the background.
 function maybeRegenForReadiness() {
+  // ENGINE v2 SEAM 4: readiness-driven regeneration is the nightly job's
+  // responsibility, not the client's — a v2 morning open never generates. No-op.
+  if (isV2Profile()) return;
   if (aiPermanentlyFailed) { console.warn('[ApexCoach] maybeRegenForReadiness: suppressed — recs permanently failed'); return; }
   if (!readiness || typeof readiness.score !== 'number') return;
   var cached = aiRecReadinessUsed;
@@ -4241,6 +4257,9 @@ function maybeRegenForReadiness() {
 // Invalidate + regenerate on user context changes (check-in, goal reorder,
 // goal add/remove, road map or coaching brief regeneration).
 function regenerateAIForContextChange(reason) {
+  // ENGINE v2 SEAM 5a: context changes don't regenerate client-side for v2 —
+  // the plan is server-owned. Just refresh the today card from the cache.
+  if (isV2Profile()) { if (typeof loadV2Today === 'function') loadV2Today(); return; }
   console.log('[ApexCoach] Context changed (' + reason + ') -> regenerating recs');
   var aiCard = document.getElementById('ai-card');
   if (!aiCard) return;
@@ -4253,6 +4272,9 @@ function regenerateAIForContextChange(reason) {
 // Profile tab). Clears local + server caches so the NEXT render on any tab
 // shows fresh recs, then triggers a fresh resolve.
 function invalidateDailyRecsAndRefresh(reason) {
+  // ENGINE v2 SEAM 5b: v2 has no client-side recs cache to invalidate; refresh
+  // the today card from the server cache instead.
+  if (isV2Profile()) { if (typeof loadV2Today === 'function') loadV2Today(); return; }
   console.log('[ApexCoach] Invalidating recs cache (' + reason + ')');
   // Clear in-memory state
   aiRec = null;
@@ -5406,6 +5428,11 @@ function resolveLogPastRowLinks(id) {
 }
 
 function renderAI() {
+  // ENGINE v2 SEAM 2: a flagged profile renders the v2 today card (autoregulated
+  // primary + decision tag + variant surface) instead of the v1 options. Branch
+  // at the first line — the v1 body below, including SEAM 3 (the cycling-UI
+  // reroll/category/focus block near the end), never runs for v2.
+  if (isV2Profile()) { renderV2Today(); return; }
   var viewingAlt = !!(altRec || altRecLoading);
   var activeRec = (altRec && !altRecLoading) ? altRec : aiRec;
   if (!activeRec && !altRecLoading) return;
@@ -6238,6 +6265,8 @@ function renderProfileGoals() {
     if (prog && prog.last_computed_at) {
       html += '<div class="mono" style="font-size:9px;color:var(--text-dim);letter-spacing:1px;margin-top:6px;text-align:right" title="' + attrEsc(prog.last_computed_at) + '">Updated ' + escHtml(formatRelativeTimeAgo(prog.last_computed_at)) + '</div>';
     }
+    // ENGINE v2 (flagged profiles only): per-goal tier selector.
+    if (isV2Profile() && typeof v2GoalTierHtml === 'function') html += v2GoalTierHtml(i);
     // Living Goal Roadmap drill-down entry point.
     if (g.id) {
       html += '<div onclick="openGoalRoadmap(\'' + attrEsc(g.id) + '\')" style="margin-top:12px;color:var(--accent-ember);font-size:12px;font-weight:600;cursor:pointer">View Roadmap &rarr;</div>';
@@ -12613,6 +12642,12 @@ function saveWorkoutToSupabase(entry) {
         var _wMatch = wk.wearable_match;
         setTimeout(function() { showWearableMatchModal(wkId, _wMatch); }, 500);
       }
+      // ENGINE v2: one-tap RIR-lite effort prompt (flagged profiles only),
+      // skippable, per-session, never blocks the save. Shown after the wearable
+      // prompt so they don't collide.
+      if (isV2Profile() && wkId && typeof showV2EffortTap === 'function') {
+        setTimeout(function() { showV2EffortTap(wkId); }, wk && wk.wearable_match ? 900 : 500);
+      }
       // The new workout is now a same-day match target — refresh the
       // unmatched-Fitbit card so its "Match to …" buttons reflect it.
       if (typeof invalidateUnmatchedFitbit === 'function') invalidateUnmatchedFitbit();
@@ -13005,7 +13040,8 @@ function doSaveWorkout() {
     calculateStreak();
     renderStreak();
     // Past-date logs don't change today's biometric context — skip the daily-recs regen.
-    if (!isPastDate && readiness && fitData) fetchAI();
+    // ENGINE v2 SEAM 6: v2 never generates client-side; it refreshes from cache.
+    if (!isPastDate && readiness && fitData) { if (isV2Profile()) { if (typeof loadV2Today === 'function') loadV2Today(); } else fetchAI(); }
 
     // Regenerate coaching brief in background
     if (currentProfileId) {
@@ -16779,6 +16815,10 @@ function renderSettingsContent() {
   // ── AI COACHING ──
   h += '<div class="settings-section' + (currentSettingsTab === 'ai' ? ' active' : '') + '">';
   h += '<h3>AI Coaching</h3>';
+  // ENGINE v2 (flagged profiles only): default session length + intensity that
+  // drive the nightly planner and which neighbouring durations the alternate
+  // cache prepares. Rendered inline at the top of the AI Coaching tab.
+  if (typeof v2DefaultsSettingsHtml === 'function') h += v2DefaultsSettingsHtml();
   var aiTone = s.aiTone || 'Motivational';
   var aiDetail = s.aiDetail || 'Normal';
   var aiOptions = s.aiOptions || 3;
@@ -17255,6 +17295,519 @@ function confirmDeleteProfile() {
     }
   }).catch(function(){ document.getElementById('del-error').textContent = 'Network error'; });
 }
+
+// ══════════════════════════════════════════════════════════════════════════
+// ENGINE v2 — FLAGGED UI (profile_data.engine_v2 === true)
+// ──────────────────────────────────────────────────────────────────────────
+// Everything below runs ONLY for a flagged profile. v1 profiles never enter
+// these paths (the 7 seams branch on isV2Profile() and leave the v1 body
+// untouched). All CSS is scoped under #v2-today / #v2-week-card / #v2-variant /
+// #v2-effort / .v2-* — no global class is redefined. No prompt assembly here:
+// the today card is a pure DB read (GET /api/v2/today), and the variant surface
+// POSTs to the server. localStorage is used only for the one ephemeral
+// "viewing a variation" flag pattern, mirroring v1's altRec.
+// ══════════════════════════════════════════════════════════════════════════
+
+function isV2Profile() {
+  return !!(currentProfileData && currentProfileData.engine_v2 === true);
+}
+
+// Module state.
+var v2Cache = null;        // the v2_daily_cache object { today, alternates, decision_tag, why, ... }
+var v2Week = null;         // { block, sessions[] }
+var v2Defaults = null;     // profile_data.defaults
+var v2Variant = null;      // the ephemeral variant being viewed (null = showing today)
+var v2VariantLoading = false;
+var v2VariantLabel = '';   // what the user asked for (for the banner)
+
+// SEAM 1 target: resolve the v2 today card. Pure DB read, no model call.
+function resolveV2Today() {
+  return loadV2Today();
+}
+
+function loadV2Today() {
+  if (!currentProfileId) return Promise.resolve();
+  var card = document.getElementById('ai-card');
+  if (card) card.style.display = 'block';
+  return fetch('/api/v2/today/' + currentProfileId)
+    .then(function(r) { return r.json(); })
+    .then(function(data) {
+      if (!data || !data.success || !data.engine_v2) return;   // not v2 / not migrated
+      v2Cache = data.cache_fresh ? data.cache : null;
+      v2Defaults = data.defaults || null;
+      v2Week = { block: data.block, sessions: data.sessions || [] };
+      v2Variant = null; v2VariantLoading = false;
+      renderV2Today();
+      renderV2Week();
+    })
+    .catch(function(e) { console.warn('[v2] loadV2Today failed:', e && e.message); });
+}
+
+// SEAM 2 target: render the today card into #ai-content.
+function renderV2Today() {
+  var el = document.getElementById('ai-content');
+  if (!el) return;
+  var card = document.getElementById('ai-card');
+  if (card) card.style.display = 'block';
+
+  if (v2VariantLoading) {
+    el.innerHTML = v2VariantBannerHtml() +
+      '<div style="text-align:center;padding:26px 0"><p class="mono" style="font-size:12px;color:var(--accent-cornerman);letter-spacing:3px;animation:pulse 1.6s infinite">BUILDING YOUR VARIATION&hellip;</p></div>';
+    return;
+  }
+
+  if (!v2Cache && !v2Variant) {
+    el.innerHTML = '<div id="v2-today"><div style="text-align:center;padding:22px 0">' +
+      '<p style="color:var(--text-muted);font-size:14px;margin-bottom:6px">Today’s session isn’t ready yet.</p>' +
+      '<p style="color:var(--text-dim);font-size:12px">It’s prepared overnight. Check back shortly.</p></div></div>';
+    return;
+  }
+
+  var viewingVariant = !!v2Variant;
+  var session = viewingVariant ? v2Variant.session : v2Cache.today;
+  var html = '<div id="v2-today">';
+
+  if (viewingVariant) {
+    html += v2VariantBannerHtml();
+  } else {
+    // Decision tag — surfaced honestly. Only shown when the session was actually
+    // adjusted (not "kept"); this is the "feels coached" payoff.
+    var tag = v2Cache.decision_tag;
+    if (tag && tag !== 'kept') {
+      var tagLabel = { reduced_volume: 'Volume reduced today', reduced_intensity: 'Intensity dialled back today', swapped: 'Session swapped today', recovery: 'Recovery day' }[tag] || 'Adjusted today';
+      html += '<div class="v2-tag">' +
+        '<span class="v2-tag-dot"></span><span class="v2-tag-label">' + attrEsc(tagLabel) + '</span></div>';
+    }
+  }
+
+  html += v2SessionCardHtml(session, viewingVariant ? (v2Variant.why || '') : (v2Cache.why || ''));
+
+  if (!viewingVariant) {
+    html += v2VariantSurfaceHtml();
+  }
+  html += '</div>';
+  el.innerHTML = html;
+}
+
+// Render one flattened session (category/duration/intensity + sections + why).
+// Reuses recOptionSections() so the section shape and time_seconds display
+// ("Dead Hang — 2 sets, 45s") are identical to the flatten-boundary output.
+function v2SessionCardHtml(session, whyLine) {
+  if (!session) return '';
+  var cat = String(session.category || 'session').replace(/_/g, ' ');
+  var catPretty = cat.charAt(0).toUpperCase() + cat.slice(1);
+  var dur = session.duration_min != null ? session.duration_min + ' min' : '';
+  var intensity = session.intensity || '';
+  var h = '<div class="v2-session">';
+  // Header row.
+  h += '<div class="v2-session-head">';
+  h += '<div class="v2-session-title">' + attrEsc(session.headline || catPretty) + '</div>';
+  h += '<div class="v2-session-meta"><span class="v2-chip-cat">' + attrEsc(catPretty) + '</span>' +
+    (dur ? '<span class="v2-meta-dot font-mono">' + attrEsc(dur) + '</span>' : '') +
+    (intensity ? '<span class="v2-meta-dot font-mono">' + attrEsc(intensity) + '</span>' : '') + '</div>';
+  h += '</div>';
+  // AI-generated why — cornerman/purple attribution treatment.
+  if (whyLine) {
+    h += '<div class="v2-why">' + attrEsc(whyLine) + '</div>';
+  }
+  // Goal tags.
+  if (Array.isArray(session.goal_tags) && session.goal_tags.length) {
+    h += '<div class="v2-goaltags">';
+    session.goal_tags.forEach(function(t) { h += '<span class="v2-goaltag">&rarr; ' + attrEsc(t) + '</span>'; });
+    h += '</div>';
+  }
+  // Segments via the existing section normalizer.
+  var sections = recOptionSections(session);
+  var n = 0;
+  h += '<div class="v2-sections">';
+  sections.forEach(function(sec, si) {
+    if (sec.label) {
+      var mins = (sec.minutes != null && sec.minutes > 0) ? '<span class="v2-sec-min font-mono">~' + attrEsc(sec.minutes) + ' MIN</span>' : '';
+      h += '<div class="v2-sec-head"' + (si === 0 ? ' style="margin-top:0"' : '') + '><span class="v2-sec-label">' + attrEsc(sec.label) + '</span>' + mins + '</div>';
+    }
+    (sec.exercises || []).forEach(function(ex) {
+      n++;
+      var num = n < 10 ? '0' + n : '' + n;
+      h += '<div class="v2-ex"><span class="v2-ex-num font-mono">' + num + '</span><span class="v2-ex-txt">' + attrEsc(ex) + '</span></div>';
+    });
+  });
+  h += '</div>';
+  // Log this session.
+  h += '<button type="button" class="v2-log-btn" onclick="v2LogSession()">Log This Session</button>';
+  h += '</div>';
+  return h;
+}
+
+// ── VARIANT SURFACE (replaces v1 reroll + category pills + focus buttons) ────
+function v2VariantSurfaceHtml() {
+  var h = '<div id="v2-variant">';
+  h += '<div class="v2-var-head">Want something else?</div>';
+  h += '<div class="v2-var-chips">';
+  var chips = [
+    ['style', 'Different style, same focus'],
+    ['notfeeling', 'Not feeling it &mdash; change it'],
+    ['shorter', 'Shorter'],
+    ['harder', 'Harder'],
+    ['easier', 'Easier'],
+  ];
+  chips.forEach(function(c) {
+    h += '<button type="button" class="v2-var-chip" onclick="v2VariantChip(\'' + c[0] + '\')">' + c[1] + '</button>';
+  });
+  h += '</div>';
+  h += '<div class="v2-var-textrow">' +
+    '<input type="text" id="v2-var-text" class="v2-var-input" placeholder="e.g. same muscle group, different exercises" ' +
+    'onkeydown="if(event.key===\'Enter\'){event.preventDefault();v2VariantFromText();}">' +
+    '<button type="button" class="v2-var-go" onclick="v2VariantFromText()">Go</button></div>';
+  h += '</div>';
+  return h;
+}
+
+function v2VariantBannerHtml() {
+  return '<div class="v2-var-banner">' +
+    '<span class="v2-var-banner-label">SHOWING A VARIATION' + (v2VariantLabel ? ' · ' + attrEsc(v2VariantLabel).toUpperCase() : '') + '</span>' +
+    '<a href="javascript:void(0)" onclick="v2BackToToday()" class="v2-var-back">&larr; Back to today</a></div>';
+}
+
+var V2_CHIP_BODY = {
+  style:      { body: { constraint_text: 'same muscle group, different style' }, label: 'different style' },
+  notfeeling: { body: { constraint_text: 'not feeling it today, change it' },     label: 'not feeling it' },
+  shorter:    { body: { constraint_text: 'shorter' },                             label: 'shorter' },
+  harder:     { body: { constraint_text: 'harder' },                              label: 'harder' },
+  easier:     { body: { constraint_text: 'easier' },                              label: 'easier' },
+};
+function v2VariantChip(kind) {
+  var c = V2_CHIP_BODY[kind];
+  if (!c) return;
+  v2RequestVariant(c.body, c.label);
+}
+function v2VariantFromText() {
+  var inp = document.getElementById('v2-var-text');
+  var t = inp && inp.value ? inp.value.trim() : '';
+  if (!t) return;
+  v2RequestVariant({ constraint_text: t }, t.length > 24 ? t.slice(0, 24) + '…' : t);
+}
+
+// POST the variant. The endpoint returns plain JSON on the cache/code path
+// (instant) and SSE on the model path — detect and handle both, so a cached
+// duration swap renders without a spinner-gate.
+function v2RequestVariant(body, label) {
+  if (!currentProfileId) return;
+  v2VariantLabel = label || '';
+  v2VariantLoading = true;
+  renderV2Today();
+  fetch('/api/v2/variant/' + currentProfileId, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body)
+  })
+  .then(function(r) {
+    var ctype = (r.headers && r.headers.get && r.headers.get('content-type')) || '';
+    if (ctype.indexOf('event-stream') >= 0 && r.body && r.body.getReader) {
+      return v2ReadVariantSSE(r);   // model path
+    }
+    return r.json();                // cache/code path — instant
+  })
+  .then(function(result) {
+    v2VariantLoading = false;
+    if (!result || result.success === false || !result.session) {
+      v2VariantLabel = ''; v2Variant = null; renderV2Today();
+      showToast((result && result.error) ? 'Could not build that variation.' : 'Could not build that variation.', 'danger');
+      return;
+    }
+    v2Variant = { session: result.session, why: result.why || '', refused: !!result.refused, path: result.path };
+    renderV2Today();
+    if (result.refused) showToast('That wasn’t safe given your injuries — showing a safe version.', 'caution');
+  })
+  .catch(function(e) {
+    v2VariantLoading = false; v2Variant = null; v2VariantLabel = '';
+    renderV2Today();
+    showToast('Variation failed: ' + (e && e.message || 'network error'), 'danger');
+  });
+}
+
+// Reassemble the SSE stream + the [[APEXCOACH_V2_VARIANT_RESULT]] marker.
+function v2ReadVariantSSE(r) {
+  var reader = r.body.getReader();
+  var decoder = new TextDecoder();
+  var acc = '', sseBuf = '';
+  var pump = function() {
+    return reader.read().then(function(res) {
+      if (res.done) return v2ExtractVariantResult(acc);
+      sseBuf += decoder.decode(res.value, { stream: true });
+      var idx;
+      while ((idx = sseBuf.indexOf('\n\n')) >= 0) {
+        var frame = sseBuf.slice(0, idx); sseBuf = sseBuf.slice(idx + 2);
+        frame.split('\n').forEach(function(line) {
+          if (line.charAt(0) === ':') return;
+          if (line.indexOf('data:') !== 0) return;
+          var p = line.slice(5); if (p.charAt(0) === ' ') p = p.slice(1);
+          if (p === '[DONE]') return;
+          try { acc += JSON.parse(p); } catch (e) {}
+        });
+      }
+      return pump();
+    });
+  };
+  return pump();
+}
+function v2ExtractVariantResult(acc) {
+  var m = acc.match(/\[\[APEXCOACH_V2_VARIANT_RESULT\]\]\n([\s\S]*?)\n\[\[\/APEXCOACH_V2_VARIANT_RESULT\]\]/);
+  if (!m) return { success: false, error: 'no result marker' };
+  try { return JSON.parse(m[1]); } catch (e) { return { success: false, error: 'unparseable result' }; }
+}
+
+function v2BackToToday() {
+  v2Variant = null; v2VariantLabel = '';
+  renderV2Today();
+}
+
+// Prefill the log modal from the shown session (today or the variant).
+function v2LogSession() {
+  var session = v2Variant ? v2Variant.session : (v2Cache && v2Cache.today);
+  if (!session) return;
+  var names = [];
+  recOptionSections(session).forEach(function(sec) { (sec.exercises || []).forEach(function(x) { names.push(x); }); });
+  if (typeof prefillLogFromAI === 'function') {
+    prefillLogFromAI('', session.headline || (session.category || 'Session'), names, '');
+  }
+}
+
+// ── WEEK VIEW ────────────────────────────────────────────────────────────────
+function renderV2Week() {
+  var card = document.getElementById('v2-week-card');
+  var el = document.getElementById('v2-week-content');
+  if (!card || !el) return;
+  if (!isV2Profile() || !v2Week || !v2Week.sessions || !v2Week.sessions.length) { card.style.display = 'none'; return; }
+  card.style.display = 'block';
+
+  var todayStr = ds(0);
+  var byDate = {};
+  v2Week.sessions.forEach(function(s) { if (!byDate[s.date]) byDate[s.date] = []; byDate[s.date].push(s); });
+  var dates = Object.keys(byDate).sort();
+
+  var statusColor = { planned: 'var(--text-muted)', completed: 'var(--color-positive)', missed: 'var(--color-danger)', modified: 'var(--accent-cornerman)', skipped: 'var(--text-dim)' };
+  var h = '<div class="v2-week-title clabel">this week</div><div class="v2-week-list">';
+  dates.forEach(function(d) {
+    var isToday = d === todayStr;
+    var dayLabel = new Date(d + 'T12:00:00').toLocaleDateString('en-US', { weekday: 'short' });
+    byDate[d].forEach(function(s) {
+      var anchor = s.movable === false;
+      var cat = String(s.category || 'rest').replace(/_/g, ' ');
+      h += '<div class="v2-week-row' + (isToday ? ' v2-week-today' : '') + '" onclick="v2WeekDayDetail(\'' + attrEsc(d) + '\',' + (s.slot || 1) + ')">';
+      h += '<span class="v2-week-day font-mono">' + attrEsc(dayLabel) + '</span>';
+      h += '<span class="v2-week-cat">' + (anchor ? '<span class="v2-week-anchor" title="Fixed commitment">◆</span> ' : '') + attrEsc(cat) + '</span>';
+      h += '<span class="v2-week-dur font-mono">' + (s.duration_min ? s.duration_min + 'm' : '') + '</span>';
+      h += '<span class="v2-week-status" style="color:' + (statusColor[s.status] || 'var(--text-muted)') + '">' + attrEsc(s.status || 'planned') + '</span>';
+      h += '</div>';
+    });
+  });
+  h += '</div>';
+  el.innerHTML = h;
+}
+function v2WeekDayDetail(date, slot) {
+  if (!v2Week) return;
+  var s = v2Week.sessions.filter(function(x) { return x.date === date && (x.slot || 1) === slot; })[0];
+  if (!s || !s.session) return;
+  var when = new Date(date + 'T12:00:00').toLocaleDateString('en-US', { weekday: 'long', month: 'short', day: 'numeric' });
+  var body = '<div style="font-size:12px;color:var(--text-muted);margin-bottom:10px">' + attrEsc(when) + (s.movable === false ? ' · fixed commitment' : '') + '</div>' +
+    v2SessionCardHtml(s.session, s.session.why || '');
+  v2OpenSheet(when, body);
+}
+
+// Lightweight bottom-sheet for week-day detail (scoped, not the log modal).
+function v2OpenSheet(title, bodyHtml) {
+  var ov = document.getElementById('v2-sheet');
+  if (!ov) {
+    ov = document.createElement('div');
+    ov.id = 'v2-sheet';
+    ov.onclick = function(e) { if (e.target === ov) v2CloseSheet(); };
+    document.body.appendChild(ov);
+  }
+  ov.innerHTML = '<div class="v2-sheet-panel"><div class="v2-sheet-head"><span>' + attrEsc(title) + '</span>' +
+    '<button onclick="v2CloseSheet()" class="v2-sheet-x">&times;</button></div><div class="v2-sheet-body">' + bodyHtml + '</div></div>';
+  ov.style.display = 'flex';
+}
+function v2CloseSheet() { var ov = document.getElementById('v2-sheet'); if (ov) ov.style.display = 'none'; }
+
+// ── EFFORT TAP (RIR-lite) ────────────────────────────────────────────────────
+function showV2EffortTap(workoutId) {
+  var ov = document.getElementById('v2-effort');
+  if (!ov) {
+    ov = document.createElement('div');
+    ov.id = 'v2-effort';
+    document.body.appendChild(ov);
+  }
+  ov.innerHTML = '<div class="v2-effort-panel">' +
+    '<div class="v2-effort-q">How did that feel?</div>' +
+    '<div class="v2-effort-btns">' +
+    '<button onclick="v2SaveEffort(' + workoutId + ',\'more_in_tank\')" class="v2-effort-b">Had more in me</button>' +
+    '<button onclick="v2SaveEffort(' + workoutId + ',\'about_right\')" class="v2-effort-b v2-effort-mid">About right</button>' +
+    '<button onclick="v2SaveEffort(' + workoutId + ',\'brutal\')" class="v2-effort-b v2-effort-hard">Brutal</button>' +
+    '</div>' +
+    '<a href="javascript:void(0)" onclick="v2DismissEffort()" class="v2-effort-skip">Skip</a></div>';
+  ov.style.display = 'flex';
+}
+function v2DismissEffort() { var ov = document.getElementById('v2-effort'); if (ov) ov.style.display = 'none'; }
+function v2SaveEffort(workoutId, val) {
+  // PATCH /api/workouts/:id forwards req.body verbatim — no endpoint change.
+  fetch('/api/workouts/' + workoutId, {
+    method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ session_effort: val, profile_id: currentProfileId })
+  }).then(function(r) { return r.json(); }).then(function() {
+    if (typeof showToast === 'function') showToast('Logged — thanks', 'positive');
+  }).catch(function() {}).then(function() { v2DismissEffort(); });
+  v2DismissEffort();
+}
+
+// ── DEFAULTS PICKER (Settings → AI Coaching) ─────────────────────────────────
+function v2DefaultsSettingsHtml() {
+  if (!isV2Profile()) return '';
+  var d = (currentProfileData && currentProfileData.defaults) || v2Defaults || { duration_min: 45, intensity: 'auto' };
+  var dur = d.duration_min || 45;
+  var intn = d.intensity || 'auto';
+  var h = '<div class="s-row v2-def"><label class="s-label">DEFAULT SESSION LENGTH</label>';
+  h += '<p style="font-size:12px;color:var(--text-dim);margin-bottom:6px">Sets your baseline. Your two shortcut variations are prepared at 15 minutes either side of this.</p>';
+  h += '<div class="v2-def-row">';
+  [30, 45, 60, 75].forEach(function(m) {
+    h += '<button type="button" class="v2-def-pill' + (dur === m ? ' v2-def-on' : '') + '" onclick="v2SaveDefault(\'duration_min\',' + m + ')">' + m + 'm</button>';
+  });
+  h += '</div></div>';
+  h += '<div class="s-row v2-def"><label class="s-label">DEFAULT INTENSITY</label><div class="v2-def-row">';
+  ['low', 'medium', 'high', 'auto'].forEach(function(v) {
+    h += '<button type="button" class="v2-def-pill' + (intn === v ? ' v2-def-on' : '') + '" onclick="v2SaveDefault(\'intensity\',\'' + v + '\')">' + v + '</button>';
+  });
+  h += '</div></div>';
+  return h;
+}
+function v2SaveDefault(key, val) {
+  if (!currentProfileData) return;
+  var d = Object.assign({ duration_min: 45, intensity: 'auto' }, currentProfileData.defaults || {});
+  d[key] = val;
+  currentProfileData.defaults = d;
+  try { localStorage.setItem('ac_profile_data', JSON.stringify(currentProfileData)); } catch (e) {}
+  fetch('/api/profiles/' + currentProfileId, {
+    method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ profile_data: { defaults: d } })
+  }).catch(function(e) { console.warn('[v2] save default failed:', e && e.message); });
+  if (typeof renderSettingsContent === 'function') renderSettingsContent();
+}
+
+// ── TIER SELECTOR (goal cards) ───────────────────────────────────────────────
+function v2GoalTierHtml(idx) {
+  var g = (currentProfileData && currentProfileData.goals && currentProfileData.goals[idx]) || {};
+  var tier = g.tier || 'maintenance';
+  var tiers = [['driver', 'Driver'], ['maintenance', 'Maintenance'], ['accessory', 'Accessory']];
+  var h = '<div class="v2-tier"><span class="v2-tier-label">TIER</span><div class="v2-tier-pills">';
+  tiers.forEach(function(t) {
+    h += '<button type="button" class="v2-tier-pill v2-tier-' + t[0] + (tier === t[0] ? ' v2-tier-on' : '') + '" onclick="v2SetTier(' + idx + ',\'' + t[0] + '\')">' + t[1] + '</button>';
+  });
+  h += '</div></div>';
+  return h;
+}
+function v2SetTier(idx, tier) {
+  if (!currentProfileData || !currentProfileData.goals || !currentProfileData.goals[idx]) return;
+  var goals = currentProfileData.goals;
+  // Enforce max-2-drivers in the UI so the user can't silently create a state
+  // the planner will override server-side.
+  if (tier === 'driver') {
+    var drivers = goals.filter(function(x, i) { return i !== idx && x.tier === 'driver'; }).length;
+    if (drivers >= 2) {
+      showToast('Only 2 drivers at a time. Demote another goal first.', 'caution');
+      return;
+    }
+  }
+  goals[idx].tier = tier;
+  try { localStorage.setItem('ac_profile_data', JSON.stringify(currentProfileData)); } catch (e) {}
+  fetch('/api/profiles/' + currentProfileId, {
+    method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ profile_data: { goals: goals } })
+  }).catch(function(e) { console.warn('[v2] save tier failed:', e && e.message); });
+  if (typeof renderProfileGoals === 'function') renderProfileGoals();
+}
 </script>
+<style>
+/* ── ENGINE v2 flagged UI — all scoped, no global class redefined ──────────── */
+#v2-today .v2-tag { display:inline-flex; align-items:center; gap:7px; background:rgba(139,92,246,0.12);
+  border:1px solid rgba(139,92,246,0.28); border-radius:9999px; padding:5px 12px; margin-bottom:12px; }
+#v2-today .v2-tag-dot { width:7px; height:7px; border-radius:50%; background:var(--accent-cornerman); }
+#v2-today .v2-tag-label { font-size:11px; font-weight:700; letter-spacing:0.04em; color:var(--accent-cornerman); text-transform:uppercase; }
+#v2-today .v2-session { background:var(--accent-ember); border-radius:20px; padding:20px; }
+#v2-today .v2-session-head { display:flex; justify-content:space-between; align-items:flex-start; gap:12px; margin-bottom:8px; }
+#v2-today .v2-session-title { font-size:17px; font-weight:700; color:#fff; }
+#v2-today .v2-session-meta { display:flex; align-items:center; gap:6px; flex-shrink:0; }
+#v2-today .v2-chip-cat { font-size:9px; text-transform:uppercase; letter-spacing:0.06em; font-weight:700; color:#fff;
+  background:rgba(255,255,255,0.2); padding:3px 8px; border-radius:9999px; }
+#v2-today .v2-meta-dot { font-size:12px; color:rgba(255,255,255,0.85); }
+#v2-today .v2-why { font-size:14px; font-style:italic; color:rgba(255,255,255,0.92); line-height:1.6; margin-bottom:12px;
+  border-left:3px solid rgba(255,255,255,0.5); padding-left:12px; }
+#v2-today .v2-goaltags { display:flex; flex-wrap:wrap; gap:5px; margin-bottom:12px; }
+#v2-today .v2-goaltag { font-size:9px; font-weight:600; color:#fff; background:rgba(255,255,255,0.18); padding:3px 8px; border-radius:9999px; }
+#v2-today .v2-sec-head { display:flex; align-items:baseline; justify-content:space-between; gap:10px; margin:14px 0 4px; }
+#v2-today .v2-sec-label { font-size:10px; text-transform:uppercase; letter-spacing:0.08em; font-weight:700; color:rgba(255,255,255,0.78); }
+#v2-today .v2-sec-min { font-size:10px; color:rgba(255,255,255,0.55); letter-spacing:0.06em; }
+#v2-today .v2-ex { display:flex; gap:12px; padding:8px 0; border-bottom:1px solid rgba(255,255,255,0.18); font-size:14px; align-items:flex-start; }
+#v2-today .v2-ex-num { font-size:10px; color:rgba(255,255,255,0.6); width:20px; flex-shrink:0; padding-top:2px; }
+#v2-today .v2-ex-txt { color:#fff; line-height:1.5; }
+#v2-today .v2-log-btn { width:100%; background:#fff; color:var(--accent-ember); border:none; padding:12px 20px; font-size:14px;
+  font-weight:700; cursor:pointer; border-radius:14px; font-family:Inter,sans-serif; margin-top:14px; }
+/* Variant surface */
+#v2-variant { margin-top:18px; padding-top:14px; border-top:1px solid var(--border-subtle); }
+#v2-variant .v2-var-head { font-size:12px; color:var(--text-muted); margin-bottom:10px; font-weight:600; }
+#v2-variant .v2-var-chips { display:flex; flex-wrap:wrap; gap:6px; margin-bottom:10px; }
+#v2-variant .v2-var-chip { background:var(--bg-surface-2); border:1px solid var(--border-subtle); color:var(--text-primary);
+  padding:7px 12px; border-radius:9999px; font-size:12px; cursor:pointer; font-family:Inter,sans-serif; }
+#v2-variant .v2-var-chip:hover { border-color:var(--accent-cornerman); }
+#v2-variant .v2-var-textrow { display:flex; gap:8px; }
+#v2-variant .v2-var-input { flex:1; background:var(--bg-surface-2); border:1px solid var(--border-subtle); color:var(--text-primary);
+  border-radius:10px; padding:9px 12px; font-size:13px; font-family:Inter,sans-serif; }
+#v2-variant .v2-var-input:focus { outline:none; border-color:var(--accent-cornerman); }
+#v2-variant .v2-var-go { background:var(--accent-cornerman); border:none; color:#fff; padding:9px 18px; border-radius:10px;
+  font-size:13px; font-weight:700; cursor:pointer; font-family:Inter,sans-serif; }
+#v2-today .v2-var-banner { display:flex; justify-content:space-between; align-items:center; gap:10px;
+  background:rgba(139,92,246,0.1); border:1px solid rgba(139,92,246,0.3); border-radius:8px; padding:8px 12px; margin-bottom:12px; }
+#v2-today .v2-var-banner-label { font-size:10px; letter-spacing:0.1em; color:var(--accent-cornerman); font-weight:700; }
+#v2-today .v2-var-back { font-size:12px; color:var(--accent-ember); text-decoration:none; font-family:Inter,sans-serif; }
+/* Week view */
+#v2-week-card .v2-week-title { margin-bottom:10px; }
+#v2-week-card .v2-week-list { display:flex; flex-direction:column; }
+#v2-week-card .v2-week-row { display:grid; grid-template-columns:38px 1fr auto auto; align-items:center; gap:10px;
+  padding:9px 4px; border-bottom:1px solid var(--border-subtle); cursor:pointer; }
+#v2-week-card .v2-week-row:hover { background:var(--bg-surface-2); }
+#v2-week-card .v2-week-today { border-left:3px solid var(--accent-ember); padding-left:8px; margin-left:-4px; }
+#v2-week-card .v2-week-day { font-size:11px; color:var(--text-muted); text-transform:uppercase; }
+#v2-week-card .v2-week-cat { font-size:14px; color:var(--text-primary); text-transform:capitalize; }
+#v2-week-card .v2-week-anchor { color:var(--accent-ember); }
+#v2-week-card .v2-week-dur { font-size:12px; color:var(--text-muted); }
+#v2-week-card .v2-week-status { font-size:10px; text-transform:uppercase; letter-spacing:0.06em; }
+/* Bottom sheet */
+#v2-sheet { display:none; position:fixed; inset:0; background:rgba(0,0,0,0.55); z-index:9000; align-items:flex-end; justify-content:center; }
+#v2-sheet .v2-sheet-panel { background:var(--bg-surface-1); border-radius:20px 20px 0 0; width:100%; max-width:640px;
+  max-height:82vh; overflow-y:auto; padding:18px; }
+#v2-sheet .v2-sheet-head { display:flex; justify-content:space-between; align-items:center; font-size:18px; font-weight:700;
+  color:var(--text-primary); margin-bottom:12px; }
+#v2-sheet .v2-sheet-x { background:transparent; border:none; color:var(--text-muted); font-size:26px; cursor:pointer; line-height:1; }
+/* Effort tap */
+#v2-effort { display:none; position:fixed; inset:0; background:rgba(0,0,0,0.55); z-index:9100; align-items:flex-end; justify-content:center; }
+#v2-effort .v2-effort-panel { background:var(--bg-surface-1); border-radius:20px 20px 0 0; width:100%; max-width:640px; padding:22px 18px 26px; text-align:center; }
+#v2-effort .v2-effort-q { font-size:17px; font-weight:700; color:var(--text-primary); margin-bottom:16px; }
+#v2-effort .v2-effort-btns { display:flex; flex-direction:column; gap:10px; }
+#v2-effort .v2-effort-b { padding:14px; border-radius:14px; border:1px solid var(--border-subtle); background:var(--bg-surface-2);
+  color:var(--text-primary); font-size:15px; font-weight:600; cursor:pointer; font-family:Inter,sans-serif; }
+#v2-effort .v2-effort-mid { border-color:var(--color-positive); }
+#v2-effort .v2-effort-hard { border-color:var(--color-danger); }
+#v2-effort .v2-effort-skip { display:inline-block; margin-top:14px; color:var(--text-muted); font-size:13px; text-decoration:underline; }
+/* Defaults picker */
+.v2-def .v2-def-row { display:flex; flex-wrap:wrap; gap:6px; }
+.v2-def .v2-def-pill { background:var(--bg-surface-2); border:1px solid var(--border-subtle); color:var(--text-primary);
+  padding:8px 14px; border-radius:9999px; font-size:13px; cursor:pointer; font-family:Inter,sans-serif; text-transform:capitalize; }
+.v2-def .v2-def-on { background:var(--accent-ember); border-color:var(--accent-ember); color:#fff; }
+/* Tier selector */
+.v2-tier { display:flex; align-items:center; gap:10px; margin-top:12px; flex-wrap:wrap; }
+.v2-tier .v2-tier-label { font-size:10px; letter-spacing:0.08em; color:var(--text-dim); font-weight:700; }
+.v2-tier .v2-tier-pills { display:flex; gap:5px; }
+.v2-tier .v2-tier-pill { background:var(--bg-surface-2); border:1px solid var(--border-subtle); color:var(--text-muted);
+  padding:5px 11px; border-radius:9999px; font-size:11px; cursor:pointer; font-family:Inter,sans-serif; }
+.v2-tier .v2-tier-on.v2-tier-driver { background:var(--accent-ember); border-color:var(--accent-ember); color:#fff; }
+.v2-tier .v2-tier-on.v2-tier-maintenance { background:var(--color-info); border-color:var(--color-info); color:#fff; }
+.v2-tier .v2-tier-on.v2-tier-accessory { background:var(--bg-surface-2); border-color:var(--accent-cornerman); color:var(--accent-cornerman); }
+</style>
 </body>
 </html>
