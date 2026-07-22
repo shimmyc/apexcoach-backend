@@ -6550,9 +6550,75 @@ var COACH_CHAT_TOOLS = [
 // same functions — only the trigger moved from a tool call to a direct
 // server-side call after confirm.
 
+// ENGINE v2 — session/preference tools, offered ONLY to a flagged profile
+// (see buildCoachChatTools). A v1 profile never sees these, so a v1 Coach Chat
+// call sends the exact same COACH_CHAT_TOOLS array as before (byte-identical).
+var COACH_CHAT_TOOLS_V2 = [
+  {
+    name: "propose_session_change",
+    description: "Propose a change to ONE of the athlete's FUTURE planned sessions (not today's — for today, tell them to use the 'want something else' variation buttons on the Today card, which are ephemeral and don't alter the plan). You can swap an exercise, adjust volume or intensity, or change a MOVABLE session's category. You CANNOT change a session marked FIXED (an immovable commitment). Not applied immediately — the athlete confirms a card first.",
+    input_schema: {
+      type: "object",
+      properties: {
+        session_id: { type: "integer", description: "The [id N] of the planned session to change — read it from THIS WEEK'S PLANNED SESSIONS in the snapshot. Must be a future date, never today or a past date." },
+        change_summary: { type: "string", description: "One plain sentence describing the change in athlete-facing terms (e.g. 'swap the barbell rows for dumbbell rows', 'drop to 30 minutes', 'make it lower intensity')." },
+        new_category: { type: "string", description: "Only if changing the session's category (movable sessions only). One of: strength, cardio, martial_arts, sports, mind_body, rehab, other." },
+        new_intensity: { type: "string", enum: ["low", "medium", "high"], description: "Only if changing intensity." },
+        new_duration_min: { type: "integer", description: "Only if changing the session length." },
+        exercise_swaps: { type: "array", items: { type: "object", properties: { from: { type: "string" }, to: { type: "string" } } }, description: "Only if swapping specific exercises — each {from: currentName, to: replacementName}." },
+        reason: { type: "string", description: "One plain sentence explaining why this change makes sense — shown on the confirmation card." }
+      },
+      required: ["session_id", "change_summary", "reason"]
+    }
+  },
+  {
+    name: "propose_skip_session",
+    description: "Propose marking a FUTURE planned session as skipped or rescheduled. Cannot skip a FIXED session. Not applied immediately — the athlete confirms first.",
+    input_schema: {
+      type: "object",
+      properties: {
+        session_id: { type: "integer", description: "The [id N] of the future planned session, from the snapshot." },
+        action: { type: "string", enum: ["skip", "reschedule"], description: "'skip' marks it skipped; 'reschedule' moves it to a new date." },
+        new_date: { type: "string", description: "YYYY-MM-DD — required when action is 'reschedule'. Must be within this planning week and in the future." },
+        reason: { type: "string", description: "One plain sentence — shown on the confirmation card." }
+      },
+      required: ["session_id", "action", "reason"]
+    }
+  },
+  {
+    name: "propose_standing_preference",
+    description: "Propose recording a STANDING training preference the athlete states in conversation (e.g. 'I never want to train legs on Mondays', 'I prefer dumbbells over barbells', 'no running, my knee hates it'). This is remembered and factored into future planning. Not applied immediately — the athlete confirms first.",
+    input_schema: {
+      type: "object",
+      properties: {
+        preference: { type: "string", description: "The preference in the athlete's own terms, as a short standing rule." },
+        reason: { type: "string", description: "One plain sentence — shown on the confirmation card (usually just restating what they asked for)." }
+      },
+      required: ["preference", "reason"]
+    }
+  }
+];
+
+// Coach Chat tools for a given profile. v1 (or a v2 migration not yet run) gets
+// the exact original array; a flagged profile also gets the v2 session tools.
+function buildCoachChatTools(isV2) {
+  return isV2 ? COACH_CHAT_TOOLS.concat(COACH_CHAT_TOOLS_V2) : COACH_CHAT_TOOLS;
+}
+
+// Appended to the system persona for a flagged profile. Tells the model about
+// the v2 session tools, the today-vs-future rule (which prevents cache/plan
+// desync), and the no-re-planning boundary.
+var CHAT_PERSONA_V2_ADDENDUM =
+  "\n\nENGINE v2 — THIS ATHLETE IS ON THE v2 PLANNING ENGINE. The ENGINE v2 STATE section of the snapshot shows today's autoregulated session, this week's planned sessions (each with an [id]), the dossier, goal tiers, progression and recency. You have THREE extra proposal tools for this athlete: propose_session_change, propose_skip_session, propose_standing_preference. Rules you must follow:\n" +
+  "- These edit FUTURE planned sessions only. NEVER propose a change to today's session — if the athlete wants today to be different, tell them to tap the variation buttons ('Shorter', 'Not feeling it', etc.) on the Today card, which show an alternative without changing their actual plan.\n" +
+  "- NEVER propose changing a session marked FIXED — those are immovable commitments (like a class). If asked, explain it's a fixed commitment and offer to change the work around it on another day instead.\n" +
+  "- NEVER propose something that conflicts with an active injury flag in the dossier. Refuse it in plain language and say why.\n" +
+  "- You propose edits to individual sessions. You do NOT re-plan the week or regenerate the block — if the athlete wants a fresh plan, tell them the plan refreshes overnight, or that a bigger change is best done by adjusting their goals/schedule.\n" +
+  "- Every proposal is still confirm-first: the athlete sees a card and must confirm before anything changes. Say what you're proposing and why, naturally.";
+
 // Hard cap on Anthropic call legs within one coach_chat send (1 initial call +
 // up to N tool-result continuations). Guards against a runaway tool loop —
-// should never be hit in practice with 3 simple, non-chaining write tools.
+// should never be hit in practice with the simple, non-chaining write tools.
 var CHAT_MAX_TOOL_LEGS = 4;
 
 // Compact, provider-agnostic reading of the v2 schedule shape (see "Weekly
@@ -6909,6 +6975,22 @@ async function buildChatSnapshot(profileId, opts) {
   console.log("[Chat] snapshot for profile " + profileId + ": " + snapshot.length + " chars, " +
     goals.length + " goals, " + microGoals.length + " challenges" + (foTxt ? ", focus override active" : ""));
 
+  // ENGINE v2: a flagged profile gets an appended v2 section (plan, dossier,
+  // tiers, progression, recency). PURE APPEND — the v1 snapshot above is
+  // byte-identical for a v1 profile, which never enters this branch. Its own
+  // fetches are separate from the v1 query, so v1's snapshot build is untouched.
+  if (pd.engine_v2 === true) {
+    try {
+      var v2Section = await buildV2ChatSnapshotSection(profileId, profile, today);
+      if (v2Section) {
+        snapshot += "\n\n" + v2Section;
+        console.log("[Chat] v2 snapshot section for profile " + profileId + ": " + v2Section.length + " chars (total now " + snapshot.length + ")");
+      }
+    } catch (e) {
+      console.warn("[Chat] v2 snapshot section failed (non-fatal, plain reply): " + (e && e.message));
+    }
+  }
+
   if (opts.debug) {
     console.log("[Chat] ---- FULL SNAPSHOT DUMP (profile " + profileId + ") ----\n" + snapshot + "\n---- END SNAPSHOT DUMP ----");
   }
@@ -6916,8 +6998,93 @@ async function buildChatSnapshot(profileId, opts) {
   return snapshot;
 }
 
-function buildChatSystemPrompt(snapshot, summary) {
-  var sys = CHAT_SYSTEM_PERSONA + "\n\nATHLETE SNAPSHOT:\n" + snapshot;
+// ── ENGINE v2 — Coach Chat snapshot section (flagged profiles only) ─────────
+// Gives Coach Chat visibility into the v2 plan, dossier, tiers, progression and
+// recency. Compact by construction — the progression table is rendered with a
+// smaller signal cap here than the planner uses (it shares a prompt with thread
+// history), and its size is reported.
+async function buildV2ChatSnapshotSection(profileId, profile, today) {
+  // Profile-side v2 columns (dossier + cache) via a targeted read, tolerant of
+  // an unrun v2 migration (PostgREST returns an error object → skip the section).
+  var vr = await fetch(SUPABASE_URL + "/rest/v1/profiles?id=eq." + profileId +
+    "&select=dossier,v2_daily_cache,v2_daily_cache_date", { headers: sbHeaders() });
+  var vrows = await vr.json();
+  if (!Array.isArray(vrows) || !vrows.length) return "";
+  var vrow = vrows[0];
+  var pd = profile.profile_data || {};
+
+  var L = ["ENGINE v2 STATE (this athlete is on the v2 planning engine):"];
+
+  // Goal tiers.
+  var goals = Array.isArray(pd.goals) ? pd.goals : [];
+  var tierBits = goals.filter(function (g) { return g && g.tier; }).map(function (g) { return g.title + " [" + g.tier + "]"; });
+  if (tierBits.length) L.push("GOAL TIERS: " + tierBits.join("; "));
+
+  // Today's autoregulated session from the cache.
+  var cacheFresh = vrow.v2_daily_cache_date === today;
+  var cache = cacheFresh ? vrow.v2_daily_cache : null;
+  if (cache && cache.today) {
+    var t = cache.today;
+    var tag = cache.decision_tag && cache.decision_tag !== "kept" ? " [ADJUSTED: " + cache.decision_tag + "]" : " [as planned]";
+    L.push("TODAY'S SESSION" + tag + ": " + (t.headline || t.category) + " — " + (t.duration_min || "?") + " min, " + (t.intensity || "?") + " intensity.");
+    if (cache.why) L.push("  why: " + cache.why);
+  } else {
+    L.push("TODAY'S SESSION: not generated yet for " + today + ".");
+  }
+
+  // The planned week (active block).
+  try {
+    var br = await fetch(SUPABASE_URL + "/rest/v1/training_blocks?profile_id=eq." + profileId +
+      "&status=eq.active&order=start_date.desc&limit=1&select=id,block", { headers: sbHeaders() });
+    var brows = await br.json();
+    var block = Array.isArray(brows) && brows.length ? brows[0] : null;
+    if (block) {
+      if (block.block && block.block.focus) L.push("BLOCK FOCUS: " + block.block.focus);
+      var sr = await fetch(SUPABASE_URL + "/rest/v1/planned_sessions?profile_id=eq." + profileId +
+        "&block_id=eq." + block.id + "&order=date.asc,slot.asc&select=id,date,slot,status,movable,session", { headers: sbHeaders() });
+      var srows = await sr.json();
+      if (Array.isArray(srows) && srows.length) {
+        var wk = srows.map(function (s) {
+          var sess = s.session || {};
+          return "  " + s.date + " [id " + s.id + "]" + (s.movable === false ? " (FIXED, immovable)" : "") + ": " +
+            (sess.category || "?") + " " + (sess.duration_min || "?") + "min " + (sess.intensity || "") + " · " + (s.status || "planned");
+        });
+        L.push("THIS WEEK'S PLANNED SESSIONS (each carries an [id N] — use it when proposing a change; a session marked FIXED is an immovable commitment and cannot be changed):\n" + wk.join("\n"));
+      }
+    }
+  } catch (e) { /* non-fatal */ }
+
+  // Dossier (nightly-built, stored). Rendered via the same helper the prompts use.
+  if (vrow.dossier) {
+    L.push(v2Dossier.renderDossierForPrompt(vrow.dossier));
+  }
+
+  // Progression + recency — computed fresh (small windows). Progression table
+  // is capped tighter here (shares the chat budget with thread history).
+  var deps = { fetch: fetch, SUPABASE_URL: SUPABASE_URL, sbHeaders: sbHeaders, localToday: localToday };
+  try {
+    var recency = await v2Progression.buildRecencyState(deps, profileId, { today: today });
+    var recencyText = v2Progression.renderRecencyBlock(recency);
+    if (recencyText) L.push(recencyText);
+  } catch (e) { /* non-fatal */ }
+  try {
+    var progression = await v2Progression.buildProgressionState(deps, profileId, { today: today });
+    var progText = v2Progression.renderProgressionTable(progression, { maxSignal: 10, includeTail: true });
+    if (progText) L.push(progText);
+  } catch (e) { /* non-fatal */ }
+
+  L.push("SOURCING RULE (v2): every training figure above is real and computed. State no training-history number that is not present in this snapshot.");
+  L.push("GOAL-TAG CAVEAT: a session's goal_tags can under-report which goals its exercises serve. When the athlete asks what they did for a goal, reason from the actual EXERCISES in the plan, not the tags alone — do not claim a goal was untrained if exercises that clearly serve it are present.");
+
+  return L.join("\n");
+}
+
+function buildChatSystemPrompt(snapshot, summary, isV2) {
+  // The v2 addendum is appended to the persona (the STABLE, cache-friendly part)
+  // rather than the snapshot, so a v2 profile's cached system prefix stays
+  // stable across messages. A v1 profile passes isV2 falsy → byte-identical.
+  var persona = isV2 ? (CHAT_SYSTEM_PERSONA + CHAT_PERSONA_V2_ADDENDUM) : CHAT_SYSTEM_PERSONA;
+  var sys = persona + "\n\nATHLETE SNAPSHOT:\n" + snapshot;
   if (summary) sys += "\n\nEARLIER IN THIS CONVERSATION (summarized):\n" + summary;
   return sys;
 }
@@ -7183,6 +7350,124 @@ async function computeCheckinNoteProposal(profileId, input) {
 // chat_messages row (which this proposal is attached to for display) isn't
 // saved until after the whole stream finishes, but the proposal itself is
 // created mid-stream, as soon as the tool call happens.
+// ── ENGINE v2 — session/preference proposal computation (READ-ONLY) ─────────
+// Every guard here fires at PROPOSAL time, in code, before a card is ever
+// created — so a disallowed change can't even become a pending proposal, let
+// alone be applied. A guard failure throws {noop:true} so executeProposalTool
+// returns a plain refusal to the model instead of creating a proposal.
+
+function _chatNoop(msg) { var e = new Error(msg); e.noop = true; return e; }
+
+// Load a planned session and enforce the shared hard rules (future-only,
+// not-an-anchor). Returns { row, sessionData, dossier }.
+async function _loadPlannedSessionForProposal(profileId, sessionId, today) {
+  var sr = await fetch(SUPABASE_URL + "/rest/v1/planned_sessions?id=eq." + encodeURIComponent(sessionId) +
+    "&profile_id=eq." + profileId + "&select=id,date,slot,status,movable,session,block_id", { headers: sbHeaders() });
+  var rows = await sr.json();
+  var row = Array.isArray(rows) && rows.length ? rows[0] : null;
+  if (!row) throw _chatNoop("I couldn't find that planned session — it may have already changed. Ask them to reopen the plan.");
+  // FUTURE-ONLY. Today's session is owned by the ephemeral variant surface + the
+  // autoregulator; letting chat write today's planned_sessions row would desync
+  // it from today's cache. Past sessions are history.
+  if (row.date <= today) {
+    throw _chatNoop(row.date === today
+      ? "That's today's session — I can't change the plan for today. Tell the athlete to use the variation buttons on the Today card, which show an alternative without altering their plan."
+      : "That session is in the past and can't be changed.");
+  }
+  // ANCHOR — immovable, same rule the planner and autoregulator obey.
+  if (row.movable === false) {
+    throw _chatNoop("That's a fixed commitment (an anchored session) — it can't be modified. Offer to adjust the work around it on another day instead.");
+  }
+  // Load the dossier for the injury check.
+  var pr = await fetch(SUPABASE_URL + "/rest/v1/profiles?id=eq." + profileId + "&select=dossier", { headers: sbHeaders() });
+  var prows = await pr.json();
+  var dossier = (Array.isArray(prows) && prows[0] && prows[0].dossier) || null;
+  return { row: row, sessionData: row.session || {}, dossier: dossier };
+}
+
+// Apply the requested edits to a copy of the session and return the modified
+// session. Pure — does not write.
+function _applySessionEdits(sessionData, input) {
+  var s = JSON.parse(JSON.stringify(sessionData));
+  var changes = [];
+  if (input.new_category && String(input.new_category) !== String(s.category)) {
+    changes.push({ field: "category", label: "category", before: s.category, after: input.new_category });
+    s.category = input.new_category;
+  }
+  if (input.new_intensity && String(input.new_intensity) !== String(s.intensity)) {
+    changes.push({ field: "intensity", label: "intensity", before: s.intensity, after: input.new_intensity });
+    s.intensity = input.new_intensity;
+  }
+  if (input.new_duration_min && Number(input.new_duration_min) !== Number(s.duration_min)) {
+    changes.push({ field: "duration_min", label: "duration", before: s.duration_min, after: input.new_duration_min });
+    s.duration_min = Number(input.new_duration_min);
+  }
+  if (Array.isArray(input.exercise_swaps) && input.exercise_swaps.length) {
+    input.exercise_swaps.forEach(function (sw) {
+      if (!sw || !sw.from || !sw.to) return;
+      var swapped = false;
+      (s.segments || []).forEach(function (seg) {
+        (seg.exercises || []).forEach(function (ex) {
+          if (ex && ex.name && ex.name.toLowerCase() === String(sw.from).toLowerCase()) { ex.name = sw.to; swapped = true; }
+        });
+      });
+      if (swapped) changes.push({ field: "exercise", label: "exercise swap", before: sw.from, after: sw.to });
+    });
+  }
+  return { session: s, changes: changes };
+}
+
+async function computeSessionChangeProposal(profileId, input, today) {
+  var loaded = await _loadPlannedSessionForProposal(profileId, input.session_id, today);
+  var edited = _applySessionEdits(loaded.sessionData, input);
+  if (!edited.changes.length) {
+    throw _chatNoop("That change matches what's already planned for that day — nothing to confirm.");
+  }
+  // INJURY CHECK — refuse a change that introduces contraindicated work.
+  var ci = v2Variant.contraindications(edited.session, loaded.dossier);
+  if (ci.length) {
+    throw _chatNoop("I can't propose that — it would add " + ci[0].exercise + ", which conflicts with the athlete's " +
+      ci[0].injury_area + ". Tell them plainly and suggest a safer alternative.");
+  }
+  return {
+    title: input.change_summary || "session change",
+    changes: edited.changes,
+    reason: input.reason || "",
+    _session_id: loaded.row.id,
+    _date: loaded.row.date,
+    _new_session: edited.session,   // the fully-edited session to write on confirm
+  };
+}
+
+async function computeSkipSessionProposal(profileId, input, today) {
+  var loaded = await _loadPlannedSessionForProposal(profileId, input.session_id, today);
+  var action = input.action === "reschedule" ? "reschedule" : "skip";
+  var changes;
+  if (action === "reschedule") {
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(String(input.new_date || ""))) throw _chatNoop("A reschedule needs a valid new date.");
+    if (String(input.new_date) <= today) throw _chatNoop("The new date has to be in the future.");
+    changes = [{ field: "date", label: "move to", before: loaded.row.date, after: input.new_date }];
+  } else {
+    changes = [{ field: "status", label: "status", before: loaded.row.status || "planned", after: "skipped" }];
+  }
+  return {
+    title: (loaded.sessionData.category || "session") + " on " + loaded.row.date,
+    changes: changes, reason: input.reason || "",
+    _session_id: loaded.row.id, _action: action, _new_date: input.new_date || null,
+  };
+}
+
+async function computeStandingPreferenceProposal(profileId, input) {
+  var pref = (input.preference || "").trim();
+  if (!pref) throw _chatNoop("There's no preference text to record.");
+  return {
+    title: "standing preference",
+    changes: [{ field: "preference", label: "remember", before: null, after: pref }],
+    reason: input.reason || pref,
+    _preference: pref,
+  };
+}
+
 async function createChatProposal(threadId, toolUseId, type, payload) {
   var r = await fetch(SUPABASE_URL + "/rest/v1/chat_proposals", {
     method: "POST",
@@ -7205,7 +7490,7 @@ async function backfillProposalMessageIds(proposalIds, messageId) {
 // Dispatches one tool_use block: computes the proposed change (read-only),
 // creates a pending chat_proposals row, and returns the tool_result content
 // the model needs to finish its turn gracefully. NEVER writes real data.
-async function executeProposalTool(toolUse, profileId, threadId) {
+async function executeProposalTool(toolUse, profileId, threadId, _chatToday) {
   var input = toolUse.input || {};
   try {
     var proposal, type;
@@ -7218,6 +7503,15 @@ async function executeProposalTool(toolUse, profileId, threadId) {
     } else if (toolUse.name === "propose_checkin_note") {
       type = "log_checkin_note";
       proposal = await computeCheckinNoteProposal(profileId, input);
+    } else if (toolUse.name === "propose_session_change") {
+      type = "modify_planned_session";
+      proposal = await computeSessionChangeProposal(profileId, input, _chatToday);
+    } else if (toolUse.name === "propose_skip_session") {
+      type = "skip_planned_session";
+      proposal = await computeSkipSessionProposal(profileId, input, _chatToday);
+    } else if (toolUse.name === "propose_standing_preference") {
+      type = "set_standing_preference";
+      proposal = await computeStandingPreferenceProposal(profileId, input);
     } else {
       return { resultContent: "Unknown tool '" + toolUse.name + "' — not available.", proposalId: null };
     }
@@ -7279,6 +7573,54 @@ async function applyProposal(proposal, profileId) {
       headers: sbHeaders("return=minimal,resolution=merge-duplicates"),
       body: JSON.stringify(checkinPayload),
     });
+  } else if (proposal.type === "modify_planned_session") {
+    // Re-verify the hard rules AT APPLY TIME against fresh data — the row could
+    // have changed between proposal and confirm (become an anchor, moved to
+    // today, etc.). Reject rather than write if anything shifted.
+    var pTz = await fetch(SUPABASE_URL + "/rest/v1/profiles?id=eq." + profileId + "&select=timezone,dossier", { headers: sbHeaders() });
+    var pRows = await pTz.json();
+    var pRow = (Array.isArray(pRows) && pRows[0]) || {};
+    var todayApply = localToday(pRow);
+    var freshSr = await fetch(SUPABASE_URL + "/rest/v1/planned_sessions?id=eq." + payload._session_id +
+      "&profile_id=eq." + profileId + "&select=id,date,movable,status", { headers: sbHeaders() });
+    var freshRows = await freshSr.json();
+    var fresh = Array.isArray(freshRows) && freshRows.length ? freshRows[0] : null;
+    if (!fresh) throw new Error("That planned session no longer exists.");
+    if (fresh.date <= todayApply) throw new Error("That session is now today or in the past and can no longer be changed here.");
+    if (fresh.movable === false) throw new Error("That session is now a fixed commitment and can't be changed.");
+    var newSession = payload._new_session;
+    // INVARIANT SET (Phase 3.5) on the confirmed session, plus the injury check.
+    // A confirmed change that would violate an invariant is caught BEFORE the write.
+    var enforced = v2Planner.enforceInvariants(
+      { sessions: [{ date: fresh.date, slot: 1, movable: true, category: newSession.category, duration_min: newSession.duration_min, intensity: newSession.intensity, why: newSession.why || "Adjusted via Coach Chat.", goal_tags: newSession.goal_tags, segments: newSession.segments }], block: {} },
+      { profileId: Number(profileId), weekDates: [{ date: fresh.date }], tiers: { goals: [] }, schedule: { fill_policy: "ai_assigned" }, anchors: [] }
+    );
+    var rejected = enforced.violations.filter(function (v) { return v.severity === "rejected"; });
+    if (rejected.length) throw new Error("The change would break a plan rule (" + rejected[0].invariant + ") — not applied.");
+    var ci2 = v2Variant.contraindications(newSession, pRow.dossier);
+    if (ci2.length) throw new Error("The change would add " + ci2[0].exercise + ", contraindicated by " + ci2[0].injury_area + " — not applied.");
+    var cleaned = enforced.sessions[0];
+    var writeSession = Object.assign({}, newSession, { category: cleaned.category, duration_min: cleaned.duration_min, intensity: cleaned.intensity, why: cleaned.why, segments: cleaned.segments });
+    await fetch(SUPABASE_URL + "/rest/v1/planned_sessions?id=eq." + payload._session_id, {
+      method: "PATCH", headers: sbHeaders("return=minimal"),
+      body: JSON.stringify({ session: writeSession, status: "modified", updated_at: new Date().toISOString() }),
+    });
+  } else if (proposal.type === "skip_planned_session") {
+    var body = payload._action === "reschedule"
+      ? { date: payload._new_date, status: "planned", updated_at: new Date().toISOString() }
+      : { status: "skipped", updated_at: new Date().toISOString() };
+    await fetch(SUPABASE_URL + "/rest/v1/planned_sessions?id=eq." + payload._session_id +
+      "&profile_id=eq." + profileId, {
+      method: "PATCH", headers: sbHeaders("return=minimal"), body: JSON.stringify(body),
+    });
+  } else if (proposal.type === "set_standing_preference") {
+    // Stored in profile_data.v2_preferences[]; the dossier builder folds these
+    // into refusals_preferences on its next nightly run (closing the Phase 2
+    // deferred item — see v2Dossier.buildDossier).
+    var loadedP = await loadProfileWithGoals(profileId);
+    var prefs = Array.isArray(loadedP.profileData.v2_preferences) ? loadedP.profileData.v2_preferences.slice() : [];
+    prefs.push({ text: payload._preference, added: new Date().toISOString() });
+    await saveProfileDataField(profileId, loadedP.profileData, "v2_preferences", prefs);
   } else if (proposal.type === "regenerate_goal_roadmap") {
     // Unlike every other proposal type, this is a live Sonnet call — slow
     // (a few seconds) and can genuinely fail (Anthropic error, invalid JSON,
@@ -7320,8 +7662,16 @@ app.post("/api/profiles/:id/chat/message", async function(req, res) {
     var thread = await getOrCreateChatThread(profileId);
     var history = await fetchChatMessagesAfter(thread.id, thread.summary_through_message_id);
 
+    // ENGINE v2 flag for this profile — decides the tool set, the persona
+    // addendum, and whether the snapshot carries the v2 section. A v1 profile
+    // resolves isV2Chat=false and every branch below is byte-identical to before.
+    var chatProfileRow = await fetch(SUPABASE_URL + "/rest/v1/profiles?id=eq." + profileId + "&select=profile_data,timezone", { headers: sbHeaders() }).then(function(r){return r.json();}).catch(function(){return [];});
+    var chatPd = (Array.isArray(chatProfileRow) && chatProfileRow[0] && chatProfileRow[0].profile_data) || {};
+    var isV2Chat = chatPd.engine_v2 === true;
+    var chatToday = localToday((Array.isArray(chatProfileRow) && chatProfileRow[0]) || {});
+
     var snapshot = await buildChatSnapshot(profileId, { debug: debug });
-    var systemText = buildChatSystemPrompt(snapshot, thread.summary);
+    var systemText = buildChatSystemPrompt(snapshot, thread.summary, isV2Chat);
 
     var messages = history.map(function(m) { return { role: m.role, content: m.content }; });
     messages.push({ role: "user", content: text });
@@ -7363,7 +7713,7 @@ app.post("/api/profiles/:id/chat/message", async function(req, res) {
       return fetch("https://api.anthropic.com/v1/messages", {
         method: "POST",
         headers: anthropicHeaders,
-        body: JSON.stringify({ model: model, max_tokens: 1500, stream: true, system: system, messages: msgs, tools: COACH_CHAT_TOOLS }),
+        body: JSON.stringify({ model: model, max_tokens: 1500, stream: true, system: system, messages: msgs, tools: buildCoachChatTools(isV2Chat) }),
         signal: signal,
         agent: anthropicStreamAgent,
       });
@@ -7396,7 +7746,7 @@ app.post("/api/profiles/:id/chat/message", async function(req, res) {
       onToolUse: async function(toolUses) {
         var toolResultBlocks = [];
         for (var i = 0; i < toolUses.length; i++) {
-          var outcome = await executeProposalTool(toolUses[i], profileId, thread.id);
+          var outcome = await executeProposalTool(toolUses[i], profileId, thread.id, chatToday);
           if (outcome.proposalId) proposalIdsThisCall.push(outcome.proposalId);
           toolResultBlocks.push({ type: "tool_result", tool_use_id: toolUses[i].id, content: outcome.resultContent });
         }

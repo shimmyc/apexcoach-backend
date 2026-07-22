@@ -262,11 +262,18 @@ async function buildDossier(deps, profileId, ctx) {
 
   var novelty = resolveNoveltyPref(pd, ps);
 
+  // Standing preferences captured by Coach Chat (Phase 7) live in
+  // profile_data.v2_preferences[]. This closes the Phase 2 deferred item — the
+  // refusals_preferences field now has a real code source.
+  var prefs = Array.isArray(pd.v2_preferences)
+    ? pd.v2_preferences.map(function (p) { return typeof p === "string" ? p : (p && p.text) || ""; }).filter(Boolean)
+    : [];
+
   var dossier = {
     v: 1,
     generated_for: ctx.today,
     injury_flags: buildInjuryFlags(pd, ctx.checkins, ctx.today),
-    refusals_preferences: [],           // prose pass may fill; code has no source for this yet
+    refusals_preferences: prefs.slice(0, 12),   // from Coach Chat standing preferences (Phase 7)
     equipment_time_reality: buildEquipmentReality(pd, profileRow),
     novelty_pref: novelty.value,
     novelty_pref_source: novelty.source,
@@ -382,6 +389,9 @@ function renderDossierForPrompt(dossier) {
   if (eq.gym_access) eqBits.push("gym access: " + eq.gym_access + (eq.gym_type ? " (" + eq.gym_type + ")" : ""));
   if (eq.weekly_target) eqBits.push("weekly target: " + eq.weekly_target);
   if (eqBits.length) L.push("- Equipment/time: " + eqBits.join("; "));
+  if (dossier.refusals_preferences && dossier.refusals_preferences.length) {
+    L.push("- Standing preferences / refusals: " + dossier.refusals_preferences.join("; "));
+  }
   L.push("- Novelty preference: " + dossier.novelty_pref + " (" + dossier.novelty_pref_source + ")");
   if (dossier.stalled_lifts && dossier.stalled_lifts.length) {
     L.push("- Stalled (>" + rules.STALL_WEEKS_FOR_STALLED_FLAG + " wk no progression): " +
