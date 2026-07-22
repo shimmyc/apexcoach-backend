@@ -149,16 +149,36 @@ function buildNeglected(fullExerciseContext) {
   return out.slice(0, 8);
 }
 
-/** Notable PBs — only ones that actually carry a number. */
+/**
+ * Notable PBs — only ones that actually carry a number, and only ones that are
+ * genuinely a PERSONAL BEST rather than an attendance record.
+ *
+ * Two exclusions, both found by running against real cloned data:
+ *  - session length is NOT a PB. "MMA Sparring 60:00" is how long the class
+ *    was, not an achievement to beat.
+ *  - an exercise seen only once in the window has no "best" to speak of; its
+ *    single logged value was being reported as a PB, which is how
+ *    "Pinky Abduction with Rubber Band 15 reps" ended up billed alongside real
+ *    lifts. Requires >= 2 sessions.
+ *
+ * Ranked so the most substantial numbers survive the size trim, rather than
+ * whatever happened to sort first.
+ */
 function buildNotablePBs(progressionState) {
   var out = [];
   (progressionState.exercises || []).forEach(function (e) {
     var p = e.prs || {};
-    if (p.best_hold_seconds) out.push({ name: e.name, pb: p.best_hold_display + " hold", metric: "hold" });
-    else if (p.best_weight_lbs) out.push({ name: e.name, pb: p.best_weight_lbs + " lb", metric: "load" });
-    else if (p.best_reps) out.push({ name: e.name, pb: p.best_reps + " reps", metric: "reps" });
+    if ((e.sessions_in_window || 0) < 2) return;
+    if (p.best_hold_seconds) {
+      out.push({ name: e.name, pb: p.best_hold_display + " hold", metric: "hold", rank: p.best_hold_seconds });
+    } else if (p.best_weight_lbs) {
+      out.push({ name: e.name, pb: p.best_weight_lbs + " lb", metric: "load", rank: p.best_weight_lbs * 10 });
+    } else if (p.best_reps) {
+      out.push({ name: e.name, pb: p.best_reps + " reps", metric: "reps", rank: p.best_reps });
+    }
   });
-  return out.slice(0, 10);
+  out.sort(function (a, b) { return b.rank - a.rank; });
+  return out.slice(0, 10).map(function (p) { return { name: p.name, pb: p.pb, metric: p.metric }; });
 }
 
 /** Equipment / location / time reality — from profile_data + top-level columns. */
@@ -304,6 +324,19 @@ async function buildDossier(deps, profileId, ctx) {
   // Trim the elastic lists first, never the injury flags — an injury dropped
   // for length is a safety problem, not a formatting one.
   var serialized = JSON.stringify(dossier);
+
+  // Injury descriptions are the single largest contributor for a real athlete
+  // (measured on profile 4's cloned data: 5 injuries with long clinical
+  // histories pushed the dossier to 2,596 chars against a 2,000 target). They
+  // are SHORTENED rather than dropped — an injury removed for length is a
+  // safety problem, an injury summarised is not. This runs before the elastic
+  // list trims because it recovers the most space for the least signal loss.
+  if (serialized.length > DOSSIER_TARGET_CHARS && dossier.injury_flags.length) {
+    dossier.injury_flags.forEach(function (f) { f.status = trim(f.status, 55); });
+    serialized = JSON.stringify(dossier);
+    warnings.push("shortened injury descriptions to fit the size target (areas and report dates preserved)");
+  }
+
   var trimOrder = ["notable_pbs", "neglected_movements", "stalled_lifts"];
   var ti = 0;
   while (serialized.length > DOSSIER_HARD_CAP_CHARS && ti < trimOrder.length) {

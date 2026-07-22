@@ -47,6 +47,18 @@ var BARBELL_HINTS = /\b(barbell|bench press|back squat|front squat|deadlift|over
 var CONDITIONING_HINTS = /\b(run|running|jog|sprint|row(ing)?|bike|cycl|elliptical|swim|walk|hike|ruck|interval|conditioning|cardio|jump rope|skipping)\b/i;
 var ISOMETRIC_HINTS = /\b(hang|dead hang|plank|hold|isometric|wall sit|l-sit|bridge hold)\b/i;
 
+// Categories where `duration_minutes` means SESSION LENGTH, not a hold.
+// This distinction is load-bearing and was found by running against real data:
+// a 60-minute MMA class and a 20-minute yoga session were both being read as
+// isometric HOLDS, producing "PB 60:00 hold" and a progression instruction of
+// "+5-10 s hold" on a sparring session. Duration only means a hold for
+// strength/rehab-style movements (dead hang, plank, wall sit).
+var SESSION_DURATION_CATEGORIES = ["cardio", "martial_arts", "sports", "mind_body"];
+
+function isSessionDurationCategory(category) {
+  return SESSION_DURATION_CATEGORIES.indexOf(String(category || "").toLowerCase()) >= 0;
+}
+
 /**
  * @param {string} name
  * @param {object} agg — the aggregated exercise (to read data shape)
@@ -54,7 +66,10 @@ var ISOMETRIC_HINTS = /\b(hang|dead hang|plank|hold|isometric|wall sit|l-sit|bri
  */
 function inferModality(name, agg) {
   var n = String(name || "");
-  // Data shape wins over the name: a hold with no reps is isometric.
+  // Category first: a timed cardio/class/skill session progresses like
+  // conditioning (duration then density), never like an isometric hold.
+  if (agg && isSessionDurationCategory(agg.category)) return "conditioning";
+  // Data shape next: a hold with no reps is isometric.
   if (agg && agg.best_duration_seconds && !agg.best_reps) return "isometric";
   if (agg && agg.has_distance && !agg.best_weight) return "conditioning";
   if (ISOMETRIC_HINTS.test(n)) return "isometric";
@@ -93,13 +108,20 @@ function fmtMMSS(totalSeconds) {
  * Only ever compares like with like — a row's score is only meaningful against
  * another row of the same metric, which is why `metric` travels with it.
  */
-function topSetOf(row) {
+function topSetOf(row, category) {
   var w = num(row.weight_lbs);
   var reps = num(row.reps);
   var sets = num(row.sets);
   var durMin = num(row.duration_minutes);
   var dist = num(row.distance_miles);
-  var holdSec = durMin != null ? Math.round(durMin * 60) : null;
+  var sessionDuration = isSessionDurationCategory(category || row.main_category || row.category);
+  var holdSec = (durMin != null && !sessionDuration) ? Math.round(durMin * 60) : null;
+
+  // A timed cardio/class/skill session: report the session length as what it
+  // is. Never a "hold", and never a hold PB.
+  if (sessionDuration && durMin != null && w == null && reps == null) {
+    return { metric: "session_minutes", score: durMin, display: Math.round(durMin) + " min session" };
+  }
 
   if (w != null && reps != null) {
     return { metric: "load_x_reps", score: w * reps, display: w + " lb x " + reps + (sets ? " (" + sets + " sets)" : "") };
@@ -210,6 +232,7 @@ async function buildProgressionState(deps, profileId, opts) {
         category: row.main_category || row.category || null,
         instances: [],
         best_weight: null, best_reps: null, best_duration_seconds: null,
+        best_session_minutes: null,
         has_distance: false,
       };
     }
@@ -220,15 +243,21 @@ async function buildProgressionState(deps, profileId, opts) {
     if (w != null && (g.best_weight === null || w > g.best_weight)) g.best_weight = w;
     if (reps != null && (g.best_reps === null || reps > g.best_reps)) g.best_reps = reps;
     if (durMin != null) {
-      var sec = Math.round(durMin * 60);
-      if (g.best_duration_seconds === null || sec > g.best_duration_seconds) g.best_duration_seconds = sec;
+      // Session length and hold duration are tracked SEPARATELY. Collapsing
+      // them is what produced "MMA Sparring PB 60:00 hold" against real data.
+      if (isSessionDurationCategory(g.category)) {
+        if (g.best_session_minutes === null || durMin > g.best_session_minutes) g.best_session_minutes = durMin;
+      } else {
+        var sec = Math.round(durMin * 60);
+        if (g.best_duration_seconds === null || sec > g.best_duration_seconds) g.best_duration_seconds = sec;
+      }
     }
     if (dist != null) g.has_distance = true;
 
     g.instances.push({
       date: row.date,
       workout_id: row.workout_id,
-      top: topSetOf(row),
+      top: topSetOf(row, g.category),
       effort: effortByWorkoutId[row.workout_id] || null,
     });
   });
@@ -292,6 +321,7 @@ async function buildProgressionState(deps, profileId, opts) {
         best_reps: g.best_reps,
         best_hold_seconds: g.best_duration_seconds,
         best_hold_display: g.best_duration_seconds ? fmtMMSS(g.best_duration_seconds) : null,
+        best_session_minutes: g.best_session_minutes,
       },
       gap_decay: {
         band: decay.band,
@@ -349,6 +379,7 @@ function renderProgressionTable(state, limit) {
     if (e.prs.best_weight_lbs) pr.push(e.prs.best_weight_lbs + " lb");
     if (e.prs.best_reps) pr.push(e.prs.best_reps + " reps");
     if (e.prs.best_hold_display) pr.push(e.prs.best_hold_display + " hold");
+    if (e.prs.best_session_minutes) pr.push(Math.round(e.prs.best_session_minutes) + " min longest session");
     if (pr.length) bits.push("PB " + pr.join(" / "));
     // A >6-week gap has a NULL multiplier (conservative restart, no single
     // number applies) — it must still be printed, or the longest layoffs would
