@@ -230,7 +230,9 @@ function buildVariantPrompt(ctx) {
   var sections = {};
   function add(name, text) { if (!text) return; parts.push(text); sections[name] = text.length; }
 
-  add("today", "TODAY'S SESSION (this is what you are transforming" + (isAnchor ? " — IMMOVABLE, a fixed commitment" : "") + "):\n" + JSON.stringify(primary, null, 1));
+  // Compact JSON (no pretty-print) — the pretty-printed session was ~4.4k
+  // chars, roughly a third of the whole prompt. Haiku reads compact JSON fine.
+  add("today", "TODAY'S SESSION (this is what you are transforming" + (isAnchor ? " — IMMOVABLE, a fixed commitment" : "") + "):\n" + JSON.stringify(primary));
 
   // The concrete ask.
   var askLines = ["THE REQUEST:"];
