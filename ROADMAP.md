@@ -1728,6 +1728,16 @@ All verified present in `server.js`. `:id`/`:userId` = profile id.
   what I want" (session #32, PARKED).** This is separate from the session #32 display rename
   (which changed only the label, not the `mode:'total'` logic). May need a look at how the
   prompt generates workouts in total-override mode. **Parked — not yet scoped.**
+- **✅ RESOLVED 2026-07-22 (Phase 3.5) — all four Phase 3 output defects closed and re-verified on
+  a fresh generation.** (1) The unsourced-history problem is fixed by `buildRecencyState()` +
+  a SOURCING RULE in the planner system prompt — regeneration contains zero "22-day"/"post-gap"/
+  "layoff"/"returning from" text. (2) The `time` unit ambiguity is fixed at the schema
+  (`time_seconds`, always seconds; a timed block's length lives on the segment) — regeneration
+  emitted 0 bare `time` and 11 correct `time_seconds`. (3) The missing time-budget verifier is
+  now the `session_time_budget` invariant — all 7 sessions summed exactly on regeneration.
+  (4) Silently-unprescribed tiered goals are now caught by `tiered_goal_prescribed`, which **fired
+  on the real regeneration** and correctly caught the pinky-rehab goal being prescribed but never
+  tagged. The four original entries are kept below for the root-cause record.
 - **Engine v2 `session.segments[].exercises[].time` carries NO UNIT — the `duration_minutes`
   overload repeating itself in the new schema (found 2026-07-22, Phase 3 first real plan).** In
   the generated week, `Indoor Bike time=20` means twenty MINUTES while `Dead Hang time=30` and
@@ -1764,6 +1774,20 @@ All verified present in `server.js`. `:id`/`:userId` = profile id.
   since, including the day of generation), yet the plan treats it as current. Two fixes, both real:
   surface a computed `days_since_last_workout` + recent-session-count explicitly so the model never
   has to infer one, and instruct it not to state training-history figures that are not given to it.
+- **Engine v2: the planner prescribes work for a goal but omits it from `goal_tags` (found
+  2026-07-22 on the Phase 3.5 regeneration, NOT fixed).** The `tiered_goal_prescribed` invariant
+  fired correctly against the accessory-tier pinky-rehab goal — and inspection shows the work IS
+  in the plan: `Pinky Abduction with Rubber Band`, `Tabletop Lumbrical Curl` and `Wrist Circles`
+  on Friday, `Lumbrical Pinky Isolation` on Sunday. Those sessions are tagged
+  `["Fix Posture", "Build Muscle"]` and `["Fix Posture", "Fix Pubic Osteitis"]` — the goal the
+  exercises actually serve is missing from both. So this is a **mis-tagging** defect, not a
+  dropped-goal defect, and it is narrower than the original Daily Meditation case (which really
+  was prose-only). Consequence: any consumer that reasons over `goal_tags` — Coach Chat, goal
+  progress, a future "what did I do for X this week" view — will under-report. The invariant
+  cannot distinguish the two cases, and deliberately does not try: it flags, and a human reads it.
+  A prompt change may reduce it but is unlikely to eliminate it; the durable fix is probably to
+  derive `goal_tags` in code from the prescribed exercises rather than trusting the model to
+  label its own work.
 - **Engine v2 progression state: 34 of 40 exercises have <3 sessions in a 60-day window (found
   2026-07-22, Phase 2 audit against real cloned data).** 27 appear exactly once, 7 twice. They are
   flagged `insufficient_data` and their trend defaults to `flat`, which is honest — but it means
@@ -1904,6 +1928,18 @@ produced 2026-07-22 and approved; see that session's report. Phasing:
   against real output, since nothing fired. Four real defects found in the output are logged in §6
   (the `time` unit ambiguity, the missing time-budget verifier, silently-dropped accessory goals,
   and an unverifiable model-asserted statistic).
+- **Phase 3.5 — Correctness pass on the planner output shape.** ✅ **Done 2026-07-22.** All four
+  Phase 3 defects closed and re-verified on a fresh generation (block id 3). Added
+  `buildRecencyState()`/`renderRecencyBlock()` + a system-prompt SOURCING RULE; changed the
+  exercise time field to `time_seconds` at the schema; added the `session_time_budget`,
+  `time_unit_resolvable` and `tiered_goal_prescribed` invariants; and added
+  `server/v2Planner.test.js` (**27 tests**) proving every invariant against a deliberately
+  corrupted fixture plus a zero-false-positive clean-plan case.
+  **Regeneration:** 1 attempt, **101 s** (vs 114 s), **6,704 output tokens** (vs 7,323), 3,089
+  cache-read input tokens, 7 sessions persisted. **1 invariant fired on real output** —
+  `tiered_goal_prescribed` correctly caught the pinky-rehab goal being prescribed across 4
+  exercises on 2 days but never tagged in any session's `goal_tags`. Remaining open item: that
+  mis-tagging is a model behaviour a prompt change may not fully fix (§6).
 - **Phase 4 — Nightly job + autoregulator** (Haiku) + alternate cache. **Not started.**
   - **⚠ Render is on the Hobby (free) plan and spins down after ~15 minutes idle** (confirmed by
     Shimmy 2026-07-22). The in-process interval therefore **cannot be the primary nightly

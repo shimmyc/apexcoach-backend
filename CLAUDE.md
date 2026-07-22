@@ -1995,6 +1995,70 @@ rejects identically to an empty result, so "not planned yet" and "cannot plan ye
 indistinguishable. Now reports each precondition (tables present, `engine_v2`, goals tiered,
 drivers, `schedule_v3`, `defaults`) plus `can_generate` / `will_be_meaningful`.
 
+## Engine v2 — Phase 3.5 Correctness Pass (2026-07-22)
+
+Four defects found in the first real plan, each closed at the level it belonged at.
+
+### 1. Unverifiable history assertions → computed recency block
+The first plan asserted a "22-day gap" and framed the week as "post-gap day 1", cutting load
+10–20% on that basis. The number was **correct against the database and derivable from nothing in
+the prompt** — and the gap had CLOSED 9 days and 7 sessions earlier. A right answer reached
+unverifiably is the same failure mode as a confidently wrong one.
+
+**`buildRecencyState()`** (`server/v2Progression.js`) computes, in code:
+`days_since_last_workout`, `sessions_last_7`, `sessions_last_14`, `current_streak_days`,
+`days_logged_in_window`, and `longest_gap_60d` **with an explicit `open`/closed flag**. Malformed
+`workouts.date` text rows (ROADMAP §6) are excluded rather than text-sorted.
+`renderRecencyBlock()` states it as the only sanctioned source and carries the framing rule.
+
+The planner system prompt gained a **SOURCING RULE**: state no numeric fact about training history
+that is not present in the prompt; never derive one from progression-table instance dates (that
+table shows only a SAMPLE of instances, so any figure derived from it will be wrong); any
+"post-gap" / "returning from a layoff" framing must be justified by the recency block.
+
+**Verified on regeneration:** zero occurrences of "22-day", "post-gap", "layoff" or "returning
+from". The two surviving "re-establish" uses are legitimate — one quotes the roadmap phase name,
+one describes the Indoor Bike downtrend.
+
+### 2. `time` had no unit → `time_seconds`
+`Indoor Bike time=20` meant MINUTES; `Dead Hang time=30` and `Plank time=30` meant SECONDS. Same
+key, same type, 18 occurrences — the `duration_minutes` overload reproducing itself in the very
+schema meant to prevent it.
+
+Fixed at the schema: **exercise time is `time_seconds`, always seconds**. A timed block's length
+is not an exercise property at all — it belongs on the segment's `duration_min`. Chosen over a
+value + required `time_unit` pair because a MISSING unit degrades silently back into the exact
+ambiguity being fixed, and because `time_seconds` matches `best_hold_seconds` already used by the
+progression state. The `time_unit_resolvable` invariant repairs a legacy bare `time` where the
+intent is unambiguous (a value on a timed-block segment is minutes and moves to the segment;
+anywhere else it is a hold in seconds) and FLAGS anything non-numeric rather than guessing.
+**Verified on regeneration: 0 bare `time`, 11 correct `time_seconds`.**
+
+### 3. No time-budget verifier → `session_time_budget`
+4 of 7 sessions in the first plan disagreed with their own stated duration. Segment minutes must
+now sum to the session's `duration_min`, tolerance `max(2, floor(10%))` — tighter than v1's ±15%
+because the planner states segment durations EXPLICITLY, so a mismatch is the model contradicting
+its own arithmetic rather than estimation noise. **Repair direction differs by case:** an anchored
+session's stated duration is real-world truth (a 60-minute class is 60 minutes) so the SEGMENT is
+corrected; everywhere else the segments are the concrete content and `duration_min` is corrected
+to match. **Verified: all 7 sessions exact on regeneration.**
+
+### 4. Tiered goals silently unprescribed → `tiered_goal_prescribed`
+`Daily Meditation` appeared only inside a segment's `intent` string — acknowledged in prose,
+dropped in practice. A goal is now satisfied by appearing in some session's `goal_tags` (on a
+session that actually has segments) OR by being named in `block.tradeoff_notes` (the legitimate
+"deliberately not addressed this week" escape). FLAGGED, never repaired — inventing work for an
+unaddressed goal is content fabrication.
+
+### 5. `server/v2Planner.test.js` — 27 tests, invariants proven
+The invariant set had fired **0 times across 7 sessions**, which is no evidence it works — an
+invariant that has never fired is indistinguishable from one that cannot. Every invariant is now
+proven against a deliberately corrupted fixture: dropped anchor, modified anchor duration,
+`(date,slot)` collision, consecutive high-CNS days, over-cap session, missing and whitespace-only
+`why`, out-of-enum segment type, bare `time` in both unit senses, non-numeric time, over- and
+under-budget sessions, anchored-vs-movable repair direction, goal-in-intent-only, goal on an empty
+session, and out-of-week dates — plus a clean-plan case asserting **zero** false positives.
+
 ## Migrations
 
 One-time data fixes that should be run in the Supabase SQL editor.
