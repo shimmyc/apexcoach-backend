@@ -30,6 +30,19 @@
 > and `daily_sleep` (736) has no listing endpoint at all. Running the baseline query rather than
 > trusting the API is what caught both.
 >
+> **ARC 4 — Engine v2 Phase 3 (planner shipped; one real plan generated + persisted).** 47-test
+> rules harness closes the two gap-decay bands real data never reached; progression table resized
+> **9,989 -> 3,093 chars** by splitting on signal not recency; `establish_baseline` added as a
+> first-class action; goal tiers + `profile_data.schedule_v3`; `POST /api/v2/plan/:profileId`
+> (streaming Sonnet, 2-attempt cap). **First generation: 1 attempt, 114 s, 5,426 in / 7,323 out
+> tokens, 7 sessions persisted, ZERO invariant violations — so the invariant set is shipped but
+> UNPROVEN.** The plan used all 6 progression signals, both anchors, the tier split and all three
+> roadmap emphases. Four real defects found in its output, all logged in §6: the `time` field
+> carries no unit (bike 20 = minutes, dead hang 30 = seconds — a SCHEMA defect, not prompt-fixable),
+> no time-budget verifier exists in v2 (4 of 7 sessions disagreed with their own stated length by
+> 5 min), an accessory-tier goal was named in prose but never actually prescribed, and the model
+> asserted a "22-day gap" statistic that is correct against the DB but **absent from its inputs**.
+>
 > **ARC 3 — Engine v2 Phase 2 (shipped, deployed, run live).** `server/coachingRules.js` +
 > `server/v2Progression.js` + `server/v2Dossier.js` + `GET /api/v2/audit/:profileId` +
 > `v2CurrentPhase()`, plus three UNRUN migration files. **v1 untouched**: three additive requires
@@ -1715,6 +1728,42 @@ All verified present in `server.js`. `:id`/`:userId` = profile id.
   what I want" (session #32, PARKED).** This is separate from the session #32 display rename
   (which changed only the label, not the `mode:'total'` logic). May need a look at how the
   prompt generates workouts in total-override mode. **Parked — not yet scoped.**
+- **Engine v2 `session.segments[].exercises[].time` carries NO UNIT — the `duration_minutes`
+  overload repeating itself in the new schema (found 2026-07-22, Phase 3 first real plan).** In
+  the generated week, `Indoor Bike time=20` means twenty MINUTES while `Dead Hang time=30` and
+  `Plank time=30` mean thirty SECONDS. Same key, same JSON type, no way for any consumer to tell
+  them apart without name-matching the exercise — which is exactly the heuristic v2 was built to
+  stop relying on. **This is a SCHEMA defect, not a prompt defect**: no wording makes one integer
+  field mean two units. Fix is to split into `time_seconds` / `duration_min`, or carry an explicit
+  `time_unit`. Must be resolved before the renderer (Phase 6) or the autoregulator (Phase 4)
+  consumes segments, or both will inherit the ambiguity.
+- **Engine v2 has no time-budget verifier; segment minutes drift from the stated session length
+  (found 2026-07-22).** On the first real plan, 4 of 7 sessions disagreed with themselves: two
+  were 5 min UNDER their stated `duration_min` and two were 5 min OVER (30-min cardio sessions
+  whose segments summed to 35). v1 has `verifyRecTimeBudget()` for exactly this and v2 has no
+  equivalent — the invariant set checks volume, spacing and anchors but never asks whether the
+  session's own parts add up to its own stated length. Small in absolute terms, but it is the
+  precise complaint that started the v1 time-budget work ("a rec labelled 45 minutes contains ~12
+  minutes of work"), and it will compound once the autoregulator starts editing segments.
+- **Accessory-tier goals can be silently dropped with no invariant catching it (found
+  2026-07-22).** `Daily Meditation` (accessory tier) appears in the generated plan only inside a
+  segment's `intent` STRING ("Pinky accessory + meditation — daily accessory dose") and is never
+  prescribed as an actual exercise. Nothing in the invariant set checks that every tiered goal
+  received a real prescription, so an accessory goal can be acknowledged in prose and dropped in
+  practice. Candidate invariant: every driver and accessory goal must appear in at least one
+  session's `goal_tags` AND have at least one concrete exercise attached.
+- **The planner asserted a specific quantitative fact that was NOT in its inputs (found
+  2026-07-22).** The generated block states a "22-day gap" and builds the week around
+  re-establishing cadence "post-gap day 1". The number is **correct** — profile 4's workouts do
+  show exactly 22 days between 2026-06-22 and 2026-07-14 — but **nothing in the assembled prompt
+  contains it**: the progression table carries per-exercise instance dates (whose own visible gap
+  is ~32 days, not 22), the dossier carries `consistency: 4.4`, and no section states a workout-gap
+  figure at all. So the model produced an unverifiable assertion that happened to be right. That is
+  not a success — it is the same behaviour that would have produced a confidently wrong number.
+  Compounding it, the gap is **historical and already closed** (7 sessions logged in the 9 days
+  since, including the day of generation), yet the plan treats it as current. Two fixes, both real:
+  surface a computed `days_since_last_workout` + recent-session-count explicitly so the model never
+  has to infer one, and instruct it not to state training-history figures that are not given to it.
 - **Engine v2 progression state: 34 of 40 exercises have <3 sessions in a 60-day window (found
   2026-07-22, Phase 2 audit against real cloned data).** 27 appear exactly once, 7 twice. They are
   flagged `insufficient_data` and their trend defaults to `flat`, which is honest — but it means
@@ -1842,7 +1891,19 @@ produced 2026-07-22 and approved; see that session's report. Phasing:
 
 - **Phase 1 — Audit.** ✅ Done 2026-07-22 (audit only, no code).
 - **Phase 2 — Rules module + progression/dossier builders + audit endpoint.** ✅ **Done 2026-07-22, deployed, run live against profile 4.** Delivered: three unrun migration files (above); `server/coachingRules.js` (one source, consumed as prompt text AND as callable pure functions, every rule carrying an evidence marker); `server/v2Progression.js` (progression state in code, no table); `server/v2Dossier.js` (code-derived flags first, one small Haiku pass for prose only); `GET /api/v2/audit/:profileId` (admin-gated, read-only); and `v2CurrentPhase()`, the server-side roadmap phase resolver. **v1 isolation held** — the only `server.js` edits are three additive requires and one new route; no v1 function, prompt or endpoint changed, and a post-deploy smoke test of profile 1's workouts/exercises/daily-recs/micro-goals/providers endpoints all returned 200.
-- **Phase 3 — Planner** (weekly, Sonnet) + block/session persistence + admin trigger. **NEXT — not started.**
+- **Phase 3 — Planner** (weekly, Sonnet) + block/session persistence + admin trigger. ✅ **Done
+  2026-07-22 — one real plan generated against profile 4 and persisted (block id 1, 7 sessions).**
+  Delivered: `server/coachingRules.test.js` (47 tests, closes the two gap-decay bands real data
+  never reached); `establish_baseline` as a first-class progression action; the progression table
+  resized **9,989 → 3,093 chars** by splitting on signal rather than truncating by recency;
+  goal tiers + `profile_data.schedule_v3` sibling keys; `server/v2Planner.js`;
+  `POST /api/v2/plan/:profileId` (admin-gated, streaming, Sonnet, capped at 2 attempts) and
+  `GET /api/v2/plan/:profileId` with explicit readiness reporting.
+  **First-generation result:** 1 attempt, 114 s wall clock, 5,426 input / 7,323 output tokens,
+  **0 invariant violations and 0 repairs** — the invariant set is therefore SHIPPED BUT UNPROVEN
+  against real output, since nothing fired. Four real defects found in the output are logged in §6
+  (the `time` unit ambiguity, the missing time-budget verifier, silently-dropped accessory goals,
+  and an unverifiable model-asserted statistic).
 - **Phase 4 — Nightly job + autoregulator** (Haiku) + alternate cache. **Not started.**
   - **⚠ Render is on the Hobby (free) plan and spins down after ~15 minutes idle** (confirmed by
     Shimmy 2026-07-22). The in-process interval therefore **cannot be the primary nightly

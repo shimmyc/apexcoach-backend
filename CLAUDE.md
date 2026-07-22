@@ -1924,6 +1924,77 @@ today → else the last phase stored `status:'current'` → else an open-ended s
 time and never write back (ROADMAP §9 D5) — the stored `phases[]` this reads can disagree with
 what the Goals tab renders, which is what let two phases sit marked `current` for weeks.
 
+## Engine v2 — Phase 3 Implementation (2026-07-22)
+
+### `server/coachingRules.test.js` — test harness
+Plain `node --test`, zero dependencies: `node --test server/coachingRules.test.js`. 47 tests.
+Exists because the Phase 2 audit against real data exercised only 3 of 5 gap-decay bands —
+`10-14 days` and `2-3 weeks` had never executed. Covers every band, every boundary
+(9/10, 14/15, 28/29, 42/43), garbage input, every `progressionDecision` branch, and the
+pain/readiness/deload/rotation/time-compression/accessory functions.
+**Found that `PER_EXERCISE_STALE_MULTIPLIER` is provably unreachable** (staleness needs >30 days;
+every band from 29 days up is already ≤0.85) — kept and documented as defensive-not-active.
+
+### `establish_baseline` — a first-class progression action
+`progressionDecision` returns `establish_baseline` (NOT `hold`) when an exercise has fewer than
+`MIN_SESSIONS_FOR_SIGNAL` (3) sessions in the window. On real data that is 34 of 40 exercises, so
+"we have no idea yet" is the COMMON case and must be sayable separately from "we are deliberately
+holding the load steady" — two states that need opposite coaching language. It yields to a
+`brutal` effort report, which is checked first.
+
+### Progression table: split by signal, not truncated by recency
+`renderProgressionTable(state, {maxSignal, includeTail})` renders exercises with a resolvable
+trend in full and collapses the rest into a dense `name (Nx, Nd)` tail. **9,989 → 3,093 chars.**
+Capping by recency was rejected: it would discard a lift trained consistently but not lately,
+which is the exact thing progression logic exists to notice.
+
+### Goal tiers + Schedule v3
+`profile_data.goals[i].tier` (`driver`|`maintenance`|`accessory`), no migration. Max 2 drivers —
+`resolveTiers()` keeps the top 2 by array order (array order IS priority) and demotes the rest to
+maintenance **for the block only, never mutating stored goals**, returning the demotions so the
+planner can state them.
+
+**Schedule v3 lives at `profile_data.schedule_v3`, NOT inside `profile_data.schedule`.** This is
+load-bearing: `loadSchedule()` reconstructs `currentSchedule` as exactly
+`{anchors, frequency_targets, addons}` and `schedPersist()` writes that reconstruction back, so
+any key placed inside `.schedule` is destroyed the first time the athlete edits the Schedule card.
+A sibling survives because `schedPersist` does
+`Object.assign({}, currentProfileData, {schedule: currentSchedule})`. The same reconstruction is
+what makes v1 **provably** unable to see these keys — they are stripped at load time, before any
+v1 reader runs.
+
+### `server/v2Planner.js` + `POST /api/v2/plan/:profileId`
+Admin-gated, **streaming** (Render's 25s cap; a full week is ~7,300 output tokens / ~114 s), Sonnet,
+**capped at 2 attempts** with the retry only on unparseable JSON. Refuses to run on a profile whose
+`engine_v2` flag is not true. `?dry_run=1` generates and validates without persisting;
+`?start=YYYY-MM-DD` overrides the week start.
+
+Because the response is already streaming when persistence happens, the result is appended inside an
+`[[APEXCOACH_V2_PLAN_RESULT]]` marker — the same server-authored-marker pattern coach_chat uses for
+tool proposals.
+
+**Persistence** (`v2PersistPlan`): supersedes any existing `active` block, deletes only
+`status='planned'` rows in the target week (a completed/modified session is history and is never
+destroyed by a re-plan), then inserts the block and its sessions.
+
+**Deterministic invariants enforced in CODE after generation** (`enforceInvariants`), per the
+`enforceSingleCurrentPhase` precedent that prompt rules are probabilistic:
+- REPAIRED (structural, safe to fix mechanically): sessions dated outside the week; missing or
+  duration-modified anchors; `(date, slot)` collisions; missing `why`; unknown segment type.
+- FLAGGED (training content, never silently rewritten): high-CNS sessions on consecutive days;
+  per-session volume ceiling.
+
+The volume check is a **coarse whole-session 30-set proxy**, not the real ≤10-sets-per-muscle rule —
+`planned_sessions.session` carries no muscle tags. Wiring `exercise_catalog` muscle data in would
+make it exact; deferred.
+
+### `GET /api/v2/plan/:profileId`
+Returns the active block + sessions **and a `ready` object**. `{block:null, sessions:[]}` alone was
+ambiguous — PostgREST returns an error OBJECT for a missing relation, which `Array.isArray()`
+rejects identically to an empty result, so "not planned yet" and "cannot plan yet" were
+indistinguishable. Now reports each precondition (tables present, `engine_v2`, goals tiered,
+drivers, `schedule_v3`, `defaults`) plus `can_generate` / `will_be_meaningful`.
+
 ## Migrations
 
 One-time data fixes that should be run in the Supabase SQL editor.
