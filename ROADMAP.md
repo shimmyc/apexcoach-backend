@@ -1774,8 +1774,20 @@ All verified present in `server.js`. `:id`/`:userId` = profile id.
   since, including the day of generation), yet the plan treats it as current. Two fixes, both real:
   surface a computed `days_since_last_workout` + recent-session-count explicitly so the model never
   has to infer one, and instruct it not to state training-history figures that are not given to it.
+- **Engine v2 variant model paths run ~15s, materially over the sub-5s target (found 2026-07-22,
+  Phase 5, ACCEPTED).** The deterministic paths (cache ~1.4s, code ~2s) meet sub-5s and cover the
+  common duration cases. A model-generated variant (intensity/category/style/free-text) runs ~15s
+  because it **generates a full structured session** (~1,500 output tokens on Haiku) — the cost is
+  output generation, not prompt size (the prompt is already ~11k chars / ~3.2k input tokens, under
+  the autoregulator's). Trimming the prompt further will not reach 5s. The durable fix is
+  generating a DIFF against the primary rather than a whole session, a design change deferred to
+  its own scope. Streaming means the user sees incremental progress in the meantime.
+- **✅ RESOLVED 2026-07-22 (Phase 5) — the alternate-cache category swap.** The Phase 4 inline swap
+  prompt produced nothing; rewiring the nightly swap through the shared `v2GenerateVariant` path
+  fixed it (root cause: the swap was handed the flattened display session, not the structured one).
+  The nightly job now yields 4 cache objects. Original entry kept below for the record.
 - **Engine v2: the alternate-cache category swap silently produced no usable alternate on the
-  first real nightly run (found 2026-07-22, Phase 4, NOT fixed — non-fatal).** The swap Haiku call
+  first real nightly run (found 2026-07-22, Phase 4, ~~NOT fixed~~ — fixed in Phase 5, above).** The swap Haiku call
   ran (`model_calls:1`) but returned no parseable `session`, so the cache holds 3 objects (primary
   + two duration variants) instead of 4 — within the ≤4 budget, so nothing broke, but a Haiku call
   was spent for nothing. The two duration variants are code-derived and always succeed; only the
@@ -1979,7 +1991,22 @@ produced 2026-07-22 and approved; see that session's report. Phasing:
     maintenance-tier goal to driver (Build Muscle is first in line) and demote the completed rehab
     goal to maintenance**. This belongs with the re-plan triggers (driver-tier goal change / phase
     completion), NOT with the planner itself. Deliberately not built in Phase 3.
-- **Phase 5 — Variant endpoint** (Haiku, streamed) + conversational constraints. **Not started.**
+- **Phase 5 — Variant endpoint** (Haiku, streamed) + conversational constraints. ✅ **Done
+  2026-07-22 — all constraint classes run live against profile 4.** `server/v2Variant.js` (one
+  shared implementation), `POST /api/v2/variant/:profileId` (streaming, ephemeral — never writes
+  the cache or plan, proven by before/after check), and the nightly swap rewired to the same path
+  (**nightly now yields 4 cache objects**). Routing: cache-first (zero call, ~1.4s) → code-only
+  duration reduction (~2s) → model (intensity/category/style/free-text/readiness, ~15s). Free-text
+  classified in code — "not feeling it" routes through the readiness rules (proven: trimmed
+  intensity, didn't reroll), "same muscle different style" holds the pattern. **Hard rules proven
+  live:** an injury-contraindicated request ("heavy sprint + adductor work" vs Pubic Osteitis) was
+  REFUSED in prose with the safe session returned. Two new invariants (`constraint_honored`,
+  `contraindication_free`); 21 variant tests incl. both conflict cases (97 v2 tests total).
+  **Four bugs found by running it** (all fixed): server.js wasn't in the first commit (route
+  404'd), `loadV2Context` didn't select `v2_daily_cache` (409), the variant read the flattened not
+  the structured session (silent no-op compression), and "Glute Bridge" false-matched a neck
+  contraindication. **Sub-5s met for the deterministic paths; model paths run ~15s** (output
+  generation of a full session, not prompt size — see §6).
 - **Phase 6 — Flagged UI**: week view, today card, variant surface, effort tap, defaults, tier selector. **Not started.**
 - **Phase 7 — Coach Chat v2 integration. DESIGN NOT STARTED — DO NOT BUILD.** Explicitly out of
   scope for Phases 1–6, recorded here so it isn't rediscovered as a surprise. **The gap:**

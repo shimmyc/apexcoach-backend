@@ -2127,6 +2127,76 @@ so the renderer is untouched. **Morning open is a pure DB read — zero model ca
 byte-identical inside the `else`. Tolerates an unrun v2 migration via a column-less fallback
 select.
 
+## Engine v2 — Phase 5 Implementation (2026-07-22)
+
+On-demand variant endpoint + the shared variant logic. `server/v2Variant.js` is ONE
+implementation with TWO callers: the user-facing endpoint AND the nightly category-swap alternate
+(replacing Phase 4's inline swap prompt).
+
+### `POST /api/v2/variant/:profileId` (streaming, Haiku)
+Admin-gated. Body `{ constraint_text?, duration_min?, intensity?, category? }`, any combination.
+Transforms the **autoregulated primary from `v2_daily_cache`** (`today_session`, the structured
+form — see below), not the raw `planned_sessions` row. **Ephemeral by design**: it never writes
+`v2_daily_cache` or `planned_sessions` — proven both structurally (no Supabase write in the route
+or `v2GenerateVariant`) and by a before/after check (a model variant left the planned session's
+`updated_at` and the cache's `today` byte-identical). Returns 409 if there is no fresh cache for
+today (run the nightly job first).
+
+**Structured vs flattened, load-bearing.** The cache's `today` is the FLATTENED display shape
+(`sections[]` of strings) the v1 renderer reads; `today_session` is the STRUCTURED session
+(`segments[]` with exercise objects) the variant transforms — compression and the model both need
+structure. Missing this initially made code-compression silently no-op ("no segments to
+compress"). Alternates carry `session_structured` too.
+
+### Routing — code before model
+1. **CACHE-FIRST** (zero model call, ~1.4s): a pure duration request matching a prepared alternate.
+   Matched by the `dur_<N>` key **when the alternate's actual duration is genuinely near the
+   request** — a `dur_30` alternate compresses to ~28 min, and the `dur_60` no-op-extend (the
+   40-min primary relabeled) is correctly excluded from being served as "60".
+2. **CODE-ONLY** (~1.5-2s): a pure duration REDUCTION, resolved by the rules module's
+   time-compression order (`compressSessionToDuration` — drop tertiary accessories → shorten rest
+   → never drop the primary compound or a prehab/mobility segment). A duration INCREASE is NOT
+   code (adding volume is a judgment the code must not fake).
+3. **MODEL** (~15s, streamed): intensity, category, style, free-text, or a readiness signal.
+
+### Free-text classification (in code, before any model call)
+`classifyRequest`: "shorter"/"longer"/"harder"/"easier" map to structured equivalents;
+**"not feeling it" is a READINESS signal** routed through the rules module (proven live: the model
+applied the subjective-malaise-vetoes-green-score rule and trimmed intensity, it did not reroll);
+"same muscle group, different style" holds the primary + pattern and varies structure. An explicit
+structured field beats a vague phrasing.
+
+### Hard rules constraints cannot override (proven live)
+- **Anchors**: the code path is gated off for an anchor, and the model is told to refuse-in-prose.
+- **Injury contraindications**: checked in code against ACTIVE dossier flags (`contraindications`,
+  deduped; a merely-"declared" flag doesn't count). Proven live — "give me heavy sprint intervals
+  and adductor work" was REFUSED (`refused:true`) with a plain-language Pubic Osteitis explanation
+  and the safe session returned unchanged.
+- The SOURCING RULE and the rules-module caps still bind.
+
+### Two new invariants (`checkVariant`, both flag never rewrite)
+- **`constraint_honored`**: the output reflects the ask (a 30-min request → a ~30-min session; the
+  requested intensity/category). Suppressed on a legitimate refusal.
+- **`contraindication_free`**: no exercise conflicts with an active injury flag. Keyword tokens are
+  qualified to avoid false positives — "bridge" was matching "Glute Bridge" (a hip rehab staple)
+  against a neck flag, now "neck bridge"/"wrestler bridge".
+
+### Nightly swap rewired
+The Phase 4 inline swap prompt produced nothing; the nightly category-swap alternate now calls
+`v2GenerateVariant` (the shared path), so it gets the same dossier/contraindication/invariant
+treatment. **The nightly job now yields 4 cache objects** (primary + two duration variants + the
+swap) — the Phase 4 failure was the same structured-vs-flattened bug.
+
+### Latency vs the targets
+- **Sub-5s is met for the deterministic paths** (cache ~1.4s, code ~1.5-2s) — which cover the
+  common "shorter"/duration cases.
+- **Model paths run ~15s**, materially over 5s. Assembled prompt ~11k chars / ~3.2k input tokens
+  (the structured session ~3.5k + rules ~3.3k dominate; smaller than the autoregulator's 15,890 as
+  required). The latency is **output generation** (~1,500 tokens for a full structured session on
+  Haiku), not input size — so trimming the prompt further won't reach 5s. A sub-5s full-session
+  model generation isn't achievable; closing it would need generating a diff rather than a whole
+  session, a design change deferred. Streaming means the user sees progress meanwhile.
+
 ## Migrations
 
 One-time data fixes that should be run in the Supabase SQL editor.
