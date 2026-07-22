@@ -1211,7 +1211,7 @@ recommendations from biometrics, training history, goals, and short-horizon "cha
 
 ## 2. Database Schema
 
-Supabase/Postgres. IDs on `profiles` and most child tables are `bigint`; `micro_goals.id` is `uuid`.
+Supabase/Postgres. IDs on `profiles` and most child tables are `bigint`. **⚠ Correction (2026-07-22): `micro_goals.id` is an INTEGER, not a `uuid`** — verified against live production rows (ids `1` and `2`, returned as JSON numbers). This doc and `CLAUDE.md` both previously stated `uuid PRIMARY KEY DEFAULT gen_random_uuid()`, and the Engine v2 Phase 1 audit repeated the claim from them; all three were wrong. The uuid DDL still shown in `CLAUDE.md`'s "Supabase setup" snippet is historical and must not be used to recreate the table.
 
 ### `profiles`
 Core user record. PIN-protected, all child data scoped by `profile_id`.
@@ -1260,7 +1260,7 @@ Auto-extracted from workout notes by Claude on save.
 ### `micro_goals` (Active Challenges)
 | Column | Type | Notes |
 |--------|------|-------|
-| `id` | uuid PK | |
+| `id` | **integer PK** | ⚠ **NOT uuid** — corrected 2026-07-22 against live data (see the section header). |
 | `profile_id` | bigint FK → profiles (cascade) | |
 | `title`, `type` | text | type ∈ daily_habit / weekly_frequency / cumulative_volume / strength_milestone / skill_technique / streak / recovery_balance |
 | `target_value` (numeric), `target_unit` (text), `period` (text) | | period ∈ daily / weekly / monthly / custom |
@@ -1321,6 +1321,7 @@ Remembers a user's "these are separate sessions" decision so a rejected pairing 
 - `migrations/2026-07-17_exercises_workout_fk_cascade.sql` — adds `exercises_workout_id_fkey` (`exercises.workout_id → workouts.id`, `ON DELETE CASCADE`). **✅ Applied to production** — the orphan check ran clean across every profile first (a pre-existing orphan would have made the `ALTER TABLE` itself fail); see §9.
 - `migrations/2026-07-17_wearable_needs_reconnect.sql` — adds `wearable_connections.needs_reconnect` (boolean, `NOT NULL DEFAULT false`) for the connection-health flag (session #19). **⚠ Run manually in the Supabase SQL editor.** Code is resilient to its absence — writes are best-effort and the providers endpoint falls back to a column-less select — so it can be applied just before/with the deploy without a broken window, but the flag only persists/reports once it's run.
 - `migrations/2026-07-17_exercise_catalog_content.sql` — adds `exercise_catalog.description` (text) + `images` (jsonb), both nullable, for the exercise how-to content seed (session #25). **⚠ Run manually.** Populated by `POST /api/debug/seed-exercise-content` (fill-if-null, keyed by `wger_id`). Endpoint 500s cleanly if the columns are absent.
+- `migrations/2026-07-22_clone_p1_to_p4_{wipe,copy,flags,verify}.sql` — **⚠ NOT RUN.** Not schema migrations: a 4-file **data** operation seeding profile 4 (the designated Engine v2 test profile) with a clone of profile 1's training history. Run order is **verify §A (baseline) → wipe → copy → flags → verify §B–E**. Profile 1 is read-only throughout; wearable credentials/connections, `rejected_wearable_matches`, `dismissed_fitbit_activities`, chat tables and identity fields are all deliberately **not** copied, `workouts.wearable_activity_id` is forced NULL (UNIQUE partial index), the v1 rec caches are cleared, and the 6 malformed-date workouts (§6) are skipped. Cloned rows use a deterministic `+100000` id offset, so the pair is re-runnable; the copy script **aborts** if profile 4 is non-empty. Its `setval()` section is **mandatory** — skipping it eventually collides the shared identity sequences with profile 1's real inserts.
 
 > Most other tables/columns were created ad-hoc via the Supabase SQL editor (the `CREATE TABLE`/`ALTER TABLE` snippets are documented inline in `CLAUDE.md`). Only the wearables + the 2026-05-22 / 2026-05-24 / 2026-05-26 migrations are committed as files.
 
@@ -1663,6 +1664,43 @@ All verified present in `server.js`. `:id`/`:userId` = profile id.
   what I want" (session #32, PARKED).** This is separate from the session #32 display rename
   (which changed only the label, not the `mode:'total'` logic). May need a look at how the
   prompt generates workouts in total-override mode. **Parked — not yet scoped.**
+- **6 of profile 1's workouts hold a TIME STRING in `workouts.date` (found 2026-07-22, profile-4
+  clone audit) — production data bug, NOT fixed.** Workout ids **110 (`"10:12"`), 97 (`"12:52"`),
+  95 (`"13:00"`), 88 (`"19:37"`), 82 (`"10:07"`), 77 (`"10:20"`)** — types Martial arts / Workout /
+  Walk / Yoga / Martial Arts / Martial Arts. This is only possible because **`workouts.date` is a
+  `text` column, not `date`** — a real `date` column would have rejected these outright. That
+  column type is itself the root enabler and is not recorded anywhere else in the docs.
+  **Consequences:** these 6 rows are invisible to every `date >= x` window query in the app, so
+  they already contribute nothing to analytics, the weekly-volume summary, the variety analysis,
+  the coaching briefs, or the daily-rec prompt — they inflate only the raw workout count (81 total
+  vs 75 date-valid). All 6 have **zero child `exercises` rows**, which correlates with the
+  session-#32 "notes-only logged workouts where `extract-exercises` silently produced no rows"
+  item, though causation was not established. **Deliberately not repaired:** profile 1 was
+  read-only for the clone task, and a repair would have to guess the intended date (`ts` is
+  client-supplied, overwritten on every edit, and carries a systematic ~300-minute offset, so it
+  is not a trustworthy source). The profile-4 clone **skips** them via a shape regex rather than a
+  hardcoded id list, so a 7th such row is caught automatically. A real fix needs its own scope:
+  decide the date source, repair the 6 rows, then consider whether `workouts.date` should become a
+  real `date` column (which would require every one of the app's text-comparison date filters to
+  be re-verified first).
+- **`lpAiOptionToNotes()` (`public/index.html` ~11992) still reads `o.exercises` directly — missed
+  in the session #31 sections migration (found 2026-07-22, NOT fixed).** Session #31 moved rec
+  options from a flat `exercises[]` to `sections[]` and updated five consumers through the
+  `recOptionSections()` / `recOptionExerciseStrings()` normalizers; this sixth consumer was not.
+  Because a sectioned option has no top-level `exercises` key, `var exes = o.exercises || []`
+  yields an empty array, so **"Save AI rec as template" and "AI rec → template" produce
+  headline-only notes** (plus mobility) for every rec generated since that deploy — the exercise
+  list is silently dropped. One-line fix (`recOptionExerciseStrings(o)`), but it is a write path
+  into `workout_templates.notes_template`, so it is logged rather than opportunistically patched.
+- **`GET /api/profiles/:id` is a read endpoint with a WRITE side effect (found 2026-07-22, by
+  design but undocumented).** `ensureGoalIds()` (`server.js:990`) fires a fire-and-forget `PATCH`
+  of the **entire `profile_data` column** whenever any goal lacks an `id`. In normal operation
+  this is a one-time backfill per profile and a no-op thereafter — but it means a plain GET can
+  rewrite a profile's most important jsonb column, so "just checking profile 1 in the browser" is
+  not a read. Relevant any time a profile must be treated as strictly read-only (the profile-4
+  clone audit deliberately never called this endpoint against profile 1 and inspected it via SQL
+  `SELECT` instead). Also worth knowing: the PATCH writes `cleanProfileData(pd)`, so it
+  simultaneously re-sanitizes every string in the column.
 
 ### Coach Chat / Timezone — Known Issues & Deferred (2026-07-15)
 
@@ -1715,6 +1753,43 @@ Each item below is self-contained — no other doc/session context should be nee
   control. Touches the rec-generation data path (durations feed the skeleton, TIME BUDGET, and
   verifier), so **audit-first**. Would also need a persistence seam (per-profile setting) that
   the ephemeral `recLengthChoice` deliberately is not.
+
+### Engine v2 — Planner / Autoregulator (parallel build, feature-flagged)
+
+Replaces the single per-day "AI does everything" rec call with a two-cadence engine, for
+`profile_data.engine_v2 = true` profiles only. **v1 stays live and byte-identical for every other
+profile.** All v2 generation is server-side; the client renders cached output. Phase 1 (audit) is
+complete — full current-state map, schema proposal, reuse inventory and shared-surface list were
+produced 2026-07-22 and approved; see that session's report. Phasing:
+
+- **Phase 1 — Audit.** ✅ Done 2026-07-22 (audit only, no code).
+- **Phase 2 — Migrations (files only) + `server/coachingRules.js` + progression-state and dossier builders**, with a dry-run/audit endpoint proving their output on the test profile. **Not started.**
+- **Phase 3 — Planner** (weekly, Sonnet) + block/session persistence + admin trigger. **Not started.**
+- **Phase 4 — Nightly job + autoregulator** (Haiku) + alternate cache. **Not started.**
+- **Phase 5 — Variant endpoint** (Haiku, streamed) + conversational constraints. **Not started.**
+- **Phase 6 — Flagged UI**: week view, today card, variant surface, effort tap, defaults, tier selector. **Not started.**
+- **Phase 7 — Coach Chat v2 integration. DESIGN NOT STARTED — DO NOT BUILD.** Explicitly out of
+  scope for Phases 1–6, recorded here so it isn't rediscovered as a surprise. **The gap:**
+  `buildChatSnapshot()` currently reads only `daily_recommendations_readiness` and
+  `daily_recommendations_date` off the profile row — it has **no visibility into any v2 state**.
+  On a flagged profile the coach would therefore be blind to `planned_sessions`, the active
+  `training_blocks` row, the athlete dossier, goal tiers (driver/maintenance/accessory),
+  progression state, and the nightly autoregulator's decision + reasoning — while still narrating
+  confidently from v1-shaped data that is no longer being written. **Target end state:** a
+  concierge coach that can see all v2 state and *propose* writes to `planned_sessions` (move a
+  session, swap a segment, change today's plan) through the **existing propose-never-
+  silently-apply tool-use pattern** — a pending `chat_proposals` row plus an explicit confirm
+  card, exactly as `propose_goal_update` / `propose_focus_override` / `propose_checkin_note` work
+  today. **Known design questions, unanswered:** whether the v2 snapshot replaces or extends the
+  v1 one on a flagged profile; the prompt-cache cost of a much larger snapshot (§6 item 5 already
+  flags that any snapshot change invalidates the whole cached system block); and whether a
+  session-mutating tool needs a stricter confirm than a goal edit does.
+
+**Prerequisite, in progress:** profile 4 is the designated `engine_v2` test profile. The clone
+scripts that seed it with profile 1's real training history
+(`migrations/2026-07-22_clone_p1_to_p4_{wipe,copy,flags,verify}.sql`) are **written but NOT run**.
+Profile 4 deliberately gets **no wearable connection** — readiness comes from cloned historical
+`daily_sleep` rows plus manual check-ins.
 
 1. **Rebuild all other profiles off profile 1 once it's stable** *(supersedes the old "second-profile Google Health migration" item — new direction, decided this cycle).* Profile 1 is the reference build; the plan is to reconstruct every other profile from it once profile 1 is proven stable, rather than migrating each profile's wearable connection in place. Still resolves the Sept-2026 cutover for those profiles (they come up on Google Health as part of the rebuild). Ordered first, but gated on profile 1 being stable (the #29 rec fix was a prerequisite).
 2. **Google Health historical backfill** — mirror `backfill-wearable-history` (§4 / `CLAUDE.md` → "Fitbit History Backfill") for GH's API v4. *Value: High, same Sept deadline — once Fitbit's API is gone, GH is the only remaining source for any further gap-filling. Effort: Medium.* Deprioritized by the #29 outage, still on the board. The chunking/merge/never-overwrite-worse-data design transfers directly — the real work is GH's different endpoint shapes (`:reconcile`, `dailyRollUp`, list+`page_size=1`) and confirming GH's own real per-metric range limits against Google's docs (the RHR silent-drop quirk found in session #17 is exactly what doesn't transfer safely by assumption).

@@ -42,7 +42,7 @@ ApexCoach is a personalized AI fitness coaching web app. Users connect their Fit
 
 - daily_checkins: id, profile_id, date (text, YYYY-MM-DD), energy (text), soreness (text[]), severity (text), checkin_text (text), created_at. UNIQUE(profile_id, date) for upsert.
 
-- micro_goals: id (uuid pk), profile_id (fk → profiles), title (text), type (text: daily_habit | weekly_frequency | cumulative_volume | strength_milestone | skill_technique | streak | recovery_balance), target_value (numeric), target_unit (text), period (text: daily | weekly | monthly | custom), end_date (date, nullable), current_value (numeric default 0), is_active (boolean default true), created_at (timestamp default now()).
+- micro_goals: id (**integer pk — NOT uuid**; corrected 2026-07-22 against live data, rows read id `1` and `2` as JSON numbers. Both this file and `ROADMAP.md` §2 previously claimed `uuid PRIMARY KEY DEFAULT gen_random_uuid()`, and the "Supabase setup" snippet further down this file still shows that uuid DDL — it does **not** match the live table and must not be used to recreate it), profile_id (fk → profiles), title (text), type (text: daily_habit | weekly_frequency | cumulative_volume | strength_milestone | skill_technique | streak | recovery_balance), target_value (numeric), target_unit (text), period (text: daily | weekly | monthly | custom), end_date (date, nullable), current_value (numeric default 0), is_active (boolean default true), created_at (timestamp default now()).
 
 - daily_steps: id (bigint identity pk), profile_id (fk → profiles, on delete cascade), date (date), steps (int), calories (int), distance_miles (numeric), floors (int), source (text default 'fitbit' — **threaded from the real provider since 2026-07-20 (session #31)**; was hardcoded `'fitbit'` on every write, mislabeling all Google-Health-sourced rows. Rows written before that date cannot be corrected — see ROADMAP §6), created_at (timestamptz default now()). UNIQUE(profile_id, date). Upserted nightly from Fitbit sync; powers history-tab step pills, Library 30-day chart, and step-goal context in the AI rec prompt.
 
@@ -1000,11 +1000,11 @@ Claude may include challenge titles in the rec's `goal_tags` array; `isMicroGoal
 
 **Cache refresh** — adding, editing, completing, or deleting a challenge calls `regenerateAIForContextChange()` to invalidate cached daily recs. Workout saves also call `loadMicroGoals()` so auto-tracked progress updates immediately after a session is logged.
 
-**Supabase setup** — run once in SQL editor:
+**Supabase setup** — ⚠ **STALE, DO NOT RUN AS-IS.** The snippet below is the *original* proposed DDL and does **not** describe the live table: production `micro_goals.id` is an **integer**, not a uuid (verified 2026-07-22 — live rows are ids `1` and `2`), and `profile_id` is a **bigint** FK to `profiles(id)` (bigint), not uuid. Kept for historical context only; recreating the table from this would break every existing FK relationship and the +100000 clone offset used by the profile-4 clone scripts.
 ```sql
 CREATE TABLE IF NOT EXISTS micro_goals (
-  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-  profile_id uuid NOT NULL REFERENCES profiles(id) ON DELETE CASCADE,
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),          -- ⚠ live table: integer
+  profile_id uuid NOT NULL REFERENCES profiles(id) ON DELETE CASCADE,  -- ⚠ live table: bigint
   title text NOT NULL,
   type text NOT NULL,
   target_value numeric NOT NULL,

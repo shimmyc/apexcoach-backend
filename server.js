@@ -5,6 +5,15 @@ const path    = require("path");
 const crypto  = require("crypto");
 const wearables = require("./wearables");
 
+// ── ENGINE v2 (feature-flagged, profile_data.engine_v2 === true) ───────────
+// v2-only modules. Nothing in the v1 path requires or calls these; they are
+// reached exclusively from the /api/v2/* routes. Pure/injected-dependency
+// design (they receive { fetch, SUPABASE_URL, sbHeaders, ... }) so there is no
+// circular require against this file.
+const v2Rules       = require("./server/coachingRules");
+const v2Progression = require("./server/v2Progression");
+const v2Dossier     = require("./server/v2Dossier");
+
 // Forces a fresh TCP/TLS connection — Render's node-fetch pool has a
 // compatibility issue with Fitbit's token endpoint that causes Premature
 // close on pooled sockets.
@@ -11776,6 +11785,229 @@ app.get("/api/analytics/muscle-volume/:userId", async function(req, res) {
   } catch (e) {
     console.error("[MuscleVolume] failed (non-fatal):", e.message);
     res.json({ success: true, window_days: windowDays, groups: zeroGroups() });
+  }
+});
+
+// ══════════════════════════════════════════════════════════════════════════
+// ENGINE v2 — PHASE 2  (feature-flagged; v1 is untouched by everything below)
+// ══════════════════════════════════════════════════════════════════════════
+// Read-only in this phase. The planner/autoregulator/variant endpoints arrive
+// in Phases 3-5. Nothing here writes; nothing here is reachable from the v1
+// client. Every date key goes through localToday()/getProfileTimezone().
+
+/**
+ * Server-side current-phase resolver for a goal roadmap.
+ *
+ * `rmCurrentPhase()` in public/index.html is CLIENT-only, so the planner (which
+ * runs server-side) needs its own. This mirrors that resolution order rather
+ * than inventing a second one:
+ *   1. the near_term phase whose [start_date, end_date] window contains today
+ *   2. else the LAST phase stored as status:'current' (some roadmaps carry two
+ *      — see ROADMAP.md §9 D7)
+ *   3. else the first phase with no end_date that has started
+ *
+ * ⚠ KNOWN LIVE DIVERGENCE (ROADMAP.md §9, D5). `recomputeRoadmapProgress()` and
+ * `assignNearTermDates()` run at READ time and never write back, so the STORED
+ * phases[] this function reads can disagree with what the Goals tab renders.
+ * That divergence is exactly what let two phases sit marked 'current' for weeks.
+ * This resolver therefore prefers the DATE window over the stored status, and
+ * reports which basis it used so a caller can see when the two disagree.
+ */
+function v2CurrentPhase(roadmap, todayYmd) {
+  if (!roadmap || !Array.isArray(roadmap.phases) || !roadmap.phases.length) {
+    return { phase: null, basis: "no_roadmap", index: -1, disagreement: false };
+  }
+  var phases = roadmap.phases;
+  var near = [];
+  for (var i = 0; i < phases.length; i++) {
+    if (phases[i] && phases[i].type === "near_term") near.push({ p: phases[i], i: i });
+  }
+  if (!near.length) return { phase: null, basis: "no_near_term_phases", index: -1, disagreement: false };
+
+  var byDate = null;
+  for (var j = 0; j < near.length; j++) {
+    var p = near[j].p;
+    if (p.start_date && p.end_date && todayYmd >= p.start_date && todayYmd <= p.end_date) {
+      byDate = near[j];
+      break;
+    }
+  }
+
+  var byStatus = null, statusCount = 0;
+  for (var k = 0; k < near.length; k++) {
+    if (near[k].p.status === "current") { byStatus = near[k]; statusCount++; }
+  }
+
+  var chosen = byDate || byStatus;
+  var basis = byDate ? "date_window" : (byStatus ? "stored_status" : null);
+
+  if (!chosen) {
+    for (var m = 0; m < near.length; m++) {
+      var q = near[m].p;
+      if (q.start_date && !q.end_date && todayYmd >= q.start_date) { chosen = near[m]; basis = "open_ended_started"; break; }
+    }
+  }
+  if (!chosen) return { phase: null, basis: "unresolved", index: -1, disagreement: statusCount > 1 };
+
+  return {
+    phase: chosen.p,
+    index: chosen.i,
+    basis: basis,
+    disagreement: !!(byDate && byStatus && byDate.i !== byStatus.i),
+    multiple_current_stored: statusCount > 1,
+    stored_current_count: statusCount,
+  };
+}
+
+/**
+ * GET /api/v2/audit/:profileId — admin-gated, READ-ONLY, writes nothing.
+ *
+ * The Phase 2 proof: assembles the progression state, the dossier the builder
+ * WOULD write (never persisted here), the resolved rules sections and the
+ * resolved roadmap phases, and reports character counts for each so the
+ * prompt-size discipline is measurable from day one.
+ *
+ * ?prose=1        also runs the dossier's single small Haiku prose pass
+ *                 (the ONLY thing in this endpoint that costs money).
+ * ?window=N       progression window in days (default 60).
+ * ?sections=a,b   subset of rule sections to render.
+ */
+app.get("/api/v2/audit/:profileId", async function(req, res) {
+  var started = Date.now();
+  try {
+    if (process.env.ADMIN_SECRET) {
+      var got = req.query.secret || req.get("X-Admin-Secret");
+      if (got !== process.env.ADMIN_SECRET) return res.status(403).json({ success: false, error: "forbidden" });
+    }
+    var pid = req.params.profileId;
+
+    // Profile row. NOTE: this is a direct PostgREST read, deliberately NOT
+    // `GET /api/profiles/:id` — that endpoint fire-and-forget PATCHes
+    // profile_data via ensureGoalIds() (a read with a write side effect, see
+    // ROADMAP.md §6), which must never fire from an audit path.
+    var pr = await fetch(SUPABASE_URL + "/rest/v1/profiles?id=eq." + encodeURIComponent(pid) +
+      "&select=id,name,timezone,profile_data,gym_access,gym_type,dossier,dossier_updated_at,roadmap_data",
+      { headers: sbHeaders() });
+    var prows = await pr.json();
+    if (!Array.isArray(prows) || !prows.length) {
+      return res.status(404).json({ success: false, error: "Profile not found" });
+    }
+    var profileRow = prows[0];
+    var pd = profileRow.profile_data || {};
+    var today = localToday(profileRow);
+    var engineV2 = pd.engine_v2 === true;
+
+    var windowDays = Math.min(Math.max(parseInt(req.query.window, 10) || v2Progression.DEFAULT_WINDOW_DAYS, 7), 365);
+
+    // Effort feedback, keyed by workout id, for the progression decisions.
+    // The column may not exist yet (its migration is unrun) — degrade quietly.
+    var effortByWorkoutId = {};
+    try {
+      var wr = await fetch(SUPABASE_URL + "/rest/v1/workouts?profile_id=eq." + encodeURIComponent(pid) +
+        "&select=id,session_effort&limit=5000", { headers: sbHeaders() });
+      var wrows = await wr.json();
+      if (Array.isArray(wrows)) {
+        wrows.forEach(function(w) { if (w && w.session_effort) effortByWorkoutId[w.id] = w.session_effort; });
+      }
+    } catch (e) {
+      // session_effort column not migrated yet — not an error for this audit.
+    }
+
+    var deps = {
+      fetch: fetch,
+      SUPABASE_URL: SUPABASE_URL,
+      sbHeaders: sbHeaders,
+      localToday: localToday,
+      callAISystem: callAISystem,
+      MODEL_HAIKU: MODEL_HAIKU,
+    };
+
+    var progression = await v2Progression.buildProgressionState(deps, pid, {
+      today: today, windowDays: windowDays, effortByWorkoutId: effortByWorkoutId,
+    });
+
+    // Reused as-is, not reimplemented (approved Phase 1 decision).
+    var fullCtx = await getFullExerciseContext(pid, 90).catch(function(e) {
+      console.warn("[v2Audit] getFullExerciseContext failed (non-fatal):", e.message);
+      return null;
+    });
+
+    var checkins = [];
+    try {
+      var cr = await fetch(SUPABASE_URL + "/rest/v1/daily_checkins?profile_id=eq." + encodeURIComponent(pid) +
+        "&order=date.desc&limit=14", { headers: sbHeaders() });
+      var crows = await cr.json();
+      if (Array.isArray(crows)) checkins = crows;
+    } catch (e) { /* non-fatal */ }
+
+    var dossierOut = await v2Dossier.buildDossier(deps, pid, {
+      today: today,
+      profileRow: profileRow,
+      progressionState: progression,
+      fullExerciseContext: fullCtx,
+      checkins: checkins,
+      withProse: req.query.prose === "1",
+    });
+
+    // Roadmap phase resolution, per goal that has one, plus the macro roadmap.
+    var goals = Array.isArray(pd.goals) ? pd.goals : [];
+    var phaseResolutions = goals.filter(function(g) { return g && g.roadmap; }).map(function(g) {
+      var r = v2CurrentPhase(g.roadmap, today);
+      return {
+        goal: g.title, goal_id: g.id, tier: g.tier || null,
+        roadmap_version: g.roadmap.version || null,
+        basis: r.basis,
+        disagreement: r.disagreement,
+        multiple_current_stored: !!r.multiple_current_stored,
+        stored_current_count: r.stored_current_count || 0,
+        phase_name: r.phase ? (r.phase.name || r.phase.title || null) : null,
+        phase_window: r.phase ? ((r.phase.start_date || "?") + " -> " + (r.phase.end_date || "?")) : null,
+        emphasis: r.phase ? (r.phase.emphasis || null) : null,
+      };
+    });
+    var macroPhase = profileRow.roadmap_data ? v2CurrentPhase(profileRow.roadmap_data, today) : null;
+
+    var sections = req.query.sections ? String(req.query.sections).split(",").map(function(s) { return s.trim(); }) : null;
+    var rulesText = v2Rules.renderRulesForPrompt(sections);
+    var progressionText = v2Progression.renderProgressionTable(progression);
+    var dossierText = v2Dossier.renderDossierForPrompt(dossierOut.dossier);
+
+    // promptSections discipline, from day one — same pattern as the v1 client's
+    // fetchAI() logging. These are the numbers that make prompt-size drift
+    // visible before it becomes a truncation bug.
+    var promptSections = {
+      rules: rulesText.length,
+      progression_table: progressionText.length,
+      dossier: dossierText.length,
+      dossier_serialized: dossierOut.chars,
+      _total: rulesText.length + progressionText.length + dossierText.length,
+      _rules_by_section: v2Rules.rulesSectionLengths(sections),
+    };
+    console.log("[v2Audit] profile " + pid + " (engine_v2=" + engineV2 + ") sections", JSON.stringify(promptSections));
+
+    res.json({
+      success: true,
+      profile: { id: profileRow.id, name: profileRow.name, timezone: profileRow.timezone || null, engine_v2: engineV2 },
+      today: today,
+      elapsed_ms: Date.now() - started,
+      progression: progression,
+      dossier: {
+        would_write: dossierOut.dossier,
+        chars: dossierOut.chars,
+        target_chars: v2Dossier.DOSSIER_TARGET_CHARS,
+        hard_cap_chars: v2Dossier.DOSSIER_HARD_CAP_CHARS,
+        prose_used: dossierOut.prose_used,
+        warnings: dossierOut.warnings,
+        persisted: false,
+        currently_stored_at: profileRow.dossier_updated_at || null,
+      },
+      roadmap_phases: { per_goal: phaseResolutions, macro: macroPhase },
+      rendered: { rules: rulesText, progression_table: progressionText, dossier: dossierText },
+      prompt_sections: promptSections,
+    });
+  } catch (e) {
+    console.error("[v2Audit] failed:", e && e.message);
+    res.status(500).json({ success: false, error: e.message });
   }
 });
 
