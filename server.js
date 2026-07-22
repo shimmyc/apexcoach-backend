@@ -11885,10 +11885,25 @@ app.get("/api/v2/audit/:profileId", async function(req, res) {
     // `GET /api/profiles/:id` — that endpoint fire-and-forget PATCHes
     // profile_data via ensureGoalIds() (a read with a write side effect, see
     // ROADMAP.md §6), which must never fire from an audit path.
+    // `dossier` / `dossier_updated_at` land with 2026-07-22_v2_profile_columns.sql,
+    // which is applied MANUALLY and may not have been run yet. PostgREST 400s
+    // an unknown column and returns an error OBJECT rather than an array — so
+    // without this fallback the audit reports a misleading "Profile not found"
+    // on a profile that exists. Same defensive shape the wearables providers
+    // endpoint uses for needs_reconnect. (Found by running this endpoint, not
+    // by reading it.)
+    var baseSelect = "id,name,timezone,profile_data,gym_access,gym_type,roadmap_data";
+    var v2ColumnsPresent = true;
     var pr = await fetch(SUPABASE_URL + "/rest/v1/profiles?id=eq." + encodeURIComponent(pid) +
-      "&select=id,name,timezone,profile_data,gym_access,gym_type,dossier,dossier_updated_at,roadmap_data",
+      "&select=" + baseSelect + ",dossier,dossier_updated_at",
       { headers: sbHeaders() });
     var prows = await pr.json();
+    if (!Array.isArray(prows)) {
+      v2ColumnsPresent = false;
+      var pr2 = await fetch(SUPABASE_URL + "/rest/v1/profiles?id=eq." + encodeURIComponent(pid) +
+        "&select=" + baseSelect, { headers: sbHeaders() });
+      prows = await pr2.json();
+    }
     if (!Array.isArray(prows) || !prows.length) {
       return res.status(404).json({ success: false, error: "Profile not found" });
     }
@@ -12000,6 +12015,7 @@ app.get("/api/v2/audit/:profileId", async function(req, res) {
         warnings: dossierOut.warnings,
         persisted: false,
         currently_stored_at: profileRow.dossier_updated_at || null,
+        storage_columns_migrated: v2ColumnsPresent,
       },
       roadmap_phases: { per_goal: phaseResolutions, macro: macroPhase },
       rendered: { rules: rulesText, progression_table: progressionText, dossier: dossierText },
