@@ -12071,9 +12071,14 @@ app.get("/api/v2/audit/:profileId", async function(req, res) {
 async function loadV2Context(pid, opts) {
   opts = opts || {};
   var baseSelect = "id,name,timezone,profile_data,gym_access,gym_type,roadmap_data";
+  // v2_daily_cache_date is REQUIRED for the nightly idempotency guard — without
+  // it the guard reads undefined and every non-forced run (including every
+  // hourly interval tick) does a full 2-call generation instead of a cheap
+  // no-op. Found by testing: a non-force run took 25s instead of skipping.
+  var v2Cols = ",dossier,dossier_updated_at,v2_daily_cache_date";
   var v2ColumnsPresent = true;
   var pr = await fetch(SUPABASE_URL + "/rest/v1/profiles?id=eq." + encodeURIComponent(pid) +
-    "&select=" + baseSelect + ",dossier,dossier_updated_at", { headers: sbHeaders() });
+    "&select=" + baseSelect + v2Cols, { headers: sbHeaders() });
   var prows = await pr.json();
   if (!Array.isArray(prows)) {
     v2ColumnsPresent = false;
