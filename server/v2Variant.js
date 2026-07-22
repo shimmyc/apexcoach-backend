@@ -113,10 +113,24 @@ function matchCachedAlternate(intent, cache) {
   // duration alternate.
   if (intent.category || intent.intensity || intent.style_change || intent.readiness_signal) return null;
   if (intent.duration_min == null) return null;
-  var hit = cache.alternates.filter(function (a) {
+  // Match by the alternate's INTENT (its `dur_<N>` key), then fall back to the
+  // actual duration within a small tolerance. A "dur_30" alternate compresses
+  // to ~28 min (the segment floor), so an exact-minutes match on a request for
+  // 30 would miss the very alternate that was prepared for it.
+  var wantKey = "dur_" + Number(intent.duration_min);
+  // Only serve from cache when the prepared alternate's ACTUAL duration is
+  // genuinely near the request. This excludes the `dur_60` no-op-extend
+  // alternate (which is just the primary relabeled and does not actually reach
+  // 60) — serving that as a 60-minute session would be dishonest; that request
+  // correctly falls through to a real generation.
+  var near = function (a) {
     var s = a.session_structured || a.session;
-    return s && Number(s.duration_min) === Number(intent.duration_min);
-  })[0];
+    if (!s) return false;
+    var tol = Math.max(3, Math.floor(intent.duration_min * 0.1));
+    return Math.abs(Number(s.duration_min) - Number(intent.duration_min)) <= tol;
+  };
+  var byKey = cache.alternates.filter(function (a) { return a.key === wantKey && near(a); })[0];
+  var hit = byKey || cache.alternates.filter(near)[0];
   // Prefer the structured form so the caller can re-flatten uniformly; fall
   // back to the flattened one for older caches.
   return hit ? (hit.session_structured || hit.session) : null;
@@ -137,8 +151,13 @@ var AREA_TOKENS = {
   "quad": ["sprint", "deep squat", "lunge jump", "plyometric"],
   "it band": ["run", "sprint", "lunge jump"],
   "concussion": ["sprint", "heavy overhead", "inversion", "rotational jump"],
+  // Tokens are matched as substrings, so they must be SPECIFIC enough not to
+  // catch an unrelated movement. "bridge" alone matched "Glute Bridge" (a hip
+  // exercise central to this athlete's osteitis rehab) against a NECK flag on
+  // every session — a false positive that erodes the flag's value. A neck
+  // bridge is the real contraindication, so the token is qualified.
   "trap": ["upright row", "heavy shrug", "behind neck"],
-  "neck": ["upright row", "behind neck", "heavy shrug", "bridge"],
+  "neck": ["upright row", "behind neck", "heavy shrug", "neck bridge", "wrestler bridge"],
   "pelvic": ["heavy squat", "sprint", "box jump"],
 };
 function contraindications(session, dossier) {
