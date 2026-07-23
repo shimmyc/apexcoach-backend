@@ -2252,6 +2252,24 @@ All new CSS scoped under `#v2-today` / `#v2-week-card` / `#v2-variant` / `#v2-sh
 (valid, applies document-wide; confirmed rendering correctly in the live app). No migration — every
 field already exists.
 
+## Engine v2 — NEXT SESSION STARTS HERE (2026-07-22 close-out)
+
+Engine v2 is code-complete across all 7 phases (planner → autoregulator → variant → UI → Coach
+Chat), verified live on profile 4, profile 1 byte-identical. Before building anything else next
+session, read **ROADMAP.md §7 → "Engine v2 COMPLETE"** — it opens with the **first open decision**:
+
+- **Single-plan vs. option-set (DECIDE FIRST).** v2 gives one autoregulated session/day (variant
+  surface as the escape hatch); v1 gave 3 options + Minimum Viable. This was an implicit Phase-3
+  choice, never explicitly weighed. Settle it before the UX fixes below, because it changes what
+  the Today card and the flatten boundary render. Do not implement either direction until decided.
+
+Then the deferred UX fixes (**ROADMAP.md §6**, from live close-out screenshots, none started):
+non-set-based segments render as fake single sets ("Yoga — 1 sets, 180s" — segment-type-aware
+formatting needed at the flatten boundary / `#v2-today` render), doubled superset-rest parens
+("(rest 90 s (between supersets))"), and a v2 Today card action-button styling pass. Plus the
+standing §6/§9 follow-ups (sub-5s variant diff-generation, `goal_tags` code derivation, the v1
+`duration_minutes` overload, the Coach Chat leg-1 narration residual).
+
 ## Engine v2 — Phase 7 Implementation (2026-07-22): Coach Chat concierge
 
 Extends the existing Coach Chat propose→confirm→apply pattern for flagged profiles. **v1 Coach Chat

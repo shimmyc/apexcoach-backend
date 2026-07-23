@@ -1726,6 +1726,23 @@ All verified present in `server.js`. `:id`/`:userId` = profile id.
   strips to empty → no exact/alias match → not clickable. **Accepted parser limitation** — the
   same conservative rule is what guarantees a link is never a wrong match; the trade-off is a
   handful of digit-leading names stay plain.
+- **Engine v2 UX findings from real profile-4 use (logged 2026-07-22, post-Phase-7 close-out —
+  live production screenshots, NOT injected state; NOT fixed):**
+  1. **Non-set-based segments render as fake single sets.** A `mobility` / `steady_state` /
+     `active_recovery` segment that carries only a duration (a yoga block, a steady ride) renders
+     through the discrete-exercise phrasing — e.g. "Yoga — 1 sets, 180s" — inherited from the
+     sets×reps renderer. It should read as a duration block ("Yoga — 3 min"), not a fabricated
+     single set. This is a **renderer / flatten-boundary bug** (`flattenExercise` in
+     `server/v2Planner.js` and/or the `#v2-today` section render in `public/index.html`): those
+     segment types need **segment-type-aware formatting** rather than the universal
+     `sets/reps/time_seconds` template.
+  2. **Doubled parenthetical in superset rest strings.** Variant output rendered
+     "(rest 90 s (between supersets))" — nested parens from a string-template composition bug in
+     how a superset segment's rest annotation is assembled. Not intentional copy; a **formatting
+     bug** in the superset rendering path.
+  4. **v2 Today card action buttons need a styling pass.** The bottom action button(s) on the v2
+     Today card read inconsistently with the rest of the design system per live screenshot review.
+     **UI polish** only.
 - **Engine v2 Coach Chat: the model can pre-announce a proposal as "done" in its first stream leg,
   before the tool result is known (found + partially mitigated 2026-07-22, Phase 7).** The
   coach_chat tool loop streams the model's leg-1 text to the client BEFORE the tool executes, so if
@@ -1966,6 +1983,21 @@ Each item below is self-contained — no other doc/session context should be nee
 > and `2026-07-22_chat_proposals_v2_types.sql` — **ALL ✅ RUN.** The Phase 7 apply cycle is verified
 > end to end (proposal #24 on future session id 32: planned/45 → confirm → modified/30, segments
 > compressed to sum 30, invariant clean, double-confirm 409, row untouched before confirmation).
+>
+> **⟶ FIRST OPEN DECISION for Engine v2's next session — single-plan vs. option-set.** v2's whole
+> architecture produces ONE autoregulated session per day (with the variant surface as the escape
+> hatch), where v1 showed **3 options + Minimum Viable**. This was an *implicit* architectural
+> choice made in Phase 3 and carried through all 7 phases — it was never explicitly weighed against
+> the alternative. **The open product question:** keep the single-coached-plan model (a coach gives
+> you the plan; "want something else?" is the variant surface), or have the planner/autoregulator
+> emit a small option set closer to v1's three-choice feel? This is a **design decision, not a bug**,
+> and it should be settled BEFORE the next session's UX fixes (the §6 findings) are picked up,
+> because the answer changes what the Today card and the flatten boundary need to render. Do not
+> implement either direction until it is decided.
+>
+> **UX findings from the 2026-07-22 close-out** (live profile-4 screenshots) are logged in §6:
+> non-set-based segments render as fake single sets, doubled superset-rest parens, and a v2 Today
+> card action-button styling pass. All deferred to the next session, after the design decision above.
 >
 > **Remaining logged follow-ups** (all in §6/§9, none blocking): sub-5s variant model paths need
 > diff-generation not full-session generation (§6); `goal_tags` are model-labelled and under-report
