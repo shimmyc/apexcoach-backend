@@ -1864,6 +1864,35 @@ All verified present in `server.js`. `:id`/`:userId` = profile id.
   or whether the model should shorten those sessions to an honest length, or whether a rehab-specific
   floor is warranted. Not tuned this session (0.70 was the approved starting value; reported the real
   week's scores against it rather than tuning blind).
+  - **⚠ REFRAMED 2026-07-23 (Session 11 audit — READ THIS BEFORE TOUCHING THE FLOOR AGAIN).** The
+    thinness is a **missing phase-progression model, not a duration-labeling problem, and not because
+    rehab/posture work is inherently low-volume.** Sessions 9–10 built the CORRECT measuring
+    instrument (`estimateSessionWorkMinutes` + the 0.70 floor) and pointed it at the WRONG root cause.
+    The floor and estimator are right and STAY as-is — do not weaken, tune, special-case, or add a
+    rehab-specific floor; every one of those hides the defect. **The real cause, confirmed against
+    live profile-4 data + the persisted plan:** the planner is handed a goal name, a tier, a phase
+    *label* and ≤4 prose `emphasis` bullets, and NOTHING actionable about how much work this phase of
+    this arc calls for. The phase objects carry `weekly_targets` / `completion_signals` /
+    `duration_weeks`, but none of those reach the planner, and none exist as a machine-readable
+    volume/intensity envelope. So the model prescribes a thin, static, undifferentiated set of gentle
+    movements (bodyweight 3×15/3×8 — it didn't even apply the "weighted glute bridges 10-20 lbs" its
+    OWN emphasis named) and pads `duration_min`; the floor then catches the shortfall. Proof the
+    thinness is not "correct low volume": the two thin days (51% / 44%) are driven by **`Build Muscle`,
+    a DRIVER goal** — thinness tracks MODALITY (bodyweight/posture/rehab strength), not tier, so it is
+    not a tier problem either. Phase advancement is purely calendar-based (`v2CurrentPhase` uses dates;
+    `completion_signals` are evaluated by nothing), so the arc never gets harder. **The fix is the
+    phase-aware prescription engine scoped in §7 (Session 11) — a code-enforced stage envelope sized
+    to the slot, so a full session NATURALLY clears the floor.** When a goal genuinely cannot fill the
+    slot at its stage, the stage's own fill expectation shortens the session deterministically — not
+    the model padding, not the floor loosening.
+  - **REJECTED (Session 10), logged so it is not re-proposed:** "honestly shorten the stated duration
+    on light days," and the follow-up "fill the remainder with maintenance-tier work." Both hide the
+    defect. Shortening the label to match thin content accepts a thin, undifferentiated prescription
+    as correct when it is not — real PT/hypertrophy/endurance arcs fill 45–60 min and progress across
+    weeks; the athlete confirmed doing genuine 45-min sessions in the early phase of this exact injury.
+    Bolting maintenance filler onto a thin driver skeleton papers over the same gap. Shortening is only
+    correct when it falls OUT of a stage's code-defined fill expectation (Session 11 proposal), never
+    as a model-chosen relabel.
 - **Engine v2 `v2PersistPlan` re-plan collision — FIXED 2026-07-22 (Session 9), surfaced during the
   above verification.** A pre-existing bug independent of the content work: `v2PersistPlan` cleared
   only `status='planned'` rows before inserting a re-planned week, so a `modified` row (autoregulated
@@ -2175,6 +2204,37 @@ produced 2026-07-22 and approved; see that session's report. Phasing:
     maintenance-tier goal to driver (Build Muscle is first in line) and demote the completed rehab
     goal to maintenance**. This belongs with the re-plan triggers (driver-tier goal change / phase
     completion), NOT with the planner itself. Deliberately not built in Phase 3.
+- **⬜ Engine v2 — PHASE-AWARE SESSION PRESCRIPTION (Session 11 audit, 2026-07-23 — AUDIT DONE, build
+  NOT started, awaiting approval).** The architectural fix for the OPEN §6 session-content thinness
+  entry. **Audit-confirmed root cause:** the planner receives a phase LABEL + ≤4 prose `emphasis`
+  bullets and nothing about how much work the current phase of a goal's arc calls for; phases carry
+  `weekly_targets`/`completion_signals`/`duration_weeks` but none reach the planner as a machine-
+  readable volume/intensity envelope, and phase advancement is purely calendar-based
+  (`completion_signals` are evaluated by nothing). So the model prescribes a thin, static,
+  undifferentiated set of movements and pads `duration_min`. Re-tiering does NOT fix it (thinness is on
+  a driver goal already; it tracks modality, not tier). **Proposed mechanism (goal-agnostic):** a
+  training-stage archetype ladder in `server/coachingRules.js`
+  (`tissue_tolerance → capacity → load → power → return_to_sport`, + maintenance) that ANY goal maps
+  its phases onto. Each stage carries a CODE-DEFINED envelope (working-set range, intensity band,
+  rep-scheme family, modality mix, session-fill expectation sized to clear the 0.70 floor); the MODEL
+  authors only exercise selection + load targets inside that envelope, and the model's stage suggestion
+  is code-clamped — the exact code-enforced/model-authored split the work budget already uses. NO
+  injury- or sport-specific content; the injury only changes which exercises fill the envelope.
+  **Ordered build (one scoped session each):** (A, first + independently verifiable) stage ladder +
+  code envelope + pass the envelope AND the athlete's week-position-in-phase into the planner → the two
+  thin strength days clear 0.70 with the floor untouched and duration untrimmed; (B) structured
+  machine-evaluable `exit_criteria` + a code phase-advancement gate = dwell floor + criteria-met + a
+  pain/deload safety veto with hold/regress paths (time-elapsed alone must NEVER advance a rehab
+  phase); (C) make the catalog reachable at plan time (filtered subset in the prompt) + add a
+  difficulty/progression-level column to `exercise_catalog` + phase-gate contraindications
+  (wrong-now-vs-wrong-always, extending `AREA_TOKENS` to `{token, min_stage}`); (D) within-phase weekly
+  ramp + wire RE-TIERING-ON-PHASE-COMPLETION (the note above) onto the new advancement trigger. **Cold
+  start is first-class:** a driver goal with no roadmap (profile 4's `Stamina` today) gets a default
+  stage by goal type + recency; a brand-new user maps to the bottom of the capacity band. All additive
+  jsonb on `goals[i].roadmap.phases[]` + one nullable catalog column (unrun SQL file); profile 1 and
+  non-flagged profiles byte-identical. **Constraints held during the audit:** no code, no migrations,
+  no prompt/UI edits; `estimateSegmentWorkMinutes`/`SESSION_WORK_FLOOR`/`session_time_budget` untouched
+  and STAY; profile 4 not re-tiered. Full audit report + proposal produced 2026-07-23.
 - **Phase 5 — Variant endpoint** (Haiku, streamed) + conversational constraints. ✅ **Done
   2026-07-22 — all constraint classes run live against profile 4.** `server/v2Variant.js` (one
   shared implementation), `POST /api/v2/variant/:profileId` (streaming, ephemeral — never writes
