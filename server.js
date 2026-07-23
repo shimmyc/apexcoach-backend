@@ -12719,8 +12719,16 @@ function v2StartStream(res, label) {
  *
  * Idempotency: planned sessions are keyed UNIQUE(profile_id, date, slot), so
  * re-planning the same week must clear that window first rather than collide.
- * Only 'planned' rows are cleared — a session already completed/modified is
- * history and is never destroyed by a re-plan.
+ * Clears every NON-completed row in the window (Session 9 fix). It previously
+ * cleared only `status='planned'`, so a `modified` row (an autoregulated or
+ * Coach-Chat-edited session) under a now-SUPERSEDED block survived as an orphan
+ * and, once a few had accumulated across re-plans, collided on
+ * (profile_id, date, slot) — the new plan's insert 23505'd and wrote 0 sessions.
+ * A full re-plan legitimately supersedes those stale edits (they belong to the
+ * block being replaced); only a genuinely `completed` row (a real logged
+ * workout) is history and is preserved. The nightly job never re-plans, and the
+ * Coach Chat propose→confirm→apply cycle is untouched — this only changes what a
+ * full re-plan reclaims.
  */
 async function v2PersistPlan(shaped, ctx) {
   var out = { block_id: null, sessions_written: 0, superseded_blocks: 0, cleared_sessions: 0, errors: [] };
@@ -12738,7 +12746,7 @@ async function v2PersistPlan(shaped, ctx) {
   try {
     var del = await fetch(SUPABASE_URL + "/rest/v1/planned_sessions?profile_id=eq." + ctx.profileId +
       "&date=gte." + ctx.weekDates[0].date + "&date=lte." + ctx.weekDates[6].date +
-      "&status=eq.planned", { method: "DELETE", headers: sbHeaders("return=representation") });
+      "&status=neq.completed", { method: "DELETE", headers: sbHeaders("return=representation") });
     var delRows = await del.json();
     if (Array.isArray(delRows)) out.cleared_sessions = delRows.length;
   } catch (e) { out.errors.push("clear: " + e.message); }
