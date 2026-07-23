@@ -735,7 +735,18 @@ function flattenExercise(ex, segType, seg) {
   if (!ex || !ex.name) return null;
   var s = ex.name;
 
-  if (segType && DURATION_SEGMENT_TYPES[segType]) {
+  // A duration block is signalled two ways, because the model does not reliably
+  // type time work with a duration-based SEGMENT type (a yoga block has been
+  // seen typed `skill` as well as `mobility`):
+  //   (a) the parent segment type is time-based, OR
+  //   (b) the exercise itself carries ONLY a duration — a time, no reps, at most
+  //       one "set" — which is exactly the "Yoga — 1 sets, 180s" fabrication.
+  // Genuine multi-set work (sets>=2, or any sets×reps) never matches (b) and
+  // stays on the set-based path, byte-identical.
+  var segIsDuration = !!(segType && DURATION_SEGMENT_TYPES[segType]);
+  var exIsDurationOnly = !!ex.time_seconds && !ex.reps && (!ex.sets || Number(ex.sets) <= 1);
+
+  if (segIsDuration || exIsDurationOnly) {
     // Duration block. Prefer the exercise's own time, then a distance, then the
     // segment's block minutes as a last resort — never fabricate a set count.
     var dur = ex.time_seconds ? fmtDurationSeconds(ex.time_seconds)

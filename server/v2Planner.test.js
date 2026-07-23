@@ -355,6 +355,19 @@ test("FLATTEN A: a duration-based (mobility) segment renders as a duration block
     "Yoga — 3 min");
 });
 
+test("FLATTEN A: a time-only exercise typed into a NON-duration segment (skill) is still a duration block", function () {
+  // Live regression: the model typed a 15-min yoga block as `skill`, producing
+  // "Yoga — 1 sets, 900s". Caught by the exercise-level (time, no reps, <=1 set) rule.
+  assert.strictEqual(P.flattenExercise({ name: "Yoga", sets: 1, time_seconds: 900 }, "skill", {}), "Yoga — 15 min");
+  // and with no set count at all
+  assert.strictEqual(P.flattenExercise({ name: "Meditation", time_seconds: 600 }, "cooldown", {}), "Meditation — 10 min");
+});
+
+test("FLATTEN A: a single timed hold in a set-based segment reads as a duration, not '1 sets'", function () {
+  assert.strictEqual(P.flattenExercise({ name: "Plank", sets: 1, time_seconds: 60 }, "straight_sets", {}), "Plank — 1 min");
+  assert.strictEqual(P.flattenExercise({ name: "Plank", sets: 1, time_seconds: 75 }, "straight_sets", {}), "Plank — 1:15");
+});
+
 test("FLATTEN A: steady_state uses the time; no fabricated set count", function () {
   assert.strictEqual(P.flattenExercise({ name: "Indoor Bike", time_seconds: 1200 }, "steady_state", { duration_min: 20 }),
     "Indoor Bike — 20 min");
