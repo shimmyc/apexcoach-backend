@@ -2252,23 +2252,21 @@ All new CSS scoped under `#v2-today` / `#v2-week-card` / `#v2-variant` / `#v2-sh
 (valid, applies document-wide; confirmed rendering correctly in the live app). No migration — every
 field already exists.
 
-## Engine v2 — NEXT SESSION STARTS HERE (2026-07-22 close-out)
+## Engine v2 — NEXT SESSION STARTS HERE (updated 2026-07-22, Session 8 close-out)
 
-Engine v2 is code-complete across all 7 phases (planner → autoregulator → variant → UI → Coach
-Chat), verified live on profile 4, profile 1 byte-identical. Before building anything else next
-session, read **ROADMAP.md §7 → "Engine v2 COMPLETE"** — it opens with the **first open decision**:
+Engine v2 is code-complete across all 7 phases plus Session 8 (alternate chip surface + flatten
+UX fixes), verified live on profile 4, profile 1 byte-identical throughout.
 
-- **Single-plan vs. option-set (DECIDE FIRST).** v2 gives one autoregulated session/day (variant
-  surface as the escape hatch); v1 gave 3 options + Minimum Viable. This was an implicit Phase-3
-  choice, never explicitly weighed. Settle it before the UX fixes below, because it changes what
-  the Today card and the flatten boundary render. Do not implement either direction until decided.
+**The single-plan-vs-option-set decision is RESOLVED — keep the single coached plan** (see "Engine
+v2 — Phase 8 / Session 8" below and ROADMAP §7). The three §6 close-out UX findings are **closed**
+(fake single sets, doubled superset-rest parens, action-button styling). Don't reopen these.
 
-Then the deferred UX fixes (**ROADMAP.md §6**, from live close-out screenshots, none started):
-non-set-based segments render as fake single sets ("Yoga — 1 sets, 180s" — segment-type-aware
-formatting needed at the flatten boundary / `#v2-today` render), doubled superset-rest parens
-("(rest 90 s (between supersets))"), and a v2 Today card action-button styling pass. Plus the
-standing §6/§9 follow-ups (sub-5s variant diff-generation, `goal_tags` code derivation, the v1
-`duration_minutes` overload, the Coach Chat leg-1 narration residual).
+Remaining Engine v2 follow-ups, none blocking (ROADMAP §6/§9): the `dur_60` `noop_extend` alternate
+is dead weight the nightly still persists (suppressed from the chip row, could stop being written);
+the superset double-paren fix has no live screenshot yet (no run has produced a `superset` segment);
+sub-5s variant paths need diff-generation not full-session generation; `goal_tags` are model-labelled
+(v2 chat reasons from the prescribed exercises instead); the v1 `duration_minutes` hold-vs-session
+overload is unfixed in v1; the Coach Chat leg-1 narration residual.
 
 ## Engine v2 — Phase 7 Implementation (2026-07-22): Coach Chat concierge
 
@@ -2345,6 +2343,97 @@ Instead the v2 snapshot exposes the actual exercises in each planned session, an
 chat to reason from the exercises, not the tags — so goal-reasoning degrades **honestly** (it never
 claims a goal was untrained when exercises that serve it are present). Verified live: "what am I
 neglecting" reasoned correctly from exercises ("no rows, presses, or pull work"), not tags.
+
+## Engine v2 — Phase 8 / Session 8 Implementation (2026-07-22): alternate chip surface + flatten UX fixes
+
+**The single-plan-vs-option-set decision is RESOLVED — keep the single coached plan.** The planner
+still emits one session per (date, slot), the autoregulator still edits that one session, all
+invariants still hold — `v2Planner.js` / `v2Autoregulator.js` / the invariant set / the
+`planned_sessions` shape / the Coach Chat propose→confirm→apply cycle were NOT touched. The gap was
+**presentation, not architecture**: `v2_daily_cache.alternates` already held 2-3 fully-formed,
+rules-validated, injury-aware sessions every morning, and the Today card never rendered them, so
+reaching an already-prepared session cost a 1.4-15s variant request. Session 8 surfaces them and
+fixes the two §6 display bugs. **Frontend + the flatten boundary + one cache-assembly field. No
+schema change. Profile 1 byte-identical (all edits are inside `engine_v2`-flagged paths); verified
+live — `GET /api/v2/today/1` → `engine_v2:false`, daily-recs 3 v1 options, life-os readiness 72.**
+
+### (A) Segment-type-aware flattening — the fake single set
+`flattenExercise(ex, segType, seg)` (`server/v2Planner.js`, the ONE object→string boundary) now
+renders a **duration block** ("Yoga — 15 min") instead of a fabricated single set
+("Yoga — 1 sets, 900s"). Two signals, because **the model does not reliably type time work with a
+duration-based SEGMENT type** — a yoga block was seen typed `skill` as well as `mobility` (the
+segment-type-only first cut shipped, then the live re-run produced a `skill`-typed yoga and still
+showed "1 sets, 900s"; caught and strengthened same session):
+- (a) the parent segment type is time-based — `DURATION_SEGMENT_TYPES` = `steady_state`,
+  `interval_long`, `interval_short`, `sprint`, `mobility`, `active_recovery`; OR
+- (b) the exercise itself carries ONLY a duration — a `time_seconds`, no `reps`, ≤1 `sets`.
+
+Genuine multi-set work (sets≥2, or any sets×reps) never matches (b) and stays byte-identical (a
+Dead Hang `3 × 30s` in a `skill` segment still reads "3 sets, 30s"). `fmtDurationSeconds` formats:
+<60→"45s", whole minutes→"3 min", else "M:SS". A multi-round interval keeps its count as "6 × 30s",
+never "6 sets". Applies to the primary AND every alternate (one boundary), so `today` and every
+`alternates[].session` are fixed together.
+
+### (B) Doubled superset-rest parenthetical
+Single composition site: `flattenExercise`'s rest append, now via **`wrapRest(rest)`**. The inner
+"(between supersets)" is **model-authored text inside `ex.rest`**; the outer "(rest …)" is code, so
+the naive `" (rest " + ex.rest + ")"` produced the nested pair. `wrapRest` unwraps a fully-wrapped
+value, strips a leading "rest", and demotes any inner parenthetical to ", …" →
+"(rest 90 s, between supersets)". A plain value ("90 s") — every real set-based rest string —
+passes through unchanged, so set-based output stays byte-identical.
+
+### (C) Alternate chip surface on `#v2-today`
+Rendered from `v2_daily_cache.alternates` by `v2AlternateRowHtml()` (`public/index.html`), between
+the primary session card and the variant surface. **Tapping a chip is an INSTANT, client-side
+display swap** — `v2SelectAlternate(key)` only sets `v2AltActiveKey` and re-renders from the
+already-loaded cache; **zero network, zero model call**, so it provably cannot write
+`v2_daily_cache`/`planned_sessions` or hit the variant endpoint (stronger than Phase 5's before/after
+check — structural). Details:
+- **Degrades to whatever exists** (0-3): `v2VisibleAlternates()` filters, and an empty set renders
+  nothing (no placeholder chip).
+- **`noop_extend` is SUPPRESSED entirely** (not shown greyed). Extending isn't a mechanical inverse
+  of compression, so the "longer" alternate is just the primary relabeled — its real duration equals
+  the primary's (live: labeled "60", actually 45). A chip labeled "60" that's really the 45-min
+  primary would mislead, so it never becomes a chip. If it's the only non-primary alternate on a run,
+  the row shows fewer chips, not a fake one.
+- **Labels come from the alternate's REAL resolved duration / swap category**, read off
+  `session.duration_min` / `session.category`, **never the cache key** (`dur_30` whose real duration
+  is 28 shows "28 min").
+- **Shortest-duration visible alternate carries a "MIN VIABLE" tag.**
+- **One-line rationale, DERIVED IN CODE** (no model call): `v2Autoregulator.deriveAlternateRationale`
+  reads the compression `steps` (dropped accessories vs trimmed rest) or the swap category, persisted
+  as `alternates[].rationale` at the cache-write boundary (`v2AssembleCache`). The compression `steps`
+  themselves aren't persisted; the derived line is.
+- **The primary is always returnable** via an always-present "Today's plan" chip.
+- **The existing free-text/constraint variant surface stays** as the escape hatch — not removed, not
+  gated. "Log This Session" and the effort prompt operate on whatever is displayed (`v2ActiveSession()`
+  = variant → active alternate → primary).
+
+### (C-server) Cache version bump — `v: 2`
+`v2AssembleCache` writes `v: 2` (the flatten boundary changed, so old strings must never be served).
+`GET /api/v2/today` treats a cache with a missing/older `v` as **stale — same as no cache** (returns
+`cache_fresh:false`, `cache:null`), and the client mirrors it (`data.cache.v === 2` gate in
+`loadV2Today`). So today's already-written `v:1` cache renders as "isn't ready yet" until the nightly
+re-writes it, rather than silently serving old-shape strings. **No schema change** (`v2_daily_cache`
+is jsonb). Recovery for a stale-shaped cache = a nightly re-run (`POST /api/v2/cron/nightly?force=1`);
+profile 4 was force-re-run in Session 8.
+
+### (D) Action-button token pass
+`.v2-var-go` moved **off** the Cornerman/AI token (it is an action control, not AI-generated content)
+onto a secondary/ghost treatment (surface-2 + border-subtle). The fully-ember session card and the
+"← Back to today" ghost link were left as-is (established v2 "coached primary" identity). All new CSS
+scoped under `#v2-today` — no global class redefined.
+
+### Verification (live, profile 4)
+Forced a nightly re-run so the cache was written through the new boundary, then on the live
+deployment: `Yoga — 15 min` and `Indoor Bike — 20 min` render as duration blocks (0 fake single
+sets); rest strings clean (0 double-parens — no `superset` segment was generated in either run, so
+that fix is unit-test-covered, not yet live-screenshotted); 3 alternates written, 2 visible chips
+(`noop_extend` suppressed); `dur_30` labels "30 min" from the real duration; MIN VIABLE = shortest
+visible (30 min); rationales derived. `v2_daily_cache.generated_at` stable across `/today` reads
+(read-only). **Tests: `server/v2Planner.test.js` extended → 113 total v2 tests (was 97), all green**
+(`node --test server/*.test.js`) — flatten formatting incl. the `skill`-typed regression, superset
+double-paren, rationale derivation, and the cache-shape/label resolution.
 
 ## Migrations
 

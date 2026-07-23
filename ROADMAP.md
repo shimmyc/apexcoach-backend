@@ -1726,8 +1726,34 @@ All verified present in `server.js`. `:id`/`:userId` = profile id.
   strips to empty → no exact/alias match → not clickable. **Accepted parser limitation** — the
   same conservative rule is what guarantees a link is never a wrong match; the trade-off is a
   handful of digit-leading names stay plain.
-- **Engine v2 UX findings from real profile-4 use (logged 2026-07-22, post-Phase-7 close-out —
-  live production screenshots, NOT injected state; NOT fixed):**
+- **✅ RESOLVED 2026-07-22 (Session 8) — all three Engine v2 close-out UX findings closed, verified
+  live on profile 4 (real `v2_daily_cache` written through the new flatten boundary), profile 1
+  byte-identical.** The findings were logged 2026-07-22 post-Phase-7 from live production
+  screenshots; fixed in Session 8 alongside the alternate chip surface. Original text kept below.
+  1. **Non-set-based segments as fake single sets — FIXED at the flatten boundary
+     (`flattenExercise`, `server/v2Planner.js`).** A duration block now renders as
+     "Yoga — 15 min", never "Yoga — 1 sets, 900s". Two signals drive it, because the model does
+     NOT reliably type time work with a duration-based SEGMENT type — a yoga block was seen typed
+     `skill` as well as `mobility`: (a) the parent segment type is time-based
+     (`mobility`/`steady_state`/`active_recovery`/`sprint`/`interval_*`), OR (b) the exercise
+     itself carries only a duration (a `time_seconds`, no reps, ≤1 set). Genuine multi-set work
+     (sets≥2, or any sets×reps) is untouched, byte-identical. Applies to the primary AND every
+     alternate (one boundary). The segment-type-only first cut was insufficient and was caught by
+     the live re-run — see CLAUDE.md.
+  2. **Doubled superset-rest parens — FIXED at the single composition site
+     (`wrapRest`, `server/v2Planner.js:703`).** The inner "(between supersets)" is model-authored
+     text inside `ex.rest`; the outer "(rest …)" is code, so wrapping produced the nested pair.
+     `wrapRest` now unwraps a fully-wrapped value, strips a leading "rest", and demotes any inner
+     parenthetical to ", …" → "(rest 90 s, between supersets)". A plain value ("90 s") passes
+     through unchanged, so set-based output stays byte-identical. Covered by unit tests; not
+     observed in the two live runs (no superset segment was generated), so the live screenshot of
+     the fixed form is still pending a run that produces one.
+  4. **v2 Today action buttons — styling pass DONE.** `.v2-var-go` moved off the Cornerman/AI
+     token (it is an action control, not AI-generated content) onto a secondary/ghost treatment.
+     The fully-ember session card and the "← Back to today" ghost link were deliberately left as-is
+     (established v2 "coached primary" identity, not slop). All new CSS scoped under `#v2-today`.
+
+  Original 2026-07-22 finding text (kept for the record):
   1. **Non-set-based segments render as fake single sets.** A `mobility` / `steady_state` /
      `active_recovery` segment that carries only a duration (a yoga block, a steady ride) renders
      through the discrete-exercise phrasing — e.g. "Yoga — 1 sets, 180s" — inherited from the
@@ -1743,6 +1769,23 @@ All verified present in `server.js`. `:id`/`:userId` = profile id.
   4. **v2 Today card action buttons need a styling pass.** The bottom action button(s) on the v2
      Today card read inconsistently with the rest of the design system per live screenshot review.
      **UI polish** only.
+- **Engine v2 Session 8 — deferred follow-ups (logged, not blocking):**
+  1. **`dur_60` `noop_extend` alternate is dead weight in the cache.** Extending a session isn't a
+     mechanical inverse of compression (adding volume is a judgment the code won't fake), so the
+     "longer" alternate is just the primary relabeled — its real duration equals the primary's
+     (live: labeled "60" but actually 45). Session 8 **suppresses it from the chip row** client-side
+     (a chip labeled "60" that's really the 45-min primary would mislead), but the nightly still
+     *writes* it into `v2_daily_cache.alternates`. Harmless (hidden, small), but the nightly could
+     stop persisting a `noop_extend` at all (`v2BuildAlternates`, `server.js`) as a minor cleanup.
+  2. **Superset double-paren fix has no live screenshot yet.** `wrapRest` is unit-tested, but
+     neither Session-8 live re-run generated a `superset` segment, so the fixed
+     "(rest 90 s, between supersets)" form hasn't been seen in a real cache. Confirm opportunistically
+     on the next run that produces one.
+  3. **Old-shape (`v:1`) caches are stale until a nightly re-run.** The flatten-boundary change bumped
+     `v2_daily_cache.v` 1→2; `GET /api/v2/today` and the client treat a missing/older `v` as stale
+     ("isn't ready yet"), so old-shape strings are never served. Profile 4 was force-re-run in
+     Session 8; any other future v2 profile carrying a pre-deploy `v:1` cache self-heals on its next
+     nightly run (or a `?force=1`).
 - **Engine v2 Coach Chat: the model can pre-announce a proposal as "done" in its first stream leg,
   before the tool result is known (found + partially mitigated 2026-07-22, Phase 7).** The
   coach_chat tool loop streams the model's leg-1 text to the client BEFORE the tool executes, so if
@@ -1984,16 +2027,21 @@ Each item below is self-contained — no other doc/session context should be nee
 > end to end (proposal #24 on future session id 32: planned/45 → confirm → modified/30, segments
 > compressed to sum 30, invariant clean, double-confirm 409, row untouched before confirmation).
 >
-> **⟶ FIRST OPEN DECISION for Engine v2's next session — single-plan vs. option-set.** v2's whole
-> architecture produces ONE autoregulated session per day (with the variant surface as the escape
-> hatch), where v1 showed **3 options + Minimum Viable**. This was an *implicit* architectural
-> choice made in Phase 3 and carried through all 7 phases — it was never explicitly weighed against
-> the alternative. **The open product question:** keep the single-coached-plan model (a coach gives
-> you the plan; "want something else?" is the variant surface), or have the planner/autoregulator
-> emit a small option set closer to v1's three-choice feel? This is a **design decision, not a bug**,
-> and it should be settled BEFORE the next session's UX fixes (the §6 findings) are picked up,
-> because the answer changes what the Today card and the flatten boundary need to render. Do not
-> implement either direction until it is decided.
+> **✅ FIRST OPEN DECISION — single-plan vs. option-set — RESOLVED 2026-07-22 (Session 8): keep the
+> single-coached-plan architecture.** The planner still emits one session per (date, slot), the
+> autoregulator still edits that one session, all invariants still hold over the seven planned
+> sessions — planner/autoregulator/`planned_sessions` shape were NOT changed. **The reasoning:** the
+> gap was never architecture, it was PRESENTATION. `v2_daily_cache.alternates` already holds 2-3
+> fully-formed, rules-validated, injury-aware sessions every morning (compressed durations derived
+> in code + one model category-swap); the Today card simply never rendered them, so reaching a
+> session already on the shelf cost the user a 1.4-15s variant request plus the mental cost of
+> formulating it. Session 8 surfaces the cached alternates as an instant client-side chip swap
+> (zero network, zero model call) and keeps the free-text/constraint variant surface as the escape
+> hatch for anything not on the shelf. A coach gives you the plan; the alternates are "here are the
+> ready variations I already prepared"; the variant surface is "want something else entirely". This
+> gets v1's option-set *feel* without duplicating the planner into an option generator. See
+> "Engine v2 — Phase 8 / Session 8" in CLAUDE.md. The three §6 UX findings this unblocked are now
+> closed (below).
 >
 > **UX findings from the 2026-07-22 close-out** (live profile-4 screenshots) are logged in §6:
 > non-set-based segments render as fake single sets, doubled superset-rest parens, and a v2 Today
