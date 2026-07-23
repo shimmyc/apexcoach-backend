@@ -12990,7 +12990,10 @@ async function v2BuildAlternates(ctx, primarySession) {
 function v2AssembleCache(alt, decision, today) {
   var flat = function (s) { return v2Planner.flattenSessionForCache(s); };
   return {
-    v: 1,
+    // v:2 (Session 8) — the flatten boundary now renders duration-based segments
+    // as duration blocks. A v-mismatched (or v-less) cache is treated as stale by
+    // GET /api/v2/today and the client, so old-shape strings are never served.
+    v: 2,
     date: today,
     generated_at: new Date().toISOString(),
     decision_tag: decision.decision,
@@ -13002,7 +13005,10 @@ function v2AssembleCache(alt, decision, today) {
     today: flat(decision.session),
     today_session: decision.session,
     alternates: alt.alternates.slice(0, 3).map(function (a) {
-      return { key: a.key, label: a.label, source: a.source, session: flat(a.session), session_structured: a.session };
+      // `rationale` is derived here from the compression steps / swap category
+      // (the steps themselves are not persisted). The chip surface reads it.
+      return { key: a.key, label: a.label, source: a.source, rationale: v2Autoregulator.deriveAlternateRationale(a),
+        session: flat(a.session), session_structured: a.session };
     }),
   };
 }
@@ -13054,7 +13060,7 @@ async function v2NightlyForProfile(pid, opts) {
     if (!todayRow) {
       // No planned session -> explicit rest state. NEVER generate one.
       decision = { decision: "recovery", why: "No session was planned for today — this is a rest day.", session: { category: "rest", duration_min: 0, intensity: "low", why: "Rest day — nothing planned.", goal_tags: [], segments: [] } };
-      cacheObj = { v: 1, date: today, generated_at: new Date().toISOString(), decision_tag: "recovery", why: decision.why, today: { category: "rest", duration_min: 0, intensity: "low", headline: "Rest day", why: decision.why, goal_tags: [], sections: [] }, alternates: [], no_planned_session: true };
+      cacheObj = { v: 2, date: today, generated_at: new Date().toISOString(), decision_tag: "recovery", why: decision.why, today: { category: "rest", duration_min: 0, intensity: "low", headline: "Rest day", why: decision.why, goal_tags: [], sections: [] }, alternates: [], no_planned_session: true };
       out.stages.autoregulator = { skipped: "no planned session" };
       out.stages.alternates = { skipped: "no planned session" };
     } else {
@@ -13223,7 +13229,12 @@ app.get("/api/v2/today/:profileId", async function (req, res) {
     if (pd.engine_v2 !== true) return res.json({ success: true, engine_v2: false });
 
     var today = localToday(prow);
-    var fresh = prow.v2_daily_cache_date === today;
+    // Cache is fresh only if it is today's AND written by the current flatten
+    // boundary (v:2, Session 8). A missing/older `v` holds old-shape display
+    // strings, so it is treated as stale — same as no cache (the client shows
+    // the "isn't ready yet" state until a nightly re-run rewrites it).
+    var cacheVersionOk = !!(prow.v2_daily_cache && prow.v2_daily_cache.v === 2);
+    var fresh = (prow.v2_daily_cache_date === today) && cacheVersionOk;
 
     // The planned week (active block) — pure read, same as GET /api/v2/plan.
     var block = null, sessions = [];

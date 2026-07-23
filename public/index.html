@@ -17319,6 +17319,7 @@ var v2Defaults = null;     // profile_data.defaults
 var v2Variant = null;      // the ephemeral variant being viewed (null = showing today)
 var v2VariantLoading = false;
 var v2VariantLabel = '';   // what the user asked for (for the banner)
+var v2AltActiveKey = null; // which cached alternate is being VIEWED (null = the primary). Display-only.
 
 // SEAM 1 target: resolve the v2 today card. Pure DB read, no model call.
 function resolveV2Today() {
@@ -17333,10 +17334,12 @@ function loadV2Today() {
     .then(function(r) { return r.json(); })
     .then(function(data) {
       if (!data || !data.success || !data.engine_v2) return;   // not v2 / not migrated
-      v2Cache = data.cache_fresh ? data.cache : null;
+      // Treat a missing/older cache version as stale (defense in depth — the
+      // server already gates on v:2). An old-shape cache renders as "not ready".
+      v2Cache = (data.cache_fresh && data.cache && data.cache.v === 2) ? data.cache : null;
       v2Defaults = data.defaults || null;
       v2Week = { block: data.block, sessions: data.sessions || [] };
-      v2Variant = null; v2VariantLoading = false;
+      v2Variant = null; v2VariantLoading = false; v2AltActiveKey = null;
       renderV2Today();
       renderV2Week();
     })
@@ -17364,14 +17367,17 @@ function renderV2Today() {
   }
 
   var viewingVariant = !!v2Variant;
-  var session = viewingVariant ? v2Variant.session : v2Cache.today;
+  var activeAlt = (!viewingVariant && v2AltActiveKey) ? v2FindAlternate(v2AltActiveKey) : null;
+  var viewingAlt = !!activeAlt;
+  var session = viewingVariant ? v2Variant.session : (viewingAlt ? activeAlt.session : v2Cache.today);
+  var whyLine = viewingVariant ? (v2Variant.why || '') : (viewingAlt ? (activeAlt.rationale || '') : (v2Cache.why || ''));
   var html = '<div id="v2-today">';
 
   if (viewingVariant) {
     html += v2VariantBannerHtml();
-  } else {
-    // Decision tag — surfaced honestly. Only shown when the session was actually
-    // adjusted (not "kept"); this is the "feels coached" payoff.
+  } else if (!viewingAlt) {
+    // Decision tag — surfaced honestly. Only shown on the PRIMARY (it describes
+    // today's autoregulation, not an alternate). Only when actually adjusted.
     var tag = v2Cache.decision_tag;
     if (tag && tag !== 'kept') {
       var tagLabel = { reduced_volume: 'Volume reduced today', reduced_intensity: 'Intensity dialled back today', swapped: 'Session swapped today', recovery: 'Recovery day' }[tag] || 'Adjusted today';
@@ -17380,13 +17386,68 @@ function renderV2Today() {
     }
   }
 
-  html += v2SessionCardHtml(session, viewingVariant ? (v2Variant.why || '') : (v2Cache.why || ''));
+  html += v2SessionCardHtml(session, whyLine);
 
   if (!viewingVariant) {
+    // Cached alternates — instant, client-side display swaps (no network).
+    html += v2AlternateRowHtml();
+    // The free-text / constraint variant surface stays as the escape hatch.
     html += v2VariantSurfaceHtml();
   }
   html += '</div>';
   el.innerHTML = html;
+}
+
+// The alternate currently displayed, or null while showing the primary.
+function v2FindAlternate(key) {
+  if (!v2Cache || !Array.isArray(v2Cache.alternates)) return null;
+  var m = v2Cache.alternates.filter(function(a) { return a && a.key === key; });
+  return m.length ? m[0] : null;
+}
+
+// Alternates worth showing as chips: everything the nightly wrote EXCEPT the
+// noop_extend (a relabeled copy of the primary — never a real alternative).
+function v2VisibleAlternates() {
+  if (!v2Cache || !Array.isArray(v2Cache.alternates)) return [];
+  return v2Cache.alternates.filter(function(a) {
+    return a && a.session && a.source !== 'code:noop_extend';
+  });
+}
+
+// The chip row. Degrades to however many distinct alternates exist (0-3); an
+// empty set renders nothing (no placeholder chip). Labels come from the
+// alternate's REAL resolved duration / swap category, never the cache key.
+function v2AlternateRowHtml() {
+  var alts = v2VisibleAlternates();
+  if (!alts.length) return '';
+  var minDur = Infinity;
+  alts.forEach(function(a) { var d = Number(a.session.duration_min); if (d && d < minDur) minDur = d; });
+  var h = '<div id="v2-alts">';
+  h += '<div class="v2-alts-head">Swap to a ready alternative</div>';
+  h += '<div class="v2-alts-chips">';
+  // The "back to today's plan" affordance is the always-present primary chip.
+  h += '<button type="button" class="v2-alt-chip' + (!v2AltActiveKey ? ' v2-alt-on' : '') + '" onclick="v2SelectAlternate(null)">' +
+    '<span class="v2-alt-label">Today&rsquo;s plan</span></button>';
+  alts.forEach(function(a) {
+    var isDur = String(a.key).indexOf('dur_') === 0;
+    var cat = String(a.session.category || '').replace(/_/g, ' ');
+    var catPretty = cat ? cat.charAt(0).toUpperCase() + cat.slice(1) : '';
+    var label = isDur ? ((a.session.duration_min != null ? a.session.duration_min : '?') + ' min') : (catPretty || 'Alternative');
+    var isMV = isDur && Number(a.session.duration_min) === minDur;
+    var cls = 'v2-alt-chip' + (v2AltActiveKey === a.key ? ' v2-alt-on' : '') + (isMV ? ' v2-alt-mv' : '');
+    h += '<button type="button" class="' + cls + '" onclick="v2SelectAlternate(\'' + attrEsc(a.key) + '\')">' +
+      '<span class="v2-alt-label">' + attrEsc(label) + (isMV ? ' <span class="v2-alt-mvtag">MIN VIABLE</span>' : '') + '</span>' +
+      (a.rationale ? '<span class="v2-alt-sub">' + attrEsc(a.rationale) + '</span>' : '') +
+      '</button>';
+  });
+  h += '</div></div>';
+  return h;
+}
+
+// A pure client-side display swap: no network call, no cache/plan write.
+function v2SelectAlternate(key) {
+  v2AltActiveKey = key || null;
+  renderV2Today();
 }
 
 // Render one flattened session (category/duration/intensity + sections + why).
@@ -17555,13 +17616,21 @@ function v2ExtractVariantResult(acc) {
 }
 
 function v2BackToToday() {
-  v2Variant = null; v2VariantLabel = '';
+  v2Variant = null; v2VariantLabel = ''; v2AltActiveKey = null;
   renderV2Today();
 }
 
-// Prefill the log modal from the shown session (today or the variant).
+// The session currently on screen: an active variant, else a selected cached
+// alternate, else the autoregulated primary.
+function v2ActiveSession() {
+  if (v2Variant) return v2Variant.session;
+  if (v2AltActiveKey) { var a = v2FindAlternate(v2AltActiveKey); if (a) return a.session; }
+  return v2Cache && v2Cache.today;
+}
+
+// Prefill the log modal from the shown session (today, an alternate, or the variant).
 function v2LogSession() {
-  var session = v2Variant ? v2Variant.session : (v2Cache && v2Cache.today);
+  var session = v2ActiveSession();
   if (!session) return;
   var names = [];
   recOptionSections(session).forEach(function(sec) { (sec.exercises || []).forEach(function(x) { names.push(x); }); });
@@ -17748,6 +17817,19 @@ function v2SetTier(idx, tier) {
 #v2-today .v2-ex-txt { color:#fff; line-height:1.5; }
 #v2-today .v2-log-btn { width:100%; background:#fff; color:var(--accent-ember); border:none; padding:12px 20px; font-size:14px;
   font-weight:700; cursor:pointer; border-radius:14px; font-family:Inter,sans-serif; margin-top:14px; }
+/* Cached alternate chips — instant, client-side display swaps */
+#v2-today #v2-alts { margin-top:16px; }
+#v2-today .v2-alts-head { font-size:12px; color:var(--text-muted); margin-bottom:8px; font-weight:600; }
+#v2-today .v2-alts-chips { display:flex; flex-wrap:wrap; gap:8px; }
+#v2-today .v2-alt-chip { display:flex; flex-direction:column; align-items:flex-start; gap:2px; text-align:left;
+  background:var(--bg-surface-2); border:1px solid var(--border-subtle); color:var(--text-primary);
+  padding:8px 13px; border-radius:12px; cursor:pointer; font-family:Inter,sans-serif; max-width:100%; }
+#v2-today .v2-alt-chip:hover { border-color:var(--text-muted); }
+#v2-today .v2-alt-on { border-color:var(--accent-ember); background:rgba(255,74,28,0.08); }
+#v2-today .v2-alt-label { font-size:13px; font-weight:700; display:inline-flex; align-items:center; gap:6px; }
+#v2-today .v2-alt-mvtag { font-size:8px; letter-spacing:0.06em; font-weight:700; color:var(--text-muted);
+  border:1px solid var(--border-subtle); border-radius:6px; padding:1px 4px; }
+#v2-today .v2-alt-sub { font-size:11px; color:var(--text-muted); line-height:1.35; }
 /* Variant surface */
 #v2-variant { margin-top:18px; padding-top:14px; border-top:1px solid var(--border-subtle); }
 #v2-variant .v2-var-head { font-size:12px; color:var(--text-muted); margin-bottom:10px; font-weight:600; }
@@ -17759,8 +17841,10 @@ function v2SetTier(idx, tier) {
 #v2-variant .v2-var-input { flex:1; background:var(--bg-surface-2); border:1px solid var(--border-subtle); color:var(--text-primary);
   border-radius:10px; padding:9px 12px; font-size:13px; font-family:Inter,sans-serif; }
 #v2-variant .v2-var-input:focus { outline:none; border-color:var(--accent-cornerman); }
-#v2-variant .v2-var-go { background:var(--accent-cornerman); border:none; color:#fff; padding:9px 18px; border-radius:10px;
-  font-size:13px; font-weight:700; cursor:pointer; font-family:Inter,sans-serif; }
+/* Secondary/ghost — an action control, not AI content, so NOT cornerman. */
+#v2-variant .v2-var-go { background:var(--bg-surface-2); border:1px solid var(--border-subtle); color:var(--text-primary);
+  padding:9px 18px; border-radius:10px; font-size:13px; font-weight:700; cursor:pointer; font-family:Inter,sans-serif; }
+#v2-variant .v2-var-go:hover { border-color:var(--text-muted); }
 #v2-today .v2-var-banner { display:flex; justify-content:space-between; align-items:center; gap:10px;
   background:rgba(139,92,246,0.1); border:1px solid rgba(139,92,246,0.3); border-radius:8px; padding:8px 12px; margin-bottom:12px; }
 #v2-today .v2-var-banner-label { font-size:10px; letter-spacing:0.1em; color:var(--accent-cornerman); font-weight:700; }

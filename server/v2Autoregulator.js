@@ -329,10 +329,33 @@ function compressSessionToDuration(session, targetMin) {
   return { session: out, steps: steps, protect: plan.protect };
 }
 
+/**
+ * A one-line, code-derived rationale for a cache alternate — from the
+ * compression STEPS (duration variants) or the swap category (model swap). No
+ * model call. `code:noop_extend` returns "" (the chip surface suppresses it).
+ * Consumed at the cache-write boundary (v2AssembleCache).
+ */
+function deriveAlternateRationale(a) {
+  if (!a) return "";
+  if (a.source === "code:time_compression") {
+    var steps = a.steps || [];
+    var dropped = steps.some(function (t) { return /dropped accessory/i.test(t); });
+    var trimmed = steps.some(function (t) { return /shortened rest|trimmed the primary/i.test(t); });
+    if (dropped) return "shorter — drops tertiary accessories, keeps the primary compound";
+    if (trimmed) return "shorter — tighter rest, keeps the primary compound";
+    return "shorter — keeps the primary compound and prehab";
+  }
+  if (a.source === "model:category_swap") {
+    var cat = (a.session && a.session.category) ? String(a.session.category).replace(/_/g, " ") : "different";
+    return "a " + cat + " session instead — same day, different focus";
+  }
+  return "";
+}
+
 module.exports = {
   SYSTEM, buildAutoregulatorPrompt, extractJSON,
   assertIsModification, assertAnchorUntouched,
-  compressSessionToDuration,
+  compressSessionToDuration, deriveAlternateRationale,
   exerciseNames, totalSets,
   DECISION_TAGS,
 };

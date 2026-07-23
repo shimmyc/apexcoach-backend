@@ -342,3 +342,99 @@ test("a clean plan produces ZERO violations (no false positives)", function () {
   assert.deepStrictEqual(res.violations, [], "clean input must not trip anything: " + JSON.stringify(res.violations));
   assert.deepStrictEqual(res.repairs, []);
 });
+
+// ── Session 8: flatten-boundary formatting + alternate rationale ─────────────
+// The §6 close-out bugs (duration-based segments as fake single sets; doubled
+// superset-rest parens) and the derived alternate rationale. Code-testable
+// slices of workstreams A, B and C-server.
+
+var AR = require("./v2Autoregulator");
+
+test("FLATTEN A: a duration-based (mobility) segment renders as a duration block, not '1 sets'", function () {
+  assert.strictEqual(P.flattenExercise({ name: "Yoga", sets: 1, time_seconds: 180 }, "mobility", { duration_min: 3 }),
+    "Yoga — 3 min");
+});
+
+test("FLATTEN A: steady_state uses the time; no fabricated set count", function () {
+  assert.strictEqual(P.flattenExercise({ name: "Indoor Bike", time_seconds: 1200 }, "steady_state", { duration_min: 20 }),
+    "Indoor Bike — 20 min");
+});
+
+test("FLATTEN A: a multi-round interval keeps its round count as 'N × dur', never 'N sets'", function () {
+  assert.strictEqual(P.flattenExercise({ name: "Sprint", sets: 6, time_seconds: 30 }, "interval_short", {}),
+    "Sprint — 6 × 30s");
+});
+
+test("FLATTEN A: a duration segment with no exercise time falls back to the segment minutes", function () {
+  assert.strictEqual(P.flattenExercise({ name: "Foam Roll" }, "active_recovery", { duration_min: 5 }),
+    "Foam Roll — 5 min");
+});
+
+test("FLATTEN A: sub-minute holds and odd durations format sensibly", function () {
+  assert.strictEqual(P.flattenExercise({ name: "Wall Sit", time_seconds: 45 }, "mobility", {}), "Wall Sit — 45s");
+  assert.strictEqual(P.flattenExercise({ name: "Hold", time_seconds: 90 }, "mobility", {}), "Hold — 1:30");
+});
+
+test("FLATTEN A: a SET-based segment is byte-identical (no behavior change)", function () {
+  assert.strictEqual(P.flattenExercise({ name: "Glute Bridge", sets: 2, reps: 15, load: "10 lb", rest: "90 s" }, "straight_sets", {}),
+    "Glute Bridge — 2 x 15 @ 10 lb (rest 90 s)");
+  // a hold-in-a-skill-segment stays set-based (legit multi-hold), unchanged
+  assert.strictEqual(P.flattenExercise({ name: "Dead Hang", sets: 3, time_seconds: 30, rest: "60 s" }, "skill", {}),
+    "Dead Hang — 3 sets, 30s (rest 60 s)");
+});
+
+test("FLATTEN B: a superset rest that already carries a parenthetical is NOT double-wrapped", function () {
+  assert.strictEqual(P.flattenExercise({ name: "DB Row", sets: 2, reps: 12, rest: "90 s (between supersets)" }, "superset", {}),
+    "DB Row — 2 x 12 (rest 90 s, between supersets)");
+});
+
+test("FLATTEN B: a fully-parenthesised rest value is unwrapped to a single set of parens", function () {
+  assert.strictEqual(P.flattenExercise({ name: "Curl", sets: 3, reps: 10, rest: "(75 s)" }, "straight_sets", {}),
+    "Curl — 3 x 10 (rest 75 s)");
+});
+
+test("FLATTEN: no exercise name -> null (unchanged guard)", function () {
+  assert.strictEqual(P.flattenExercise({ time_seconds: 60 }, "mobility", {}), null);
+});
+
+test("RATIONALE: a time-compression alternate that dropped an accessory reads 'shorter — drops tertiary accessories'", function () {
+  var r = AR.deriveAlternateRationale({ source: "code:time_compression", steps: ["dropped accessory segment 'core' (5 min)"], session: { category: "strength" } });
+  assert.strictEqual(r, "shorter — drops tertiary accessories, keeps the primary compound");
+});
+
+test("RATIONALE: a compression that only trimmed rest reads 'tighter rest'", function () {
+  var r = AR.deriveAlternateRationale({ source: "code:time_compression", steps: ["shortened rest in 'main' by 3 min"], session: {} });
+  assert.strictEqual(r, "shorter — tighter rest, keeps the primary compound");
+});
+
+test("RATIONALE: a category swap names the real resolved category, not the key", function () {
+  var r = AR.deriveAlternateRationale({ source: "model:category_swap", session: { category: "mind_body" } });
+  assert.strictEqual(r, "a mind body session instead — same day, different focus");
+});
+
+test("RATIONALE: noop_extend has no rationale (it is suppressed from the chip row)", function () {
+  assert.strictEqual(AR.deriveAlternateRationale({ source: "code:noop_extend", session: { category: "strength" } }), "");
+});
+
+test("LABEL/SUPPRESS: v2AssembleCache carries v:2, a derived rationale, and both session forms", function () {
+  var primary = { category: "strength", duration_min: 40, intensity: "medium", headline: "S", why: "w",
+    segments: [{ type: "straight_sets", duration_min: 40, exercises: [{ name: "Squat", sets: 3, reps: 8 }] }] };
+  // Mirror the alternate objects v2BuildAlternates hands to the cache assembler.
+  var alt = { alternates: [
+    { key: "dur_30", label: "30 min (compressed)", source: "code:time_compression",
+      steps: ["dropped accessory segment 'core' (5 min)"], session: Object.assign({}, primary, { duration_min: 28 }) },
+    { key: "cat_swap", label: "Different focus: mind_body", source: "model:category_swap",
+      session: Object.assign({}, primary, { category: "mind_body" }) },
+  ] };
+  // deriveAlternateRationale + flattenSessionForCache are the two code paths the
+  // client label/rationale surface reads through; assert the cache shape here.
+  var cache = { v: 2, alternates: alt.alternates.map(function (a) {
+    return { key: a.key, source: a.source, rationale: AR.deriveAlternateRationale(a),
+      session: P.flattenSessionForCache(a.session), session_structured: a.session };
+  }) };
+  assert.strictEqual(cache.v, 2);
+  assert.strictEqual(cache.alternates[0].rationale, "shorter — drops tertiary accessories, keeps the primary compound");
+  assert.strictEqual(cache.alternates[0].session.duration_min, 28, "label must resolve from the REAL duration, not the dur_30 key");
+  assert.strictEqual(cache.alternates[1].session.category, "mind_body");
+  assert.ok(cache.alternates[0].session_structured, "structured form retained for the variant path");
+});

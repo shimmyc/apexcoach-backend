@@ -688,19 +688,79 @@ function extractPlanJSON(raw) {
  * The output shape mirrors a v1 rec option's `sections[]`:
  *   { label, minutes, exercises: [ "Name — 3 x 8 @ 135 lb", ... ] }
  */
-function flattenExercise(ex) {
+// Segment types whose natural unit is TIME, not sets×reps. An exercise inside
+// one of these renders as a duration block ("Yoga — 3 min"), never as a
+// fabricated single set ("Yoga — 1 sets, 180s"). Every OTHER (set-based)
+// segment type is untouched and renders byte-identically.
+var DURATION_SEGMENT_TYPES = {
+  steady_state: 1, interval_long: 1, interval_short: 1, sprint: 1,
+  mobility: 1, active_recovery: 1,
+};
+
+// seconds -> compact human duration: <60 -> "45s"; whole minutes -> "3 min";
+// otherwise "M:SS".
+function fmtDurationSeconds(secs) {
+  secs = Number(secs) || 0;
+  if (secs <= 0) return null;
+  if (secs < 60) return secs + "s";
+  if (secs % 60 === 0) return (secs / 60) + " min";
+  var m = Math.floor(secs / 60), s = secs % 60;
+  return m + ":" + (s < 10 ? "0" + s : s);
+}
+
+// Compose the rest annotation as a SINGLE parenthetical. The model sometimes
+// emits a rest value that already carries its own parenthetical (e.g.
+// "90 s (between supersets)"); wrapping that in "(rest …)" naively produced the
+// doubled "(rest 90 s (between supersets))" (ROADMAP §6). Normalise first:
+// unwrap a fully-wrapped value, strip a leading "rest", and demote any inner
+// parenthetical to ", …" so exactly one set of parens survives. A plain value
+// like "90 s" — every real set-based rest string — passes through unchanged, so
+// the set-based output stays byte-identical.
+function wrapRest(rest) {
+  var r = String(rest == null ? "" : rest).trim();
+  if (!r) return "";
+  r = r.replace(/^\(\s*([\s\S]*?)\s*\)$/, "$1");      // unwrap a fully-wrapped value
+  r = r.replace(/^rest[:\s]+/i, "");                   // strip a leading "rest"
+  r = r.replace(/\s*\(\s*([^()]*?)\s*\)/g, ", $1");    // inner "(x)" -> ", x"
+  r = r.replace(/\s+,/g, ",").replace(/,\s*,/g, ",").replace(/,\s*$/, "").trim();
+  return "(rest " + r + ")";
+}
+
+/**
+ * @param {object} ex       the structured exercise object
+ * @param {string} [segType] the parent segment's type (drives duration vs set rendering)
+ * @param {object} [seg]     the parent segment (for its duration_min fallback)
+ */
+function flattenExercise(ex, segType, seg) {
   if (!ex || !ex.name) return null;
+  var s = ex.name;
+
+  if (segType && DURATION_SEGMENT_TYPES[segType]) {
+    // Duration block. Prefer the exercise's own time, then a distance, then the
+    // segment's block minutes as a last resort — never fabricate a set count.
+    var dur = ex.time_seconds ? fmtDurationSeconds(ex.time_seconds)
+      : (ex.distance ? String(ex.distance)
+        : (seg && Number(seg.duration_min) ? Number(seg.duration_min) + " min" : null));
+    var detail = (dur && Number(ex.sets) >= 2) ? (ex.sets + " × " + dur) : dur;
+    if (!detail && ex.reps) detail = ex.reps + " reps";  // safety: a rep move mis-typed into a time segment still shows
+    if (detail) s += " — " + detail;
+    if (ex.load && String(ex.load).toLowerCase() !== "bodyweight") s += " @ " + ex.load;
+    if (ex.rest) s += " " + wrapRest(ex.rest);
+    return s;
+  }
+
+  // Set-based path — byte-identical to the pre-Session-8 output (the rest
+  // annotation now routes through wrapRest, a no-op for a plain value).
   var bits = [];
   if (ex.sets && ex.reps) bits.push(ex.sets + " x " + ex.reps);
   else if (ex.reps) bits.push(ex.reps + " reps");
   else if (ex.sets) bits.push(ex.sets + " sets");
   if (ex.time_seconds) bits.push(ex.time_seconds + "s");   // always seconds — schema guarantees it
   if (ex.distance) bits.push(String(ex.distance));
-  var detail = bits.join(", ");
-  var s = ex.name;
-  if (detail) s += " — " + detail;
+  var detail2 = bits.join(", ");
+  if (detail2) s += " — " + detail2;
   if (ex.load && String(ex.load).toLowerCase() !== "bodyweight") s += " @ " + ex.load;
-  if (ex.rest) s += " (rest " + ex.rest + ")";
+  if (ex.rest) s += " " + wrapRest(ex.rest);
   return s;
 }
 
@@ -714,7 +774,7 @@ function flattenSessionForCache(session) {
     return {
       label: prettySegmentLabel(seg.type, seg.intent),
       minutes: Number(seg.duration_min) || null,
-      exercises: (seg.exercises || []).map(flattenExercise).filter(Boolean),
+      exercises: (seg.exercises || []).map(function (ex) { return flattenExercise(ex, seg.type, seg); }).filter(Boolean),
     };
   }).filter(function (s) { return s.exercises.length || s.label; });
 
