@@ -1726,6 +1726,17 @@ All verified present in `server.js`. `:id`/`:userId` = profile id.
   strips to empty → no exact/alias match → not clickable. **Accepted parser limitation** — the
   same conservative rule is what guarantees a link is never a wrong match; the trade-off is a
   handful of digit-leading names stay plain.
+- **Engine v2 Coach Chat: the model can pre-announce a proposal as "done" in its first stream leg,
+  before the tool result is known (found + partially mitigated 2026-07-22, Phase 7).** The
+  coach_chat tool loop streams the model's leg-1 text to the client BEFORE the tool executes, so if
+  the model opens with "Done — changed X" and the tool then fails or is refused, the false claim is
+  already on screen. The persona now instructs the model to phrase changes as *proposals needing
+  confirmation* (never "done"/"applied") and to correct itself if a tool result reports failure —
+  which handles the common case and the follow-up leg. But it **cannot fully prevent** a pre-announced
+  leg-1 claim, because that text is already streamed. The safety property is unaffected (a failed
+  tool never writes and never renders a card — proven). A complete fix would buffer the model's text
+  until after the tool result resolves, a change to the streaming flow deferred as not worth the
+  latency/complexity for a cosmetic wording issue.
 - **"Mix Focus" (ex-"Full Override") rec quality — user reports the recs under that mode "aren't
   what I want" (session #32, PARKED).** This is separate from the session #32 display rename
   (which changed only the label, not the `mode:'total'` logic). May need a look at how the
@@ -1951,9 +1962,10 @@ Each item below is self-contained — no other doc/session context should be nee
 >
 > **Migrations to run (files in `migrations/`, all UNRUN except where noted):** the profile-4 clone
 > set (✅ RUN + verified), `2026-07-22_v2_training_tables.sql`, `2026-07-22_v2_profile_columns.sql`,
-> `2026-07-22_v2_workouts_session_effort.sql`, `2026-07-22_v2_profile4_tiers_and_schedule_v3.sql`
-> (all ✅ RUN during the build), and `2026-07-22_chat_proposals_v2_types.sql` (**⚠ NOT RUN** — the
-> Phase 7 propose→confirm→apply cycle is gated on it).
+> `2026-07-22_v2_workouts_session_effort.sql`, `2026-07-22_v2_profile4_tiers_and_schedule_v3.sql`,
+> and `2026-07-22_chat_proposals_v2_types.sql` — **ALL ✅ RUN.** The Phase 7 apply cycle is verified
+> end to end (proposal #24 on future session id 32: planned/45 → confirm → modified/30, segments
+> compressed to sum 30, invariant clean, double-confirm 409, row untouched before confirmation).
 >
 > **Remaining logged follow-ups** (all in §6/§9, none blocking): sub-5s variant model paths need
 > diff-generation not full-session generation (§6); `goal_tags` are model-labelled and under-report

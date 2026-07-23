@@ -2293,6 +2293,29 @@ the block. `applyProposal` gained the three new type branches; the **confirmatio
 inherited unchanged** — `applyProposal` is still only reachable from
 `POST .../chat/proposals/:id/confirm`, so a proposal cannot write without explicit confirmation.
 
+### A duration change must compress segments (found in the apply demo)
+`computeSessionChangeProposal`'s duration edit runs the rules module's time-compression order
+(`compressSessionToDuration`) on a REDUCTION — setting only the top-level `duration_min` left the
+segments summing to the old length, and the Phase 3.5 **time-budget invariant then correctly
+reverted it on apply** (which is how the demo proved the invariant runs). Now the segments are
+actually shortened (primary compound + prehab protected), so the change is real and
+invariant-consistent.
+
+### Apply cycle — verified end to end (2026-07-22, migration run)
+Real cycle on a future movable session (id 32, Fri, strength): **before** — planned/45min; **propose
+via chat** → proposal #24 created, and the row stayed planned/45 with its `updated_at` unchanged
+(**proof no write before confirmation**); **confirm** → row PATCHed to `status:modified`,
+**duration 30, segments summing to 30 (time-budget invariant clean), primary + prehab kept**; a
+second confirm is rejected 409 "already confirmed". The refusal paths (anchor, injury) were proven
+to create no proposal, and v1 Coach Chat is byte-identical (profile 1's snapshot has no v2 section).
+
+### Known residual: leg-1 narration
+The tool loop streams the model's first-leg text before the tool runs, so a model that opens with
+"Done" before a tool fails can leave a stale claim on screen. The persona now tells it to phrase
+changes as proposals and self-correct on a failed tool result; a full fix needs stream buffering,
+deferred (§6). The safety property is unaffected — a failed tool never writes and never renders a
+card.
+
 ### Standing preferences close the Phase 2 deferred item
 `propose_standing_preference` writes `profile_data.v2_preferences[]`; `v2Dossier.buildDossier` now
 folds those into `refusals_preferences` (which Phase 2 deliberately left empty for exactly this),
