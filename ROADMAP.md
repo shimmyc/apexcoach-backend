@@ -1828,6 +1828,64 @@ All verified present in `server.js`. `:id`/`:userId` = profile id.
   session's own parts add up to its own stated length. Small in absolute terms, but it is the
   precise complaint that started the v1 time-budget work ("a rec labelled 45 minutes contains ~12
   minutes of work"), and it will compound once the autoregulator starts editing segments.
+- **⚠ Engine v2 SESSION CONTENT THINNESS — root cause named, mechanism landed, content NOT yet
+  cleared (Session 9, 2026-07-22). DO NOT close this entry.** The exact v1 complaint reproduced in
+  v2: a session labelled 45 min holding ~18-25 min of real work. **Root cause, stated plainly: the
+  `session_time_budget` invariant checked two MODEL-AUTHORED numbers against each other — that the
+  segment `duration_min` values SUM to the session's `duration_min` — and never asked whether the
+  prescribed exercises could plausibly OCCUPY those minutes. It was structurally satisfiable by an
+  empty session (the anchor sessions pass with zero exercises), and it actively INCENTIVISED the
+  padding it should have caught: the model inflated segment `duration_min` to satisfy the sum
+  instead of adding work.** (This retroactively qualifies the Phase 3.5 note above that the
+  invariant "is now the session_time_budget invariant — all 7 sessions summed exactly": summing
+  exactly was never the same as being fillable.) It was planner-wide, not one bad generation —
+  audited across the whole week (2 of 5 non-anchor sessions under a 70% work floor; the cat_swap
+  alternate worst at 47%). The screenshot that triggered this was the **cat_swap alternate viewed
+  via the Session-8 chip**, not the autoregulated primary — but the defect is real in both the
+  planner and the variant path. **What Session 9 landed (all verified live, profile 4):**
+  `estimateSegmentWorkMinutes`/`estimateSessionWorkMinutes` (`server/coachingRules.js`, mirroring
+  v1's per-SET model so the two engines can't disagree); `session_time_budget` strengthened to ALSO
+  require estimated work ≥ `SESSION_WORK_FLOOR` (0.70) × stated duration for non-anchor sessions
+  (anchors excluded off the no-prescribed-work property, NOT a category string); a new
+  `"regenerate"` severity that reuses the planner's existing 2-attempt cap (no new retry mechanism)
+  then persists the plan **flagged** rather than looping or blocking the nightly; and a prompt
+  reframe on the planner AND the variant that KILLED the "segments MUST sum" line (the direct
+  padding incentive) and injected `renderWorkBudgetGuidance` — the model now optimises against the
+  same function the code enforces. Confirmed the floor fires on variant output too (a live category
+  swap flagged at 65%). **HONEST LIVE RESULT — why this stays OPEN:** on a forced full re-plan the
+  mechanism worked end-to-end (regenerated on attempt 2, persisted flagged), and the two **cardio**
+  days rebuilt to genuinely full (0.99, real bike+yoga time blocks) — but the model STILL under-fills
+  **rehab/posture-dominant strength sessions** even after a regeneration attempt (3 of 5 non-anchor
+  sessions persisted flagged at 0.44-0.55). The flag-and-persist makes those VISIBLE in the invariant
+  report instead of silently passing — the durable win — but the regenerated week does not clear the
+  floor, so per the Session 9 brief this entry is NOT closed. **Open follow-up / decision:** whether
+  the 0.70 floor is too aggressive for legitimately light rehab/posture work (the per-set mobility
+  estimate of 1.0 min may under-count setup/transition/breathing overhead on mobility-dense sessions),
+  or whether the model should shorten those sessions to an honest length, or whether a rehab-specific
+  floor is warranted. Not tuned this session (0.70 was the approved starting value; reported the real
+  week's scores against it rather than tuning blind).
+- **Engine v2 `v2PersistPlan` re-plan collision — FIXED 2026-07-22 (Session 9), surfaced during the
+  above verification.** A pre-existing bug independent of the content work: `v2PersistPlan` cleared
+  only `status='planned'` rows before inserting a re-planned week, so a `modified` row (autoregulated
+  or Coach-Chat-edited) under a now-SUPERSEDED block survived as an orphan. Across several re-plans
+  (Sessions 3-9) these accumulated and collided on `UNIQUE(profile_id, date, slot)` — the insert
+  23505'd and wrote **0 sessions**, leaving an empty active block. Fixed by clearing every
+  NON-`completed` row in the target window (`status=eq.planned` → `status=neq.completed`): a full
+  re-plan legitimately supersedes stale `planned`/`modified` edits (they belong to the block being
+  replaced); only a genuinely `completed` row (a real logged workout) is history and is preserved.
+  The nightly job never re-plans and the Coach Chat propose→confirm→apply cycle is untouched — this
+  only changes what a full re-plan reclaims. Verified: post-fix re-plan wrote 7/7 sessions cleanly.
+- **Engine v2 category-vs-content validation — LOGGED follow-up (Session 9 audit §1.5, NOT built).**
+  A session's `category` is model-authored and never validated against its prescribed content: the
+  cat_swap stamped `strength` (later `mind_body`) on a session of yoga + wall slides + dead bugs.
+  A code check could flag a `strength`-labelled session with no strength-pattern exercise (or a swap
+  whose output category doesn't match its content). Deferred as the smaller, separate item it is.
+- **Engine v2 alternate `why` display weakness — LOGGED follow-up (Session 9 audit §1.4).** When
+  viewing a cached alternate, `renderV2Today` shows the short code-derived `rationale` as the why
+  line and hides the alternate's genuinely richer `session.why` ("Strength session built on posture
+  and core stability bolt-ons; yoga mobility preserved as prep; no high-load compound…"). Not a bug
+  (Session 8 intended the rationale as the collapsed-state summary), but the Workstream 2 folded-card
+  layout should show the rationale collapsed and the full `session.why` when expanded.
 - **Accessory-tier goals can be silently dropped with no invariant catching it (found
   2026-07-22).** `Daily Meditation` (accessory tier) appears in the generated plan only inside a
   segment's `intent` STRING ("Pinky accessory + meditation — daily accessory dose") and is never

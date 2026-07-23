@@ -2435,6 +2435,69 @@ visible (30 min); rationales derived. `v2_daily_cache.generated_at` stable acros
 (`node --test server/*.test.js`) — flatten formatting incl. the `skill`-typed regression, superset
 double-paren, rationale derivation, and the cache-shape/label resolution.
 
+## Engine v2 — Session 9 (2026-07-22): session-content work floor (Workstream 1)
+
+Content-generation fix, NOT a display fix (Session 8 was display-only and is not implicated).
+**The defect:** a session labelled 45 min holding ~18-25 min of real work. **Root cause named
+plainly:** `session_time_budget` checked that the model's segment `duration_min` values SUM to the
+model's session `duration_min` — two model-authored numbers against each other — and never asked
+whether the prescribed exercises could OCCUPY those minutes. Structurally satisfiable by an empty
+session, and it INCENTIVISED the padding it should have caught (the model inflated segment minutes
+to satisfy the sum instead of adding work). Planner-wide (audited across the whole week). The live
+screenshot that triggered it was the **cat_swap alternate viewed via the Session-8 chip**, not the
+primary — but the defect is real in both the planner and the variant path. See ROADMAP §6 (the entry
+is deliberately LEFT OPEN — the mechanism landed but the content does not yet clear the floor).
+
+- **Work-time estimator — `estimateSegmentWorkMinutes(seg)` / `estimateSessionWorkMinutes(session)`
+  (`server/coachingRules.js`, exported + `renderWorkBudgetGuidance()` for prompt text).** Mirrors
+  v1's `estimateExerciseMinutes` per-SET model so the two engines can't disagree:
+  `WORK_MIN_PER_STRENGTH_SET` 1.5, `WORK_MIN_PER_MOBILITY_SET` 1.0, holds = sets×(seconds/60 + ~1
+  min rest). Deliberate divergences from v1, documented in-code: reads STRUCTURED fields not regex
+  strings; adds a "a segment whose exercises are ALL bare (no reps, no time) IS a continuous time
+  block → count its `duration_min`" case (a bike/run, which v1 carried inline); no flat warm-up
+  bonus (would mask thinness); per-set not per-rep (the brief sketched per-rep, but v1 consistency
+  won). `sessionHasPrescribedWork()` is the anchor exclusion — off the no-prescribed-work property,
+  never a category string.
+- **`session_time_budget` strengthened (`server/v2Planner.js`).** KEEPS the sum check (real
+  arithmetic drift) and ADDS a work floor: a non-anchor session's estimated work must be ≥
+  `SESSION_WORK_FLOOR` (0.70) × stated duration. The floor failure is a new `"regenerate"` severity.
+- **Flag-and-regenerate, bounded (planner loop, `server.js`).** Reuses the existing 2-attempt cap —
+  the loop now retries on EITHER an unparseable response OR a `"regenerate"` flag, with a
+  thinness-specific retry note. On the final attempt it PERSISTS the plan **flagged** (never a retry
+  storm, never a blocked nightly, never a silent relabel-down). Reported via
+  `regenerated_for_thinness` / `persisted_while_flagged`. `enforceInvariants` mutates in place, so
+  the loop re-parses a fresh candidate each attempt.
+- **Prompt reframe (planner AND variant).** Killed the "segment `duration_min` values MUST sum to
+  the session's `duration_min`" line at `v2Planner.js` — it was the direct padding incentive — and
+  the variant's equivalent; injected `renderWorkBudgetGuidance()` into both (the same function the
+  code enforces). The variant is additionally told that a category change removing a real time block
+  (a bike) must REFILL with real work, not inflate bolt-ons.
+- **Runs on variant output too — confirmed live, not assumed.** `v2GenerateVariant` already calls
+  `enforceInvariants`, so the floor fires on a variant (a live category swap flagged at 65%). Coach
+  Chat's confirm path only acts on `severity === "rejected"`, so `"regenerate"` leaves it untouched.
+- **`v2PersistPlan` re-plan collision fixed** (pre-existing, surfaced by the verification; ROADMAP
+  §6): cleared only `status='planned'`, so orphaned `modified` rows under superseded blocks
+  accumulated and collided on `UNIQUE(profile_id, date, slot)` (insert 23505'd, 0 rows written).
+  Now clears `status=neq.completed` — a full re-plan supersedes stale edits; only a logged
+  (`completed`) workout survives. Nightly never re-plans; Coach Chat cycle untouched.
+
+**Real week vs the 0.70 floor (reported before tuning; floor kept, not tuned):** pre-fix — cardio
+0.91 PASS, strength(30) 0.71 PASS, strength(45) 0.48 FLAG, rehab 0.41 FLAG, cat_swap 0.47 FLAG,
+anchors excluded. **Live after a forced re-plan + nightly:** the mechanism worked end-to-end
+(regenerated on attempt 2, persisted flagged, 7/7 written after the collision fix); the two **cardio**
+days rebuilt to genuinely full (0.99); but the model STILL under-fills **rehab/posture-dominant
+strength** sessions after regeneration (3/5 non-anchor persisted flagged at 0.44-0.55). Flag-and-persist
+makes them VISIBLE rather than silently passing — the durable win — but the week does not clear the
+floor, so the §6 entry stays open (candidate follow-ups: a rehab-specific floor, a per-set mobility
+bump, or shortening those sessions honestly). **Profile 1 byte-identical** (`engine_v2:false`, 3 v1
+options, life-os readiness 72). **Tests → 123** (was 113): estimator shapes, floor fires on padded /
+passes on full, anchor exclusion, zero false positives. No schema change.
+
+**NOT started: Workstream 2** (the folded-card alternates layout) — queued until this content fix is
+reviewed, per the brief (the layout should be built against good content). Two logged follow-ups from
+the Session 9 audit: category-vs-content validation (§1.5) and the alternate-`why` display weakness
+(§1.4, which WS2 should address by showing the rich `session.why` when a card is expanded).
+
 ## Migrations
 
 One-time data fixes that should be run in the Supabase SQL editor.
