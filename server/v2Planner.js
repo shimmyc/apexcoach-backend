@@ -292,9 +292,14 @@ var OUTPUT_CONTRACT =
   "- For a TIMED BLOCK such as a 20-minute bike or a 30-minute run, the duration belongs on the SEGMENT's `duration_min`, and the exercise carries `time_seconds: null`. Do not express a cardio block's length as an exercise time.\n" +
   "- `load` is a string so it can carry bodyweight/band/RPE (\"bodyweight\", \"red band\", \"135 lb\").\n" +
   "- Every session MUST carry a non-empty `why`.\n" +
-  "- A session's segment `duration_min` values MUST sum to the session's own `duration_min`. Check this before returning.\n" +
   "- Exercise names must be spelled out canonically (\"Dumbbell Bench Press\", never \"DB Bench\").\n" +
-  "- Every goal listed under GOALS BY TIER must either appear in some session's `goal_tags` with real prescribed work, or be named explicitly in `block.tradeoff_notes` as deliberately not addressed this week. Mentioning a goal only inside a segment's `intent` text does NOT count as prescribing it.\n";
+  "- Every goal listed under GOALS BY TIER must either appear in some session's `goal_tags` with real prescribed work, or be named explicitly in `block.tradeoff_notes` as deliberately not addressed this week. Mentioning a goal only inside a segment's `intent` text does NOT count as prescribing it.\n\n" +
+  // Session 9: the old "segment duration_min values MUST sum to the session's
+  // duration_min" rule lived here and DIRECTLY caused the padding — the model
+  // inflated segment minutes to satisfy the sum instead of filling the time with
+  // work. Replaced by the work budget (content drives the minutes; the same
+  // function the server enforces).
+  rules.renderWorkBudgetGuidance() + "\n";
 
 /**
  * Assemble the planner prompt. Returns { system, user, sections } — `sections`
@@ -582,6 +587,31 @@ function enforceInvariants(plan, ctx) {
       s.duration_min = sum;
       violations.push({ invariant: "session_time_budget", severity: "repaired", detail: s.date + ": segments summed " + sum + " vs stated " + stated + " min (tol " + tol + "); duration_min corrected to " + sum });
       repairs.push("corrected duration_min on " + s.date + " (" + stated + " -> " + sum + ")");
+    }
+  });
+
+  // 8b. WORK-CONTENT FLOOR (Session 9). The sum check above only proves the
+  //     DECLARED minutes are internally consistent — it does NOT prove the
+  //     prescribed work can fill them, so a padded "15+15+15=45" session passes
+  //     while holding ~18 min of real work. Estimate plausible working minutes
+  //     (rules.estimateSessionWorkMinutes, the same function the model is told to
+  //     optimise against) and require >= SESSION_WORK_FLOOR of the stated
+  //     duration. Excludes a fixed-class ANCHOR off its no-prescribed-work
+  //     property (not a category string). severity:"regenerate" — the caller
+  //     retries within its EXISTING attempt cap, then persists the plan flagged
+  //     rather than looping forever or blocking the nightly.
+  sessions.forEach(function (s) {
+    var stated = Number(s.duration_min) || 0;
+    if (!stated) return;
+    if (!rules.sessionHasPrescribedWork(s)) return;   // anchor / fixed class — nothing to occupy
+    var work = rules.estimateSessionWorkMinutes(s);
+    if (work + 1e-9 < stated * rules.SESSION_WORK_FLOOR) {
+      violations.push({
+        invariant: "session_time_budget", severity: "regenerate",
+        detail: s.date + ": prescribed work ~" + work.toFixed(0) + " min fills only " +
+          Math.round((work / stated) * 100) + "% of the stated " + stated + " min (floor " +
+          Math.round(rules.SESSION_WORK_FLOOR * 100) + "%) — segments are padded, not filled",
+      });
     }
   });
 

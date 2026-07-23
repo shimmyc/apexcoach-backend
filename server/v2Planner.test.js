@@ -333,8 +333,19 @@ test("INVARIANT date_in_week: a session outside the planning week is dropped", f
 test("a clean plan produces ZERO violations (no false positives)", function () {
   var c = ctx({ anchors: [{ date: "2026-07-23", dayKey: "thu", dayLabel: "Thursday", slot: 1, activity: "MMA Class", duration_min: 60, category: "martial_arts" }] });
   var clean = [
+    // A genuinely FULL 45-min session (Session 9: a token single-exercise session
+    // is no longer "clean" — it under-fills the time and correctly flags). This
+    // estimates ~37/45 = 0.82, above the work floor.
     session({ date: "2026-07-22", duration_min: 45, goal_tags: ["Fix Posture", "Daily Meditation"],
-      segments: [{ type: "straight_sets", duration_min: 45, exercises: [{ name: "Push-Up", sets: 3, reps: 8 }] }] }),
+      segments: [
+        { type: "warmup", duration_min: 5, intent: "prep", exercises: [{ name: "90/90 Hip Rotation", sets: 2, reps: 10 }] },
+        { type: "straight_sets", duration_min: 32, intent: "main", exercises: [
+          { name: "Barbell Squat", sets: 4, reps: 6 }, { name: "Bench Press", sets: 4, reps: 8 },
+          { name: "Bent Over Row", sets: 4, reps: 8 }, { name: "Overhead Press", sets: 3, reps: 8 },
+          { name: "Romanian Deadlift", sets: 3, reps: 8 },
+        ] },
+        { type: "cooldown", duration_min: 8, intent: "mobility", exercises: [{ name: "Yoga", sets: 1, time_seconds: 420 }] },
+      ] }),
     session({ date: "2026-07-23", category: "martial_arts", intensity: "high", duration_min: 60, movable: false, goal_tags: ["Fix Posture"],
       segments: [{ type: "skill", duration_min: 60, intent: "MMA Class", exercises: [] }] }),
   ];
@@ -450,4 +461,80 @@ test("LABEL/SUPPRESS: v2AssembleCache carries v:2, a derived rationale, and both
   assert.strictEqual(cache.alternates[0].session.duration_min, 28, "label must resolve from the REAL duration, not the dur_30 key");
   assert.strictEqual(cache.alternates[1].session.category, "mind_body");
   assert.ok(cache.alternates[0].session_structured, "structured form retained for the variant path");
+});
+
+// ── Session 9: work-content estimator + strengthened session_time_budget ─────
+var R = require("./coachingRules");
+
+function s9ctx() {
+  return { profileId: 4, weekDates: [{ date: "2026-07-22" }], tiers: { goals: [] },
+    schedule: { fill_policy: "ai_assigned" }, anchors: [] };
+}
+function s9run(session) {
+  // wrap one session and run the real invariant pipeline
+  var plan = { sessions: [Object.assign({ date: "2026-07-22", slot: 1, movable: true, why: "x", goal_tags: [] }, session)], block: {} };
+  var e = P.enforceInvariants(plan, s9ctx());
+  return e.violations.filter(function (v) { return v.severity === "regenerate"; });
+}
+
+test("ESTIMATOR: a set×rep strength movement is ~1.5 min/SET (reps-agnostic, per v1)", function () {
+  assert.strictEqual(R.estimateSegmentWorkMinutes({ type: "straight_sets", exercises: [{ name: "Push-Up", sets: 3, reps: 8 }] }), 4.5);
+});
+test("ESTIMATOR: a mobility move (by name or by segment type) is ~1.0 min/set", function () {
+  assert.strictEqual(R.estimateSegmentWorkMinutes({ type: "straight_sets", exercises: [{ name: "Wall Slide", sets: 3, reps: 15 }] }), 3);
+  assert.strictEqual(R.estimateSegmentWorkMinutes({ type: "mobility", exercises: [{ name: "Anything", sets: 2, reps: 10 }] }), 2);
+});
+test("ESTIMATOR: a hold is sets×(seconds/60 + rest) — a 15-min yoga block ~16", function () {
+  assert.strictEqual(R.estimateSegmentWorkMinutes({ type: "skill", exercises: [{ name: "Yoga", sets: 1, time_seconds: 900 }] }), 16);
+  assert.strictEqual(R.estimateSegmentWorkMinutes({ type: "active_recovery", exercises: [{ name: "Dead Hang", sets: 3, time_seconds: 45 }] }), 5.25);
+});
+test("ESTIMATOR: a pure continuous time block (whole segment bare) counts its duration_min", function () {
+  assert.strictEqual(R.estimateSegmentWorkMinutes({ type: "steady_state", duration_min: 20, exercises: [{ name: "Indoor Bike", sets: 1 }] }), 20);
+});
+test("ESTIMATOR: a lone bare exercise mixed with measurable work counts as one nominal set, NOT the whole duration", function () {
+  // Glute Bridge 3x15 (mobility 3) + Farmer's Walk bare (1.5) = 4.5, NOT the declared 25
+  assert.strictEqual(R.estimateSegmentWorkMinutes({ type: "straight_sets", duration_min: 25,
+    exercises: [{ name: "Glute Bridge", sets: 3, reps: 15 }, { name: "Farmer's Walk", sets: 3 }] }), 4.5);
+});
+test("ESTIMATOR: an empty segment is 0 work; sessionHasPrescribedWork detects the fixed-class property", function () {
+  assert.strictEqual(R.estimateSegmentWorkMinutes({ type: "skill", duration_min: 60, exercises: [] }), 0);
+  assert.strictEqual(R.sessionHasPrescribedWork({ segments: [{ type: "skill", duration_min: 60, exercises: [] }] }), false);
+  assert.strictEqual(R.sessionHasPrescribedWork({ segments: [{ type: "straight_sets", exercises: [{ name: "Squat", sets: 3, reps: 5 }] }] }), true);
+});
+
+test("INVARIANT session_time_budget FLOOR: a padded 45-min session (15/15/15, thin work) FIRES 'regenerate'", function () {
+  var v = s9run({ category: "strength", duration_min: 45, intensity: "low", segments: [
+    { type: "skill", duration_min: 15, exercises: [{ name: "Yoga", sets: 1, time_seconds: 900 }] },     // 16
+    { type: "straight_sets", duration_min: 15, exercises: [{ name: "Wall Slide", sets: 3, reps: 15 }] }, // 3
+    { type: "circuit", duration_min: 15, exercises: [{ name: "Dead Bug", sets: 2, reps: 8 }] },          // 2
+  ] });
+  assert.strictEqual(v.length, 1, "should fire once: " + JSON.stringify(v));
+  assert.match(v[0].detail, /padded, not filled/);
+});
+test("INVARIANT session_time_budget FLOOR: a genuinely FULL session does NOT fire", function () {
+  var v = s9run({ category: "cardio", duration_min: 45, intensity: "low", segments: [
+    { type: "steady_state", duration_min: 20, exercises: [{ name: "Indoor Bike", sets: 1 }] }, // 20
+    { type: "skill", duration_min: 15, exercises: [{ name: "Yoga", sets: 1, time_seconds: 900 }] }, // 16
+    { type: "straight_sets", duration_min: 5, exercises: [{ name: "Wall Slide", sets: 3, reps: 15 }] }, // 3
+    { type: "circuit", duration_min: 5, exercises: [{ name: "Dead Bug", sets: 2, reps: 8 }] },   // 2
+  ] });
+  assert.strictEqual(v.length, 0, "41/45 = 0.91 must pass: " + JSON.stringify(v));
+});
+test("INVARIANT session_time_budget FLOOR: an ANCHOR (empty segments) is EXCLUDED, never flagged", function () {
+  var v = s9run({ category: "martial_arts", duration_min: 60, intensity: "high", movable: false,
+    segments: [{ type: "skill", duration_min: 60, intent: "MMA Class", exercises: [] }] });
+  assert.strictEqual(v.length, 0, "a fixed class prescribes no work and must be excluded: " + JSON.stringify(v));
+});
+test("INVARIANT session_time_budget FLOOR: a full strength session with real sets passes (zero false positive)", function () {
+  var v = s9run({ category: "strength", duration_min: 30, intensity: "medium", segments: [
+    { type: "warmup", duration_min: 4, exercises: [{ name: "90/90 Hip Rotation", sets: 2, reps: 10 }] }, // 2
+    { type: "straight_sets", duration_min: 22, exercises: [
+      { name: "Barbell Squat", sets: 4, reps: 6 },        // 6
+      { name: "Bench Press", sets: 4, reps: 8 },          // 6
+      { name: "Bent Over Row", sets: 3, reps: 10 },       // 4.5
+      { name: "Overhead Press", sets: 3, reps: 8 },       // 4.5
+    ] },
+    { type: "cooldown", duration_min: 4, exercises: [{ name: "Cat-Cow", sets: 2, reps: 10 }] }, // 2
+  ] });
+  assert.strictEqual(v.length, 0, "25/30 = 0.83 must pass: " + JSON.stringify(v));
 });

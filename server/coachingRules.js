@@ -537,6 +537,114 @@ function timeCompressionPlan(availableMinutes, plannedMinutes) {
   };
 }
 
+// ── 10b. Session work-content plausibility ──────────────────────────────────
+// The session_time_budget invariant (server/v2Planner.js) checks not just that
+// a session's segment minutes SUM to its stated length, but that the PRESCRIBED
+// WORK can plausibly occupy that length. Before this, the invariant compared two
+// model-authored numbers to each other (segment minutes vs session minutes),
+// which the model trivially satisfied by INFLATING segment duration_min — so a
+// "45 min" session could hold ~18 min of real work and still pass (ROADMAP §6,
+// Session 9). Consumed BOTH as code (estimateSegmentWorkMinutes backs the
+// invariant) AND as prompt text (renderWorkBudgetGuidance), so the model
+// optimises against the SAME function the code enforces.
+//
+// The model mirrors v1's estimateExerciseMinutes (public/index.html) — per SET,
+// not per rep — so the two engines never disagree. Divergences documented at
+// estimateSegmentWorkMinutes.
+var WORK_MIN_PER_STRENGTH_SET = 1.5;   // = v1 REC_MIN_PER_SET (one working set incl. rest)
+var WORK_MIN_PER_MOBILITY_SET = 1.0;   // = v1 REC_MIN_PER_MOBILITY
+var WORK_MIN_REST_PER_HOLD    = 1.0;   // = v1 "+1 min" per hold (sets*(hold+1))
+var SESSION_WORK_FLOOR        = 0.70;  // a non-anchor session's estimated work must be >= this * stated duration
+
+// v1's recIsMobilityish, extended with the moves this athlete's plans actually use.
+var WORK_MOBILITY_RE = /stretch|mobility|cat-cow|cat cow|slide|pull-apart|chin tuck|dead bug|clamshell|bridge|rotation|breath|foam roll|band|hang|90\/90|hollow|lumbrical|pinky|clam/i;
+var WORK_MOBILITY_SEG_TYPES = { mobility: 1, active_recovery: 1, warmup: 1, cooldown: 1 };
+
+function workIsMobilityRate(exName, segType) {
+  if (segType && WORK_MOBILITY_SEG_TYPES[segType]) return true;
+  return WORK_MOBILITY_RE.test(String(exName || ""));
+}
+
+/**
+ * Estimate the plausible WORKING minutes a segment's prescribed exercises
+ * occupy — NOT the model-declared duration_min (which is what padding inflates).
+ * Pure. Mirrors v1's per-SET model (estimateExerciseMinutes, public/index.html).
+ *
+ *   - timed hold/effort (time_seconds):  sets × (time_seconds/60) + sets × rest
+ *   - set × rep movement (reps):         sets × per-set-minutes (mobility vs strength)
+ *   - a segment whose exercises ALL lack reps AND time (a pure time block — a
+ *     bike, a run) IS its declared duration_min: the continuous block is the work.
+ *   - a lone bare exercise mixed with measurable ones counts as one nominal set.
+ *   - an empty segment is 0 work (an anchor's fixed class is excluded upstream,
+ *     by its no-prescribed-work property, not here).
+ *
+ * Deliberate divergences from v1 (reported per the Session 9 brief):
+ *   (i)   v1 parses freeform strings ("3x8"); this reads the STRUCTURED fields —
+ *         same model, cleaner input, no regex on the numbers.
+ *   (ii)  v1 has no "bare time-block segment -> duration_min" case (its cardio
+ *         line carries "20min" inline); v2 needs it because a cardio block's
+ *         length lives on seg.duration_min with time_seconds:null.
+ *   (iii) v1 adds a flat REC_WARMUP_MIN (5) per session for transitions; this does
+ *         NOT — warm-up is its own segment here and is estimated normally, and a
+ *         flat session bonus would only mask thinness. The floor tolerates setup.
+ *   (iv)  the brief sketched "sets×reps×tempo" (per rep); v1 is per SET and
+ *         reps-agnostic, and consistency with v1 was chosen over the sketch so
+ *         the two engines cannot disagree.
+ */
+function estimateSegmentWorkMinutes(seg) {
+  if (!seg) return 0;
+  var exs = seg.exercises || [];
+  if (!exs.length) return 0;
+  var total = 0, bare = 0;
+  var segMob = !!(seg.type && WORK_MOBILITY_SEG_TYPES[seg.type]);
+  exs.forEach(function (ex) {
+    var sets = Number(ex.sets) || 1;
+    if (ex.time_seconds) {
+      total += sets * (Number(ex.time_seconds) / 60) + sets * WORK_MIN_REST_PER_HOLD;
+    } else if (ex.reps) {
+      total += sets * (workIsMobilityRate(ex.name, seg.type) ? WORK_MIN_PER_MOBILITY_SET : WORK_MIN_PER_STRENGTH_SET);
+    } else {
+      bare++;
+    }
+  });
+  if (bare === exs.length) {
+    // The WHOLE segment is a pure continuous time block (a bike/run): its
+    // declared length is real work.
+    return Number(seg.duration_min) || total;
+  }
+  if (bare) total += bare * (segMob ? WORK_MIN_PER_MOBILITY_SET : WORK_MIN_PER_STRENGTH_SET);
+  return total;
+}
+
+/** Sum estimated working minutes across a session's segments. Pure. */
+function estimateSessionWorkMinutes(session) {
+  return ((session && session.segments) || []).reduce(function (a, s) {
+    return a + estimateSegmentWorkMinutes(s);
+  }, 0);
+}
+
+/** Does a session prescribe any actual work? A fixed class (anchor) does not, and
+ *  is therefore excluded from the work floor — off this property, not a category. */
+function sessionHasPrescribedWork(session) {
+  return ((session && session.segments) || []).some(function (s) { return (s.exercises || []).length > 0; });
+}
+
+/** Prompt text for the work budget — the model optimises against the SAME
+ *  function estimateSegmentWorkMinutes enforces. Injected into the planner and
+ *  the variant prompts (not the general rules block). */
+function renderWorkBudgetGuidance() {
+  return [
+    "SESSION WORK BUDGET — fill the time with real work, never pad the numbers:",
+    "- A session's stated duration must be backed by prescribed work that plausibly OCCUPIES it. The server estimates working minutes and REJECTS (and regenerates) a plan whose prescribed work is under " + Math.round(SESSION_WORK_FLOOR * 100) + "% of the stated duration.",
+    "- Estimate the way the server does, per SEGMENT — reps do NOT add time, SETS do:",
+    "    - a set×rep movement ≈ " + WORK_MIN_PER_STRENGTH_SET + " min per SET (" + WORK_MIN_PER_MOBILITY_SET + " min for mobility/posture). So \"3x8\" ≈ " + (3 * WORK_MIN_PER_STRENGTH_SET) + " min, NOT 15.",
+    "    - a timed hold/effort ≈ sets × (seconds/60 + ~" + WORK_MIN_REST_PER_HOLD + " min rest). A \"3×45s\" dead hang ≈ " + (3 * (0.75 + WORK_MIN_REST_PER_HOLD)).toFixed(1) + " min.",
+    "    - a GENUINE continuous time block (a steady bike or run) IS its segment duration_min — that is real work; keep it.",
+    "- A segment's duration_min must NOT exceed the plausible work of its exercises. If a segment would be mostly empty time, ADD real sets / exercises / rounds to fill it — do NOT inflate duration_min to hit a total. If you genuinely cannot fill the time, shorten the segment AND the session to an honest length instead.",
+    "- This REPLACES any 'segments must sum to the session length' rule: content drives the minutes; the stated minutes never license padding.",
+  ].join("\n");
+}
+
 // ── 11. Rotation ────────────────────────────────────────────────────────────
 
 var ROTATION = {
@@ -764,10 +872,15 @@ module.exports = {
   DELOAD, STALL_WEEKS_FOR_STALLED_FLAG, NEGLECT_WEEKS_FOR_FLAG,
   MISSED_SESSIONS_FOR_REPLAN, READINESS, PAIN, INTERFERENCE, MAT_LOAD,
   VOLUME, TIME_COMPRESSION_ORDER, ROTATION, MISSED_SESSIONS,
+  // work-content plausibility (Session 9)
+  WORK_MIN_PER_STRENGTH_SET, WORK_MIN_PER_MOBILITY_SET, WORK_MIN_REST_PER_HOLD,
+  SESSION_WORK_FLOOR,
   // pure functions
   assessAccessoryCost, progressionDecision, describeIncrement, gapDecay,
   deloadDecision, readinessModification, painCheck, timeCompressionPlan,
   rotationPolicy,
+  estimateSegmentWorkMinutes, estimateSessionWorkMinutes, sessionHasPrescribedWork,
+  workIsMobilityRate, renderWorkBudgetGuidance,
   // prompt rendering
   SECTION_ORDER, renderRulesForPrompt, rulesSectionLengths,
 };

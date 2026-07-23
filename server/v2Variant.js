@@ -223,7 +223,11 @@ function buildVariantPrompt(ctx) {
     '      "exercises": [ { "name": "...", "sets": 3, "reps": 8, "time_seconds": null, "distance": null, "load": "...", "rest": "...", "notes": "..." } ] } ] }\n' +
     "}\n\n" +
     "- `time_seconds` IS ALWAYS SECONDS; a timed block's length goes on the segment `duration_min`.\n" +
-    "- Segment `duration_min` values MUST sum to the session `duration_min`.\n" +
+    // Session 9: a category swap used to delete the one genuine time block (a
+    // bike) and inflate the remaining accessory segments' duration_min to refill
+    // the total — passing the old sum rule while holding ~18 min of real work in
+    // a "45 min" session. Content must fill the time; see the WORK BUDGET below.
+    "- FILL THE TIME WITH REAL WORK — do NOT pad segment `duration_min` to hit a total. Each segment's minutes must be occupied by its prescribed sets/exercises/rounds (see the SESSION WORK BUDGET below). If a category change removes a long time block (e.g. a bike), replace it with enough real work to fill the duration, or shorten the session honestly — never leave inflated, empty minutes.\n" +
     "- Set `refused:true` only when you are refusing a contraindicated request; still return a safe session.\n";
 
   var parts = [];
@@ -237,7 +241,7 @@ function buildVariantPrompt(ctx) {
   // The concrete ask.
   var askLines = ["THE REQUEST:"];
   if (intent.free_text) askLines.push("- Free text: \"" + intent.free_text + "\"");
-  if (intent.duration_min) askLines.push("- Target duration: ~" + intent.duration_min + " min (the session's segments must sum to about this).");
+  if (intent.duration_min) askLines.push("- Target duration: ~" + intent.duration_min + " min (the session should run about this long, FILLED with real work — not padded to it).");
   if (intent.intensity) askLines.push("- Target intensity: " + intent.intensity + ".");
   if (intent.category) askLines.push("- Change the category to: " + intent.category + " (a genuinely different kind of session; keep the duration).");
   if (intent.style_change) askLines.push("- SAME focus / muscle group / movement pattern, DIFFERENT style: keep the primary compound and the trained pattern, vary the accessory selection, structure and segment types.");
@@ -249,6 +253,9 @@ function buildVariantPrompt(ctx) {
   if (ctx.dossierText) add("dossier", ctx.dossierText);
   // Only the rule sections a variant actually needs — keeps context small.
   add("rules", rules.renderRulesForPrompt(["readiness", "deload", "interference", "time_compression", "volume", "pain"]));
+  // The same work-budget guidance the planner uses AND the server enforces — a
+  // swap must fill the time with real work, not inflate segment minutes.
+  add("work_budget", rules.renderWorkBudgetGuidance());
 
   var user = parts.join("\n\n");
   sections._system = system.length;

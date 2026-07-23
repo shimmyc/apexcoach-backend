@@ -12603,11 +12603,21 @@ app.post("/api/v2/plan/:profileId", async function(req, res) {
     v2StartStream(res, "v2_plan");
     streaming = true;
 
-    while (attempt < MAX_ATTEMPTS && !plan) {
+    // Retry on EITHER an unparseable response OR a work-floor "regenerate" flag,
+    // within the same 2-attempt cap (no new retry mechanism). On the final
+    // attempt whatever we have is persisted — flagged if still thin — rather than
+    // looping or blocking the nightly.
+    var enforced = null, lastReason = null, thinDetails = [];
+    while (attempt < MAX_ATTEMPTS) {
       attempt++;
       var userMsg = prompt.user;
       if (attempt > 1) {
-        userMsg += "\n\nRETRY: the previous response could not be parsed as JSON. Return ONLY the JSON object described in the output contract — no prose, no markdown fences, nothing before '{' or after '}'.";
+        if (lastReason === "thin") {
+          userMsg += "\n\nRETRY: the previous plan UNDER-FILLED these sessions — the prescribed work did not occupy the stated duration: " +
+            thinDetails.join("; ") + ". Add real sets / exercises / rounds so each session's SESSION WORK BUDGET is met, or shorten the session (and its segments) to an honest length. Do NOT inflate segment duration_min. Return ONLY the JSON object.";
+        } else {
+          userMsg += "\n\nRETRY: the previous response could not be parsed as JSON. Return ONLY the JSON object described in the output contract — no prose, no markdown fences, nothing before '{' or after '}'.";
+        }
         try { res.write(": retry " + attempt + "\n\n"); } catch (e) {}
       }
       var upstream = await fetch("https://api.anthropic.com/v1/messages", {
@@ -12636,18 +12646,31 @@ app.post("/api/v2/plan/:profileId", async function(req, res) {
       usage = leg.usage || usage;
       wroteAny = wroteAny || leg.wroteAny;
       rawLen = leg.legText.length;
-      plan = v2Planner.extractPlanJSON(leg.legText);
-      if (!plan) console.warn("[v2Plan] attempt " + attempt + " produced unparseable JSON (" + rawLen + " chars)");
+      var candidate = v2Planner.extractPlanJSON(leg.legText);
+      if (!candidate) {
+        lastReason = "parse";
+        console.warn("[v2Plan] attempt " + attempt + " produced unparseable JSON (" + rawLen + " chars)");
+        continue;
+      }
+      // enforceInvariants repairs in place; the work-floor check flags "regenerate".
+      var candEnforced = v2Planner.enforceInvariants(candidate, ctx);
+      plan = candidate; enforced = candEnforced;   // latest good-parse plan is the persist-anyway basis
+      var thin = candEnforced.violations.filter(function (v) { return v.severity === "regenerate"; });
+      if (!thin.length) break;
+      lastReason = "thin";
+      thinDetails = thin.map(function (v) { return v.detail; });
+      console.warn("[v2Plan] attempt " + attempt + ": " + thin.length + " session(s) under the work floor — " +
+        (attempt < MAX_ATTEMPTS ? "regenerating" : "out of attempts, persisting flagged"));
     }
 
     var result;
     if (!plan) {
       result = { success: false, error: "could not parse a plan after " + attempt + " attempt(s)", attempts: attempt };
     } else {
-      var enforced = v2Planner.enforceInvariants(plan, ctx);
       var shaped = v2Planner.toPersistenceShape(plan, enforced, ctx);
+      var stillThin = enforced.violations.filter(function (v) { return v.severity === "regenerate"; });
       console.log("[v2Plan] invariants: " + enforced.violations.length + " violation(s), " +
-        enforced.repairs.length + " repair(s) — " + JSON.stringify(enforced.violations));
+        enforced.repairs.length + " repair(s), " + stillThin.length + " still under work floor after " + attempt + " attempt(s) — " + JSON.stringify(enforced.violations));
 
       var persisted = { block_id: null, sessions_written: 0, skipped: req.query.dry_run === "1" };
       if (req.query.dry_run !== "1") {
@@ -12656,6 +12679,8 @@ app.post("/api/v2/plan/:profileId", async function(req, res) {
       result = {
         success: true,
         attempts: attempt,
+        regenerated_for_thinness: lastReason === "thin" || stillThin.length > 0,
+        persisted_while_flagged: stillThin.length > 0,
         week: { start: weekDates[0].date, end: weekDates[6].date },
         block: shaped.block_row.block,
         sessions: shaped.session_rows,
