@@ -182,3 +182,80 @@ test("CONFLICT: a constraint asking for contraindicated work is caught by the in
   assert.ok(r.problems.some(function (p) { return p.invariant === "contraindication_free"; }),
     "a contraindicated variant must be flagged even when the request asked for it");
 });
+
+// ── Anchor-day GENERATE (miss-class) — classifier, routing, prompt, checks ──
+
+var ANCHOR = { category: "martial_arts", duration_min: 60, intensity: "high", headline: "MMA Class", goal_tags: [], segments: [{ type: "skill", duration_min: 60, intent: "MMA Class", exercises: [] }] };
+
+test("classifier: body-region requests resolve to a region (were falling to free text)", function () {
+  assert.strictEqual(V.classifyRequest({ constraint_text: "upper body" }, ANCHOR).region, "upper_body");
+  assert.strictEqual(V.classifyRequest({ constraint_text: "give me legs" }, ANCHOR).region, "lower_body");
+  assert.strictEqual(V.classifyRequest({ constraint_text: "push day" }, ANCHOR).region, "push");
+  assert.strictEqual(V.classifyRequest({ constraint_text: "pull workout" }, ANCHOR).region, "pull");
+});
+
+test("classifier: free-text category + missed-class signal are detected", function () {
+  var i = V.classifyRequest({ constraint_text: "couldn't make class, give me cardio" }, ANCHOR);
+  assert.strictEqual(i.category, "cardio");
+  assert.strictEqual(i.missed_signal, true);
+  assert.strictEqual(V.classifyRequest({ constraint_text: "I am sick, do strength instead" }, ANCHOR).category, "strength");
+  assert.strictEqual(V.classifyRequest({ constraint_text: "class got cancelled" }, ANCHOR).missed_signal, true);
+});
+
+test("classifier: a region request is NOT code-only (needs the model)", function () {
+  assert.strictEqual(V.isCodeOnly(V.classifyRequest({ constraint_text: "upper body" }, ANCHOR), ANCHOR), false);
+});
+
+test("matchCachedAlternate: a region/category request never serves from a DURATION cache", function () {
+  var cache = { alternates: [{ key: "dur_45", session: { duration_min: 45 } }] };
+  assert.strictEqual(V.matchCachedAlternate(V.classifyRequest({ constraint_text: "upper body" }, ANCHOR), cache), null);
+  assert.strictEqual(V.matchCachedAlternate(V.classifyRequest({ category: "cardio" }, ANCHOR), cache), null);
+});
+
+test("matchGeneratedAlternate: serves a PRE-GENERATED category alternate instantly, else null", function () {
+  var cache = { alternates: [
+    { key: "miss_strength", source: "model:generate", session_structured: { category: "strength", duration_min: 60 } },
+    { key: "miss_cardio", source: "model:generate", session_structured: { category: "cardio", duration_min: 60 } },
+  ] };
+  var hit = V.matchGeneratedAlternate(V.classifyRequest({ category: "strength" }, ANCHOR), cache);
+  assert.ok(hit && hit.category === "strength");
+  // a region request does not match a pre-generated CATEGORY alternate (generates on demand)
+  assert.strictEqual(V.matchGeneratedAlternate(V.classifyRequest({ constraint_text: "upper body" }, ANCHOR), cache), null);
+  // a duration request does not either
+  assert.strictEqual(V.matchGeneratedAlternate(V.classifyRequest({ duration_min: 30 }, ANCHOR), cache), null);
+  // a duration-only cache (no generate source) does not match
+  assert.strictEqual(V.matchGeneratedAlternate(V.classifyRequest({ category: "strength" }, ANCHOR), { alternates: [{ key: "dur_45", source: "code:time_compression", session: { category: "strength" } }] }), null);
+});
+
+test("buildGeneratePrompt: targets the FREED duration, carries the envelope + work budget + week context", function () {
+  var p = V.buildGeneratePrompt({
+    intent: V.classifyRequest({ constraint_text: "upper body" }, ANCHOR),
+    freedMinutes: 60, anchorActivity: "MMA Class",
+    envelopeText: "EFFECTIVE-STAGE ENVELOPES (...capacity...)",
+    weekContextText: "PLANNED AROUND TODAY (...)", matLoadNote: null,
+    dossierText: "DOSSIER", readinessText: "READINESS",
+  });
+  assert.ok(p.system.indexOf("60 minutes") >= 0);
+  assert.ok(p.system.indexOf("STAY INSIDE THE EFFECTIVE-STAGE ENVELOPE") >= 0);
+  assert.ok(p.user.indexOf("EFFECTIVE-STAGE ENVELOPES") >= 0);
+  assert.ok(p.user.indexOf("PLANNED AROUND TODAY") >= 0);
+  assert.ok(p.user.indexOf("SESSION WORK BUDGET") >= 0);   // work-floor guidance present
+  assert.ok(p.user.indexOf("upper body") >= 0);            // region honored in the ask
+});
+
+test("checkVariant GENERATED mode: constraint checks RUN (unlike an immovable anchor transform)", function () {
+  // A generated session that came back the wrong duration / category is flagged.
+  var gen = { category: "strength", duration_min: 40, intensity: "medium", segments: [{ type: "straight_sets", exercises: [{ name: "Push-Up", sets: 3, reps: 12 }] }] };
+  var intent = V.classifyRequest({ category: "cardio" }, ANCHOR);
+  var res = V.checkVariant(gen, intent, { injury_flags: [] }, { generated: true, isAnchor: false, freedMinutes: 60 });
+  var details = res.problems.map(function (p) { return p.detail; }).join(" | ");
+  assert.ok(details.indexOf("freed slot is ~60 min but the session is 40") >= 0, "duration-vs-freed flagged");
+  assert.ok(details.indexOf("requested category cardio but the session is strength") >= 0, "category mismatch flagged");
+});
+
+test("checkVariant GENERATED mode: a matching session passes clean", function () {
+  var gen = { category: "strength", duration_min: 58, intensity: "medium", segments: [{ type: "straight_sets", exercises: [{ name: "Push-Up", sets: 3, reps: 12 }] }] };
+  var intent = V.classifyRequest({ category: "strength" }, ANCHOR);
+  var res = V.checkVariant(gen, intent, { injury_flags: [] }, { generated: true, isAnchor: false, freedMinutes: 60 });
+  assert.strictEqual(res.problems.length, 0);
+});

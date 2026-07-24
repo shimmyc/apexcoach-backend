@@ -538,3 +538,25 @@ test("INVARIANT session_time_budget FLOOR: a full strength session with real set
   ] });
   assert.strictEqual(v.length, 0, "25/30 = 0.83 must pass: " + JSON.stringify(v));
 });
+
+// ── Anchor-day GENERATE: adjacency fires against a generated replacement ─────
+// The generate branch (server.js v2EnforceGeneratedSession) reuses THIS invariant
+// set over a mini-week [yesterday, generated-today, tomorrow] so a generated
+// high-CNS session adjacent to a planned high-CNS day is caught — proving the
+// spacing rule fires against a generated session, not just a planned one.
+
+test("GENERATE adjacency: a high-CNS generated session next to a planned high-CNS day FLAGS", function () {
+  var yest = { date: "2026-07-22", slot: 1, movable: true, category: "strength", intensity: "high", why: "planned", goal_tags: [], segments: [{ type: "straight_sets", exercises: [{ name: "Squat", sets: 5, reps: 5 }] }] };
+  var gen = { date: "2026-07-23", slot: 1, movable: true, category: "strength", intensity: "high", why: "generated replacement", goal_tags: [], segments: [{ type: "straight_sets", exercises: [{ name: "Deadlift", sets: 5, reps: 5 }] }] };
+  var c = { profileId: 4, weekDates: [{ date: "2026-07-22" }, { date: "2026-07-23" }, { date: "2026-07-24" }], tiers: { goals: [] }, schedule: { fill_policy: "ai_assigned" }, anchors: [] };
+  var res = P.enforceInvariants({ sessions: [yest, gen], block: {} }, c);
+  assert.ok(fired(res, "no_consecutive_high_cns").length >= 1, "consecutive high-CNS must flag the generated day");
+});
+
+test("GENERATE adjacency: a medium generated session next to a high-CNS day does NOT flag", function () {
+  var yest = { date: "2026-07-22", slot: 1, movable: true, category: "strength", intensity: "high", why: "planned", goal_tags: [], segments: [{ type: "straight_sets", exercises: [{ name: "Squat", sets: 5, reps: 5 }] }] };
+  var gen = { date: "2026-07-23", slot: 1, movable: true, category: "strength", intensity: "medium", why: "generated", goal_tags: [], segments: [{ type: "straight_sets", exercises: [{ name: "Push-Up", sets: 3, reps: 12 }] }] };
+  var c = { profileId: 4, weekDates: [{ date: "2026-07-22" }, { date: "2026-07-23" }, { date: "2026-07-24" }], tiers: { goals: [] }, schedule: { fill_policy: "ai_assigned" }, anchors: [] };
+  var res = P.enforceInvariants({ sessions: [yest, gen], block: {} }, c);
+  assert.strictEqual(fired(res, "no_consecutive_high_cns").length, 0);
+});

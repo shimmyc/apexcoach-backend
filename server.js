@@ -13257,6 +13257,41 @@ async function v2BuildAlternates(ctx, primarySession) {
   var defaultMin = (ctx.defaults && ctx.defaults.duration_min) || 45;
   out.primary = { key: "primary", label: "As planned (" + (primarySession.duration_min || defaultMin) + " min)", source: "autoregulator", session: primarySession };
 
+  // ANCHOR / REST day: the primary has no prescribable content, so duration
+  // compression is a no-op (the Phase 5 "no segments to compress" trap) and a
+  // category swap has nothing to swap. Instead PRE-GENERATE 1-2 "if you miss
+  // class" full sessions for the freed slot, via the SHARED generate path (no
+  // inline prompt — the Phase 4 mistake). Cover the DRIVER modalities so the
+  // common "I'll lift/run instead" is instant. Anchor stays the primary.
+  var envText = ctx.goalEnvelopes ? v2Rules.renderEffectiveEnvelopesForPrompt(ctx.goalEnvelopes) : "";
+  if (!v2Rules.sessionHasPrescribedWork(primarySession)) {
+    var FAM2CAT = { resistance: "strength", aerobic: "cardio", skill_mobility: "mind_body" };
+    var driverCats = [];
+    (ctx.goalEnvelopes || []).forEach(function (ge) {
+      if (ge.tier === "driver") { var c = FAM2CAT[ge.modality_family]; if (c && driverCats.indexOf(c) < 0) driverCats.push(c); }
+    });
+    if (!driverCats.length) driverCats = ["strength", "cardio"]; // goal-agnostic default
+    driverCats = driverCats.slice(0, 2);
+    out.anchor_pregen = { categories: driverCats };
+    for (var di = 0; di < driverCats.length && out.alternates.length < 3; di++) {
+      var g = await v2GenerateVariant({
+        profileId: ctx.profileId, body: { category: driverCats[di] }, dossier: ctx.dossierObj,
+        cacheObj: null, primary: primarySession, today: ctx.today,
+        readinessText: ctx.readinessText, recencyText: ctx.recencyText, dossierText: ctx.dossierText,
+        envelopeText: envText, weekPlannedRows: ctx.weekPlannedRows, weekContextText: ctx.weekContextText, matLoadNote: ctx.matLoadNote,
+        stream: false,
+      });
+      out.model_calls++;
+      if (g.usage) out.usage.push({ call: "miss_" + driverCats[di], usage: g.usage });
+      if (g.session && !g.error) {
+        out.alternates.push({ key: "miss_" + driverCats[di], label: "If you miss " + (primarySession.headline || "your commitment") + ": " + driverCats[di] + " (" + (g.session.duration_min || "?") + " min)", source: "model:generate", session: g.session, why: g.why, problems: g.problems });
+      } else {
+        out["gen_error_" + driverCats[di]] = g.error || "no session";
+      }
+    }
+    return out;
+  }
+
   // Neighboring durations relative to the DEFAULT (e.g. 45 -> 30 and 60), not
   // relative to today's possibly-anchored duration.
   var neighbors = [defaultMin - 15, defaultMin + 15].filter(function (m) { return m >= 15 && m !== primarySession.duration_min; });
@@ -13408,7 +13443,11 @@ async function v2NightlyForProfile(pid, opts) {
       if (autoreg.usage) { out.usage.autoregulator = autoreg.usage; out.tokens.input += autoreg.usage.input_tokens || 0; out.tokens.output += autoreg.usage.output_tokens || 0; }
 
       var isAnchorToday = todayRow.movable === false;
-      var alt = await v2BuildAlternates({ profileId: pid, defaults: ctxData.profileData.defaults, dossierText: dossierText, dossierObj: ctxData.dossier, readinessText: readinessText, recencyText: recencyText, today: today, isAnchorToday: isAnchorToday, goalEnvelopes: ctxData.goalEnvelopes }, decision.session);
+      // Week context for the anchor-day pre-generation (collision + mat-load).
+      // Fetched only when today's primary has no prescribable content.
+      var nightlyWeekCtx = !v2Rules.sessionHasPrescribedWork(decision.session)
+        ? await v2WeekContext(pid, today) : { plannedRows: [], weekText: "", matLoadNote: null };
+      var alt = await v2BuildAlternates({ profileId: pid, defaults: ctxData.profileData.defaults, dossierText: dossierText, dossierObj: ctxData.dossier, readinessText: readinessText, recencyText: recencyText, today: today, isAnchorToday: isAnchorToday, goalEnvelopes: ctxData.goalEnvelopes, weekPlannedRows: nightlyWeekCtx.plannedRows, weekContextText: nightlyWeekCtx.weekText, matLoadNote: nightlyWeekCtx.matLoadNote }, decision.session);
       out.stages.alternates = { count: alt.alternates.length, model_calls: alt.model_calls, code_derived: alt.code_derived, swap_error: alt.swap_error || null, breakdown: alt.alternates.map(function (a) { return { key: a.key, source: a.source, problems: (a.problems || []).length }; }) };
       (alt.usage || []).forEach(function (u) { out.tokens.input += (u.usage.input_tokens || 0); out.tokens.output += (u.usage.output_tokens || 0); });
       out.usage.alternates = alt.usage;
@@ -13435,6 +13474,99 @@ function v2YesterdayLocal(profileRow) {
   d.setDate(d.getDate() - 1);
   return d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0");
 }
+function v2ShiftYmd(ymd, days) {
+  var d = new Date(String(ymd) + "T12:00:00");
+  d.setDate(d.getDate() + days);
+  return d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0");
+}
+
+/**
+ * Week context for the GENERATE branch (anchor day). Fetches this week's
+ * planned_sessions (for adjacency/collision awareness) + yesterday's combat
+ * workouts (mat load). Reachable from the variant path with a plain read — no
+ * structural change (A3 audit). Returns { plannedRows, weekText, matLoadNote }.
+ */
+async function v2WeekContext(pid, today) {
+  var out = { plannedRows: [], weekText: "", matLoadNote: null };
+  var startY = v2ShiftYmd(today, -1), endY = v2ShiftYmd(today, 6);
+  try {
+    var pr = await fetch(SUPABASE_URL + "/rest/v1/planned_sessions?profile_id=eq." + encodeURIComponent(pid) +
+      "&date=gte." + startY + "&date=lte." + endY + "&order=date.asc,slot.asc", { headers: sbHeaders() });
+    var rows = await pr.json();
+    if (Array.isArray(rows)) out.plannedRows = rows;
+  } catch (e) { /* non-fatal — generation proceeds without collision context */ }
+
+  if (out.plannedRows.length) {
+    var L = ["PLANNED AROUND TODAY (respect spacing — do NOT create back-to-back high-CNS days; today's own fixed commitment is being SKIPPED):"];
+    out.plannedRows.forEach(function (r) {
+      var s = r.session || {};
+      var rel = r.date === today ? "TODAY (skipped)" : (r.date === v2ShiftYmd(today, -1) ? "yesterday" : (r.date === v2ShiftYmd(today, 1) ? "tomorrow" : r.date));
+      L.push("  - " + r.date + " (" + rel + "): " + (s.category || "?") + ", " + (s.intensity || "?") + " intensity" + (r.movable === false ? " [fixed]" : ""));
+    });
+    out.weekText = L.join("\n");
+  }
+
+  // Mat load — yesterday's logged combat session reduces today's lower-body volume.
+  try {
+    var yr = await fetch(SUPABASE_URL + "/rest/v1/workouts?profile_id=eq." + encodeURIComponent(pid) +
+      "&date=eq." + v2ShiftYmd(today, -1) + "&select=type", { headers: sbHeaders() });
+    var yRows = await yr.json();
+    if (Array.isArray(yRows) && yRows.some(function (w) { return /mma|spar|bjj|grappl|jiu|kickbox|box|martial|wrestl/i.test(String(w.type || "")); })) {
+      out.matLoadNote = "MAT LOAD: a hard combat-sports session was logged yesterday. Reduce lower-body strength volume by ~2 sets today and do not stack another high-CNS session.";
+    }
+  } catch (e) { /* non-fatal */ }
+
+  return out;
+}
+
+/** Run the variant model (stream or non-stream) and parse. Shared by TRANSFORM
+ *  and GENERATE. Returns { obj, usage, raw } or { error }. */
+async function v2RunVariantModel(args, prompt, label) {
+  if (args.stream && args.res) {
+    var upstream = await fetch("https://api.anthropic.com/v1/messages", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "x-api-key": process.env.ANTHROPIC_KEY, "anthropic-version": "2023-06-01" },
+      body: JSON.stringify({ model: MODEL_HAIKU, max_tokens: 3000, stream: true, system: wrapSystemWithCache(prompt.system, label), messages: [{ role: "user", content: prompt.user }] }),
+      signal: args.controller.signal, agent: anthropicStreamAgent,
+    });
+    if (!upstream.ok) {
+      var et = await upstream.text().catch(function () { return "err " + upstream.status; });
+      return { error: "upstream " + upstream.status + ": " + et.slice(0, 200) };
+    }
+    var leg = await pumpAnthropicLeg(upstream, args.controller, args.res, label, true);
+    return { obj: v2Variant.extractJSON(leg.legText), usage: leg.usage, raw: leg.legText };
+  }
+  return await v2HaikuJSON(prompt.system, prompt.user, 3000, label);
+}
+
+/**
+ * Run the planner's structural invariant set on a GENERATED session, INSIDE its
+ * real week window so no_consecutive_high_cns (and the other spacing rules) fire
+ * against it — reusing v2Planner.enforceInvariants, NOT a parallel selection path.
+ * The neighbours are the planned sessions on today±1 (today's own anchor is
+ * excluded — the athlete is skipping it). Returns { cleaned, problems }.
+ */
+function v2EnforceGeneratedSession(profileId, today, generatedSession, weekPlannedRows) {
+  var yest = v2ShiftYmd(today, -1), tom = v2ShiftYmd(today, 1);
+  var neighbours = (weekPlannedRows || []).filter(function (r) { return r.date === yest || r.date === tom; }).map(function (r) {
+    var s = r.session || {};
+    return { date: r.date, slot: r.slot || 1, movable: r.movable, category: s.category, intensity: s.intensity, why: s.why || "planned", goal_tags: s.goal_tags || [], segments: s.segments || [] };
+  });
+  var genRow = { date: today, slot: 1, movable: true, category: generatedSession.category, duration_min: generatedSession.duration_min, intensity: generatedSession.intensity, why: generatedSession.why, goal_tags: generatedSession.goal_tags, segments: generatedSession.segments };
+  var weekDates = [{ date: yest }, { date: today }, { date: tom }];
+  var enforced = v2Planner.enforceInvariants(
+    { sessions: neighbours.concat([genRow]), block: {} },
+    { profileId: profileId, weekDates: weekDates, tiers: { goals: [] }, schedule: { fill_policy: "ai_assigned" }, anchors: [] }
+  );
+  var cleaned = enforced.sessions.filter(function (s) { return s.date === today; })[0] || genRow;
+  // Keep violations about the generated session (today) + any consecutive-high-CNS
+  // flag (which is inherently about today vs a neighbour). Drop neighbours' own
+  // work-floor noise.
+  var problems = enforced.violations.filter(function (v) {
+    return v.invariant === "no_consecutive_high_cns" || (v.detail && v.detail.indexOf(today) >= 0);
+  });
+  return { cleaned: cleaned, problems: problems };
+}
 
 /**
  * Shared variant logic — ONE implementation used by BOTH the on-demand endpoint
@@ -13452,6 +13584,44 @@ async function v2GenerateVariant(args) {
   var primary = args.primary;
   var intent = v2Variant.classifyRequest(args.body || {}, primary);
   var dossier = args.ctxData ? args.ctxData.dossier : args.dossier;
+  var envelopeText = args.envelopeText ||
+    (args.ctxData && args.ctxData.goalEnvelopes ? v2Rules.renderEffectiveEnvelopesForPrompt(args.ctxData.goalEnvelopes) : "");
+
+  // 0. GENERATE — the primary has NO prescribable content (a fixed-commitment
+  //    anchor — a class/practice — or a rest day). It cannot be TRANSFORMED, so
+  //    when the athlete asks for something else we GENERATE a full replacement
+  //    for the freed slot. Derived from the existing sessionHasPrescribedWork
+  //    property (A2 audit), so it is goal-agnostic across any anchor type. The
+  //    anchor row is NOT touched — ephemeral, for today only.
+  if (!v2Rules.sessionHasPrescribedWork(primary)) {
+    var freed = Number(primary.duration_min) || (args.ctxData && args.ctxData.profileData && args.ctxData.profileData.defaults && args.ctxData.profileData.defaults.duration_min) || 45;
+    var gprompt = v2Variant.buildGeneratePrompt({
+      intent: intent, freedMinutes: freed,
+      anchorActivity: primary.headline || primary.category || null,
+      envelopeText: envelopeText,
+      weekContextText: args.weekContextText, matLoadNote: args.matLoadNote,
+      dossierText: args.dossierText, readinessText: args.readinessText,
+      recencyText: args.recencyText, progressionText: args.progressionText,
+    });
+    console.log("[v2Generate] profile " + args.profileId + " freed=" + freed + " sections " + JSON.stringify(gprompt.sections));
+    var ggen = await v2RunVariantModel(args, gprompt, "v2_generate");
+    if (ggen.error) return { error: ggen.error, path: "generate", sections: gprompt.sections, intent: intent };
+    if (!ggen.obj || !ggen.obj.session) return { error: "no parseable generated session", path: "generate", usage: ggen.usage, sections: gprompt.sections, intent: intent };
+    var gsession = ggen.obj.session;
+    var grefused = ggen.obj.refused === true;
+    var genf = v2EnforceGeneratedSession(args.profileId, args.today, {
+      category: gsession.category, duration_min: gsession.duration_min, intensity: gsession.intensity,
+      why: gsession.why || ggen.obj.why, goal_tags: gsession.goal_tags, segments: gsession.segments,
+    }, args.weekPlannedRows);
+    var gcheck = v2Variant.checkVariant(genf.cleaned, intent, dossier, { generated: true, isAnchor: false, freedMinutes: freed, refused: grefused });
+    return {
+      session: { category: genf.cleaned.category, duration_min: genf.cleaned.duration_min, intensity: genf.cleaned.intensity, why: genf.cleaned.why, goal_tags: genf.cleaned.goal_tags, segments: genf.cleaned.segments },
+      why: ggen.obj.why || gsession.why || "Replacement session for the freed slot.",
+      path: "generate", refused: grefused,
+      problems: genf.problems.concat(gcheck.problems),
+      usage: ggen.usage, sections: gprompt.sections, intent: intent,
+    };
+  }
 
   // 1. CACHE-FIRST — a pure duration swap matching a cached alternate: zero call.
   var cached = v2Variant.matchCachedAlternate(intent, args.cacheObj);
@@ -13477,11 +13647,7 @@ async function v2GenerateVariant(args) {
   // 3. MODEL — everything else (intensity, category, style, free-text, readiness
   //    signal, or a duration increase). Streamed Haiku, small context.
   // A2: the same effective-stage envelope block the planner used, so a category
-  // swap refills to the right stage's volume and cannot escalate. From ctxData
-  // when the caller has it (variant endpoint), or a pre-rendered envelopeText
-  // (nightly swap). Best-effort — absent it, the work-budget guidance still governs.
-  var envelopeText = args.envelopeText ||
-    (args.ctxData && args.ctxData.goalEnvelopes ? v2Rules.renderEffectiveEnvelopesForPrompt(args.ctxData.goalEnvelopes) : "");
+  // swap refills to the right stage's volume and cannot escalate.
   var prompt = v2Variant.buildVariantPrompt({
     intent: intent, primary: primary, isAnchor: args.isAnchor,
     readinessText: args.readinessText, recencyText: args.recencyText, dossierText: args.dossierText,
@@ -13489,26 +13655,8 @@ async function v2GenerateVariant(args) {
   });
   console.log("[v2Variant] profile " + args.profileId + " sections " + JSON.stringify(prompt.sections));
 
-  var gen;
-  if (args.stream && args.res) {
-    // User path — stream to the client.
-    var upstream = await fetch("https://api.anthropic.com/v1/messages", {
-      method: "POST",
-      headers: { "Content-Type": "application/json", "x-api-key": process.env.ANTHROPIC_KEY, "anthropic-version": "2023-06-01" },
-      body: JSON.stringify({ model: MODEL_HAIKU, max_tokens: 3000, stream: true, system: wrapSystemWithCache(prompt.system, "v2_variant"), messages: [{ role: "user", content: prompt.user }] }),
-      signal: args.controller.signal, agent: anthropicStreamAgent,
-    });
-    if (!upstream.ok) {
-      var et = await upstream.text().catch(function () { return "err " + upstream.status; });
-      return { error: "upstream " + upstream.status + ": " + et.slice(0, 200), path: "model", sections: prompt.sections };
-    }
-    var leg = await pumpAnthropicLeg(upstream, args.controller, args.res, "v2_variant", true);
-    gen = { obj: v2Variant.extractJSON(leg.legText), usage: leg.usage, raw: leg.legText };
-  } else {
-    // Nightly path — non-streamed Haiku, capped single retry.
-    gen = await v2HaikuJSON(prompt.system, prompt.user, 3000, "v2_variant");
-  }
-
+  var gen = await v2RunVariantModel(args, prompt, "v2_variant");
+  if (gen.error) return { error: gen.error, path: "model", sections: prompt.sections, intent: intent };
   if (!gen.obj || !gen.obj.session) {
     return { error: "no parseable variant", path: "model", usage: gen.usage, sections: prompt.sections, intent: intent };
   }
@@ -13646,8 +13794,21 @@ app.post("/api/v2/variant/:profileId", async function (req, res) {
     // Resolve. Cache/code paths return WITHOUT streaming; only the model path streams.
     var body = req.body || {};
     var intent = v2Variant.classifyRequest(body, primary);
+    // A no-prescribable-content primary (an anchor / rest day) routes to GENERATE.
+    var noWork = !v2Rules.sessionHasPrescribedWork(primary);
+    // Week context (collision + mat-load) — only needed for a generate day.
+    var weekCtx = noWork ? await v2WeekContext(pid, ctxData.today) : { plannedRows: [], weekText: "", matLoadNote: null };
+
+    // INSTANT: a pre-generated anchor alternate matching a category request (the
+    // nightly pre-built "if you miss class" sessions). Zero model call.
+    var generatedHit = noWork ? v2Variant.matchGeneratedAlternate(intent, cacheObj) : null;
+    if (generatedHit) {
+      var ghc = v2Variant.checkVariant(generatedHit, intent, ctxData.dossier, { generated: true, isAnchor: false, freedMinutes: Number(primary.duration_min) || 45, refused: false });
+      return res.json({ success: true, path: "cache:generated", why: "Prepared last night for the freed slot.", refused: false, session: v2Planner.flattenSessionForCache(generatedHit), problems: ghc.problems, intent: intent, elapsed_ms: Date.now() - t0, ephemeral: true });
+    }
+
     var cachedHit = v2Variant.matchCachedAlternate(intent, cacheObj);
-    var codeHit = !isAnchor && v2Variant.isCodeOnly(intent, primary);
+    var codeHit = !isAnchor && !noWork && v2Variant.isCodeOnly(intent, primary);
 
     if (cachedHit || codeHit) {
       // Non-model path — plain JSON, no stream.
@@ -13655,13 +13816,14 @@ app.post("/api/v2/variant/:profileId", async function (req, res) {
       return res.json({ success: true, path: result0.path, why: result0.why, refused: !!result0.refused, session: v2Planner.flattenSessionForCache(result0.session), problems: result0.problems, intent: result0.intent, elapsed_ms: Date.now() - t0, ephemeral: true });
     }
 
-    // Model path — stream.
+    // Model / GENERATE path — stream.
     v2StartStream(res, "v2_variant");
     streaming = true;
     var result = await v2GenerateVariant({
       profileId: pid, body: body, ctxData: ctxData, cacheObj: cacheObj, primary: primary,
       isAnchor: isAnchor, today: ctxData.today,
       readinessText: readinessText, recencyText: recencyText, dossierText: dossierText, progressionText: progressionText,
+      weekPlannedRows: weekCtx.plannedRows, weekContextText: weekCtx.weekText, matLoadNote: weekCtx.matLoadNote,
       stream: true, res: res, controller: controller,
     });
 
