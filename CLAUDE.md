@@ -2252,21 +2252,36 @@ All new CSS scoped under `#v2-today` / `#v2-week-card` / `#v2-variant` / `#v2-sh
 (valid, applies document-wide; confirmed rendering correctly in the live app). No migration — every
 field already exists.
 
-## Engine v2 — NEXT SESSION STARTS HERE (updated 2026-07-22, Session 8 close-out)
+## Engine v2 — NEXT SESSION STARTS HERE (updated 2026-07-24, Session 12 close-out)
 
-Engine v2 is code-complete across all 7 phases plus Session 8 (alternate chip surface + flatten
-UX fixes), verified live on profile 4, profile 1 byte-identical throughout.
+Engine v2 is code-complete across all 7 phases plus Sessions 8-12, verified live on profile 4,
+profile 1 byte-identical throughout. **The athlete-facing surface is now DONE** — Session 12's
+folded-card alternates layout was the last piece the athlete actually experiences.
 
 **The single-plan-vs-option-set decision is RESOLVED — keep the single coached plan** (see "Engine
 v2 — Phase 8 / Session 8" below and ROADMAP §7). The three §6 close-out UX findings are **closed**
 (fake single sets, doubled superset-rest parens, action-button styling). Don't reopen these.
 
+**QUEUED, in order** (see ROADMAP §7 → the Session 11 A/B/C/D ladder):
+1. **(B) ENABLE advancement** — the dwell floor + apply the effective-stage verdict + wire the
+   pain/deload safety-regression veto. **HARD PREREQUISITE: threshold plausibility (ROADMAP §6).**
+   It is harmless while advancement is disabled and a SAFETY issue the moment it is not — an
+   implausibly high threshold is a permanent hold, an implausibly low one advances someone
+   prematurely on a rehab arc. **B must not ship without a threshold-plausibility gate.**
+2. **(D) within-phase weekly ramp** + wire re-tiering-on-phase-completion onto the new advancement
+   trigger. Also owns the honest-shorten of low-fill days (the §6 narrowed residual (b)).
+3. **Settings UI for `session_composition.tier_weights`** — the preference seam exists and is read;
+   a control writes it via the ordinary `PATCH /api/profiles/:id`, exactly like the Phase-6 defaults
+   picker writes `profile_data.defaults`. No new endpoint, no new column.
+
 Remaining Engine v2 follow-ups, none blocking (ROADMAP §6/§9): the `dur_60` `noop_extend` alternate
-is dead weight the nightly still persists (suppressed from the chip row, could stop being written);
+is dead weight the nightly still persists (suppressed from the layout, could stop being written);
 the superset double-paren fix has no live screenshot yet (no run has produced a `superset` segment);
-sub-5s variant paths need diff-generation not full-session generation; `goal_tags` are model-labelled
-(v2 chat reasons from the prescribed exercises instead); the v1 `duration_minutes` hold-vs-session
-overload is unfixed in v1; the Coach Chat leg-1 narration residual.
+the anchor-day folded-card render needs confirming on a REAL anchor-day cache after the 2026-07-28
+nightly (Session 12 verified it against a real-shaped synthetic one); sub-5s variant paths need
+diff-generation not full-session generation; `goal_tags` are model-labelled (v2 chat reasons from
+the prescribed exercises instead); category-vs-content validation; the v1 `duration_minutes`
+hold-vs-session overload is unfixed in v1; the Coach Chat leg-1 narration residual.
 
 ## Engine v2 — Phase 7 Implementation (2026-07-22): Coach Chat concierge
 
@@ -2848,7 +2863,121 @@ short 20-min mind_body day sits at 66% (a low-fill mobility day the model overst
 "honestly shorten" case, a different phenomenon from mixed-session starvation). Both are flagged-and-
 persisted (visible), model-compliance on the margins. **193 v2 tests** (was 184). Profile 1 byte-identical.
 
-**Position:** B (advancement), D (within-phase ramp), and the folded-card layout remain queued behind §6.
+**Position:** B (advancement) and D (within-phase ramp) remain queued behind §6. The folded-card
+alternates layout shipped 2026-07-24 — see the next section.
+
+## Engine v2 — Session 12 (2026-07-24): folded-card alternates layout
+
+**The Session-8 alternate chip row is SUPERSEDED.** Queued since Session 8, built last on purpose so
+it had good content (A2 + allocation) and real anchor-day alternates to lay out.
+
+**DISPLAY ONLY — nothing server-side changed.** The single-coached-plan architecture is untouched:
+planner, autoregulator, invariants, stage/envelope logic, the allocation contract and the
+`planned_sessions` shape are all exactly as they were. Same data source (`v2_daily_cache`), same
+ephemeral display-swap behaviour, zero writes, no schema change, no npm dependency. The entire diff
+is `public/index.html` plus a new test file.
+
+### The problem it fixes
+Session 8 shipped the cached alternates as a chip row. From live use: v1 showed three full options at
+different lengths that could be compared side by side; the chip row hid each alternate behind a tap
+and showed too little to decide from. A presentation gap, not an architecture gap — the data has been
+sitting in the cache since Session 8.
+
+### The stack
+`v2FoldedStackHtml()` replaces `v2AlternateRowHtml()`. The primary and every distinct alternate are
+cards in ONE stack with **exactly one expanded**:
+- **Primary EXPANDED by default** — the established ember card, `why`, goal tags, full section list,
+  `Log This Session` CTA. Unchanged from Session 8 in content.
+- **Collapsed cards** show enough to DECIDE from without expanding: **resolved duration, category,
+  intensity, and the code-derived rationale line**.
+- **Tapping expands in place.** Expanding an alternate folds the primary into its own collapsed card
+  (`v2-fold-primary`), so the coached plan is always one tap away. Tapping the open card folds back
+  to the primary; tapping the open primary is a no-op.
+- `v2ToggleCard(key)` — the whole interaction. `v2AltActiveKey` semantics are unchanged from Session
+  8 (`null` = primary), so `v2ActiveSession()` / `v2LogSession()` needed no edit. A **stale key**
+  (alternate gone after a cache refresh) falls back to the primary rather than leaving nothing
+  expanded.
+
+**Session 8 rules carried forward, all re-verified:** labels come from the real
+`session.duration_min` / `session.category`, **never the cache key**; `noop_extend` is suppressed
+entirely; the shortest **duration** variant carries MIN VIABLE; degrades to however many distinct
+alternates exist and never renders an empty or placeholder card (an absent group emits no heading).
+
+### The alternate-`why` weakness is FIXED (Session 9 §1.4)
+Collapsed shows the short **code-derived `rationale`**; expanded shows the alternate's genuinely
+richer **`session.why`**. Live proof on profile 4's `cat_swap`: expanded now reads *"Lower-body
+compound strength (capacity stage: 55–70% 1RM, 10–15 reps, RPE 6–7) + injury-prehab stack.
+Glute-dominant patterns address quad dominance and anterior pelvic tilt…"* instead of the one-line
+"a strength session instead — same day, different focus".
+
+### Anchor-day miss-class alternates — the proposed treatment, kept light
+The generate-branch session's pre-generated `miss_strength` / `miss_cardio` alternates are
+semantically different from duration/category variants: *"if you can't make class"*, not *"a shorter
+version of today"*. **Distinguished using fields the nightly ALREADY writes** — `source:
+'model:generate'` with a `miss_` key, vs `code:*` / `model:category_swap` (`v2AltIsMissClass`). No
+server change was needed. Three light signals, no warning system:
+1. Their own group heading, **"If you can't make it"**, above a `border-top` divider.
+2. A cornerman-purple **`IF YOU MISS CLASS`** tag on each card.
+3. They **never compete for MIN VIABLE** — a miss-class session is not a shorter version of today,
+   so skipping a committed session is never presented as equivalent to picking a shorter one.
+The anchor itself stays the expanded primary and is never demoted.
+
+### Flagged sessions — a marker, not a warning system
+Sessions that persisted while flagged by the **work-floor** (`session_time_budget`) or
+**driver-share** (`driver_share_underfilled`) invariants get a small caution-coloured `⚑` chip with
+the full invariant detail as its `title`. **Severity `repaired` is a mechanical correction and never
+produces a marker.**
+
+**Where the flag data comes from (worth knowing before extending this).** It is **NOT in
+`v2_daily_cache`** — the invariant report lives on the `training_blocks` row, and
+`GET /api/v2/today` already returns it as `block.block.invariant_violations`, in the same payload
+the client already holds in `v2Week`. So it is readable with **zero server change**; `v2FlagsByDate()`
+just indexes it by the date each `detail` string leads with. Alternates are ephemeral variants, not
+`planned_sessions` rows, so they carry no persisted invariant result and **never** get a fabricated
+marker.
+
+### Styling
+Expanded keeps the established ember "coached primary" identity (deliberately unchanged — §6 says
+not to touch it); collapsed cards are `--bg-surface-2` / `--border-subtle` and carry **no ember at
+all**, so ember stays reserved for the expanded card and its CTA. The meta row is ONE markup path
+restyled by context (`#v2-today .v2-session .v2-fold-facts`), not a second render path. All new CSS
+is scoped under `#v2-today` / `#v2-week-card`; no global class redefined, no v1 class touched. The
+free-text/constraint variant surface stays exactly where it was, below the cards.
+
+### Verification (live, profile 4, deployed build)
+- Primary expanded by default (ember), 2 collapsed alternates beneath under "Ready alternatives";
+  `noop_extend` correctly absent; `dur_30` labelled "30 min" from its real duration with MIN VIABLE.
+- Expanding `cat_swap` collapsed the primary into its own card reading *"Your coached plan for
+  today, unchanged."*; folding back returned to it.
+- **Zero network requests across 8 toggles covering every card** (`browse network` after `--clear`),
+  zero console errors. Also proven **structurally** in the test suite: the folded-card source
+  contains no request primitive and references no write target or endpoint.
+- **`planned_sessions.updated_at` and `v2_daily_cache` byte-identical** before/after expanding every
+  card — `updated_at` `2026-07-24T03:26:48.024824+00:00` on all 7 rows, `planned_sessions` digest
+  `91adcc3b…`, cache digest `9d9b8167…`, cache `generated_at` `2026-07-24T05:31:20.427Z`, all
+  unchanged.
+- **Both currently-flagged sessions render the `⚑`** — SUN 07-26 (driver share) and WED 07-29 (work
+  floor, 66% of 20 min) — and the two `repaired` days (SAT 07-25, MON 07-27) correctly show none.
+- **Profile 1 unchanged**: `GET /api/v2/today/1` → `engine_v2:false`; v1 daily-recs still 3 options,
+  readiness 74.
+- **⚠ ANCHOR-DAY RENDER — verified against a SYNTHETIC anchor-day cache, not a real one.** Today
+  (2026-07-24) is not an anchor day, and **the nightly has no date override** (`v2NightlyForProfile`
+  takes `today` from `localToday(profileRow)`), so a real anchor-day cache could not be produced
+  without a server change — which was out of scope. The check rendered a cache in the **exact shape
+  `v2BuildAlternates` writes on an anchor day** (`miss_strength`/`miss_cardio`, `source:
+  'model:generate'`, real session content) through the **real deployed** render path: the heading,
+  both `IF YOU MISS CLASS` tags, and the absence of MIN VIABLE all rendered correctly. **Confirm on
+  a real cache after the 2026-07-28 nightly** — logged in ROADMAP §6.
+
+**Tests: 193 → 213.** New `server/v2FoldedCards.test.js` (20 cases). Because the logic is
+client-side, the harness **extracts the real shipped functions out of `public/index.html` by source
+slicing** and evaluates them in a `vm` sandbox — the same "run the actual code, not a copy"
+discipline used for `localToday()` and `pipeAnthropicStream()`. A rename or deletion in `index.html`
+fails the extraction rather than silently passing against a stale duplicate. Covers: miss-class
+discrimination, group separation, MIN VIABLE scoping, `noop_extend` suppression, key-vs-real-duration
+labelling, degradation (0 alternates / only-`noop_extend` / no cache / stale key), collapsed-vs-
+expanded content, the toggle state machine, flag parsing incl. `repaired` exclusion and non-array
+degradation, and escaping.
 
 ## Migrations
 

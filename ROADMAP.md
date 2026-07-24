@@ -1773,10 +1773,12 @@ All verified present in `server.js`. `:id`/`:userId` = profile id.
   1. **`dur_60` `noop_extend` alternate is dead weight in the cache.** Extending a session isn't a
      mechanical inverse of compression (adding volume is a judgment the code won't fake), so the
      "longer" alternate is just the primary relabeled — its real duration equals the primary's
-     (live: labeled "60" but actually 45). Session 8 **suppresses it from the chip row** client-side
-     (a chip labeled "60" that's really the 45-min primary would mislead), but the nightly still
-     *writes* it into `v2_daily_cache.alternates`. Harmless (hidden, small), but the nightly could
-     stop persisting a `noop_extend` at all (`v2BuildAlternates`, `server.js`) as a minor cleanup.
+     (**re-confirmed live 2026-07-24: labeled "60 min (primary as-is…)" while `session.duration_min`
+     is 45**). Session 8 suppressed it from the chip row; **Session 12's folded-card layout carries
+     the same suppression forward** (`v2VisibleAlternates`, unit-tested), so it is still never shown.
+     The nightly still *writes* it into `v2_daily_cache.alternates`. Harmless (hidden, small), but
+     the nightly could stop persisting a `noop_extend` at all (`v2BuildAlternates`, `server.js`) as
+     a minor cleanup.
   2. **Superset double-paren fix has no live screenshot yet.** `wrapRest` is unit-tested, but
      neither Session-8 live re-run generated a `superset` segment, so the fixed
      "(rest 90 s, between supersets)" form hasn't been seen in a real cache. Confirm opportunistically
@@ -1915,6 +1917,11 @@ All verified present in `server.js`. `:id`/`:userId` = profile id.
     rehab accessories, or splitting a capacity driver and a rehab-maintenance goal onto separate days.
     Verdict comes with the within-phase ramp (D) or a dedicated mixed-session pass. No session escalated
     past the cleared stage (proven: all strength = capacity-level, medium intensity, 10-15 reps).
+  - **Session 12 (2026-07-24) did NOT touch this entry.** The folded-card layout is display-only —
+    `estimateSegmentWorkMinutes`, `SESSION_WORK_FLOOR`, `session_time_budget`, the driver-share
+    invariant and the allocation contract are all untouched. What it DID add is that the two sessions
+    still persisting flagged (07-26 driver share, 07-29 work floor) are now **visible to the athlete**
+    as a `⚑` marker rather than only in the invariant report — the residual is surfaced, not fixed.
   - **SESSION COMPOSITION ALLOCATION shipped 2026-07-23 — the candidate follow-up above, built. CORE
     DEFECT FIXED; entry STAYS OPEN but heavily NARROWED.** The mixed-session starvation was a missing
     allocation contract; added a CODE-OWNED per-session allocation (tier-weighted, on
@@ -1967,17 +1974,46 @@ All verified present in `server.js`. `:id`/`:userId` = profile id.
   replaced); only a genuinely `completed` row (a real logged workout) is history and is preserved.
   The nightly job never re-plans and the Coach Chat propose→confirm→apply cycle is untouched — this
   only changes what a full re-plan reclaims. Verified: post-fix re-plan wrote 7/7 sessions cleanly.
+- **✅ Engine v2 — FOLDED-CARD ALTERNATES LAYOUT (2026-07-24, Session 12, DONE + DEPLOYED +
+  live-verified). The Session-8 alternate chip row is SUPERSEDED.** Queued since Session 8 and built
+  last on purpose, so it had good content (A2 + allocation) and real anchor-day alternates to lay
+  out. **DISPLAY ONLY** — planner, autoregulator, invariants, stage/envelope logic, the allocation
+  contract and the `planned_sessions` shape are all untouched; same `v2_daily_cache` source, zero
+  writes, no schema change, no npm dependency; the whole diff is `public/index.html` + one test file.
+  The primary renders expanded (ember) with each distinct alternate as a collapsed card showing
+  resolved duration / category / rationale; tapping expands in place and folds the primary into its
+  own card. Session 8's rules carried forward (real duration/category never the cache key,
+  `noop_extend` suppressed, MIN VIABLE on the shortest duration variant, graceful degradation).
+  Closes the §1.4 alternate-`why` weakness above. Full record: `CLAUDE.md` → "Engine v2 — Session 12".
+  **Live-verified:** zero network across 8 toggles covering every card; `planned_sessions.updated_at`
+  + digest and `v2_daily_cache` digest byte-identical before/after; both currently-flagged sessions
+  (07-26 driver share, 07-29 work floor) render the `⚑` marker while the two `repaired` days do not;
+  profile 1 `engine_v2:false` with 3 v1 options. 193 → **213 v2 tests**.
+  - **⚠ ONE DEFERRED VERIFICATION — confirm the anchor-day render on a REAL cache after the
+    2026-07-28 nightly.** 2026-07-24 was not an anchor day and **the nightly has no date override**
+    (`v2NightlyForProfile` takes `today` from `localToday(profileRow)`), so a real anchor-day cache
+    could not be produced without a server change, which was out of scope. The check therefore
+    rendered a cache in the **exact shape `v2BuildAlternates` writes on an anchor day**
+    (`miss_strength`/`miss_cardio`, `source:'model:generate'`, real session content) through the real
+    deployed render path — heading, both `IF YOU MISS CLASS` tags, and the absence of MIN VIABLE all
+    correct. The **discrimination itself is not in doubt** (existing `source`/`key` fields, unit
+    tested); what is unconfirmed is the render against a genuinely nightly-written anchor cache.
+    Same class as the Session-8 superset-double-paren item: confirm opportunistically.
 - **Engine v2 category-vs-content validation — LOGGED follow-up (Session 9 audit §1.5, NOT built).**
   A session's `category` is model-authored and never validated against its prescribed content: the
   cat_swap stamped `strength` (later `mind_body`) on a session of yoga + wall slides + dead bugs.
   A code check could flag a `strength`-labelled session with no strength-pattern exercise (or a swap
   whose output category doesn't match its content). Deferred as the smaller, separate item it is.
-- **Engine v2 alternate `why` display weakness — LOGGED follow-up (Session 9 audit §1.4).** When
-  viewing a cached alternate, `renderV2Today` shows the short code-derived `rationale` as the why
-  line and hides the alternate's genuinely richer `session.why` ("Strength session built on posture
-  and core stability bolt-ons; yoga mobility preserved as prep; no high-load compound…"). Not a bug
-  (Session 8 intended the rationale as the collapsed-state summary), but the Workstream 2 folded-card
-  layout should show the rationale collapsed and the full `session.why` when expanded.
+- **✅ RESOLVED 2026-07-24 (Session 12) — Engine v2 alternate `why` display weakness (Session 9 audit
+  §1.4).** Fixed exactly as this entry prescribed: the folded-card layout shows the short code-derived
+  `rationale` in the COLLAPSED state and the alternate's real `session.why` when EXPANDED. Live on
+  profile 4, the expanded `cat_swap` now reads *"Lower-body compound strength (capacity stage: 55–70%
+  1RM, 10–15 reps, RPE 6–7) + injury-prehab stack. Glute-dominant patterns address quad dominance and
+  anterior pelvic tilt…"* instead of the one-line rationale. Original text kept below for the record.
+  > When viewing a cached alternate, `renderV2Today` shows the short code-derived `rationale` as the
+  > why line and hides the alternate's genuinely richer `session.why`. Not a bug (Session 8 intended
+  > the rationale as the collapsed-state summary), but the Workstream 2 folded-card layout should
+  > show the rationale collapsed and the full `session.why` when expanded.
 - **✅ Engine v2 — ANCHOR-DAY VARIANT GENERATE (2026-07-23, DONE + DEPLOYED + live-verified).** An
   insertion ahead of B and D (both still queued, unchanged), driven by a live usability failure: on an
   anchor day the variant surface returned nothing (an empty anchor has nothing to TRANSFORM). Added a
@@ -2225,6 +2261,18 @@ Each item below is self-contained — no other doc/session context should be nee
 > "Engine v2 — Phase 8 / Session 8" in CLAUDE.md. The three §6 UX findings this unblocked are now
 > closed (below).
 >
+> **✅ THE PRESENTATION IS NOW FINISHED — Session 12 (2026-07-24) SUPERSEDED the Session-8 chip row
+> with the folded-card alternates layout.** The chip row hid each alternate behind a tap and showed
+> too little to decide from; v1's side-by-side comparability is now back without touching the
+> single-plan architecture. Primary expanded, each distinct alternate a collapsed card showing
+> resolved duration / category / rationale, tap to expand in place, one open at a time, the primary
+> always one tap away. Also closes the §6 alternate-`why` weakness (collapsed = short rationale,
+> expanded = the real `session.why`), gives anchor-day miss-class alternates their own legible
+> "If you can't make it" grouping, and marks sessions that persisted while flagged. Display only,
+> zero writes, 213 v2 tests. See "Engine v2 — Session 12" in CLAUDE.md.
+> **Still queued behind it, unchanged: (B) advancement — with threshold plausibility as a HARD
+> prerequisite (§6) — (D) the within-phase ramp, and the session-composition settings UI.**
+>
 > **UX findings from the 2026-07-22 close-out** (live profile-4 screenshots) are logged in §6:
 > non-set-based segments render as fake single sets, doubled superset-rest parens, and a v2 Today
 > card action-button styling pass. All deferred to the next session, after the design decision above.
@@ -2347,9 +2395,12 @@ produced 2026-07-22 and approved; see that session's report. Phasing:
   51%→79%, cardio stayed full, no escalation past the cleared stage (proven), metric-fits-pattern
   validator folded in (0 permanent shape-mismatch UNEVALUABLEs). PARTIAL: one mixed capacity+rehab day
   still 65% (§6 stays OPEN — model under-fills a capacity slot with rehab work on mixed days, NOT a floor
-  issue; floor untouched); **(B)** ENABLE advancement — the dwell floor + apply the effective-stage verdict + wire the
+  issue; floor untouched); **(B — NEXT UP, 2026-07-24: the athlete-facing surface is finished, so B is the head of the queue)**
+  ENABLE advancement — the dwell floor + apply the effective-stage verdict + wire the
   pain/deload safety-regression veto (time-elapsed alone must NEVER advance a rehab phase; persist a
-  monotonic-non-rising `effective_stage`, which the A1 resolver already accepts as `prior_effective_stage`);
+  monotonic-non-rising `effective_stage`, which the A1 resolver already accepts as `prior_effective_stage`).
+  **⚠ HARD PREREQUISITE: threshold plausibility (§6). B must not ship without a threshold-plausibility
+  gate** — harmless while advancement is disabled, a safety issue the moment it is not;
   (C) make the catalog reachable at plan time (filtered subset in the prompt) + add a
   difficulty/progression-level column to `exercise_catalog` + phase-gate contraindications
   (wrong-now-vs-wrong-always, extending `AREA_TOKENS` to `{token, min_stage}`); (D) within-phase weekly
