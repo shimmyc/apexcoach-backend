@@ -12868,6 +12868,7 @@ app.post("/api/v2/plan/:profileId", async function(req, res) {
       tiers: tiers, schedule: schedule, weekDates: weekDates, anchors: anchors,
       phaseResolutions: ctxData.phaseResolutions,
       goalEnvelopes: ctxData.goalEnvelopes,
+      allocationPref: ctxData.profileData.session_composition,
       dossierText: dossierText, progressionText: progressionText, recencyText: recencyText,
       microGoals: ctxData.microGoals,
       defaults: ctxData.profileData.defaults,
@@ -12880,6 +12881,10 @@ app.post("/api/v2/plan/:profileId", async function(req, res) {
     var ctx = {
       profileId: Number(pid), weekDates: weekDates, tiers: tiers,
       schedule: schedule, anchors: anchors,
+      // Composition allocation (closes §6): per-goal envelopes drive the driver-
+      // share invariant; the preference seam overrides the tier weights.
+      goalEnvelopes: ctxData.goalEnvelopes,
+      allocationPref: ctxData.profileData.session_composition,
     };
 
     // ── Stream, with a CAPPED retry (max 2 attempts total, no storms) ───────
@@ -13278,7 +13283,8 @@ async function v2BuildAlternates(ctx, primarySession) {
         profileId: ctx.profileId, body: { category: driverCats[di] }, dossier: ctx.dossierObj,
         cacheObj: null, primary: primarySession, today: ctx.today,
         readinessText: ctx.readinessText, recencyText: ctx.recencyText, dossierText: ctx.dossierText,
-        envelopeText: envText, weekPlannedRows: ctx.weekPlannedRows, weekContextText: ctx.weekContextText, matLoadNote: ctx.matLoadNote,
+        envelopeText: envText, goalEnvelopes: ctx.goalEnvelopes, allocationPref: ctx.allocationPref,
+        weekPlannedRows: ctx.weekPlannedRows, weekContextText: ctx.weekContextText, matLoadNote: ctx.matLoadNote,
         stream: false,
       });
       out.model_calls++;
@@ -13324,6 +13330,7 @@ async function v2BuildAlternates(ctx, primarySession) {
       readinessText: ctx.readinessText, recencyText: ctx.recencyText, dossierText: ctx.dossierText,
       // A2: the nightly swap respects the same envelope as the planner.
       envelopeText: ctx.goalEnvelopes ? v2Rules.renderEffectiveEnvelopesForPrompt(ctx.goalEnvelopes) : "",
+      goalEnvelopes: ctx.goalEnvelopes, allocationPref: ctx.allocationPref,
       stream: false,
     });
     out.model_calls++;
@@ -13447,7 +13454,7 @@ async function v2NightlyForProfile(pid, opts) {
       // Fetched only when today's primary has no prescribable content.
       var nightlyWeekCtx = !v2Rules.sessionHasPrescribedWork(decision.session)
         ? await v2WeekContext(pid, today) : { plannedRows: [], weekText: "", matLoadNote: null };
-      var alt = await v2BuildAlternates({ profileId: pid, defaults: ctxData.profileData.defaults, dossierText: dossierText, dossierObj: ctxData.dossier, readinessText: readinessText, recencyText: recencyText, today: today, isAnchorToday: isAnchorToday, goalEnvelopes: ctxData.goalEnvelopes, weekPlannedRows: nightlyWeekCtx.plannedRows, weekContextText: nightlyWeekCtx.weekText, matLoadNote: nightlyWeekCtx.matLoadNote }, decision.session);
+      var alt = await v2BuildAlternates({ profileId: pid, defaults: ctxData.profileData.defaults, dossierText: dossierText, dossierObj: ctxData.dossier, readinessText: readinessText, recencyText: recencyText, today: today, isAnchorToday: isAnchorToday, goalEnvelopes: ctxData.goalEnvelopes, allocationPref: ctxData.profileData.session_composition, weekPlannedRows: nightlyWeekCtx.plannedRows, weekContextText: nightlyWeekCtx.weekText, matLoadNote: nightlyWeekCtx.matLoadNote }, decision.session);
       out.stages.alternates = { count: alt.alternates.length, model_calls: alt.model_calls, code_derived: alt.code_derived, swap_error: alt.swap_error || null, breakdown: alt.alternates.map(function (a) { return { key: a.key, source: a.source, problems: (a.problems || []).length }; }) };
       (alt.usage || []).forEach(function (u) { out.tokens.input += (u.usage.input_tokens || 0); out.tokens.output += (u.usage.output_tokens || 0); });
       out.usage.alternates = alt.usage;
@@ -13546,7 +13553,8 @@ async function v2RunVariantModel(args, prompt, label) {
  * The neighbours are the planned sessions on today±1 (today's own anchor is
  * excluded — the athlete is skipping it). Returns { cleaned, problems }.
  */
-function v2EnforceGeneratedSession(profileId, today, generatedSession, weekPlannedRows) {
+function v2EnforceGeneratedSession(profileId, today, generatedSession, weekPlannedRows, opts) {
+  opts = opts || {};
   var yest = v2ShiftYmd(today, -1), tom = v2ShiftYmd(today, 1);
   var neighbours = (weekPlannedRows || []).filter(function (r) { return r.date === yest || r.date === tom; }).map(function (r) {
     var s = r.session || {};
@@ -13556,7 +13564,9 @@ function v2EnforceGeneratedSession(profileId, today, generatedSession, weekPlann
   var weekDates = [{ date: yest }, { date: today }, { date: tom }];
   var enforced = v2Planner.enforceInvariants(
     { sessions: neighbours.concat([genRow]), block: {} },
-    { profileId: profileId, weekDates: weekDates, tiers: { goals: [] }, schedule: { fill_policy: "ai_assigned" }, anchors: [] }
+    // goalEnvelopes/allocationPref enable the §6 driver-share invariant on the
+    // GENERATED session too (same shared enforce path, no second implementation).
+    { profileId: profileId, weekDates: weekDates, tiers: { goals: [] }, schedule: { fill_policy: "ai_assigned" }, anchors: [], goalEnvelopes: opts.goalEnvelopes, allocationPref: opts.allocationPref }
   );
   var cleaned = enforced.sessions.filter(function (s) { return s.date === today; })[0] || genRow;
   // Keep violations about the generated session (today) + any consecutive-high-CNS
@@ -13595,10 +13605,13 @@ async function v2GenerateVariant(args) {
   //    anchor row is NOT touched — ephemeral, for today only.
   if (!v2Rules.sessionHasPrescribedWork(primary)) {
     var freed = Number(primary.duration_min) || (args.ctxData && args.ctxData.profileData && args.ctxData.profileData.defaults && args.ctxData.profileData.defaults.duration_min) || 45;
+    var genGoalEnvelopes = (args.ctxData && args.ctxData.goalEnvelopes) || args.goalEnvelopes || null;
+    var genAllocPref = (args.ctxData && args.ctxData.profileData && args.ctxData.profileData.session_composition) || args.allocationPref || null;
+    var allocationText = genGoalEnvelopes ? v2Rules.renderAllocationGuidance(genGoalEnvelopes, v2Rules.resolveAllocationWeights(genAllocPref)) : "";
     var gprompt = v2Variant.buildGeneratePrompt({
       intent: intent, freedMinutes: freed,
       anchorActivity: primary.headline || primary.category || null,
-      envelopeText: envelopeText,
+      envelopeText: envelopeText, allocationText: allocationText,
       weekContextText: args.weekContextText, matLoadNote: args.matLoadNote,
       dossierText: args.dossierText, readinessText: args.readinessText,
       recencyText: args.recencyText, progressionText: args.progressionText,
@@ -13612,10 +13625,10 @@ async function v2GenerateVariant(args) {
     var genf = v2EnforceGeneratedSession(args.profileId, args.today, {
       category: gsession.category, duration_min: gsession.duration_min, intensity: gsession.intensity,
       why: gsession.why || ggen.obj.why, goal_tags: gsession.goal_tags, segments: gsession.segments,
-    }, args.weekPlannedRows);
+    }, args.weekPlannedRows, { goalEnvelopes: genGoalEnvelopes, allocationPref: genAllocPref });
     var gcheck = v2Variant.checkVariant(genf.cleaned, intent, dossier, { generated: true, isAnchor: false, freedMinutes: freed, refused: grefused });
     return {
-      session: { category: genf.cleaned.category, duration_min: genf.cleaned.duration_min, intensity: genf.cleaned.intensity, why: genf.cleaned.why, goal_tags: genf.cleaned.goal_tags, segments: genf.cleaned.segments },
+      session: { category: genf.cleaned.category, duration_min: genf.cleaned.duration_min, intensity: genf.cleaned.intensity, why: genf.cleaned.why, goal_tags: genf.cleaned.goal_tags, segments: genf.cleaned.segments, allocation: genf.cleaned.allocation },
       why: ggen.obj.why || gsession.why || "Replacement session for the freed slot.",
       path: "generate", refused: grefused,
       problems: genf.problems.concat(gcheck.problems),
@@ -13664,16 +13677,20 @@ async function v2GenerateVariant(args) {
   var session = gen.obj.session;
   var refused = gen.obj.refused === true;
 
-  // Reuse the planner's structural invariants on the single variant session.
+  // Reuse the planner's structural invariants on the single variant session —
+  // incl. the §6 driver-share check (a transform, e.g. a category swap, that
+  // produces an off-modality session is caught too).
+  var vGoalEnvelopes = (args.ctxData && args.ctxData.goalEnvelopes) || args.goalEnvelopes || null;
+  var vAllocPref = (args.ctxData && args.ctxData.profileData && args.ctxData.profileData.session_composition) || args.allocationPref || null;
   var enforced = v2Planner.enforceInvariants(
     { sessions: [{ date: args.today, slot: 1, movable: args.isAnchor ? false : true, category: session.category, duration_min: session.duration_min, intensity: session.intensity, why: session.why || gen.obj.why, goal_tags: session.goal_tags, segments: session.segments }], block: {} },
-    { profileId: args.profileId, weekDates: [{ date: args.today }], tiers: { goals: [] }, schedule: { fill_policy: "ai_assigned" }, anchors: args.isAnchor ? [{ date: args.today, slot: 1, activity: (primary.headline || primary.category || ""), duration_min: primary.duration_min, category: primary.category }] : [] }
+    { profileId: args.profileId, weekDates: [{ date: args.today }], tiers: { goals: [] }, schedule: { fill_policy: "ai_assigned" }, anchors: args.isAnchor ? [{ date: args.today, slot: 1, activity: (primary.headline || primary.category || ""), duration_min: primary.duration_min, category: primary.category }] : [], goalEnvelopes: vGoalEnvelopes, allocationPref: vAllocPref }
   );
   var cleaned = enforced.sessions.filter(function (s) { return !s._restored; })[0] || enforced.sessions[0];
   var vCheck = v2Variant.checkVariant(cleaned, intent, dossier, { isAnchor: args.isAnchor, refused: refused });
 
   return {
-    session: { category: cleaned.category, duration_min: cleaned.duration_min, intensity: cleaned.intensity, why: cleaned.why, goal_tags: cleaned.goal_tags, segments: cleaned.segments },
+    session: { category: cleaned.category, duration_min: cleaned.duration_min, intensity: cleaned.intensity, why: cleaned.why, goal_tags: cleaned.goal_tags, segments: cleaned.segments, allocation: cleaned.allocation },
     why: gen.obj.why || session.why || "adjusted",
     path: "model", refused: refused,
     problems: enforced.violations.concat(vCheck.problems),

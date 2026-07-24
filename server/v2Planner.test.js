@@ -560,3 +560,57 @@ test("GENERATE adjacency: a medium generated session next to a high-CNS day does
   var res = P.enforceInvariants({ sessions: [yest, gen], block: {} }, c);
   assert.strictEqual(fired(res, "no_consecutive_high_cns").length, 0);
 });
+
+// ── Driver-share composition invariant (closes §6 thinness) ─────────────────
+
+var ALLOC_GE = [
+  { goal: "Build Muscle", tier: "driver", modality_family: "resistance" },
+  { goal: "Fix Posture", tier: "maintenance", modality_family: "skill_mobility" },
+  { goal: "Fix Pubic Osteitis", tier: "maintenance", modality_family: "resistance" },
+];
+function allocCtx() {
+  return { profileId: 4, weekDates: [{ date: "2026-07-22" }], tiers: { goals: [] }, schedule: { fill_policy: "ai_assigned" }, anchors: [], goalEnvelopes: ALLOC_GE };
+}
+
+test("driver_share_underfilled: a Build-Muscle slot filled mostly with mobility FLAGS (the §6 failure)", function () {
+  var thin = {
+    date: "2026-07-22", slot: 1, movable: true, category: "strength", intensity: "medium",
+    why: "mixed", goal_tags: ["Build Muscle", "Fix Posture", "Fix Pubic Osteitis"],
+    segments: [
+      { type: "warmup", duration_min: 5, exercises: [{ name: "Cat-Cow", sets: 2, reps: 10 }] },
+      { type: "mobility", duration_min: 20, exercises: [{ name: "Clamshell", sets: 2, reps: 12 }, { name: "90/90 Hip Rotation", sets: 3, reps: 10 }, { name: "Wall Slide", sets: 3, reps: 15 }] },
+      { type: "straight_sets", duration_min: 15, exercises: [{ name: "Glute Bridge", sets: 3, reps: 15 }] },
+    ],
+  };
+  var res = P.enforceInvariants({ sessions: [thin], block: {} }, allocCtx());
+  assert.ok(fired(res, "driver_share_underfilled").length >= 1, "the starved driver must flag");
+  assert.ok(Array.isArray(thin.allocation) && thin.allocation.length === 3, "the code-owned allocation is attached");
+});
+
+test("driver_share: a resistance-dominant Build-Muscle session PASSES", function () {
+  var full = {
+    date: "2026-07-24", slot: 1, movable: true, category: "strength", intensity: "medium",
+    why: "full", goal_tags: ["Build Muscle", "Fix Posture", "Fix Pubic Osteitis"],
+    segments: [
+      { type: "warmup", duration_min: 5, exercises: [{ name: "Cat-Cow", sets: 1, reps: 10 }] },
+      { type: "straight_sets", duration_min: 35, exercises: [{ name: "Push-Up", sets: 4, reps: 12 }, { name: "Dumbbell Row", sets: 4, reps: 12 }, { name: "Overhead Press", sets: 4, reps: 10 }, { name: "Goblet Squat", sets: 4, reps: 12 }, { name: "Romanian Deadlift", sets: 3, reps: 10 }] },
+      { type: "mobility", duration_min: 5, exercises: [{ name: "Wall Slide", sets: 2, reps: 12 }] },
+    ],
+  };
+  var res = P.enforceInvariants({ sessions: [full], block: {} }, allocCtx());
+  assert.strictEqual(fired(res, "driver_share_underfilled").length, 0);
+});
+
+test("driver_share: a pure cardio (aerobic driver) day does NOT flag", function () {
+  var ge = [{ goal: "Stamina", tier: "driver", modality_family: "aerobic" }];
+  var cardio = { date: "2026-07-25", slot: 1, movable: true, category: "cardio", intensity: "low", why: "z2", goal_tags: ["Stamina"], segments: [{ type: "steady_state", duration_min: 40, exercises: [{ name: "Indoor Bike" }] }] };
+  var res = P.enforceInvariants({ sessions: [cardio], block: {} }, { profileId: 4, weekDates: [{ date: "2026-07-25" }], tiers: { goals: [] }, schedule: { fill_policy: "ai_assigned" }, anchors: [], goalEnvelopes: ge });
+  assert.strictEqual(fired(res, "driver_share_underfilled").length, 0);
+});
+
+test("driver_share: DEGRADES to no-op when goalEnvelopes absent (autoregulator path)", function () {
+  var thin = { date: "2026-07-22", slot: 1, movable: true, category: "strength", intensity: "medium", why: "x", goal_tags: ["Build Muscle"], segments: [{ type: "mobility", duration_min: 30, exercises: [{ name: "Cat-Cow", sets: 3, reps: 10 }] }] };
+  var res = P.enforceInvariants({ sessions: [thin], block: {} }, { profileId: 4, weekDates: [{ date: "2026-07-22" }], tiers: { goals: [] }, schedule: { fill_policy: "ai_assigned" }, anchors: [] });
+  assert.strictEqual(fired(res, "driver_share_underfilled").length, 0, "no envelopes → check skipped, no crash");
+  assert.strictEqual(thin.allocation, undefined, "no allocation attached without envelopes");
+});

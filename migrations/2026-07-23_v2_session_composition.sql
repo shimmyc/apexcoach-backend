@@ -1,0 +1,61 @@
+-- ============================================================================
+-- Engine v2 — session composition allocation (closes the §6 thinness)
+-- 2026-07-23
+--
+-- ⚠ DELIVERED UNRUN. But note: NO DDL IS REQUIRED.
+--
+-- WHY NO DDL
+-- ---------
+-- Two additive JSONB keys, both nested inside columns that already exist:
+--
+--   1. The per-session ALLOCATION (code-owned composition budget) is stored on
+--      each planned session at:
+--          planned_sessions.session -> 'allocation'
+--      an array of { goal, tier, modality_family, weight, share_fraction,
+--      share_min }. `planned_sessions.session` is already jsonb, so nesting a key
+--      needs no ALTER TABLE (same as `segments`, `goal_tags`, `why`).
+--
+--   2. The PREFERENCE SEAM (the per-profile override of the tier weights) is:
+--          profiles.profile_data -> 'session_composition'
+--      shape: { "tier_weights": { "driver": 3, "maintenance": 1, "accessory": 0.5 } }
+--      `profile_data` is already jsonb, so this needs no ALTER TABLE either (same
+--      as `defaults`, `schedule_v3`, `engine_v2`, `goals[].tier`).
+--
+-- Unset → the code falls back to the default tier weights
+-- (coachingRules.ALLOCATION_TIER_WEIGHTS = driver:3 / maintenance:1 /
+-- accessory:0.5). A NEW USER with zero config therefore gets sane composition
+-- automatically (untiered goals resolve to maintenance → equal shares, no driver
+-- privileged).
+--
+-- WHERE A SETTINGS CONTROL WOULD WRITE IT (for the later UI session)
+-- ----------------------------------------------------------------
+-- A composition control writes `profile_data.session_composition.tier_weights`
+-- via the ordinary PATCH /api/profiles/:id path, EXACTLY like the Phase-6 v2
+-- defaults picker writes `profile_data.defaults`. No new endpoint, no new column.
+-- Read side: v2Planner.enforceInvariants + the variant/generate paths read it via
+-- `ctx.allocationPref` (= profile_data.session_composition), resolved through
+-- coachingRules.resolveAllocationWeights(). The read touches ONLY the v2 path
+-- (behind the engine_v2 flag), so v1 / non-flagged profiles are unaffected.
+--
+-- INTEGRITY is enforced in CODE (the driver_share_underfilled invariant in
+-- v2Planner), not by the DB — a jsonb CHECK cannot express "the driver's modality
+-- fills its allocated share", so none is added.
+-- ============================================================================
+
+-- (No DDL.)
+
+-- ---------------------------------------------------------------------------
+-- READ-ONLY inspection: the stored allocation per planned session for one
+-- profile's active block. Safe to run.
+-- ---------------------------------------------------------------------------
+-- SELECT ps.date, ps.slot,
+--        ps.session ->> 'category'                          AS category,
+--        ps.session ->> 'duration_min'                      AS duration_min,
+--        ps.session -> 'allocation'                         AS allocation
+-- FROM planned_sessions ps
+-- WHERE ps.profile_id = 4
+-- ORDER BY ps.date, ps.slot;
+
+-- Inspect the preference override (null = using tier-derived defaults):
+-- SELECT id, profile_data -> 'session_composition' AS session_composition
+-- FROM profiles WHERE id = 4;

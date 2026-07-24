@@ -20,6 +20,7 @@
  */
 
 var rules = require("./coachingRules");
+var stages = require("./v2Stages");   // classifyPattern (no cycle: v2Stages requires only coachingRules)
 
 var MAX_DRIVERS = rules.MAX_DRIVERS;
 var DAY_KEYS = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"];
@@ -355,6 +356,9 @@ function buildPlannerPrompt(ctx) {
   // intended/calendar). Placed above emphasis because it is the actionable
   // volume/intensity envelope; emphasis is the softer "what to focus on".
   add("envelopes", rules.renderEffectiveEnvelopesForPrompt(ctx.goalEnvelopes));
+  // Composition allocation — how to split a multi-goal session and fill the
+  // driver's share FIRST. The code enforces this (driver_share_underfilled).
+  add("allocation", rules.renderAllocationGuidance(ctx.goalEnvelopes, rules.resolveAllocationWeights(ctx.allocationPref)));
   add("emphasis", renderEmphasisBlock(ctx.phaseResolutions));
   add("dossier", ctx.dossierText);
   add("progression", ctx.progressionText);
@@ -371,6 +375,79 @@ function buildPlannerPrompt(ctx) {
 }
 
 // ── Post-generation invariants (CODE, not prompt rules) ─────────────────────
+
+// ── Session composition — driver-share enforcement (closes §6) ──────────────
+// A fallback modality for a segment whose exercises don't classify (rare).
+var SEGTYPE_FAMILY = {
+  steady_state: "aerobic", interval_long: "aerobic", interval_short: "aerobic", sprint: "aerobic",
+  mobility: "skill_mobility", active_recovery: "skill_mobility", warmup: "skill_mobility", cooldown: "skill_mobility",
+};
+var DRIVER_SHARE_TOL = 0.10;   // a 60%-share driver passes at >= 50% of actual work
+
+/**
+ * Estimated WORKING minutes per modality_family for a session. Mirrors
+ * rules.estimateSegmentWorkMinutes' per-set model (same constants) so the parts
+ * sum ~= estimateSessionWorkMinutes, but split by the modality each exercise
+ * trains (classifyPattern -> patternFamily). Pure.
+ */
+function workByModality(session) {
+  var out = {};
+  function add(fam, w) { if (!fam) fam = "resistance"; out[fam] = (out[fam] || 0) + w; }
+  ((session && session.segments) || []).forEach(function (seg) {
+    var exs = seg.exercises || [];
+    if (!exs.length) return;
+    var segFam = SEGTYPE_FAMILY[seg.type] || null;
+    var allBare = exs.every(function (ex) { return !ex.reps && !ex.time_seconds; });
+    if (allBare) {
+      // A continuous time block (a bike/run): its declared minutes are the work,
+      // classified by its first exercise / segment type.
+      var fam0 = rules.patternFamily(stages.classifyPattern(exs[0].name, null, null)) || segFam || "resistance";
+      add(fam0, Number(seg.duration_min) || 0);
+      return;
+    }
+    exs.forEach(function (ex) {
+      var sets = Number(ex.sets) || 1;
+      var w;
+      if (ex.time_seconds) w = sets * (Number(ex.time_seconds) / 60) + sets * rules.WORK_MIN_REST_PER_HOLD;
+      else w = sets * (rules.workIsMobilityRate(ex.name, seg.type) ? rules.WORK_MIN_PER_MOBILITY_SET : rules.WORK_MIN_PER_STRENGTH_SET);
+      var fam = rules.patternFamily(stages.classifyPattern(ex.name, null, null)) || segFam || "resistance";
+      add(fam, w);
+    });
+  });
+  return out;
+}
+
+/**
+ * The DRIVER-SHARE invariant. The driver goal(s)' modality must actually occupy
+ * at least their allocated fraction of the session's real work — otherwise the
+ * driver was starved by mobility/accessory filler (the §6 thinness). Returns a
+ * `regenerate`-severity violation (reuses the planner's existing 2-attempt cap),
+ * or [] when there is no driver to enforce.
+ */
+function driverShareProblems(session, allocation) {
+  var drivers = (allocation || []).filter(function (a) { return a.tier === "driver"; });
+  if (!drivers.length) return [];
+  var driverFrac = drivers.reduce(function (a, d) { return a + (d.share_fraction || 0); }, 0);
+  var driverMods = {};
+  drivers.forEach(function (d) { if (d.modality_family) driverMods[d.modality_family] = 1; });
+  if (!Object.keys(driverMods).length) return [];
+
+  var wbm = workByModality(session);
+  var total = Object.keys(wbm).reduce(function (a, k) { return a + wbm[k]; }, 0);
+  if (total <= 0) return [];
+  var driverWork = Object.keys(wbm).reduce(function (a, k) { return a + (driverMods[k] ? wbm[k] : 0); }, 0);
+  var actualFrac = driverWork / total;
+  if (actualFrac + 1e-9 < driverFrac - DRIVER_SHARE_TOL) {
+    var mods = Object.keys(driverMods).join("/");
+    return [{
+      invariant: "driver_share_underfilled", severity: "regenerate",
+      detail: (session.date || "session") + ": driver goal(s) allocated " + Math.round(driverFrac * 100) +
+        "% of the slot (" + mods + " work) but only " + Math.round(actualFrac * 100) +
+        "% of the actual work is " + mods + " — the driver's share is filled with off-modality (rehab/mobility/accessory) work. Put the driver's own envelope work in first.",
+    }];
+  }
+  return [];
+}
 
 /**
  * Prompt rules are probabilistic; these are not. Same precedent as
@@ -619,6 +696,23 @@ function enforceInvariants(plan, ctx) {
     }
   });
 
+  // 8c. SESSION COMPOSITION / DRIVER SHARE (closes §6). Attach the CODE-OWNED
+  //     allocation to each prescribed-work session, then require the driver's
+  //     modality to actually fill its allocated share. Skipped when goalEnvelopes
+  //     is absent (the autoregulator's single-session edit does not re-compose,
+  //     so it does not pass envelopes — the check degrades to a no-op there).
+  //     Same severity ("regenerate") + retry path as the work floor (8b); does
+  //     NOT touch session_time_budget's own checks.
+  if (ctx.goalEnvelopes) {
+    var goalIndex = rules.buildGoalIndex(ctx.goalEnvelopes);
+    var allocWeights = rules.resolveAllocationWeights(ctx.allocationPref);
+    sessions.forEach(function (s) {
+      if (!rules.sessionHasPrescribedWork(s)) return;   // anchor / fixed class
+      s.allocation = rules.computeSessionAllocation(s.goal_tags, Number(s.duration_min) || 0, goalIndex, allocWeights);
+      driverShareProblems(s, s.allocation).forEach(function (v) { violations.push(v); });
+    });
+  }
+
   // 9. EVERY TIERED GOAL MUST ACTUALLY BE PRESCRIBED.
   //    `Daily Meditation` (accessory) appeared in the first plan ONLY inside a
   //    segment's `intent` STRING and was never prescribed — acknowledged in
@@ -694,6 +788,7 @@ function toPersistenceShape(plan, enforced, ctx) {
           why: s.why,
           goal_tags: Array.isArray(s.goal_tags) ? s.goal_tags : [],
           segments: Array.isArray(s.segments) ? s.segments : [],
+          allocation: Array.isArray(s.allocation) ? s.allocation : undefined,   // code-owned composition budget
           restored_by_invariant: !!s._restored,
         },
       };
@@ -857,5 +952,6 @@ module.exports = {
   flattenSessionForCache, flattenExercise,
   buildPlannerPrompt, enforceInvariants, toPersistenceShape, extractPlanJSON,
   renderTierBlock, renderScheduleBlock, renderEmphasisBlock,
-  DAY_KEYS, DAY_LABELS, SESSION_TOTAL_SET_CAP, HIGH_CNS_CATEGORIES,
+  workByModality, driverShareProblems,
+  DAY_KEYS, DAY_LABELS, SESSION_TOTAL_SET_CAP, HIGH_CNS_CATEGORIES, DRIVER_SHARE_TOL,
 };

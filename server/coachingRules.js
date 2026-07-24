@@ -1053,6 +1053,98 @@ function renderEffectiveEnvelopesForPrompt(goalEnvelopes) {
   return L.join("\n");
 }
 
+// ── Session composition allocation (closes the §6 mixed-session thinness) ────
+// A session serving multiple goals had NO allocation contract: nothing said how
+// much of the slot belonged to the driver vs maintenance/accessory work, and
+// nothing enforced that the driver's share was filled with driver-appropriate
+// work FIRST. The model filled a Build-Muscle (capacity/resistance) slot with
+// low-density rehab work (cat-cow / clamshell / 90-90 = skill_mobility) and the
+// session came in thin. This adds a CODE-OWNED per-session allocation; the model
+// fills exercises inside each share; a new invariant (v2Planner) enforces that
+// the driver's modality actually fills its share.
+//
+// Reuses the A1/A2 envelopes (a goal's modality_family comes from its effective
+// envelope) — this is "which envelopes apply and in what proportion", NOT a new
+// envelope system.
+
+// Default tier weights. Overridable per-profile via
+// profile_data.session_composition.tier_weights (the preference SEAM — read only
+// on the v2 path; a later settings control writes it, exactly like the Phase-6
+// defaults picker writes profile_data.defaults). Untiered goals resolve to
+// maintenance upstream (resolveTiers), so a NEW USER with zero config gets equal
+// maintenance shares — sane composition automatically, no driver privileged.
+var ALLOCATION_TIER_WEIGHTS = { driver: 3, maintenance: 1, accessory: 0.5 };
+
+function resolveAllocationWeights(pref) {
+  var w = { driver: ALLOCATION_TIER_WEIGHTS.driver, maintenance: ALLOCATION_TIER_WEIGHTS.maintenance, accessory: ALLOCATION_TIER_WEIGHTS.accessory };
+  var tw = pref && pref.tier_weights;
+  if (tw && typeof tw === "object") {
+    ["driver", "maintenance", "accessory"].forEach(function (k) {
+      if (typeof tw[k] === "number" && isFinite(tw[k]) && tw[k] >= 0) w[k] = tw[k];
+    });
+  }
+  return w;
+}
+
+function allocNormTitle(t) { return String(t || "").toLowerCase().trim(); }
+
+/** goal title -> { goal, tier, modality_family }, from v2GoalEnvelopes output. */
+function buildGoalIndex(goalEnvelopes) {
+  var idx = {};
+  (Array.isArray(goalEnvelopes) ? goalEnvelopes : []).forEach(function (ge) {
+    if (ge && ge.goal) idx[allocNormTitle(ge.goal)] = { goal: ge.goal, tier: ge.tier || "maintenance", modality_family: ge.modality_family || null };
+  });
+  return idx;
+}
+
+/**
+ * The CODE-OWNED per-session allocation. Splits the slot's minutes across the
+ * goals the session serves, by tier weight. Pure.
+ *
+ * @param {string[]} goalTags   the session's goal_tags (model-authored — see A2:
+ *                              robust because the check keys off MODALITY dominance)
+ * @param {number} durationMin
+ * @param {object} goalIndex    from buildGoalIndex()
+ * @param {object} weights      from resolveAllocationWeights()
+ * @returns {Array} [{goal, tier, modality_family, weight, share_fraction, share_min}]
+ */
+function computeSessionAllocation(goalTags, durationMin, goalIndex, weights) {
+  weights = weights || ALLOCATION_TIER_WEIGHTS;
+  var dur = Number(durationMin) || 0;
+  var entries = [];
+  var seen = {};
+  (Array.isArray(goalTags) ? goalTags : []).forEach(function (t) {
+    var g = goalIndex[allocNormTitle(t)];
+    if (!g) return;
+    if (seen[allocNormTitle(t)]) return;
+    seen[allocNormTitle(t)] = true;
+    var w = (typeof weights[g.tier] === "number") ? weights[g.tier] : weights.maintenance;
+    entries.push({ goal: g.goal, tier: g.tier, modality_family: g.modality_family, weight: w });
+  });
+  if (!entries.length) {
+    // No known goals tagged — the whole slot is general work; no driver to enforce.
+    return [{ goal: null, tier: "general", modality_family: null, weight: 1, share_fraction: 1, share_min: dur }];
+  }
+  var sumW = entries.reduce(function (a, e) { return a + e.weight; }, 0) || 1;
+  entries.forEach(function (e) { e.share_fraction = e.weight / sumW; e.share_min = Math.round(e.share_fraction * dur); });
+  return entries;
+}
+
+/** Prompt guidance — the model fills within the allocation; the code enforces it. */
+function renderAllocationGuidance(goalEnvelopes, weights) {
+  weights = weights || ALLOCATION_TIER_WEIGHTS;
+  var L = ["SESSION COMPOSITION — allocate a multi-goal session's minutes, and FILL THE DRIVER'S SHARE FIRST (the code enforces this):"];
+  L.push("- When a session serves more than one goal, split its minutes by tier weight: driver x" + weights.driver + ", maintenance x" + weights.maintenance + ", accessory x" + weights.accessory + " (normalized). The DRIVER goal gets the majority of the slot.");
+  L.push("- Fill the driver's share with the DRIVER GOAL'S OWN envelope work (its modality — resistance / aerobic / skill_mobility) FIRST. Only after the driver's share is full do maintenance and accessory movements get room.");
+  L.push("- An accessory/mobility movement occupying the driver's share is WRONG: a resistance-driver (e.g. Build Muscle) session filled mostly with cat-cow / clamshell / 90-90 (skill_mobility) STARVES the driver and will be REJECTED and regenerated. Put the driver's compound/loaded work in first; rehab/mobility is the remainder, not the bulk.");
+  var drivers = (Array.isArray(goalEnvelopes) ? goalEnvelopes : []).filter(function (g) { return g.tier === "driver"; });
+  if (drivers.length) {
+    L.push("- This athlete's DRIVER goal(s) and the modality that must fill their share: " +
+      drivers.map(function (g) { return g.goal + " -> " + g.modality_family; }).join("; ") + ".");
+  }
+  return L.join("\n");
+}
+
 // ── Prompt rendering ────────────────────────────────────────────────────────
 
 var SECTION_ORDER = [
@@ -1256,4 +1348,7 @@ module.exports = {
   PATTERN_VALUE_METRICS, patternMetrics, metricFitsPattern,
   COLD_START_RULES, coldStartStage,
   renderStageEnvelopesForPrompt, stageEnvelopeLengths, renderEffectiveEnvelopesForPrompt,
+  // session composition allocation (closes §6 mixed-session thinness)
+  ALLOCATION_TIER_WEIGHTS, resolveAllocationWeights, buildGoalIndex,
+  computeSessionAllocation, renderAllocationGuidance,
 };

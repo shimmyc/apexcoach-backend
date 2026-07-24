@@ -379,3 +379,55 @@ test("evidence markers exist on every contested constant", function () {
     assert.ok(o.note && o.note.length > 20, "a contested rule must explain WHY it is contested");
   });
 });
+
+// ── Session composition allocation (closes §6 mixed-session thinness) ────────
+
+var GE_FIX = [
+  { goal: "Build Muscle", tier: "driver", modality_family: "resistance" },
+  { goal: "Stamina", tier: "driver", modality_family: "aerobic" },
+  { goal: "Fix Posture", tier: "maintenance", modality_family: "skill_mobility" },
+  { goal: "Fix Pubic Osteitis", tier: "maintenance", modality_family: "resistance" },
+  { goal: "Daily Meditation", tier: "accessory", modality_family: "skill_mobility" },
+];
+
+test("computeSessionAllocation: a driver-dominant mixed session gives the driver the majority share", function () {
+  var idx = r.buildGoalIndex(GE_FIX), w = r.resolveAllocationWeights(null);
+  var a = r.computeSessionAllocation(["Build Muscle", "Fix Posture", "Fix Pubic Osteitis"], 45, idx, w);
+  var driver = a.filter(function (e) { return e.tier === "driver"; })[0];
+  assert.strictEqual(a.length, 3);
+  assert.ok(driver.share_fraction > 0.5, "driver gets the majority");
+  assert.strictEqual(driver.share_min, 27);   // 60% of 45
+});
+
+test("REQ 5 GENERALITY: a fully blended session expresses FIVE allocation entries", function () {
+  var idx = r.buildGoalIndex(GE_FIX), w = r.resolveAllocationWeights(null);
+  var a = r.computeSessionAllocation(["Build Muscle", "Stamina", "Fix Posture", "Fix Pubic Osteitis", "Daily Meditation"], 80, idx, w);
+  assert.strictEqual(a.length, 5, "five entries — a blended yoga/cardio/strength/skill/rehab session");
+  var mods = a.map(function (e) { return e.modality_family; });
+  assert.ok(mods.indexOf("resistance") >= 0 && mods.indexOf("aerobic") >= 0 && mods.indexOf("skill_mobility") >= 0);
+  var sum = a.reduce(function (s, e) { return s + e.share_min; }, 0);
+  assert.ok(Math.abs(sum - 80) <= 2, "shares roughly sum to the duration");
+});
+
+test("COLD START: a new user with no drivers (untiered → maintenance) gets equal, sane composition", function () {
+  var coldGe = [{ goal: "Get Fit", tier: "maintenance", modality_family: "resistance" }, { goal: "Move More", tier: "maintenance", modality_family: "aerobic" }];
+  var a = r.computeSessionAllocation(["Get Fit", "Move More"], 45, r.buildGoalIndex(coldGe), r.resolveAllocationWeights(null));
+  assert.strictEqual(a.length, 2);
+  assert.ok(Math.abs(a[0].share_fraction - 0.5) < 1e-9 && Math.abs(a[1].share_fraction - 0.5) < 1e-9, "equal shares, no goal privileged");
+  assert.strictEqual(a.filter(function (e) { return e.tier === "driver"; }).length, 0, "no driver → driver-share invariant will not fire");
+});
+
+test("preference seam: tier_weights override shifts the driver share; unset falls back to defaults", function () {
+  var idx = r.buildGoalIndex(GE_FIX);
+  var base = r.computeSessionAllocation(["Build Muscle", "Fix Posture", "Fix Pubic Osteitis"], 45, idx, r.resolveAllocationWeights(null));
+  var boosted = r.computeSessionAllocation(["Build Muscle", "Fix Posture", "Fix Pubic Osteitis"], 45, idx, r.resolveAllocationWeights({ tier_weights: { driver: 5 } }));
+  var bDriver = base.filter(function (e) { return e.tier === "driver"; })[0].share_fraction;
+  var oDriver = boosted.filter(function (e) { return e.tier === "driver"; })[0].share_fraction;
+  assert.ok(oDriver > bDriver, "a higher driver weight yields a bigger driver share");
+});
+
+test("untagged / unknown goals → a single 'general' entry (no driver to enforce)", function () {
+  var a = r.computeSessionAllocation(["Nonexistent Goal"], 45, r.buildGoalIndex(GE_FIX), r.resolveAllocationWeights(null));
+  assert.strictEqual(a.length, 1);
+  assert.strictEqual(a[0].tier, "general");
+});

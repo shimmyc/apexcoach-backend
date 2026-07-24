@@ -382,6 +382,7 @@ function buildGeneratePrompt(ctx) {
   add("request", askLines.join("\n"));
 
   add("envelope", ctx.envelopeText);
+  if (ctx.allocationText) add("allocation", ctx.allocationText);
   if (ctx.weekContextText) add("week_context", ctx.weekContextText);
   if (ctx.matLoadNote) add("mat_load", ctx.matLoadNote);
   if (ctx.readinessText) add("readiness", ctx.readinessText);
