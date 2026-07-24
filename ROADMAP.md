@@ -1899,7 +1899,33 @@ All verified present in `server.js`. `:id`/`:userId` = profile id.
     planner and does not touch `estimateSegmentWorkMinutes`/`SESSION_WORK_FLOOR`/`session_time_budget`.
     **A2** is what closes this thinness entry (pass the envelope + week-position into the planner so a
     full session naturally clears the 0.70 floor). Do not close this until A2 ships.
-- **Engine v2 A1 — TWO evaluator follow-ups found live on profile 4 (2026-07-23), logged not fixed.**
+  - **A2 shipped 2026-07-23 and SUBSTANTIALLY improved fill but did NOT fully clear the week — entry
+    STAYS OPEN.** The effective-stage envelope is now in the planner + variant (see `CLAUDE.md` → "Engine
+    v2 — Phase-progression A2"). Live before/after on profile 4 (floor 0.70, UNTOUCHED; anchors excluded):
+    the headline thin strength day cleared **51%→79%**, the "other" day 55%→79%, cardio stayed full
+    (99%→101%/90%, no regression). BUT one MIXED capacity-driver + rehab-maintenance strength day went
+    only **44%→65%** — still under. Diagnosed from the rows: the model filled a Build-Muscle (capacity,
+    fill 33) slot with low-density posture/rehab work (Cat-Cow, Clamshell, 90/90, Bird Dog, Chin Tuck at
+    ~1.0 min/set) instead of the capacity envelope's loaded compound volume — it honored the envelope on
+    the pure-capacity day (Push-Up 4×12, Dumbbell Row 4×12 → 79%) but not the mixed day. **This is model
+    compliance on mixed rehab-heavy days, NOT a floor problem** — the floor was NOT touched,
+    `session_time_budget` correctly flagged the day `regenerate`, the planner retried within its 2-attempt
+    cap, and it persisted flagged (the designed flag-and-persist, now visible). **Candidate follow-ups
+    (do NOT touch the floor):** a mixed-session rule that requires the driver's envelope volume before
+    rehab accessories, or splitting a capacity driver and a rehab-maintenance goal onto separate days.
+    Verdict comes with the within-phase ramp (D) or a dedicated mixed-session pass. No session escalated
+    past the cleared stage (proven: all strength = capacity-level, medium intensity, 10-15 reps).
+- **Engine v2 — metric-fits-pattern DONE in A2, threshold-plausibility is a BEFORE-B BLOCKER (2026-07-23).**
+  The two A1 evaluator follow-ups (below) split: (1) **metric-fits-pattern — FIXED in A2.** `validateCriterion`
+  now rejects a value metric that cannot fit its referent pattern's logged shape (hold-seconds on a
+  rep-based pull-up), grounded in the four `exercises` columns via `PATTERN_VALUE_METRICS`; it rejects
+  only impossible-by-shape pairs, never a loadable-but-unlogged data gap. Live: permanent shape-mismatch
+  UNEVALUABLEs went to 0 (A1 had ≥1). (2) **Threshold PLAUSIBILITY — a BEFORE-B BLOCKER, deliberately NOT
+  built now.** It is harder to do goal-agnostically and HARMLESS while advancement is disabled, but it is
+  a SAFETY issue the moment B enables advancement: an implausibly HIGH threshold (the absurd 135-lb
+  weighted chin tuck) is a permanent hold; an implausibly LOW one advances someone prematurely on a rehab
+  arc. **B must not ship without a threshold-plausibility gate.**
+- **Engine v2 A1 — the two original evaluator follow-ups (2026-07-23), for the record.**
   Both are surfaced HONESTLY by the three-state resolver (as UNEVALUABLE), never as a fabricated MET/UNMET,
   so neither is a correctness bug — they are authoring-quality gaps for a later pass. (1) **The authoring
   validator guarantees pattern∈envelope but NOT metric-fits-pattern.** The model authored e.g.
@@ -2224,8 +2250,14 @@ produced 2026-07-22 and approved; see that session's report. Phasing:
     maintenance-tier goal to driver (Build Muscle is first in line) and demote the completed rehab
     goal to maintenance**. This belongs with the re-plan triggers (driver-tier goal change / phase
     completion), NOT with the planner itself. Deliberately not built in Phase 3.
-- **◧ Engine v2 — PHASE-AWARE SESSION PRESCRIPTION (Session 11, 2026-07-23 — A1 ✅ DONE + DEPLOYED;
-  A2/B/C/D pending).** The architectural fix for the OPEN §6 session-content thinness entry.
+- **◧ Engine v2 — PHASE-AWARE SESSION PRESCRIPTION (Session 11, 2026-07-23 — A1 + A2 ✅ DONE + DEPLOYED;
+  B/C/D pending).** The architectural fix for the still-OPEN §6 session-content thinness entry.
+  **A2 (envelope wired into the planner + variant) shipped 2026-07-23** — see `CLAUDE.md` → "Engine v2
+  — Phase-progression A2". Live result on profile 4: the headline thin strength day cleared 51%→79%,
+  cardio stayed full, and the metric-fits-pattern validator drove permanent shape-mismatch UNEVALUABLEs
+  to 0 — BUT one MIXED capacity+rehab strength day still persisted at 65% (up from 44%; model filled a
+  capacity slot with low-density rehab work), so the regenerated week does NOT fully clear the floor and
+  the §6 entry stays OPEN. Floor untouched (0.70); no session escalated past the cleared stage (proven).
   **A1 (evaluator only) shipped 2026-07-23** — see `CLAUDE.md` → "Engine v2 — Phase-progression A1"
   for the full record. A1 built the stage ladder + code-owned envelopes (`server/coachingRules.js`),
   the three-state exit-criteria evaluator + tagged-referent authoring validator + effective-stage gate
@@ -2260,10 +2292,13 @@ produced 2026-07-22 and approved; see that session's report. Phasing:
   **Ordered build (REDRAWN — one scoped session each):** **(A1 ✅ DONE 2026-07-23)** stage ladder +
   code envelopes + the three-state exit-criteria evaluator (schema, tagged-referent authoring validator,
   MET/UNMET/UNEVALUABLE resolver, effective-stage gate with advancement DISABLED) + cold-start table +
-  backfill + audit — the pure evaluator, plan byte-identical; **(A2, NEXT)** pass the envelope AND the
-  athlete's week-position-in-phase into the planner prompt + wire `session_fill` → the two thin strength
-  days clear 0.70 with the floor untouched and duration untrimmed (this is what closes the §6 thinness
-  entry); **(B)** ENABLE advancement — the dwell floor + apply the effective-stage verdict + wire the
+  backfill + audit — the pure evaluator, plan byte-identical; **(A2 ✅ DONE 2026-07-23)** pass the effective-stage
+  envelope (gate-clamped, never intended/calendar) AND the athlete's week-position-in-phase into the
+  planner AND variant prompts + the code-driven honest-shorten rule → headline thin strength day cleared
+  51%→79%, cardio stayed full, no escalation past the cleared stage (proven), metric-fits-pattern
+  validator folded in (0 permanent shape-mismatch UNEVALUABLEs). PARTIAL: one mixed capacity+rehab day
+  still 65% (§6 stays OPEN — model under-fills a capacity slot with rehab work on mixed days, NOT a floor
+  issue; floor untouched); **(B)** ENABLE advancement — the dwell floor + apply the effective-stage verdict + wire the
   pain/deload safety-regression veto (time-elapsed alone must NEVER advance a rehab phase; persist a
   monotonic-non-rising `effective_stage`, which the A1 resolver already accepts as `prior_effective_stage`);
   (C) make the catalog reachable at plan time (filtered subset in the prompt) + add a

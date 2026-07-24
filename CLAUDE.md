@@ -2632,6 +2632,99 @@ time and NOT persisted — no column, until B.**
   advancement + the dwell floor + the pain/deload safety veto). The §6 time-budget/thinness entry stays
   OPEN — A2 is what closes it.
 
+## Engine v2 — Phase-progression A2 (2026-07-23): wire the effective-stage envelope into the planner
+
+A2 takes the A1 evaluator and USES it: the planner and the variant now receive each goal's
+effective-stage envelope, so a session gets filled to the volume/intensity its stage actually calls for
+instead of the thin, undifferentiated skeleton the model was producing. This is the §6 thinness fix
+**by construction** — the code owns the bands, the model fills exercises + loads inside them, and the
+work floor stops firing because sessions become genuinely full (the floor itself is UNTOUCHED). Also
+folds in the one non-deferrable A1 follow-up (metric-fits-pattern). **Advancement stays disabled**;
+`estimateSegmentWorkMinutes` / `SESSION_WORK_FLOOR` / `session_time_budget` are untouched.
+
+### What A2 injects
+- **`v2GoalEnvelopes(goals, progression, today)`** (`server.js`) — per non-accessory goal, the
+  GATE-CLAMPED effective stage (via `v2StageAuditForGoal` → `resolveEffectiveStage`, advancement
+  disabled) + its modality_family + week-position. **Drawn from the effective stage, NEVER from
+  `intended_stage` or the calendar phase** — so with advancement off the envelope fills the *current
+  cleared stage* and can never escalate. `loadV2Context` computes it once; the plan route, the nightly,
+  and the variant all read it.
+- **`renderEffectiveEnvelopesForPrompt(goalEnvelopes)`** (`coachingRules.js`) — the per-goal envelope
+  block: working-set/duration band, intensity band, rep-scheme, modality mix, and the target working
+  fill, drivers sorted first. Plus the **SESSION-FILL RULE**: a capacity/load/power session FILLS a full
+  slot (add sets/exercises, never empty minutes); a session serving ONLY a low-fill stage
+  (tissue_tolerance / maintenance / mobility) is HONESTLY SHORT — set its duration to the envelope's
+  fill, do NOT pad and do NOT bolt on filler. This is the §6-sanctioned "shorten by construction (code
+  envelope), never by model relabel" distinction. Rendered into `buildPlannerPrompt` (above the softer
+  `emphasis` block) and, identically, into `buildVariantPrompt` so a category swap refills to the right
+  stage and cannot escalate. (Found + fixed a `order[tier] || 1` falsy-`0` bug that mis-sorted drivers.)
+- **Week-position-in-phase** is surfaced ("week N of ~M") but A2 does NOT build the within-phase ramp
+  (that is D) — it only makes the position available.
+- The envelope is code-owned; the model selects exercises + loads inside it — the same
+  code-enforced/model-authored split as `renderWorkBudgetGuidance`.
+
+### Metric-fits-pattern validator (the folded A1 follow-up — NOT deferrable)
+A criterion whose metric can never fit its referent pattern's logged shape (hold-seconds on a rep-based
+pull-up) is the permanent-hold bug arriving through a different door than the envelope check, and it
+would contaminate A2's own success metric (UNEVALUABLE dropping as prescribed patterns get logged). So
+`validateCriterion` now also checks metric-fits-pattern:
+- **`PATTERN_VALUE_METRICS`** (`coachingRules.js`) — per pattern, which of the four VALUE metrics its
+  logged shape produces, grounded in the four `exercises` columns (reps→best_reps, weight_lbs→
+  best_weight_lbs, duration_min→best_hold_seconds *or* best_session_minutes by category). `sessions_logged`
+  (count) and `trend` fit ANY pattern and always pass.
+- **The load-bearing distinction:** this rejects a SHAPE mismatch (a pull-up can never be a hold), NOT a
+  data gap. `best_weight_lbs` on `hip_bridge` is ALLOWED (a hip thrust CAN be loaded) even if only
+  bodyweight bridges are logged so far — that resolves UNEVALUABLE-until-logged and A2's plan closes it.
+  Only impossible-by-shape pairs are rejected, at authoring, dropped-and-reported like an out-of-envelope
+  referent.
+
+### Verification (live, profile 4; unit tests local)
+- **174 v2 tests** (was 165): metric-fits-pattern (shape mismatch rejected / data gap allowed / count+trend
+  always fit / every pattern has a metric set), the effective-envelope renderer (renders the effective
+  stage it is given, never a higher one; honest-shorten rule present; drivers sort first; empty→empty),
+  and an integration check that a HELD-at-capacity goal renders the capacity envelope not `load`.
+- **Before/after work-floor table** (forced re-plan; floor 0.70, UNCHANGED; anchors excluded):
+
+  | day | category | pre-A2 | post-A2 |
+  |---|---|---|---|
+  | headline thin #1 | strength | **51% FLAG** | **79% PASS** |
+  | headline thin #2 | strength | **44% FLAG** | **65% FLAG** |
+  | "other" | rehab/other | 55% FLAG | 79% PASS |
+  | cardio ×2 | cardio | 99% PASS | 101% / 90% PASS |
+
+- **Does the regenerated week clear the floor? NOT fully — so the §6 entry stays OPEN.** 5 of 6
+  non-anchor sessions clear (up from ~2 of 5). The headline thin strength day cleared 51%→79%; cardio
+  stayed full (no regression); but one MIXED capacity-driver + rehab-maintenance strength day persists
+  at **65%** (up from 44%). Cause, diagnosed from the rows: on that day the model filled a Build-Muscle
+  (capacity, fill 33) slot with low-density posture/rehab work (Cat-Cow, Clamshell, 90/90, Bird Dog,
+  Chin Tuck at ~1.0 min/set) instead of the capacity envelope's loaded compound volume — it honored the
+  envelope on the pure-capacity day (Push-Up 4×12, Dumbbell Row 4×12 → 79%) but under-delivered on the
+  mixed day. That is model compliance on mixed rehab-heavy days, **not a floor issue** — the floor was
+  NOT touched, and `session_time_budget` correctly flagged that day `regenerate`, the planner retried
+  within its existing 2-attempt cap, and it persisted flagged (the designed flag-and-persist, now
+  VISIBLE). The other flag was the opposite problem: the pure-capacity day hit the coarse 30-set
+  `session_volume_cap` (32 sets — over-filled, flagged not repaired).
+- **No escalation past the cleared stage — PROVEN, not asserted:** every strength session is
+  `intensity=medium` with 10–15-rep schemes and 2–4 sets (Glute Bridge even loaded at 10 lb — the
+  "weighted glute bridge" the A1 emphasis named), i.e. exactly the capacity envelope; zero load-stage
+  (3–8 heavy) or power-stage (1–5 explosive) work. Cardio is zone-2 low (capacity aerobic), never
+  threshold/sprint.
+- **UNEVALUABLE, split by cause vs A1's 6/9:** now **5 of 9 UNEVALUABLE with ZERO permanent
+  shape-mismatches** (A1 had ≥1). The metric-fits-pattern validator eliminated the permanent-unevaluable
+  class at authoring; all 5 remaining are DATA GAPS (pattern/exercise not yet logged, a metric not yet
+  logged loaded/timed, or <3 sessions for a trend) that A2's envelope-driven plan now prescribes, so
+  they close as the athlete trains — the measurement is no longer contaminated. (The absolute count
+  varies run-to-run with the model's non-deterministic authoring; the STRUCTURAL win is 0 permanent
+  shape-mismatches.)
+- **Nightly** (forced) ran clean in 5.6s — today is the MMA anchor, correctly KEPT by the autoregulator
+  (anchor-integrity check reverted the model's touch); the swap alternate uses the same envelope block.
+- **Plan byte-identical** for profile 1 across the A2 deploy; v1 paths untouched. `/api/v2/audit` now
+  also surfaces `goal_envelopes` (what the planner receives).
+- **NOT done (correctly): B** (enable advancement + dwell floor + pain/deload veto) and **D** (within-phase
+  ramp). The §6 thinness entry stays OPEN pending the mixed-session residual; **threshold plausibility is
+  logged as a BEFORE-B blocker** (an implausible threshold is a permanent hold or a premature advance
+  once advancement is on).
+
 ## Migrations
 
 One-time data fixes that should be run in the Supabase SQL editor.
