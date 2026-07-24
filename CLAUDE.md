@@ -2794,6 +2794,62 @@ change, no npm deps. **184 v2 tests** (was 174). Profile 1 / non-flagged profile
 alternates layout stays queued and should come AFTER this (it now has real anchor-day alternates to lay
 out). The strength-generate work-floor flag is the same mixed capacity+rehab residual tracked OPEN in §6.
 
+## Engine v2 — Session composition allocation (2026-07-23): the §6 mixed-session fix
+
+The mixed capacity+rehab thinness surfaced three times (A2's 65% flag, the anchor-generate 56% flag) as
+the same shape: a Build-Muscle (capacity/resistance) slot filled with low-density rehab work (Cat-Cow,
+Clamshell, 90-90 = skill_mobility) instead of the capacity envelope's compound volume. Named precisely:
+**a session serving multiple goals had NO allocation contract** — nothing said how much of the slot
+belonged to the driver vs maintenance/accessory, and nothing enforced the driver's share be filled with
+driver work first. The model filled the slot with whatever it liked, the driver got starved, the session
+came in thin. This is enforcement, not preference — even an athlete who wants 40 min strength + 10 min
+rehab doesn't want the strength 40 filled with cat-cows.
+
+### The allocation contract (code-owned; the model fills inside it)
+- **`computeSessionAllocation(goalTags, duration, goalIndex, weights)`** (`coachingRules.js`) — a
+  per-session budget `[{goal, tier, modality_family, weight, share_fraction, share_min}]`, split by tier
+  weight. **Stored** on `planned_sessions.session.allocation` (additive jsonb, no DDL). The code owns it;
+  the model fills exercises inside each share.
+- **Tier-derived defaults** `ALLOCATION_TIER_WEIGHTS = {driver:3, maintenance:1, accessory:0.5}`. A
+  driver-dominant session gives the driver ~60%; maintenance/accessory the remainder. **Cold start is
+  first-class:** untiered goals resolve to maintenance upstream (`resolveTiers`), so a NEW USER with zero
+  config gets equal, sane composition automatically — no driver privileged, no configuration needed.
+- **Generality:** a fully blended session (yoga/cardio/strength/skill/rehab) is expressed as a
+  five-entry allocation, not two — demonstrated in the unit suite.
+
+### Driver-share invariant (the enforcement)
+`driver_share_underfilled` (new, in `enforceInvariants`, severity `regenerate` — reuses the existing
+2-attempt cap; does **NOT** touch `session_time_budget`/`SESSION_WORK_FLOOR`/`estimateSegmentWorkMinutes`).
+It is **absolute, not proportional**: the driver goal's modality work (via `workByModality` →
+`classifyPattern`+`patternFamily`, the A1/A2 machinery, not a new system) must be
+`>= driver-share-minutes × floor density`. The first live re-plan proved why absolute matters — a
+proportional check passed a session where the driver dominated a *too-small pie* (73% of 25 min); only
+the total floor flagged, which doesn't tell the model WHERE to add work. Absolute fill ties the driver's
+allocated minutes to real driver work. Reuses across the **planner, the variant transform, and the
+anchor-day generate branch** (shared enforce path — pass `ctx.goalEnvelopes`); degrades to a no-op when
+envelopes are absent (the autoregulator's single-session edit doesn't re-compose, so it isn't checked).
+
+### Preference seam (NO UI this session)
+`profile_data.session_composition.tier_weights` (additive jsonb, v2-only read via `ctx.allocationPref` →
+`resolveAllocationWeights`; falls back to the tier defaults when unset). **A later settings control writes
+it via the ordinary `PATCH /api/profiles/:id`, exactly like the Phase-6 defaults picker writes
+`profile_data.defaults`** — no new endpoint, no new column. See
+`migrations/2026-07-23_v2_session_composition.sql` (no DDL). Profile 1 / non-flagged never enter this path.
+
+### Live result (profile 4, forced re-plan; floor 0.70 UNTOUCHED) — CORE DEFECT FIXED, §6 NARROWED not closed
+Before → after on the two headline mixed strength days: **51%/44% (and A2's 65%) → 74% and 70% — both now
+CLEAR the floor**, with the driver's resistance work filling its share (07-25: Push-Up 4×10 / Dumbbell Row
+4×12 / Overhead Press 3×12 → 27 min resistance ≥ its 24-min share). Cardio stayed full (96%/101%, no
+regression). No escalation — every session low/medium, within the capacity cleared stage. **The week does
+NOT 100% clear, so §6 stays OPEN (narrowed):** (1) 07-26 clears the floor (70%) but its driver-share still
+flags — the model picked low-density rehab-adjacent resistance (Glute Bridge / Single-Leg Glute Bridge /
+Bird Dog) on a Fix-Pubic-Osteitis-tagged day, real driver modality but too light to fill 19 min; (2) a
+short 20-min mind_body day sits at 66% (a low-fill mobility day the model overstated by ~2 min — the
+"honestly shorten" case, a different phenomenon from mixed-session starvation). Both are flagged-and-
+persisted (visible), model-compliance on the margins. **193 v2 tests** (was 184). Profile 1 byte-identical.
+
+**Position:** B (advancement), D (within-phase ramp), and the folded-card layout remain queued behind §6.
+
 ## Migrations
 
 One-time data fixes that should be run in the Supabase SQL editor.

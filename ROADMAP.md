@@ -1915,6 +1915,23 @@ All verified present in `server.js`. `:id`/`:userId` = profile id.
     rehab accessories, or splitting a capacity driver and a rehab-maintenance goal onto separate days.
     Verdict comes with the within-phase ramp (D) or a dedicated mixed-session pass. No session escalated
     past the cleared stage (proven: all strength = capacity-level, medium intensity, 10-15 reps).
+  - **SESSION COMPOSITION ALLOCATION shipped 2026-07-23 — the candidate follow-up above, built. CORE
+    DEFECT FIXED; entry STAYS OPEN but heavily NARROWED.** The mixed-session starvation was a missing
+    allocation contract; added a CODE-OWNED per-session allocation (tier-weighted, on
+    `planned_sessions.session.allocation`) + a `driver_share_underfilled` invariant that requires the
+    driver's modality to FILL its allocated minutes (absolute, `>= share_min × floor`), reusing the A1/A2
+    envelopes + `classifyPattern`. Full record: `CLAUDE.md` → "Engine v2 — Session composition allocation".
+    **Live re-plan on profile 4 (floor 0.70, UNTOUCHED): both headline mixed strength days now CLEAR the
+    floor — 51%/44%/65% → 74% and 70%** — with the driver's resistance work filling its share (Push-Up
+    4×10 / Dumbbell Row 4×12 / Overhead Press 3×12). Cardio full (96%/101%), no escalation. **Why the
+    entry stays OPEN (the week does not 100% clear):** (a) 07-26 clears the floor but its driver-share
+    still flags — the model chose low-density rehab-adjacent resistance (glute bridge / bird dog) on a
+    Fix-Pubic-Osteitis-tagged day, real driver modality but too light to fill 19 min; (b) a short 20-min
+    mind_body day sits at 66% (a low-fill mobility day overstated ~2 min — the "honestly shorten" case, a
+    DIFFERENT phenomenon from mixed-session starvation). Both flagged-and-persisted, model-compliance on
+    the margins. The allocation mechanism is the right fix and resolves the composition problem; full
+    closure awaits better model compliance on rehab-tagged strength days (candidate: bias the driver
+    share to loaded compounds via the envelope's rep-scheme) or the honest-shorten of low-fill days (D).
 - **Engine v2 — metric-fits-pattern DONE in A2, threshold-plausibility is a BEFORE-B BLOCKER (2026-07-23).**
   The two A1 evaluator follow-ups (below) split: (1) **metric-fits-pattern — FIXED in A2.** `validateCriterion`
   now rejects a value metric that cannot fit its referent pattern's logged shape (hold-seconds on a
@@ -1978,6 +1995,21 @@ All verified present in `server.js`. `:id`/`:userId` = profile id.
   the work floor at the SAME mixed capacity+rehab residual tracked OPEN in §6** (cardio generates pass).
   **The Workstream 2 folded-card layout is still queued and should come AFTER this** — it now has real
   anchor-day alternates (the pre-generated miss-class sessions) to lay out.
+- **✅ Engine v2 — SESSION COMPOSITION ALLOCATION (2026-07-23, DONE + DEPLOYED + live-verified).** The
+  last item that was keeping the §6 thinness entry open — the mixed capacity+rehab starvation, now
+  named as a missing allocation contract. A CODE-OWNED per-session allocation (tier-weighted, stored on
+  `planned_sessions.session.allocation`) + a `driver_share_underfilled` invariant enforcing the driver's
+  modality FILL its allocated minutes (absolute), reusing the A1/A2 envelopes + `classifyPattern` — no
+  new envelope system, `session_time_budget`/floor untouched. Applies to planner + variant + anchor-day
+  generate (shared enforce path). Tier defaults (driver 3 / maintenance 1 / accessory 0.5); new users get
+  sane equal composition automatically; preference seam `profile_data.session_composition.tier_weights`
+  (v2-only, a later settings control writes it like the defaults picker — no UI built). Live: **both
+  headline mixed strength days now CLEAR the floor (51%/44%/65% → 74%/70%)** with the driver's compound
+  work filling its share; cardio full, no escalation, profile 1 byte-identical, 193 v2 tests. **§6 stays
+  OPEN but heavily narrowed** — the week does not 100% clear (one strength day's driver-share still light
+  on a rehab-tagged day; one short mobility day at 66%), both model-compliance on the margins. Full record:
+  `CLAUDE.md` → "Engine v2 — Session composition allocation". **B, D, and the folded-card layout remain
+  queued.**
 - **Accessory-tier goals can be silently dropped with no invariant catching it (found
   2026-07-22).** `Daily Meditation` (accessory tier) appears in the generated plan only inside a
   segment's `intent` STRING ("Pinky accessory + meditation — daily accessory dose") and is never
