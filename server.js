@@ -17,6 +17,7 @@ const v2Planner     = require("./server/v2Planner");
 const v2Readiness   = require("./server/v2Readiness");
 const v2Autoregulator = require("./server/v2Autoregulator");
 const v2Variant     = require("./server/v2Variant");
+const v2Stages      = require("./server/v2Stages");
 
 // Forces a fresh TCP/TLS connection — Render's node-fetch pool has a
 // compatibility issue with Fitbit's token endpoint that causes Premature
@@ -12260,6 +12261,75 @@ function v2CurrentPhase(roadmap, todayYmd) {
 }
 
 /**
+ * Engine v2 — A1 per-goal STAGE AUDIT. Pure over its inputs (no I/O). Resolves a
+ * goal's current phase to an intended stage, resolves each of that phase's
+ * exit_criteria to MET/UNMET/UNEVALUABLE against the progression state, computes
+ * the dwell gate input, and runs the effective-stage resolver (advancement
+ * DISABLED). Used by the audit endpoint; reused verbatim after the backfill so
+ * the reported states are exactly what a real evaluation produces.
+ *
+ * @param {object} goal
+ * @param {object} progression  buildProgressionState() output
+ * @param {string} today        athlete-local YYYY-MM-DD
+ */
+function v2StageAuditForGoal(goal, progression, today) {
+  var cold = v2Rules.coldStartStage(String((goal.type || "") + " " + (goal.title || "")));
+  var pr = v2CurrentPhase(goal.roadmap, today);
+  var phase = pr.phase;
+  var hasRoadmap = !!(goal.roadmap && Array.isArray(goal.roadmap.phases) && goal.roadmap.phases.length);
+
+  var intendedStage, intendedBasis, modalityFamily;
+  if (phase && v2Rules.isStage(phase.intended_stage)) {
+    intendedStage = phase.intended_stage;
+    intendedBasis = "backfilled on the current phase";
+    modalityFamily = v2Rules.MODALITY_FAMILIES.indexOf(phase.modality_family) >= 0 ? phase.modality_family : cold.family;
+  } else {
+    intendedStage = cold.stage;
+    intendedBasis = phase ? ("current phase not yet stage-backfilled -> cold-start (" + cold.basis + ")")
+      : (hasRoadmap ? ("no resolvable current phase -> cold-start (" + cold.basis + ")")
+        : ("no roadmap -> cold-start (" + cold.basis + ")"));
+    modalityFamily = cold.family;
+  }
+
+  // Dwell: whole weeks elapsed in the current phase vs a floor. In A1 the floor is
+  // the phase's own duration_weeks (default 4). The dwell gate is an INPUT to the
+  // resolver; the real dwell-floor policy is a Phase-B decision.
+  var dwellFloorWeeks = (phase && Number(phase.duration_weeks)) ? Number(phase.duration_weeks) : 4;
+  var weeksElapsed = null;
+  if (phase && phase.start_date && /^\d{4}-\d{2}-\d{2}$/.test(String(phase.start_date))) {
+    var a = new Date(phase.start_date + "T12:00:00"), b = new Date(today + "T12:00:00");
+    if (!isNaN(a) && !isNaN(b)) weeksElapsed = Math.floor((b - a) / (7 * 86400000));
+  }
+  var dwellMet = weeksElapsed != null && weeksElapsed >= dwellFloorWeeks;
+
+  var criteria = (phase && Array.isArray(phase.exit_criteria)) ? phase.exit_criteria : [];
+  var criteriaStates = criteria.map(function (c) { return v2Stages.resolveCriterion(c, progression); });
+
+  // Safety veto: NOT wired in A1 (advancement disabled means the resolver can
+  // hold/regress, but the pain/deload trigger that would set regress is a Phase-B
+  // wiring job). Reported honestly as not-yet-wired.
+  var gateInputs = { dwell_met: dwellMet, safety: { regress: false, note: "pain/deload regression veto is wired in Phase B; not evaluated here" } };
+  var eff = v2Stages.resolveEffectiveStage({ intended_stage: intendedStage, criteria_states: criteriaStates, gate_inputs: gateInputs });
+
+  return {
+    goal: goal.title, goal_id: goal.id || null, tier: goal.tier || null,
+    has_roadmap: hasRoadmap,
+    phase_name: phase ? (phase.name || phase.title || null) : null,
+    phase_basis: pr.basis,
+    intended_stage: intendedStage,
+    intended_stage_basis: intendedBasis,
+    modality_family: modalityFamily,
+    dwell: { weeks_elapsed: weeksElapsed, floor_weeks: dwellFloorWeeks, met: dwellMet },
+    criteria: criteriaStates,
+    criteria_summary: eff.criteria_summary,
+    effective_stage: eff.effective_stage,
+    verdict: eff.verdict,
+    advancement_enabled: eff.advancement_enabled,
+    reasons: eff.reasons,
+  };
+}
+
+/**
  * GET /api/v2/audit/:profileId — admin-gated, READ-ONLY, writes nothing.
  *
  * The Phase 2 proof: assembles the progression state, the dossier the builder
@@ -12382,6 +12452,19 @@ app.get("/api/v2/audit/:profileId", async function(req, res) {
     });
     var macroPhase = profileRow.roadmap_data ? v2CurrentPhase(profileRow.roadmap_data, today) : null;
 
+    // A1 stage audit: per-goal intended vs effective stage, each criterion's
+    // three-state result + why, gate inputs, and the verdict. Pure over the
+    // progression state already built above.
+    var stageAudit = goals.map(function(g) { return v2StageAuditForGoal(g, progression, today); });
+    var stageAuditSummary = stageAudit.reduce(function(acc, sa) {
+      acc.verdicts[sa.verdict] = (acc.verdicts[sa.verdict] || 0) + 1;
+      acc.criteria_total += sa.criteria_summary.total;
+      acc.met += sa.criteria_summary.met;
+      acc.unmet += sa.criteria_summary.unmet;
+      acc.unevaluable += sa.criteria_summary.unevaluable;
+      return acc;
+    }, { verdicts: {}, criteria_total: 0, met: 0, unmet: 0, unevaluable: 0 });
+
     var sections = req.query.sections ? String(req.query.sections).split(",").map(function(s) { return s.trim(); }) : null;
     var rulesText = v2Rules.renderRulesForPrompt(sections);
     var progressionText = v2Progression.renderProgressionTable(progression);
@@ -12418,11 +12501,184 @@ app.get("/api/v2/audit/:profileId", async function(req, res) {
         storage_columns_migrated: v2ColumnsPresent,
       },
       roadmap_phases: { per_goal: phaseResolutions, macro: macroPhase },
+      stage_audit: { per_goal: stageAudit, summary: stageAuditSummary },
       rendered: { rules: rulesText, progression_table: progressionText, dossier: dossierText },
       prompt_sections: promptSections,
     });
   } catch (e) {
     console.error("[v2Audit] failed:", e && e.message);
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+/**
+ * Author intended_stage + exit_criteria for ONE goal's roadmap phases. Model
+ * authors, code clamps + validates. Bounded to 2 attempts (the existing planner
+ * cap pattern — no new retry mechanism): attempt 2 re-authors ONLY when attempt 1
+ * left invalid criteria, passing the rejection reasons back. Invalid criteria that
+ * survive both attempts are DROPPED and reported (never written) — a criterion
+ * that is not measurable by construction must not be persisted.
+ *
+ * Pure-ish: the ONLY side effect is the model call. Mutates nothing.
+ * @returns {{phases:Array, attempts:number, error?:string}}
+ */
+async function v2AuthorGoalStages(goal, coldStart) {
+  var phases = (goal.roadmap && Array.isArray(goal.roadmap.phases)) ? goal.roadmap.phases : [];
+  if (!phases.length) return { phases: [], attempts: 0 };
+
+  var attempt = 0, retryNote = null, byIndex = {};
+  var MAX_ATTEMPTS = 2;
+  while (attempt < MAX_ATTEMPTS) {
+    attempt++;
+    var prompt = v2Stages.buildStageAuthoringPrompt(goal, { coldStart: coldStart, retryNote: retryNote });
+    var authored;
+    try {
+      var raw = await callAISystem(prompt.system, prompt.user, 2000, MODEL_HAIKU);
+      authored = parseAIJson(raw);
+    } catch (e) {
+      if (attempt >= MAX_ATTEMPTS) return { phases: [], attempts: attempt, error: "authoring model call/parse failed: " + e.message };
+      retryNote = "the previous response was not parseable JSON — return STRICT JSON only.";
+      continue;
+    }
+    var authoredPhases = (authored && Array.isArray(authored.phases)) ? authored.phases : [];
+    var authoredByIndex = {};
+    authoredPhases.forEach(function (ap) { if (ap && typeof ap.phase_index === "number") authoredByIndex[ap.phase_index] = ap; });
+
+    var stillInvalid = [];
+    phases.forEach(function (ph, i) {
+      var clamped = v2Stages.clampAuthoredPhase(authoredByIndex[i], coldStart);
+      byIndex[i] = clamped;
+      if (clamped.invalid_criteria.length) {
+        clamped.invalid_criteria.forEach(function (iv) {
+          stillInvalid.push("phase " + i + " criterion (" + JSON.stringify(iv.criterion.referent || {}) + "): " + iv.reasons.join("; "));
+        });
+      }
+    });
+
+    if (!stillInvalid.length || attempt >= MAX_ATTEMPTS) break;
+    retryNote = stillInvalid.slice(0, 8).join(" | ");
+  }
+
+  var out = phases.map(function (ph, i) {
+    var c = byIndex[i] || v2Stages.clampAuthoredPhase(null, coldStart);
+    return {
+      phase_index: i,
+      phase_name: ph.name || ph.title || ("phase " + i),
+      phase_type: ph.type || null,
+      intended_stage: c.intended_stage,
+      modality_family: c.modality_family,
+      valid_criteria: c.valid_criteria,
+      dropped_invalid_criteria: c.invalid_criteria,
+      forced_exercises: c.forced_exercises,
+      stage_clamped: c.clamped,
+    };
+  });
+  return { phases: out, attempts: attempt };
+}
+
+/**
+ * POST /api/v2/backfill-stages/:profileId — admin-gated. Assigns each roadmap
+ * phase an intended_stage + measurable-by-construction exit_criteria (item 7).
+ *
+ * DRY RUN by default. Pass ?apply=1 to persist. A roadmap-less goal gets a
+ * cold-start default stage REPORTED (no phase to attach criteria to). Writes are
+ * an in-place mutation of profile_data.goals[].roadmap.phases[] followed by ONE
+ * whole-profile_data PATCH — never a partial {goals} PATCH, which would wipe
+ * sibling keys.
+ *
+ * A1 SAFETY: the planner reads only phase.emphasis, so adding these keys leaves
+ * /api/v2/plan output byte-identical (proven separately).
+ */
+app.post("/api/v2/backfill-stages/:profileId", async function(req, res) {
+  var started = Date.now();
+  try {
+    if (process.env.ADMIN_SECRET) {
+      var got = req.query.secret || req.get("X-Admin-Secret");
+      if (got !== process.env.ADMIN_SECRET) return res.status(403).json({ success: false, error: "forbidden" });
+    }
+    var pid = req.params.profileId;
+    var apply = req.query.apply === "1";
+
+    // Direct PostgREST read (NOT GET /api/profiles/:id — ensureGoalIds write-on-read).
+    var pr = await fetch(SUPABASE_URL + "/rest/v1/profiles?id=eq." + encodeURIComponent(pid) +
+      "&select=id,name,timezone,profile_data,roadmap_data", { headers: sbHeaders() });
+    var prows = await pr.json();
+    if (!Array.isArray(prows) || !prows.length) return res.status(404).json({ success: false, error: "Profile not found" });
+    var profileRow = prows[0];
+    var pd = profileRow.profile_data || {};
+    var today = localToday(profileRow);
+    var goals = Array.isArray(pd.goals) ? pd.goals : [];
+
+    var report = [];
+    for (var gi = 0; gi < goals.length; gi++) {
+      var goal = goals[gi];
+      var cold = v2Rules.coldStartStage(String((goal.type || "") + " " + (goal.title || "")));
+      var hasRoadmap = !!(goal.roadmap && Array.isArray(goal.roadmap.phases) && goal.roadmap.phases.length);
+
+      if (!hasRoadmap) {
+        report.push({ goal: goal.title, goal_id: goal.id || null, tier: goal.tier || null,
+          has_roadmap: false, cold_start_stage: cold.stage, cold_start_family: cold.family, cold_start_basis: cold.basis,
+          note: "no roadmap — cold-start stage reported; no phase to attach criteria to (resolved at read time by the audit/effective-stage resolver)" });
+        continue;
+      }
+
+      var authored = await v2AuthorGoalStages(goal, cold);
+      var written = 0, criteriaWritten = 0, criteriaDropped = 0;
+      authored.phases.forEach(function (ap) {
+        var ph = goal.roadmap.phases[ap.phase_index];
+        if (!ph) return;
+        // In-memory mutation ALWAYS (so the post-write audit reflects the result even
+        // on a dry run); persisted only when apply=1 via the single PATCH below.
+        ph.intended_stage = ap.intended_stage;
+        ph.modality_family = ap.modality_family;
+        ph.exit_criteria = ap.valid_criteria;
+        ph.forced_exercises = ap.forced_exercises;
+        ph.stage_backfilled_at = new Date().toISOString();
+        written++;
+        criteriaWritten += ap.valid_criteria.length;
+        criteriaDropped += ap.dropped_invalid_criteria.length;
+      });
+      report.push({ goal: goal.title, goal_id: goal.id || null, tier: goal.tier || null,
+        has_roadmap: true, phases_written: written, criteria_written: criteriaWritten,
+        criteria_dropped_invalid: criteriaDropped, attempts: authored.attempts, error: authored.error || null,
+        phases: authored.phases });
+    }
+
+    if (apply) {
+      await fetch(SUPABASE_URL + "/rest/v1/profiles?id=eq." + encodeURIComponent(pid), {
+        method: "PATCH", headers: sbHeaders("return=minimal"),
+        body: JSON.stringify({ profile_data: cleanProfileData(pd) }),
+      });
+    }
+
+    // Post-backfill stage audit — the UNEVALUABLE count that says whether the
+    // referent constraint is actually working. Reads the (in-memory mutated) goals.
+    var deps = { fetch: fetch, SUPABASE_URL: SUPABASE_URL, sbHeaders: sbHeaders, localToday: localToday };
+    var effortByWorkoutId = {};
+    try {
+      var wr = await fetch(SUPABASE_URL + "/rest/v1/workouts?profile_id=eq." + encodeURIComponent(pid) +
+        "&select=id,session_effort&limit=5000", { headers: sbHeaders() });
+      var wrows = await wr.json();
+      if (Array.isArray(wrows)) wrows.forEach(function(w) { if (w && w.session_effort) effortByWorkoutId[w.id] = w.session_effort; });
+    } catch (e) { /* unrun migration — non-fatal */ }
+    var progression = await v2Progression.buildProgressionState(deps, pid, { today: today, effortByWorkoutId: effortByWorkoutId });
+    var stageAudit = goals.map(function(g) { return v2StageAuditForGoal(g, progression, today); });
+    var uneval = stageAudit.reduce(function(a, sa){ return a + sa.criteria_summary.unevaluable; }, 0);
+    var totalCriteria = stageAudit.reduce(function(a, sa){ return a + sa.criteria_summary.total; }, 0);
+
+    res.json({
+      success: true, applied: apply, profile_id: profileRow.id, today: today,
+      elapsed_ms: Date.now() - started,
+      backfill: report,
+      post_backfill_audit: {
+        per_goal: stageAudit,
+        criteria_total: totalCriteria,
+        criteria_unevaluable: uneval,
+        note: apply ? "persisted" : "DRY RUN — nothing written; pass ?apply=1 to persist",
+      },
+    });
+  } catch (e) {
+    console.error("[v2Backfill] failed:", e && e.message);
     res.status(500).json({ success: false, error: e.message });
   }
 });

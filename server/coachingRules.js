@@ -688,6 +688,251 @@ var MISSED_SESSIONS = {
   evidence: "established",
 };
 
+// ── 13. Training-stage ladder + envelopes (Engine v2, A1) ───────────────────
+// A goal-agnostic archetype ladder that ANY goal's roadmap phases map onto. Each
+// (stage, modality-family) has a CODE-OWNED envelope: the model authors only
+// exercise selection + load targets INSIDE it. This is knowledge/data; it is
+// consumed as code (envelopeFor / validation) AND as prompt text
+// (renderStageEnvelopesForPrompt) so the model and code never disagree — the
+// same dual-consumption discipline as the rest of this module.
+//
+// ⚠ A1 SCOPE: this is NOT wired into the planner prompt (that is A2) and does NOT
+// enable phase advancement (that is B). Nothing below is added to SECTION_ORDER /
+// renderRulesForPrompt, so the planner prompt is byte-identical to before A1.
+
+// Ordered low -> high. `maintenance` is a PARALLEL track, deliberately NOT a rung
+// on the linear ladder (you maintain an adaptation you already built; you do not
+// "advance past" maintenance). It is handled specially by stage math below.
+var STAGE_LADDER = ["tissue_tolerance", "capacity", "load", "power", "return_to_sport"];
+var STAGES = STAGE_LADDER.concat(["maintenance"]);
+
+var MODALITY_FAMILIES = ["resistance", "aerobic", "skill_mobility"];
+
+/** Ladder index for advance/regress DIRECTION. maintenance is off-ladder -> -1. */
+function stageIndex(stage) {
+  return STAGE_LADDER.indexOf(stage);
+}
+/** Rank for pattern min_stage GATING only. maintenance ranks highest so a
+ *  maintenance phase may reference any pattern it is holding (incl. power work). */
+function patternStageRank(stage) {
+  if (stage === "maintenance") return STAGE_LADDER.length; // above return_to_sport
+  var i = STAGE_LADDER.indexOf(stage);
+  return i < 0 ? 0 : i;
+}
+/** One rung down the ladder (safety-veto regression). Floor is tissue_tolerance.
+ *  A maintenance phase regresses to the rebuild floor (tissue_tolerance) — the
+ *  correct safety response to escalating pain while maintaining. */
+function stageBelow(stage) {
+  if (stage === "maintenance") return "tissue_tolerance";
+  var i = STAGE_LADDER.indexOf(stage);
+  if (i <= 0) return STAGE_LADDER[0];
+  return STAGE_LADDER[i - 1];
+}
+function isStage(stage) { return STAGES.indexOf(stage) >= 0; }
+
+// Movement-pattern vocabulary — the CLOSED referent vocabulary for exit_criteria.
+// Each token belongs to exactly one modality-family (so a criterion's family is
+// derivable from its pattern) and carries a `min_stage`: the earliest ladder
+// stage at which the envelope prescribes it. `ballistic` / sprint / reactive work
+// is gated to `power`+ so a criterion referencing it on a pre-power phase is
+// caught as wrong-stage by the authoring validator. (This is the A1 seed of the
+// `{token, min_stage}` gating the Phase-C contraindication work extends.)
+var MOVEMENT_PATTERNS = {
+  // resistance
+  squat:             { family: "resistance", min_stage: "tissue_tolerance", label: "squat" },
+  hinge:             { family: "resistance", min_stage: "tissue_tolerance", label: "hip hinge" },
+  lunge:             { family: "resistance", min_stage: "tissue_tolerance", label: "lunge / split squat" },
+  hip_bridge:        { family: "resistance", min_stage: "tissue_tolerance", label: "glute bridge / hip thrust" },
+  horizontal_push:   { family: "resistance", min_stage: "tissue_tolerance", label: "horizontal press" },
+  vertical_push:     { family: "resistance", min_stage: "tissue_tolerance", label: "overhead press" },
+  horizontal_pull:   { family: "resistance", min_stage: "tissue_tolerance", label: "row" },
+  vertical_pull:     { family: "resistance", min_stage: "tissue_tolerance", label: "pull-up / pulldown" },
+  carry:             { family: "resistance", min_stage: "tissue_tolerance", label: "loaded carry" },
+  core_brace:        { family: "resistance", min_stage: "tissue_tolerance", label: "anti-movement core" },
+  isometric_hold:    { family: "resistance", min_stage: "tissue_tolerance", label: "isometric hold" },
+  calf_raise:        { family: "resistance", min_stage: "tissue_tolerance", label: "calf raise" },
+  direct_arm:        { family: "resistance", min_stage: "tissue_tolerance", label: "direct arm work" },
+  ballistic:         { family: "resistance", min_stage: "power",            label: "ballistic / plyometric" },
+  // aerobic
+  steady_state:      { family: "aerobic", min_stage: "tissue_tolerance", label: "easy steady state" },
+  long_duration:     { family: "aerobic", min_stage: "capacity",         label: "long slow distance" },
+  tempo:             { family: "aerobic", min_stage: "capacity",         label: "tempo" },
+  threshold:         { family: "aerobic", min_stage: "load",             label: "threshold intervals" },
+  aerobic_interval:  { family: "aerobic", min_stage: "load",             label: "aerobic intervals" },
+  sprint_interval:   { family: "aerobic", min_stage: "power",            label: "sprint / VO2 intervals" },
+  // skill_mobility
+  mobility_flow:     { family: "skill_mobility", min_stage: "tissue_tolerance", label: "mobility flow" },
+  end_range_hold:    { family: "skill_mobility", min_stage: "tissue_tolerance", label: "end-range hold" },
+  activation:        { family: "skill_mobility", min_stage: "tissue_tolerance", label: "activation" },
+  breathing:         { family: "skill_mobility", min_stage: "tissue_tolerance", label: "breathing / bracing drill" },
+  balance_stability: { family: "skill_mobility", min_stage: "tissue_tolerance", label: "balance / stability" },
+  positional_drill:  { family: "skill_mobility", min_stage: "capacity",         label: "loaded positional drill" },
+  reactive_control:  { family: "skill_mobility", min_stage: "power",            label: "reactive control" },
+};
+
+function patternFamily(token) {
+  var p = MOVEMENT_PATTERNS[token];
+  return p ? p.family : null;
+}
+function isMovementPattern(token) { return !!MOVEMENT_PATTERNS[token]; }
+
+/** All pattern tokens a (stage, family) envelope prescribes: family patterns whose
+ *  min_stage is available at this stage. Pure, derived from MOVEMENT_PATTERNS. */
+function prescribedPatterns(stage, family) {
+  var rank = patternStageRank(stage);
+  return Object.keys(MOVEMENT_PATTERNS).filter(function (tok) {
+    var p = MOVEMENT_PATTERNS[tok];
+    return p.family === family && patternStageRank(p.min_stage) <= rank;
+  });
+}
+
+// The envelopes. Keyed [family][stage]. Every number is code-owned. `session_fill`
+// is the target WORKING minutes for a nominal 45-minute slot at this stage/family —
+// sized against the existing 0.70 work floor (server/v2Planner.js). A stage whose
+// fill is deliberately LOW (tissue_tolerance, maintenance, mobility) is the code's
+// way of saying "a full slot is NOT expected here — A2 shortens the session, it
+// does not pad it" (the §6 thinness reframe, resolved by construction not by the
+// model padding). NOTE: session_fill is DATA for A2; A1 neither reads it into the
+// planner nor enforces it.
+var STAGE_ENVELOPES = {
+  resistance: {
+    tissue_tolerance: { working_sets: [2, 4], duration_band: null, intensity_band: "RPE 4-6 / 40-55% 1RM or bodyweight", rep_scheme: "isometric holds 20-45s, or controlled 8-15 reps kept 3-4 reps shy of failure", modality_mix: "isometrics + low-load controlled patterns; NO ballistic", session_fill: 22, evidence: "established", note: "Tolerance is built with time-under-tension and control, not near-failure volume. A full 45-min slot is not expected — shorten the session rather than pad it." },
+    capacity:         { working_sets: [3, 5], duration_band: null, intensity_band: "RPE 6-7 / 55-70% 1RM", rep_scheme: "10-15 reps at 1-3 RIR", modality_mix: "full-ROM base patterns, hypertrophy-oriented volume", session_fill: 33, evidence: "established" },
+    load:             { working_sets: [3, 6], duration_band: null, intensity_band: "RPE 7-9 / 75-90% 1RM on primaries", rep_scheme: "3-8 reps, low RIR on primaries, back-off accessories", modality_mix: "heavy compound primaries + supporting accessories", session_fill: 34, evidence: "established" },
+    power:            { working_sets: [3, 6], duration_band: null, intensity_band: "high velocity 30-60% 1RM (ballistic) or >85% (strength-speed)", rep_scheme: "1-5 explosive reps, full rest between sets", modality_mix: "ballistic + heavy strength; measured by output, not volume", session_fill: 30, evidence: "established", note: "Low-rep, long-rest work; quality over accumulated sets." },
+    return_to_sport:  { working_sets: [3, 6], duration_band: null, intensity_band: "sport-specific loading, full ROM, reactive", rep_scheme: "sport-specific loading + plyometric progressions", modality_mix: "all patterns including ballistic + reactive", session_fill: 33, evidence: "established" },
+    maintenance:      { working_sets: [1, 2], duration_band: null, intensity_band: ">=80% 1RM — intensity is the lever", rep_scheme: "1-2 hard sets, volume cut", modality_mix: "minimum effective dose; hold intensity, cut volume", session_fill: 15, evidence: "established", note: "MED: a maintenance slot is short by design." },
+  },
+  aerobic: {
+    tissue_tolerance: { working_sets: null, duration_band: [10, 20], intensity_band: "very easy, zone 1, fully conversational", rep_scheme: "continuous easy effort", modality_mix: "low-impact steady state", session_fill: 15, evidence: "established", note: "Short, easy re-introduction of aerobic load; shorten the slot, do not pad." },
+    capacity:         { working_sets: null, duration_band: [20, 45], intensity_band: "zone 2 aerobic base", rep_scheme: "continuous steady state, building duration", modality_mix: "steady state + long slow distance", session_fill: 30, evidence: "established" },
+    load:             { working_sets: null, duration_band: [25, 50], intensity_band: "zone 3-4, tempo / threshold", rep_scheme: "tempo blocks + threshold intervals", modality_mix: "tempo, threshold, aerobic intervals", session_fill: 33, evidence: "established" },
+    power:            { working_sets: null, duration_band: [20, 40], intensity_band: "zone 5, VO2 / anaerobic intervals", rep_scheme: "short hard intervals, full recovery", modality_mix: "sprint / VO2 intervals + threshold support", session_fill: 28, evidence: "established" },
+    return_to_sport:  { working_sets: null, duration_band: [20, 60], intensity_band: "sport-specific work:rest ratios", rep_scheme: "game-simulation intervals", modality_mix: "sport-specific conditioning", session_fill: 33, evidence: "established" },
+    maintenance:      { working_sets: null, duration_band: [13, 26], intensity_band: "intensity maintained, duration cut", rep_scheme: "2x/week, intensity held", modality_mix: "MED aerobic", session_fill: 15, evidence: "established" },
+  },
+  skill_mobility: {
+    tissue_tolerance: { working_sets: [2, 4], duration_band: null, intensity_band: "pain-free end range, gentle", rep_scheme: "end-range holds 20-45s + activation 10-15 reps", modality_mix: "activation + mobility flow + breathing", session_fill: 18, evidence: "established", note: "Rehab/mobility slots are legitimately short — shorten the session, do not pad." },
+    capacity:         { working_sets: [2, 5], duration_band: null, intensity_band: "loaded end range, controlled tempo", rep_scheme: "controlled reps + positional drills", modality_mix: "loaded mobility + positional drills", session_fill: 25, evidence: "contested", note: "Retention timelines for passive range are poorly characterised (mirrors MAINTENANCE_MED.mobility)." },
+    load:             { working_sets: [3, 5], duration_band: null, intensity_band: "weighted end range under control", rep_scheme: "weighted mobility + stability under load", modality_mix: "loaded end-range strength", session_fill: 28, evidence: "contested" },
+    power:            { working_sets: [3, 5], duration_band: null, intensity_band: "dynamic / reactive control", rep_scheme: "reactive stability + dynamic control drills", modality_mix: "reactive control + balance", session_fill: 25, evidence: "contested" },
+    return_to_sport:  { working_sets: [3, 5], duration_band: null, intensity_band: "sport-position specific", rep_scheme: "sport-specific mobility + stability", modality_mix: "sport-position specific control", session_fill: 28, evidence: "contested" },
+    maintenance:      { working_sets: [2, 3], duration_band: null, intensity_band: "true end range >=2x/week", rep_scheme: "end-range holds", modality_mix: "MED mobility", session_fill: 12, evidence: "contested" },
+  },
+};
+
+/**
+ * The single envelope lookup. Returns a shallow copy with prescribed_patterns
+ * attached (derived, never stored). Pure. Every (stage, family) pair exists.
+ * @returns {object|null} null only for an unknown stage/family (a caller bug).
+ */
+function envelopeFor(stage, family) {
+  if (!isStage(stage) || MODALITY_FAMILIES.indexOf(family) < 0) return null;
+  var base = STAGE_ENVELOPES[family] && STAGE_ENVELOPES[family][stage];
+  if (!base) return null;
+  return {
+    stage: stage,
+    modality_family: family,
+    working_sets: base.working_sets,
+    duration_band: base.duration_band,
+    intensity_band: base.intensity_band,
+    rep_scheme: base.rep_scheme,
+    modality_mix: base.modality_mix,
+    session_fill: base.session_fill,
+    prescribed_patterns: prescribedPatterns(stage, family),
+    evidence: base.evidence,
+    note: base.note || null,
+  };
+}
+
+// Exit-criteria vocabulary — the CLOSED metric/comparator sets the authoring
+// validator clamps to and the three-state resolver reads. `pr_field` names the
+// progression-state field a metric reads (null for derived metrics resolved
+// specially). `kind` drives resolution: value (read a PR), count (sessions in
+// window), trend (the computed trend).
+var CRITERION_METRICS = {
+  best_hold_seconds:    { pr_field: "best_hold_seconds",    kind: "value", unit: "seconds" },
+  best_weight_lbs:      { pr_field: "best_weight_lbs",      kind: "value", unit: "lbs" },
+  best_reps:            { pr_field: "best_reps",            kind: "value", unit: "reps" },
+  best_session_minutes: { pr_field: "best_session_minutes", kind: "value", unit: "minutes" },
+  sessions_logged:      { pr_field: null,                   kind: "count", unit: "sessions" },
+  trend:                { pr_field: null,                   kind: "trend", unit: null },
+};
+var CRITERION_COMPARATORS = ["gte", "lte", "eq", "trend_up", "trend_flat_or_up"];
+function isCriterionMetric(m) { return !!CRITERION_METRICS[m]; }
+function isCriterionComparator(c) { return CRITERION_COMPARATORS.indexOf(c) >= 0; }
+
+// ── Cold-start default stage table (A1 item 6) ──────────────────────────────
+// goal TYPE -> floor stage. Keyed by TYPE, NOT by injury: an injury changes which
+// exercises fill the envelope, never which stage the goal starts at. A brand-new
+// user with no history maps to the bottom of the plausible band for the type.
+var COLD_START_RULES = [
+  { match: /rehab|rehabilitation|post-?op|post-?surgery|prehab|injur|recover|tolerat|pain|osteitis|tendinop|physio|pt\b/i,
+    stage: "tissue_tolerance", family: "resistance", basis: "rehab/injury-type goal -> tissue tolerance floor" },
+  { match: /postur|mobilit|flexib|range of motion|\brom\b|stretch/i,
+    stage: "tissue_tolerance", family: "skill_mobility", basis: "mobility/posture-type goal -> tissue tolerance (skill/mobility)" },
+  { match: /experienc|returning|return to (lift|train)|advanced|comeback|get back/i,
+    stage: "load", family: "resistance", basis: "self-reported experienced returner -> load" },
+  { match: /endurance|stamina|cardio|aerobic|\brun|jog|\bhike|conditioning|\b5k\b|\b10k\b|marathon|cycl|\bbike\b|row(ing)?|swim/i,
+    stage: "capacity", family: "aerobic", basis: "endurance/stamina-type goal -> capacity (aerobic)" },
+  { match: /hypertroph|muscle|build|mass|strength|strong|tone|lean|novice|beginner|general fitness|fitness/i,
+    stage: "capacity", family: "resistance", basis: "hypertrophy/general-strength-type goal -> capacity" },
+];
+
+/**
+ * @param {string} goalTypeOrTitle — the goal's type/title text
+ * @param {object} [opts] { experiencedReturner?:bool }
+ * @returns {{stage:string, modality_family:string, basis:string}}
+ */
+function coldStartStage(goalTypeOrTitle, opts) {
+  opts = opts || {};
+  var t = String(goalTypeOrTitle || "");
+  if (opts.experiencedReturner) {
+    return { stage: "load", family: "resistance", basis: "explicitly flagged experienced returner -> load" };
+  }
+  for (var i = 0; i < COLD_START_RULES.length; i++) {
+    if (COLD_START_RULES[i].match.test(t)) {
+      return { stage: COLD_START_RULES[i].stage, family: COLD_START_RULES[i].family, basis: COLD_START_RULES[i].basis };
+    }
+  }
+  // No clear signal -> the lowest plausible stage for a general goal.
+  return { stage: "capacity", family: "resistance", basis: "no clear type signal -> lowest plausible general stage (capacity/resistance)" };
+}
+
+/**
+ * Render the stage ladder + envelopes as prompt text. Built for A2's planner and
+ * the backfill authoring prompt; NOT part of renderRulesForPrompt, so the current
+ * planner prompt is unchanged. @param {string[]} [families] subset to render.
+ */
+function renderStageEnvelopesForPrompt(families) {
+  var fams = Array.isArray(families) && families.length ? families : MODALITY_FAMILIES;
+  var L = ["TRAINING-STAGE ENVELOPES (the code owns these ranges; author exercise selection + loads INSIDE them):",
+    "Stages, low to high: " + STAGE_LADDER.join(" -> ") + " (plus maintenance, a parallel track)."];
+  fams.forEach(function (fam) {
+    L.push("");
+    L.push(fam.toUpperCase() + ":");
+    STAGES.forEach(function (stage) {
+      var e = envelopeFor(stage, fam);
+      if (!e) return;
+      var vol = e.working_sets ? (e.working_sets[0] + "-" + e.working_sets[1] + " working sets")
+        : (e.duration_band ? (e.duration_band[0] + "-" + e.duration_band[1] + " min") : "n/a");
+      L.push("  - " + stage + ": " + vol + "; " + e.intensity_band + "; " + e.rep_scheme +
+        "; mix: " + e.modality_mix + "; target working fill ~" + e.session_fill + " min/45" +
+        (e.evidence === "contested" ? " [CONTESTED" + (e.note ? " — " + e.note : "") + "]" : (e.note ? " (" + e.note + ")" : "")));
+    });
+  });
+  return L.join("\n");
+}
+
+/** Per-family char counts of the stage-envelope text, for the promptSections discipline. */
+function stageEnvelopeLengths(families) {
+  var fams = Array.isArray(families) && families.length ? families : MODALITY_FAMILIES;
+  var out = {};
+  fams.forEach(function (fam) { out[fam] = renderStageEnvelopesForPrompt([fam]).length; });
+  out._total = renderStageEnvelopesForPrompt(fams).length;
+  return out;
+}
+
 // ── Prompt rendering ────────────────────────────────────────────────────────
 
 var SECTION_ORDER = [
@@ -883,4 +1128,11 @@ module.exports = {
   workIsMobilityRate, renderWorkBudgetGuidance,
   // prompt rendering
   SECTION_ORDER, renderRulesForPrompt, rulesSectionLengths,
+  // training-stage ladder + envelopes (A1)
+  STAGE_LADDER, STAGES, MODALITY_FAMILIES, MOVEMENT_PATTERNS, STAGE_ENVELOPES,
+  stageIndex, patternStageRank, stageBelow, isStage,
+  patternFamily, isMovementPattern, prescribedPatterns, envelopeFor,
+  CRITERION_METRICS, CRITERION_COMPARATORS, isCriterionMetric, isCriterionComparator,
+  COLD_START_RULES, coldStartStage,
+  renderStageEnvelopesForPrompt, stageEnvelopeLengths,
 };

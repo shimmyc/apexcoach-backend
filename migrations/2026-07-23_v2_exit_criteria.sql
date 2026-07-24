@@ -1,0 +1,84 @@
+-- ============================================================================
+-- Engine v2 — A1: exit_criteria + intended_stage on roadmap phases
+-- 2026-07-23
+--
+-- ⚠ DELIVERED UNRUN. Review before running. But note: NO DDL IS REQUIRED.
+--
+-- WHY NO DDL
+-- ---------
+-- A1 stores the training-stage assignment and exit_criteria as ADDITIVE JSONB
+-- KEYS on each roadmap phase, i.e. inside:
+--
+--     profiles.profile_data -> 'goals' -> [i] -> 'roadmap' -> 'phases' -> [j]
+--
+-- `profile_data` is already a `jsonb` column. Nesting new keys inside it needs
+-- no ALTER TABLE — the same way `goal.roadmap`, `goal.tier`, `schedule_v3`,
+-- `defaults`, `engine_v2`, `v2_preferences`, etc. were all added without a
+-- migration. This file therefore contains NO schema change; it exists to
+-- DOCUMENT the sub-schema and to provide a read-only inspection query.
+--
+-- The macro roadmap (`profiles.roadmap_data`, a separate jsonb column) uses the
+-- identical phase sub-schema, so the same keys apply there too.
+--
+-- The per-phase keys A1 writes (all optional, absent = "not yet backfilled"):
+--
+--   phase.intended_stage   text   one of:
+--                                 tissue_tolerance | capacity | load | power |
+--                                 return_to_sport | maintenance
+--   phase.modality_family  text   one of: resistance | aerobic | skill_mobility
+--   phase.stage_backfilled_at  text (ISO timestamp)
+--   phase.exit_criteria    jsonb array of criterion objects:
+--     {
+--       "id":         "c1",
+--       "metric":     "best_hold_seconds" | "best_weight_lbs" | "best_reps" |
+--                     "best_session_minutes" | "sessions_logged" | "trend",
+--       "comparator": "gte" | "lte" | "eq" | "trend_up" | "trend_flat_or_up",
+--       "threshold":  number | null,          -- required for gte/lte/eq
+--       "referent": {                          -- TAGGED UNION
+--         "type":  "pattern" | "exercise",
+--         "value": "<movement-pattern token>" | "<Canonical Exercise Name>",
+--         "pattern": "<movement-pattern token>" -- REQUIRED when type = exercise
+--       },
+--       "rationale":  "one line (optional)"
+--     }
+--   phase.forced_exercises jsonb array of exercise names that an exercise-type
+--                          referent forces into the envelope's prescribed set
+--                          (A2 consumes this; A1 only records it).
+--
+-- INTEGRITY IS ENFORCED IN CODE, NOT BY THE DB:
+--   - the movement-pattern vocabulary + which patterns each (stage, family)
+--     envelope prescribes live in server/coachingRules.js;
+--   - authoring validation (server/v2Stages.validateCriterion) rejects any
+--     criterion whose referent pattern is not prescribed at the phase's stage,
+--     for BOTH referent types — "measurable by construction".
+-- A jsonb CHECK constraint cannot express any of that, so none is added.
+--
+-- ADVANCEMENT IS DISABLED in A1: effective_stage is computed at read time by a
+-- pure function (server/v2Stages.resolveEffectiveStage) and is NOT persisted.
+-- There is therefore no stored effective_stage column and none is needed until
+-- Phase B, when a persisted, monotonic-non-rising effective stage is tracked.
+--
+-- v1 and every non-flagged profile are unaffected: no v1 reader touches these
+-- keys, and the v2 planner reads only `phase.emphasis`, so adding these keys
+-- leaves /api/v2/plan output byte-identical.
+-- ============================================================================
+
+-- (No DDL.)
+
+-- ---------------------------------------------------------------------------
+-- READ-ONLY inspection: how many phases already carry an intended_stage and
+-- how many exit_criteria they hold, per goal, for one profile. Safe to run.
+-- ---------------------------------------------------------------------------
+-- SELECT
+--   p.id                                              AS profile_id,
+--   g.value ->> 'title'                               AS goal_title,
+--   ph.value ->> 'name'                               AS phase_name,
+--   ph.value ->> 'type'                               AS phase_type,
+--   ph.value ->> 'intended_stage'                     AS intended_stage,
+--   ph.value ->> 'modality_family'                    AS modality_family,
+--   COALESCE(jsonb_array_length(ph.value -> 'exit_criteria'), 0) AS n_criteria
+-- FROM profiles p
+--   CROSS JOIN LATERAL jsonb_array_elements(p.profile_data -> 'goals')        AS g
+--   CROSS JOIN LATERAL jsonb_array_elements(g.value -> 'roadmap' -> 'phases') AS ph
+-- WHERE p.id = 4
+-- ORDER BY goal_title, phase_name;
