@@ -2498,6 +2498,140 @@ reviewed, per the brief (the layout should be built against good content). Two l
 the Session 9 audit: category-vs-content validation (§1.5) and the alternate-`why` display weakness
 (§1.4, which WS2 should address by showing the rich `session.why` when a card is expanded).
 
+## Engine v2 — Phase-progression A1 (2026-07-23): stage ladder + three-state exit-criteria evaluator
+
+The architectural fix for the OPEN §6 session-content thinness entry, built as an **evaluator only** —
+"prove the brain before wiring it to the hands." A1 adds the stage ladder, the code-owned envelopes,
+and the machinery to author and evaluate exit criteria; it does NOT wire the envelope into the planner
+(A2) and does NOT enable advancement (B). **v1 and every non-flagged profile are byte-identical**, and
+**/api/v2/plan output is byte-identical** — proven live below.
+
+### The decisions this locks in (do not re-litigate)
+- **THREE states, never two.** Every exit criterion resolves to `MET | UNMET | UNEVALUABLE`. UNEVALUABLE
+  (no data to measure) is distinct from UNMET (measured, short of target). Collapsing them is the
+  permanent-HOLD bug the whole design exists to prevent. Distinctions, all live-verified: a null PR
+  field → UNEVALUABLE; a measured value short of threshold → UNMET; `insufficient_data:true` **with a
+  value present** → still evaluable for a THRESHOLD criterion (a single logged instance is a point
+  value), but UNEVALUABLE for a TREND criterion (no resolvable trend under `MIN_SESSIONS_FOR_SIGNAL`=3).
+- **TAGGED REFERENT** `{ type:"pattern"|"exercise", value, pattern? }`. `pattern` is the DEFAULT (best
+  generalization). `exercise` is allowed for an athlete-legible named milestone but must declare the
+  `pattern` it trains and is forced into the envelope's prescribed set (recorded as
+  `phase.forced_exercises` for A2). Rationale: pattern-only loses legible milestones (a coaching
+  product needs "pain-free single-leg glute bridge ×12", not "posterior-chain unilateral threshold
+  met"); exercise-only loses generalization. The tagged union costs one discriminator + two validation
+  branches, less than either limitation costs in product value. An exercise-type referent matches ONLY
+  that named exercise at resolve time (stricter than pattern) — verified live: a "Chin Tuck Hold"
+  exercise criterion was UNEVALUABLE even though an isometric_hold pattern (Dead Hang) WAS logged.
+- **MEASURABLE BY CONSTRUCTION.** A criterion is valid only if its referent's pattern is one the phase's
+  `(intended_stage, modality_family)` envelope prescribes — checked at authoring time for BOTH referent
+  types, regenerate-if-invalid (bounded to 2 attempts, the existing planner cap; invalid criteria that
+  survive both attempts are DROPPED, never persisted). This is the primary fix, not a fallback.
+- **REJECTED FALLBACKS, recorded so they are not re-proposed:** (a) advancing on dwell/adherence alone
+  when criteria are unevaluable — advances on *absence of evidence*; (b) re-authoring criteria against
+  whatever the athlete happened to log — lets *avoidance redefine the target* (an athlete rehabbing
+  pubic osteitis who avoids adductor loading would get criteria rewritten onto the pain-free work they
+  dodged, a false clear worse than a hold). Neither is implemented. The unevaluable case defaults to
+  **HOLD-and-flag** (never advance on absence), and the persistence of UNEVALUABLE past dwell is itself
+  the diagnostic that the plan isn't yet generating the evidence (which A2 closes by prescribing the
+  pattern).
+
+### `server/coachingRules.js` additions (knowledge; NOT wired to the planner prompt)
+- **`STAGE_LADDER`** = `tissue_tolerance → capacity → load → power → return_to_sport`, plus
+  `maintenance` (a PARALLEL track, off the linear ladder — you maintain what you built, you do not
+  advance past it; regression from it drops to `tissue_tolerance`).
+- **`MODALITY_FAMILIES`** = `resistance | aerobic | skill_mobility`. **`MOVEMENT_PATTERNS`** — the
+  closed referent vocabulary; each token belongs to one family and carries a `min_stage` (ballistic /
+  sprint / reactive gated to `power`+, so a criterion referencing them on a pre-power phase is caught
+  as wrong-stage). This is the A1 seed of the `{token, min_stage}` gating Phase C extends.
+- **`STAGE_ENVELOPES`** keyed `[family][stage]` — every (stage, family) pair exists (18 total). Each
+  carries working-set range OR duration band, intensity band, rep-scheme family, modality mix, evidence
+  marking (contested where honest — mobility retention timelines), and **`session_fill`** (target
+  working minutes for a nominal 45-min slot, sized against the existing 0.70 work floor). A deliberately
+  LOW `session_fill` (tissue_tolerance / maintenance / mobility) is the code's way of saying "a full
+  slot is NOT expected here — A2 shortens the session, it does not pad it" — the §6 thinness reframe
+  resolved by construction. **`session_fill` is DATA for A2; A1 neither reads it into the planner nor
+  enforces it.** `envelopeFor(stage, family)` attaches derived `prescribed_patterns`.
+- **`CRITERION_METRICS`** (`best_hold_seconds`/`best_weight_lbs`/`best_reps`/`best_session_minutes`/
+  `sessions_logged`/`trend`) + **`CRITERION_COMPARATORS`** — the closed vocabulary the validator clamps
+  to and the resolver reads.
+- **`coldStartStage(goalTypeOrTitle)`** — goal-TYPE → floor stage, keyed by TYPE not injury (an injury
+  changes which exercises fill the envelope, never which stage the goal starts at): rehab/post-op →
+  tissue_tolerance; posture/mobility → tissue_tolerance (skill_mobility); hypertrophy/general-strength →
+  capacity; endurance/stamina → capacity (aerobic); experienced returner → load; no clear signal → the
+  lowest plausible general stage (capacity/resistance). **Cold-start is first-class** — a driver goal
+  with no roadmap (profile 4's Stamina) gets a stage this way at read time.
+- **`renderStageEnvelopesForPrompt()`** — built for A2's planner and the backfill authoring prompt;
+  deliberately NOT added to `SECTION_ORDER`/`renderRulesForPrompt`, so the planner prompt is unchanged.
+
+### `server/v2Stages.js` (new module — the evaluator)
+- **`classifyPattern(name, category, modality)`** — canonical exercise name → a movement-pattern token,
+  ordered keyword rules (same shape/philosophy as `inferModality`, tractable because it classifies a
+  closed-ish NAME vocabulary, not prose). Unknown → null → never a false match. Verified on profile 4's
+  signal-rich six (Dead Hang→isometric_hold, Wall Slide→activation, Dead Bug→core_brace, Glute
+  Bridge→hip_bridge, Indoor Bike→steady_state, Cat-Cow→mobility_flow) and the rowing-machine-vs-barbell-
+  row collision.
+- **`validateCriterion` / `validatePhaseCriteria`** — the authoring-time referent constraint (both
+  types); collects `forced_exercises` for exercise-type referents.
+- **`resolveCriterion(criterion, progressionState)`** — the three-state resolver.
+- **`resolveEffectiveStage(o)`** — the pure gate. Returns `{intended_stage, effective_stage, verdict:
+  hold|advance_ready|regress, criteria_summary, gate_inputs, reasons}`. **Advancement DISABLED:**
+  effective_stage pins to the intended/calendar stage and can only HOLD or REGRESS — it NEVER rises. A
+  computed `advance_ready` verdict is REPORTED but not applied (that is B). Takes an optional
+  `prior_effective_stage` so B can pass a persisted, monotonic-non-rising value; A1 passes none.
+- **`buildStageAuthoringPrompt` / `clampAuthoredPhase`** — the backfill authoring prompt (model-authored)
+  and its code clamp (stage → enum, family → enum, criteria → validated).
+
+### Storage — additive jsonb, no DDL
+`intended_stage` / `modality_family` / `exit_criteria` / `forced_exercises` / `stage_backfilled_at` are
+additive keys on `profile_data.goals[i].roadmap.phases[]` (and the same shape applies to
+`roadmap_data`). No migration — nested in the existing `profile_data` jsonb, same as `goal.tier` /
+`schedule_v3` / `engine_v2`. `migrations/2026-07-23_v2_exit_criteria.sql` is a DOC file (no DDL) with a
+read-only inspection query. **Advancement being disabled means `effective_stage` is computed at read
+time and NOT persisted — no column, until B.**
+
+### Endpoints
+- **`GET /api/v2/audit/:profileId`** extended with `stage_audit`: per goal, intended vs effective stage,
+  each current-phase criterion's three-state result + reason, dwell gate input, and the verdict, plus a
+  summary (verdict counts, MET/UNMET/UNEVALUABLE totals). The pain/deload **safety-regression veto is
+  reported as not-yet-wired** (Phase B). `v2StageAuditForGoal()` is the shared helper (used by the audit
+  and re-run after the backfill so reported states are exactly what a real evaluation produces).
+- **`POST /api/v2/backfill-stages/:profileId`** (admin-gated, **DRY RUN by default**, `?apply=1` to
+  persist) — item 7. Model-authored intended_stage + exit_criteria per phase, code-clamped/validated,
+  bounded 2-attempt regen, invalid criteria dropped-and-reported. Roadmap-less goals get a cold-start
+  stage REPORTED (no phase to attach criteria to). Writes are an in-place mutation of the goals then ONE
+  whole-`profile_data` PATCH (never a partial `{goals}` PATCH, which would wipe sibling keys). Reports
+  the post-backfill UNEVALUABLE count.
+
+### Verification (live, profile 4; unit tests local)
+- **165 v2 tests** (was 123 — `server/v2Stages.test.js` adds 42): every (stage, family) envelope; the
+  three-state resolver for each state incl. the insufficient_data-with-value case; authoring validation
+  rejecting an out-of-envelope referent of BOTH types; cold-start floors (rehab + hypertrophy +
+  endurance + posture + returner + no-signal); the effective-stage resolver holding/regressing but
+  NEVER rising (incl. a higher intended + lower prior → holds at prior).
+- **Backfill authored ~33 criteria across the 3 goals-with-roadmaps, ZERO dropped as out-of-envelope** —
+  the referent constraint held on the first attempt (the model correctly used ballistic only on
+  power/load/return_to_sport phases, core_brace/hip_bridge/activation on tissue_tolerance, etc.).
+- **Post-backfill current-phase audit: 9 criteria → 2 MET, 1 UNMET, 6 UNEVALUABLE, all 8 goals `hold`.**
+  Every verdict matched a hand-check of the actual progression rows: Push-Up 15 reps → horizontal_push
+  MET; Glute Bridge 15 reps → hip_bridge MET; Squat 1 session vs ≥10 → UNMET; Pull-Up logged but no
+  hold data → vertical_pull hold-seconds UNEVALUABLE; no hinge/carry logged → UNEVALUABLE.
+- **The 6/9 UNEVALUABLE is EXPECTED and CORRECT for A1, not glossed:** the referent constraint
+  guarantees measurability against the ENVELOPE (0 dropped), but that is NOT the same as evaluability
+  against the CURRENT log, and it cannot be until **A2 wires the envelope into the planner so the
+  prescribed patterns actually get trained and logged**. Two distinguished sub-causes: (a) pattern not
+  yet in the log (hinge, carry — never trained; A2 prescribes them) and (b) a metric the pattern's
+  logged shape doesn't produce (hold-seconds on a rep-based pull-up, weight on a bodyweight glute
+  bridge). Both are surfaced with a specific reason and drive HOLD-and-flag — the exact three-state
+  signal, NOT the silent permanent-hold bug. Sub-cause (b) is a real A1 gap logged in ROADMAP §6: the
+  validator guarantees pattern∈envelope but NOT metric-fits-pattern.
+- **Plan byte-identical:** `GET /api/v2/plan` for profiles 1 AND 4 is byte-for-byte identical across
+  BOTH the deploy AND the backfill write (captured before, after-deploy, after-backfill; all three
+  hashes match). `v2Planner.js` is untouched and the planner reads only `phase.emphasis`, so the new
+  phase keys are inert to it.
+- **NOT done (correctly): A2** (wire the envelope + week-position into the planner) and **B** (enable
+  advancement + the dwell floor + the pain/deload safety veto). The §6 time-budget/thinness entry stays
+  OPEN — A2 is what closes it.
+
 ## Migrations
 
 One-time data fixes that should be run in the Supabase SQL editor.

@@ -1893,6 +1893,26 @@ All verified present in `server.js`. `:id`/`:userId` = profile id.
     Bolting maintenance filler onto a thin driver skeleton papers over the same gap. Shortening is only
     correct when it falls OUT of a stage's code-defined fill expectation (Session 11 proposal), never
     as a model-chosen relabel.
+  - **A1 landed the evaluator (2026-07-23), NOT the fix — the entry STAYS OPEN.** A1 (the stage ladder,
+    envelopes, and three-state exit-criteria evaluator; see `CLAUDE.md` → "Engine v2 — Phase-progression
+    A1") is deliberately an EVALUATOR ONLY: it does not wire the envelope or `session_fill` into the
+    planner and does not touch `estimateSegmentWorkMinutes`/`SESSION_WORK_FLOOR`/`session_time_budget`.
+    **A2** is what closes this thinness entry (pass the envelope + week-position into the planner so a
+    full session naturally clears the 0.70 floor). Do not close this until A2 ships.
+- **Engine v2 A1 — TWO evaluator follow-ups found live on profile 4 (2026-07-23), logged not fixed.**
+  Both are surfaced HONESTLY by the three-state resolver (as UNEVALUABLE), never as a fabricated MET/UNMET,
+  so neither is a correctness bug — they are authoring-quality gaps for a later pass. (1) **The authoring
+  validator guarantees pattern∈envelope but NOT metric-fits-pattern.** The model authored e.g.
+  `best_hold_seconds` on a rep-based `vertical_pull` (a pull-up has reps, not a hold) and `best_weight_lbs`
+  on a bodyweight `hip_bridge` — valid by the envelope check, but the pattern's logged shape never
+  produces that metric, so it resolves UNEVALUABLE forever. A pattern→plausible-metrics map in
+  `validateCriterion` would reject these at authoring time (more machinery — a closed
+  metric-per-pattern table). (2) **Threshold PLAUSIBILITY is unvalidated** — the model authored an
+  absurd `best_weight_lbs gte 135` on a "Weighted Chin Tuck Hold" (a neck isometric no one loads to
+  135 lb). A1 checks measurability, not clinical sanity of the number; that is a model-authoring/A2
+  concern. Both are the reason A1's live UNEVALUABLE rate was 6/9 rather than lower — the constraint is
+  working (0 out-of-envelope criteria), the residual is metric/threshold quality + patterns not yet in
+  the log (which A2 prescribes).
 - **Engine v2 `v2PersistPlan` re-plan collision — FIXED 2026-07-22 (Session 9), surfaced during the
   above verification.** A pre-existing bug independent of the content work: `v2PersistPlan` cleared
   only `status='planned'` rows before inserting a re-planned week, so a `modified` row (autoregulated
@@ -2204,9 +2224,26 @@ produced 2026-07-22 and approved; see that session's report. Phasing:
     maintenance-tier goal to driver (Build Muscle is first in line) and demote the completed rehab
     goal to maintenance**. This belongs with the re-plan triggers (driver-tier goal change / phase
     completion), NOT with the planner itself. Deliberately not built in Phase 3.
-- **⬜ Engine v2 — PHASE-AWARE SESSION PRESCRIPTION (Session 11 audit, 2026-07-23 — AUDIT DONE, build
-  NOT started, awaiting approval).** The architectural fix for the OPEN §6 session-content thinness
-  entry. **Audit-confirmed root cause:** the planner receives a phase LABEL + ≤4 prose `emphasis`
+- **◧ Engine v2 — PHASE-AWARE SESSION PRESCRIPTION (Session 11, 2026-07-23 — A1 ✅ DONE + DEPLOYED;
+  A2/B/C/D pending).** The architectural fix for the OPEN §6 session-content thinness entry.
+  **A1 (evaluator only) shipped 2026-07-23** — see `CLAUDE.md` → "Engine v2 — Phase-progression A1"
+  for the full record. A1 built the stage ladder + code-owned envelopes (`server/coachingRules.js`),
+  the three-state exit-criteria evaluator + tagged-referent authoring validator + effective-stage gate
+  with advancement DISABLED (`server/v2Stages.js`, 42 tests / 165 v2 total), the cold-start floor table,
+  the `POST /api/v2/backfill-stages` authoring endpoint, and the `/api/v2/audit` stage report. **Locked
+  decisions (do not re-litigate — see CLAUDE.md):** three states not two (UNEVALUABLE ≠ UNMET); tagged
+  referent `{type:"pattern"|"exercise"}` with pattern the default and exercise forced into the envelope;
+  measurable-by-construction validated at authoring for both types; rejected fallbacks (a) advance-on-
+  dwell-alone and (b) re-author-against-what-was-logged. **Live on profile 4:** backfill authored ~33
+  criteria, 0 dropped as out-of-envelope; current-phase audit 2 MET / 1 UNMET / 6 UNEVALUABLE (all
+  hand-verified; the high UNEVALUABLE rate is EXPECTED — measurability against the envelope is not
+  evaluability against the log until A2 prescribes those patterns), all goals HOLD (never advance on
+  absence). **Plan byte-identical** (profiles 1 & 4, across deploy AND the backfill write). **A1-scope
+  redraw vs the original A/B/C/D below:** structured `exit_criteria` + the three-state evaluator moved
+  from B INTO A1 (per the pre-build questions session); **A2** is now purely "wire the envelope +
+  week-position-in-phase into the planner" (the thinness fix); **B** is now purely "ENABLE advancement +
+  the dwell floor + wire the pain/deload safety-regression veto." **Audit-confirmed root cause:** the
+  planner receives a phase LABEL + ≤4 prose `emphasis`
   bullets and nothing about how much work the current phase of a goal's arc calls for; phases carry
   `weekly_targets`/`completion_signals`/`duration_weeks` but none reach the planner as a machine-
   readable volume/intensity envelope, and phase advancement is purely calendar-based
@@ -2220,12 +2257,16 @@ produced 2026-07-22 and approved; see that session's report. Phasing:
   authors only exercise selection + load targets inside that envelope, and the model's stage suggestion
   is code-clamped — the exact code-enforced/model-authored split the work budget already uses. NO
   injury- or sport-specific content; the injury only changes which exercises fill the envelope.
-  **Ordered build (one scoped session each):** (A, first + independently verifiable) stage ladder +
-  code envelope + pass the envelope AND the athlete's week-position-in-phase into the planner → the two
-  thin strength days clear 0.70 with the floor untouched and duration untrimmed; (B) structured
-  machine-evaluable `exit_criteria` + a code phase-advancement gate = dwell floor + criteria-met + a
-  pain/deload safety veto with hold/regress paths (time-elapsed alone must NEVER advance a rehab
-  phase); (C) make the catalog reachable at plan time (filtered subset in the prompt) + add a
+  **Ordered build (REDRAWN — one scoped session each):** **(A1 ✅ DONE 2026-07-23)** stage ladder +
+  code envelopes + the three-state exit-criteria evaluator (schema, tagged-referent authoring validator,
+  MET/UNMET/UNEVALUABLE resolver, effective-stage gate with advancement DISABLED) + cold-start table +
+  backfill + audit — the pure evaluator, plan byte-identical; **(A2, NEXT)** pass the envelope AND the
+  athlete's week-position-in-phase into the planner prompt + wire `session_fill` → the two thin strength
+  days clear 0.70 with the floor untouched and duration untrimmed (this is what closes the §6 thinness
+  entry); **(B)** ENABLE advancement — the dwell floor + apply the effective-stage verdict + wire the
+  pain/deload safety-regression veto (time-elapsed alone must NEVER advance a rehab phase; persist a
+  monotonic-non-rising `effective_stage`, which the A1 resolver already accepts as `prior_effective_stage`);
+  (C) make the catalog reachable at plan time (filtered subset in the prompt) + add a
   difficulty/progression-level column to `exercise_catalog` + phase-gate contraindications
   (wrong-now-vs-wrong-always, extending `AREA_TOKENS` to `{token, min_stage}`); (D) within-phase weekly
   ramp + wire RE-TIERING-ON-PHASE-COMPLETION (the note above) onto the new advancement trigger. **Cold
