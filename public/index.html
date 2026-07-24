@@ -17366,36 +17366,35 @@ function renderV2Today() {
     return;
   }
 
-  var viewingVariant = !!v2Variant;
-  var activeAlt = (!viewingVariant && v2AltActiveKey) ? v2FindAlternate(v2AltActiveKey) : null;
-  var viewingAlt = !!activeAlt;
-  var session = viewingVariant ? v2Variant.session : (viewingAlt ? activeAlt.session : v2Cache.today);
-  var whyLine = viewingVariant ? (v2Variant.why || '') : (viewingAlt ? (activeAlt.rationale || '') : (v2Cache.why || ''));
   var html = '<div id="v2-today">';
 
-  if (viewingVariant) {
+  if (v2Variant) {
+    // An ephemeral generated variation replaces the stack entirely while shown.
     html += v2VariantBannerHtml();
-  } else if (!viewingAlt) {
-    // Decision tag — surfaced honestly. Only shown on the PRIMARY (it describes
-    // today's autoregulation, not an alternate). Only when actually adjusted.
-    var tag = v2Cache.decision_tag;
-    if (tag && tag !== 'kept') {
-      var tagLabel = { reduced_volume: 'Volume reduced today', reduced_intensity: 'Intensity dialled back today', swapped: 'Session swapped today', recovery: 'Recovery day' }[tag] || 'Adjusted today';
-      html += '<div class="v2-tag">' +
-        '<span class="v2-tag-dot"></span><span class="v2-tag-label">' + attrEsc(tagLabel) + '</span></div>';
-    }
-  }
-
-  html += v2SessionCardHtml(session, whyLine);
-
-  if (!viewingVariant) {
-    // Cached alternates — instant, client-side display swaps (no network).
-    html += v2AlternateRowHtml();
+    html += v2SessionCardHtml(v2Variant.session, v2Variant.why || '');
+  } else {
+    // The folded-card stack: the autoregulated primary plus every distinct
+    // cached alternate, exactly one expanded. Pure client-side display swaps.
+    html += v2FoldedStackHtml();
     // The free-text / constraint variant surface stays as the escape hatch.
     html += v2VariantSurfaceHtml();
   }
   html += '</div>';
   el.innerHTML = html;
+}
+
+// Decision tag — surfaced honestly. Only ever shown on the PRIMARY (it describes
+// today's autoregulation, not an alternate), and only when actually adjusted.
+var V2_DECISION_LABEL = {
+  reduced_volume: 'Volume reduced today', reduced_intensity: 'Intensity dialled back today',
+  swapped: 'Session swapped today', recovery: 'Recovery day',
+};
+function v2DecisionTagHtml() {
+  var tag = v2Cache && v2Cache.decision_tag;
+  if (!tag || tag === 'kept') return '';
+  var label = V2_DECISION_LABEL[tag] || 'Adjusted today';
+  return '<div class="v2-tag"><span class="v2-tag-dot"></span>' +
+    '<span class="v2-tag-label">' + attrEsc(label) + '</span></div>';
 }
 
 // The alternate currently displayed, or null while showing the primary.
@@ -17405,8 +17404,9 @@ function v2FindAlternate(key) {
   return m.length ? m[0] : null;
 }
 
-// Alternates worth showing as chips: everything the nightly wrote EXCEPT the
-// noop_extend (a relabeled copy of the primary — never a real alternative).
+// Alternates worth rendering: everything the nightly wrote EXCEPT the
+// noop_extend (a relabeled copy of the primary — never a real alternative;
+// live it is labeled "60 min" while its real duration_min is the primary's 45).
 function v2VisibleAlternates() {
   if (!v2Cache || !Array.isArray(v2Cache.alternates)) return [];
   return v2Cache.alternates.filter(function(a) {
@@ -17414,59 +17414,232 @@ function v2VisibleAlternates() {
   });
 }
 
-// The chip row. Degrades to however many distinct alternates exist (0-3); an
-// empty set renders nothing (no placeholder chip). Labels come from the
-// alternate's REAL resolved duration / swap category, never the cache key.
-function v2AlternateRowHtml() {
-  var alts = v2VisibleAlternates();
-  if (!alts.length) return '';
-  var minDur = Infinity;
-  alts.forEach(function(a) { var d = Number(a.session.duration_min); if (d && d < minDur) minDur = d; });
-  var h = '<div id="v2-alts">';
-  h += '<div class="v2-alts-head">Swap to a ready alternative</div>';
-  h += '<div class="v2-alts-chips">';
-  // The "back to today's plan" affordance is the always-present primary chip.
-  h += '<button type="button" class="v2-alt-chip' + (!v2AltActiveKey ? ' v2-alt-on' : '') + '" onclick="v2SelectAlternate(null)">' +
-    '<span class="v2-alt-label">Today&rsquo;s plan</span></button>';
-  alts.forEach(function(a) {
-    var isDur = String(a.key).indexOf('dur_') === 0;
-    var cat = String(a.session.category || '').replace(/_/g, ' ');
-    var catPretty = cat ? cat.charAt(0).toUpperCase() + cat.slice(1) : '';
-    var label = isDur ? ((a.session.duration_min != null ? a.session.duration_min : '?') + ' min') : (catPretty || 'Alternative');
-    var isMV = isDur && Number(a.session.duration_min) === minDur;
-    var cls = 'v2-alt-chip' + (v2AltActiveKey === a.key ? ' v2-alt-on' : '') + (isMV ? ' v2-alt-mv' : '');
-    h += '<button type="button" class="' + cls + '" onclick="v2SelectAlternate(\'' + attrEsc(a.key) + '\')">' +
-      '<span class="v2-alt-label">' + attrEsc(label) + (isMV ? ' <span class="v2-alt-mvtag">MIN VIABLE</span>' : '') + '</span>' +
-      (a.rationale ? '<span class="v2-alt-sub">' + attrEsc(a.rationale) + '</span>' : '') +
-      '</button>';
+// ── FOLDED-CARD ALTERNATES STACK ────────────────────────────────────────────
+// Supersedes the Session-8 chip row. The autoregulated primary and every
+// distinct alternate render as cards in ONE stack with exactly one expanded.
+// A collapsed card shows enough to DECIDE from (resolved duration, category,
+// the code-derived rationale) without expanding; expanding shows full session
+// detail plus the alternate's real `session.why`.
+//
+// Expand/collapse is a PURE DISPLAY SWAP — v2ToggleCard only mutates
+// v2AltActiveKey and re-renders from the already-loaded cache. There is no
+// fetch(), no /api/v2/variant call, and no write to v2_daily_cache or
+// planned_sessions anywhere in this path (structural, not just observed).
+
+var V2_PRIMARY_KEY = '';   // the primary's stack key; '' so it never collides with a cache key
+
+// Miss-class alternates are semantically different from duration/category
+// variants — "if you can't make class", not "a shorter version of today".
+// Distinguished by fields the nightly ALREADY writes (server.js v2BuildAlternates):
+// source 'model:generate' + a 'miss_' key, vs 'code:*' / 'model:category_swap'.
+function v2AltIsMissClass(a) {
+  return a.source === 'model:generate' || String(a.key || '').indexOf('miss_') === 0;
+}
+
+function v2PrettyCat(c) {
+  var s = String(c || '').replace(/_/g, ' ');
+  return s ? s.charAt(0).toUpperCase() + s.slice(1) : '';
+}
+
+// The primary's collapsed line, code-derived from the autoregulator's decision
+// tag — the same discipline as the alternates' code-derived rationale.
+var V2_DECISION_RATIONALE = {
+  kept: 'Your coached plan for today, unchanged.',
+  reduced_volume: 'Your coached plan, with volume reduced today.',
+  reduced_intensity: 'Your coached plan, with intensity dialled back today.',
+  swapped: 'Your coached plan, swapped for today.',
+  recovery: 'Recovery day — your coached plan for today.',
+};
+
+// Which invariants mark a session as PERSISTED WHILE FLAGGED. Scoped to the
+// work-floor and driver-share checks; a `repaired` severity is a mechanical
+// correction, NOT a flag, so it never produces a marker.
+var V2_FLAG_INVARIANTS = {
+  session_time_budget: 'Work floor',
+  driver_share_underfilled: 'Driver share',
+};
+
+// date -> [{invariant, label, detail}], read from the ACTIVE BLOCK's persisted
+// invariant report. NOTE: this does NOT live in v2_daily_cache — it is on the
+// training_blocks row, already returned by the same GET /api/v2/today payload
+// the client holds in v2Week. No server change, no extra request.
+function v2FlagsByDate() {
+  var out = {};
+  var blk = v2Week && v2Week.block && v2Week.block.block;
+  var vs = blk && blk.invariant_violations;
+  if (!Array.isArray(vs)) return out;
+  vs.forEach(function(v) {
+    if (!v || v.severity === 'repaired') return;
+    var label = V2_FLAG_INVARIANTS[v.invariant];
+    if (!label) return;
+    var m = String(v.detail || '').match(/\d{4}-\d{2}-\d{2}/);
+    if (!m) return;
+    if (!out[m[0]]) out[m[0]] = [];
+    out[m[0]].push({ invariant: v.invariant, label: label, detail: String(v.detail || '') });
   });
-  h += '</div></div>';
+  return out;
+}
+
+// The ordered card descriptors: primary first, then duration/category variants,
+// then miss-class alternates. Degrades to however many distinct alternates
+// exist (0-3) — an absent group renders no heading and no placeholder card.
+function v2StackCards() {
+  var cards = [];
+  if (!v2Cache || !v2Cache.today) return cards;
+
+  var flags = v2FlagsByDate();
+  cards.push({
+    key: V2_PRIMARY_KEY, kind: 'primary', group: 'primary',
+    session: v2Cache.today,
+    title: 'Today’s plan',
+    rationale: V2_DECISION_RATIONALE[v2Cache.decision_tag] || 'Your coached plan for today.',
+    // Expanded shows the autoregulator's `why` (unchanged from Session 8).
+    why: v2Cache.why || v2Cache.today.why || '',
+    flags: flags[v2Cache.date] || [],
+  });
+
+  var alts = v2VisibleAlternates();
+  // MIN VIABLE ranks the DURATION variants only — a miss-class session is not a
+  // shorter version of today, so it never competes for that tag.
+  var minDur = Infinity;
+  alts.forEach(function(a) {
+    if (v2AltIsMissClass(a)) return;
+    var d = Number(a.session.duration_min);
+    if (d && d < minDur) minDur = d;
+  });
+
+  alts.forEach(function(a) {
+    var miss = v2AltIsMissClass(a);
+    var isDur = String(a.key).indexOf('dur_') === 0;
+    var cat = v2PrettyCat(a.session.category);
+    var d = a.session.duration_min;
+    cards.push({
+      key: a.key, kind: 'alt', group: miss ? 'miss' : 'variant',
+      session: a.session,
+      // Title is built from the alternate's REAL resolved duration/category,
+      // never the cache key (a `dur_30` that compresses to 28 reads "28 min").
+      title: (cat || 'Alternative') + (d != null ? ' — ' + d + ' min' : ''),
+      rationale: a.rationale || '',
+      // THE §1.4 FIX: collapsed shows the short code-derived rationale above;
+      // expanded shows the alternate's genuinely richer session.why.
+      why: a.session.why || '',
+      minViable: !miss && isDur && Number(d) === minDur,
+      // Alternates are ephemeral variants, not planned_sessions rows — they
+      // carry no persisted invariant result, so never a fabricated marker.
+      flags: [],
+    });
+  });
+  return cards;
+}
+
+function v2FoldedStackHtml() {
+  var cards = v2StackCards();
+  if (!cards.length) return '';
+  // If a previously-selected alternate vanished (cache refresh), fall back to
+  // the primary rather than rendering a stack with nothing expanded.
+  var activeKey = v2AltActiveKey || V2_PRIMARY_KEY;
+  var found = false;
+  cards.forEach(function(c) { if (c.key === activeKey) found = true; });
+  if (!found) activeKey = V2_PRIMARY_KEY;
+
+  var h = '<div id="v2-stack">';
+  var lastGroup = null;
+  cards.forEach(function(c) {
+    if (c.group !== lastGroup) {
+      if (c.group === 'variant') h += '<div class="v2-stack-head">Ready alternatives</div>';
+      else if (c.group === 'miss') h += '<div class="v2-stack-head v2-stack-head-miss">If you can’t make it</div>';
+      lastGroup = c.group;
+    }
+    h += (c.key === activeKey) ? v2ExpandedCardHtml(c) : v2CollapsedCardHtml(c);
+  });
+  h += '</div>';
+  return h;
+}
+
+// The meta row: resolved duration, category, intensity + any tags. Shared by
+// both states so a card reads identically collapsed and expanded (the ember
+// context restyles it via CSS rather than a second markup path).
+function v2CardMetaHtml(c) {
+  var s = c.session || {};
+  var bits = [];
+  var cat = v2PrettyCat(s.category);
+  if (cat) bits.push(cat);
+  if (s.duration_min != null) bits.push(s.duration_min + ' min');
+  if (s.intensity) bits.push(String(s.intensity));
+  var h = '<span class="v2-fold-facts font-mono">' + attrEsc(bits.join(' · ')) + '</span>';
+  if (c.minViable) h += '<span class="v2-fold-tag">MIN VIABLE</span>';
+  if (c.group === 'miss') h += '<span class="v2-fold-tag v2-fold-tag-miss">IF YOU MISS CLASS</span>';
+  (c.flags || []).forEach(function(f) {
+    h += '<span class="v2-fold-tag v2-fold-tag-flag" title="' + attrEsc(f.detail) + '">&#9873; ' +
+      attrEsc(f.label) + '</span>';
+  });
+  return h;
+}
+
+function v2CollapsedCardHtml(c) {
+  var k = attrEsc(c.key);
+  var cls = 'v2-fold v2-fold-collapsed' +
+    (c.kind === 'primary' ? ' v2-fold-primary' : '') +
+    (c.group === 'miss' ? ' v2-fold-miss' : '');
+  var h = '<div class="' + cls + '" role="button" tabindex="0" aria-expanded="false"' +
+    ' onclick="v2ToggleCard(\'' + k + '\')"' +
+    ' onkeydown="if(event.key===\'Enter\'||event.key===\' \'){event.preventDefault();v2ToggleCard(\'' + k + '\');}">';
+  h += '<div class="v2-fold-top"><span class="v2-fold-title">' + attrEsc(c.title) + '</span>' +
+    '<span class="v2-fold-chev" aria-hidden="true">&#9662;</span></div>';
+  h += '<div class="v2-fold-meta">' + v2CardMetaHtml(c) + '</div>';
+  if (c.rationale) h += '<div class="v2-fold-rationale">' + attrEsc(c.rationale) + '</div>';
+  h += '</div>';
+  return h;
+}
+
+function v2ExpandedCardHtml(c) {
+  var h = c.kind === 'primary' ? v2DecisionTagHtml() : '';
+  h += v2SessionCardHtml(c.session, c.why, {
+    foldable: true, cardKey: c.key, title: c.title, metaHtml: v2CardMetaHtml(c),
+  });
   return h;
 }
 
 // A pure client-side display swap: no network call, no cache/plan write.
-function v2SelectAlternate(key) {
-  v2AltActiveKey = key || null;
+// Tapping the card that is already open folds back to the primary, so the
+// coached plan is always one tap away.
+function v2ToggleCard(key) {
+  var k = key || V2_PRIMARY_KEY;
+  var cur = v2AltActiveKey || V2_PRIMARY_KEY;
+  v2AltActiveKey = (cur === k) ? null : (k || null);
   renderV2Today();
 }
 
 // Render one flattened session (category/duration/intensity + sections + why).
 // Reuses recOptionSections() so the section shape and time_seconds display
 // ("Dead Hang — 2 sets, 45s") are identical to the flatten-boundary output.
-function v2SessionCardHtml(session, whyLine) {
+// `opts` (folded-stack mode only) — { foldable, cardKey, title, metaHtml }.
+// Omitted by the week sheet and the variant view, which keep the original
+// header/meta layout byte-identically.
+function v2SessionCardHtml(session, whyLine, opts) {
   if (!session) return '';
+  opts = opts || {};
   var cat = String(session.category || 'session').replace(/_/g, ' ');
   var catPretty = cat.charAt(0).toUpperCase() + cat.slice(1);
   var dur = session.duration_min != null ? session.duration_min + ' min' : '';
   var intensity = session.intensity || '';
-  var h = '<div class="v2-session">';
+  var h = '<div class="v2-session' + (opts.foldable ? ' v2-fold v2-fold-expanded' : '') + '"' +
+    (opts.foldable ? ' aria-expanded="true"' : '') + '>';
   // Header row.
   h += '<div class="v2-session-head">';
-  h += '<div class="v2-session-title">' + attrEsc(session.headline || catPretty) + '</div>';
-  h += '<div class="v2-session-meta"><span class="v2-chip-cat">' + attrEsc(catPretty) + '</span>' +
-    (dur ? '<span class="v2-meta-dot font-mono">' + attrEsc(dur) + '</span>' : '') +
-    (intensity ? '<span class="v2-meta-dot font-mono">' + attrEsc(intensity) + '</span>' : '') + '</div>';
+  h += '<div class="v2-session-title">' + attrEsc(opts.title || session.headline || catPretty) + '</div>';
+  if (opts.foldable) {
+    h += '<button type="button" class="v2-fold-collapse" aria-label="Collapse"' +
+      ' onclick="v2ToggleCard(\'' + attrEsc(opts.cardKey || '') + '\')">&#9652;</button>';
+  } else {
+    h += '<div class="v2-session-meta"><span class="v2-chip-cat">' + attrEsc(catPretty) + '</span>' +
+      (dur ? '<span class="v2-meta-dot font-mono">' + attrEsc(dur) + '</span>' : '') +
+      (intensity ? '<span class="v2-meta-dot font-mono">' + attrEsc(intensity) + '</span>' : '') + '</div>';
+  }
   h += '</div>';
+  // Folded mode carries the same meta row as the collapsed card, so a card
+  // reads identically in both states.
+  if (opts.foldable && opts.metaHtml) h += '<div class="v2-fold-meta">' + opts.metaHtml + '</div>';
   // AI-generated why — cornerman/purple attribution treatment.
   if (whyLine) {
     h += '<div class="v2-why">' + attrEsc(whyLine) + '</div>';
@@ -17653,16 +17826,23 @@ function renderV2Week() {
   var dates = Object.keys(byDate).sort();
 
   var statusColor = { planned: 'var(--text-muted)', completed: 'var(--color-positive)', missed: 'var(--color-danger)', modified: 'var(--accent-cornerman)', skipped: 'var(--text-dim)' };
+  // Sessions that persisted while flagged by the work-floor / driver-share
+  // invariants get a marker — read from the block's persisted invariant report.
+  var weekFlags = v2FlagsByDate();
   var h = '<div class="v2-week-title clabel">this week</div><div class="v2-week-list">';
   dates.forEach(function(d) {
     var isToday = d === todayStr;
     var dayLabel = new Date(d + 'T12:00:00').toLocaleDateString('en-US', { weekday: 'short' });
+    var dayFlags = weekFlags[d] || [];
+    var flagHtml = dayFlags.length
+      ? ' <span class="v2-week-flag" title="' + attrEsc(dayFlags.map(function(f) { return f.detail; }).join(' | ')) + '">&#9873;</span>'
+      : '';
     byDate[d].forEach(function(s) {
       var anchor = s.movable === false;
       var cat = String(s.category || 'rest').replace(/_/g, ' ');
       h += '<div class="v2-week-row' + (isToday ? ' v2-week-today' : '') + '" onclick="v2WeekDayDetail(\'' + attrEsc(d) + '\',' + (s.slot || 1) + ')">';
       h += '<span class="v2-week-day font-mono">' + attrEsc(dayLabel) + '</span>';
-      h += '<span class="v2-week-cat">' + (anchor ? '<span class="v2-week-anchor" title="Fixed commitment">◆</span> ' : '') + attrEsc(cat) + '</span>';
+      h += '<span class="v2-week-cat">' + (anchor ? '<span class="v2-week-anchor" title="Fixed commitment">◆</span> ' : '') + attrEsc(cat) + flagHtml + '</span>';
       h += '<span class="v2-week-dur font-mono">' + (s.duration_min ? s.duration_min + 'm' : '') + '</span>';
       h += '<span class="v2-week-status" style="color:' + (statusColor[s.status] || 'var(--text-muted)') + '">' + attrEsc(s.status || 'planned') + '</span>';
       h += '</div>';
@@ -17817,19 +17997,39 @@ function v2SetTier(idx, tier) {
 #v2-today .v2-ex-txt { color:#fff; line-height:1.5; }
 #v2-today .v2-log-btn { width:100%; background:#fff; color:var(--accent-ember); border:none; padding:12px 20px; font-size:14px;
   font-weight:700; cursor:pointer; border-radius:14px; font-family:Inter,sans-serif; margin-top:14px; }
-/* Cached alternate chips — instant, client-side display swaps */
-#v2-today #v2-alts { margin-top:16px; }
-#v2-today .v2-alts-head { font-size:12px; color:var(--text-muted); margin-bottom:8px; font-weight:600; }
-#v2-today .v2-alts-chips { display:flex; flex-wrap:wrap; gap:8px; }
-#v2-today .v2-alt-chip { display:flex; flex-direction:column; align-items:flex-start; gap:2px; text-align:left;
-  background:var(--bg-surface-2); border:1px solid var(--border-subtle); color:var(--text-primary);
-  padding:8px 13px; border-radius:12px; cursor:pointer; font-family:Inter,sans-serif; max-width:100%; }
-#v2-today .v2-alt-chip:hover { border-color:var(--text-muted); }
-#v2-today .v2-alt-on { border-color:var(--accent-ember); background:rgba(255,74,28,0.08); }
-#v2-today .v2-alt-label { font-size:13px; font-weight:700; display:inline-flex; align-items:center; gap:6px; }
-#v2-today .v2-alt-mvtag { font-size:8px; letter-spacing:0.06em; font-weight:700; color:var(--text-muted);
-  border:1px solid var(--border-subtle); border-radius:6px; padding:1px 4px; }
-#v2-today .v2-alt-sub { font-size:11px; color:var(--text-muted); line-height:1.35; }
+/* ── Folded-card alternates stack (supersedes the Session-8 chip row) ────────
+   The expanded card keeps the established ember "coached primary" treatment;
+   collapsed cards are surface-2 / border-subtle and carry NO ember, so ember
+   stays reserved for the expanded card and its primary CTA. */
+#v2-today #v2-stack { display:flex; flex-direction:column; gap:10px; }
+#v2-today .v2-stack-head { font-size:11px; font-weight:700; letter-spacing:0.08em; text-transform:uppercase;
+  color:var(--text-muted); margin:8px 0 -2px; }
+#v2-today .v2-stack-head-miss { padding-top:10px; border-top:1px solid var(--border-subtle); }
+/* Collapsed: enough to decide from without expanding. */
+#v2-today .v2-fold-collapsed { background:var(--bg-surface-2); border:1px solid var(--border-subtle);
+  border-radius:16px; padding:13px 15px; cursor:pointer; }
+#v2-today .v2-fold-collapsed:hover { border-color:var(--text-muted); }
+#v2-today .v2-fold-collapsed:focus-visible { outline:2px solid var(--accent-cornerman); outline-offset:2px; }
+#v2-today .v2-fold-top { display:flex; justify-content:space-between; align-items:center; gap:10px; }
+#v2-today .v2-fold-title { font-size:15px; font-weight:700; color:var(--text-primary); }
+#v2-today .v2-fold-chev { font-size:11px; color:var(--text-muted); flex-shrink:0; }
+#v2-today .v2-fold-meta { display:flex; flex-wrap:wrap; align-items:center; gap:6px; margin-top:5px; }
+#v2-today .v2-fold-facts { font-size:11px; color:var(--text-muted); text-transform:uppercase; letter-spacing:0.05em; }
+#v2-today .v2-fold-tag { font-size:8px; letter-spacing:0.06em; font-weight:700; color:var(--text-muted);
+  border:1px solid var(--border-subtle); border-radius:6px; padding:1px 5px; text-transform:uppercase; }
+#v2-today .v2-fold-tag-miss { color:var(--accent-cornerman); border-color:rgba(139,92,246,0.4); }
+#v2-today .v2-fold-tag-flag { color:var(--color-caution); border-color:var(--color-caution); }
+#v2-today .v2-fold-rationale { font-size:12px; color:var(--text-muted); line-height:1.45; margin-top:7px; }
+/* Expanded: the ember card, plus a collapse affordance and the shared meta row
+   restyled for the ember surface (same markup, no second render path). */
+#v2-today .v2-fold-collapse { background:rgba(255,255,255,0.18); border:none; color:#fff; font-size:11px;
+  line-height:1; padding:6px 9px; border-radius:8px; cursor:pointer; flex-shrink:0; font-family:Inter,sans-serif; }
+#v2-today .v2-fold-collapse:hover { background:rgba(255,255,255,0.3); }
+#v2-today .v2-session .v2-fold-meta { margin:0 0 10px; }
+#v2-today .v2-session .v2-fold-facts { color:rgba(255,255,255,0.85); }
+#v2-today .v2-session .v2-fold-tag { color:#fff; border-color:rgba(255,255,255,0.45); }
+#v2-today .v2-session .v2-fold-tag-miss { color:#fff; border-color:rgba(255,255,255,0.6); }
+#v2-today .v2-session .v2-fold-tag-flag { color:#fff; border-color:#fff; }
 /* Variant surface */
 #v2-variant { margin-top:18px; padding-top:14px; border-top:1px solid var(--border-subtle); }
 #v2-variant .v2-var-head { font-size:12px; color:var(--text-muted); margin-bottom:10px; font-weight:600; }
@@ -17859,6 +18059,7 @@ function v2SetTier(idx, tier) {
 #v2-week-card .v2-week-day { font-size:11px; color:var(--text-muted); text-transform:uppercase; }
 #v2-week-card .v2-week-cat { font-size:14px; color:var(--text-primary); text-transform:capitalize; }
 #v2-week-card .v2-week-anchor { color:var(--accent-ember); }
+#v2-week-card .v2-week-flag { color:var(--color-caution); font-size:12px; }
 #v2-week-card .v2-week-dur { font-size:12px; color:var(--text-muted); }
 #v2-week-card .v2-week-status { font-size:10px; text-transform:uppercase; letter-spacing:0.06em; }
 /* Bottom sheet */
