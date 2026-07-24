@@ -2725,6 +2725,75 @@ would contaminate A2's own success metric (UNEVALUABLE dropping as prescribed pa
   logged as a BEFORE-B blocker** (an implausible threshold is a permanent hold or a premature advance
   once advancement is on).
 
+## Engine v2 — Anchor-day variant GENERATE (2026-07-23): miss-class replacement sessions
+
+An insertion ahead of B and D (both still queued, unchanged), driven by a real usability failure: on an
+anchor day the variant surface returned nothing. **Anchors REMAIN the primary recommendation** — a
+scheduled class is a real commitment and is never casually reshuffled, demoted, or made freely
+overridable, and no replacement primary is ever written. But when the athlete *explicitly asks for
+something else* ("class got cancelled", "give me an upper body workout"), the surface now returns a REAL,
+FULL session for the freed time.
+
+### The generate-vs-transform split (the mechanism)
+Every variant path assumed it was TRANSFORMING an existing session — and an anchor carries ZERO exercises
+and one empty `skill` segment, so cache-first compressed nothing, code-only hit the "no segments to
+compress" no-op, and the model path was told "IMMOVABLE, return segments exactly" (semantically wrong —
+the athlete is *missing* class, not reshaping it). Live audit confirmed the failure was worse than
+"nothing": a vague ask returned the empty anchor; a specific ask made the model ignore the framing and
+generate an **un-validated** session at **`intensity:high`** (escalating past the capacity cleared stage),
+with `checkVariant` skipping all constraint checks because `opts.isAnchor` gated them off.
+
+Fix: `v2GenerateVariant` gains a **GENERATE branch** ahead of the transform branch, entered when
+`!rules.sessionHasPrescribedWork(primary)` — **derived from the existing property (no new one), so it is
+goal-agnostic across any anchor type** (class, team practice, standing commitment) and also covers a rest
+day. It builds a full session from scratch instead of transforming one, via `v2Variant.buildGeneratePrompt`.
+
+### Requirements, all enforced
+1. **Slot duration = the anchor's freed time** (60 min here), not a default.
+2. **Envelope-compliant** — reuses `renderEffectiveEnvelopesForPrompt` from the gate-clamped effective
+   stage (A2), ONE envelope path. Advancement disabled → a generated session **can never escalate past
+   the cleared stage** (verified live: every generated session came back `intensity:medium`, never the
+   old `high`).
+3. **Clears the work floor** — goes through `enforceInvariants`/`session_time_budget` like anything else.
+   The floor stays 0.70, untouched. (Live: cardio generates pass ~99%; strength generates flag
+   `session_time_budget/regenerate` at the SAME mixed capacity+rehab §6-open residual A2 left open —
+   flagged-and-persisted, visible, not a floor change.)
+4. **Rules-compliant** — contraindications, CNS adjacency, mat load all through the rules module.
+   Verified live: a generated cardio session's "Easy Jog / Running Intervals" **flagged
+   `contraindication_free`** against the Right Quad / IT Band flag (matched `run`) — the injury check
+   fires on generated content.
+5. **Week-aware** — `v2WeekContext(pid, today)` fetches this week's `planned_sessions` + yesterday's
+   combat workouts (mat load) and feeds them as prompt text (evidenced live: the model reasoned "avoid
+   back-to-back high-CNS work tomorrow"). Adjacency is enforced by **reusing `v2Planner.enforceInvariants`
+   over a mini-week `[yesterday, generated-today, tomorrow]`** (`v2EnforceGeneratedSession`) so
+   `no_consecutive_high_cns` fires against a generated session — NOT a parallel selection path.
+   (Unit-test-proven; no live flag because profile 4's week has no high-CNS day adjacent to the anchor,
+   which is correct.)
+6. **Honors the request** — the classifier (`classifyRequest`) now detects **body-region**
+   (`upper_body`/`lower_body`/`push`/`pull`/`arms`/`core`/`full_body`), **free-text category** ("give me
+   cardio" → strength/cardio/mind_body/rehab), and a **missed-class signal**. Verified live: "upper body"
+   led with Push-Up/Dumbbell Row/Overhead Press; "lower body" with Glute Bridge/Goblet Squat/Reverse
+   Lunge. (Region also flows into the transform path for non-anchor days — additive.)
+7. **Ephemeral** — no write to `v2_daily_cache` or `planned_sessions`. Proven live: cache `generated_at`
+   and the plan hash were byte-identical before and after 5 variant requests. The skipped class is
+   recorded only when the athlete logs the replacement workout, through the existing workout↔planned link.
+8. **Pre-generated anchor alternates (latency)** — the nightly (`v2BuildAlternates`), on a no-prescribable-
+   content day, pre-builds 1-2 "if you miss class" sessions via the **shared** `v2GenerateVariant` generate
+   path (no inline prompt — the Phase 4 mistake), covering the **driver modalities** (Build Muscle →
+   strength, Stamina → cardio; a goal-agnostic default of strength+cardio if no drivers). They land in the
+   ≤4 alternate budget as `miss_<category>`. `matchGeneratedAlternate` serves a matching category request
+   **instantly (~2s) vs ~15-20s on-demand** — verified live. Region/free-text still generate on demand.
+
+**Files:** `server/v2Variant.js` (`classifyRequest` region/category/missed, `buildGeneratePrompt`,
+`matchGeneratedAlternate`, `checkVariant` generated-mode constraint checks, `normRegion`); `server.js`
+(`v2WeekContext`, `v2RunVariantModel` shared model call, `v2EnforceGeneratedSession`, the GENERATE branch
+in `v2GenerateVariant`, endpoint week-context + instant-serve wiring, nightly pre-generation). No schema
+change, no npm deps. **184 v2 tests** (was 174). Profile 1 / non-flagged profiles byte-identical (verified).
+
+**Position:** this is an insertion ahead of B and D, both of which remain queued. The folded-card
+alternates layout stays queued and should come AFTER this (it now has real anchor-day alternates to lay
+out). The strength-generate work-floor flag is the same mixed capacity+rehab residual tracked OPEN in §6.
+
 ## Migrations
 
 One-time data fixes that should be run in the Supabase SQL editor.

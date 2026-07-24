@@ -1961,6 +1961,23 @@ All verified present in `server.js`. `:id`/`:userId` = profile id.
   and core stability bolt-ons; yoga mobility preserved as prep; no high-load compound…"). Not a bug
   (Session 8 intended the rationale as the collapsed-state summary), but the Workstream 2 folded-card
   layout should show the rationale collapsed and the full `session.why` when expanded.
+- **✅ Engine v2 — ANCHOR-DAY VARIANT GENERATE (2026-07-23, DONE + DEPLOYED + live-verified).** An
+  insertion ahead of B and D (both still queued, unchanged), driven by a live usability failure: on an
+  anchor day the variant surface returned nothing (an empty anchor has nothing to TRANSFORM). Added a
+  GENERATE branch alongside TRANSFORM — when `!sessionHasPrescribedWork(primary)` (any anchor type, or a
+  rest day), generate a REAL full session for the freed slot. **Anchors STAY the primary** (not
+  overridable/demoted, no replacement primary written). Envelope-compliant (reuses A2's
+  `renderEffectiveEnvelopesForPrompt`, cannot escalate — live sessions all `intensity:medium`),
+  work-floor-bound, contraindication + CNS-adjacency + mat-load enforced through the rules module
+  (contraindication fired live: a generated jog flagged vs the IT-band flag), week-aware
+  (`v2WeekContext` + `enforceInvariants` over a mini-week), ephemeral (cache + plan byte-identical after
+  5 requests — proven). Classifier now handles body-region / free-text category / miss-class. Nightly
+  pre-generates 1-2 "if you miss class" alternates (driver modalities) via the shared path; matching
+  category requests serve instantly (~2s vs ~15-20s on-demand). 184 v2 tests; profile 1 byte-identical.
+  Full record in `CLAUDE.md` → "Engine v2 — Anchor-day variant GENERATE". **The strength generates flag
+  the work floor at the SAME mixed capacity+rehab residual tracked OPEN in §6** (cardio generates pass).
+  **The Workstream 2 folded-card layout is still queued and should come AFTER this** — it now has real
+  anchor-day alternates (the pre-generated miss-class sessions) to lay out.
 - **Accessory-tier goals can be silently dropped with no invariant catching it (found
   2026-07-22).** `Daily Meditation` (accessory tier) appears in the generated plan only inside a
   segment's `intent` STRING ("Pinky accessory + meditation — daily accessory dose") and is never
