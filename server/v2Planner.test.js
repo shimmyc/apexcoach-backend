@@ -574,7 +574,7 @@ function allocCtx() {
 
 test("driver_share_underfilled: a Build-Muscle slot filled mostly with mobility FLAGS (the §6 failure)", function () {
   var thin = {
-    date: "2026-07-22", slot: 1, movable: true, category: "strength", intensity: "medium",
+    date: "2026-07-22", slot: 1, movable: true, category: "strength", intensity: "medium", duration_min: 45,
     why: "mixed", goal_tags: ["Build Muscle", "Fix Posture", "Fix Pubic Osteitis"],
     segments: [
       { type: "warmup", duration_min: 5, exercises: [{ name: "Cat-Cow", sets: 2, reps: 10 }] },
@@ -589,7 +589,7 @@ test("driver_share_underfilled: a Build-Muscle slot filled mostly with mobility 
 
 test("driver_share: a resistance-dominant Build-Muscle session PASSES", function () {
   var full = {
-    date: "2026-07-24", slot: 1, movable: true, category: "strength", intensity: "medium",
+    date: "2026-07-24", slot: 1, movable: true, category: "strength", intensity: "medium", duration_min: 45,
     why: "full", goal_tags: ["Build Muscle", "Fix Posture", "Fix Pubic Osteitis"],
     segments: [
       { type: "warmup", duration_min: 5, exercises: [{ name: "Cat-Cow", sets: 1, reps: 10 }] },

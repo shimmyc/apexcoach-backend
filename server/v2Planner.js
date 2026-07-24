@@ -418,32 +418,36 @@ function workByModality(session) {
 }
 
 /**
- * The DRIVER-SHARE invariant. The driver goal(s)' modality must actually occupy
- * at least their allocated fraction of the session's real work — otherwise the
- * driver was starved by mobility/accessory filler (the §6 thinness). Returns a
- * `regenerate`-severity violation (reuses the planner's existing 2-attempt cap),
- * or [] when there is no driver to enforce.
+ * The DRIVER-SHARE invariant. The driver goal(s)' allocated SLOT MINUTES must be
+ * FILLED with real driver-modality work — not merely dominant proportionally.
+ * "Filled" is absolute: driver-modality work >= (driver share minutes) x the work
+ * floor density. This is what closes §6 — a session where the driver dominates a
+ * too-small pie (73% of 25 min) still starves the driver in absolute terms, and
+ * the total work floor alone doesn't tell the model WHERE to add volume. Returns
+ * a `regenerate`-severity violation (reuses the planner's existing 2-attempt
+ * cap), or [] when there is no driver to enforce. Does NOT touch the work floor.
  */
 function driverShareProblems(session, allocation) {
   var drivers = (allocation || []).filter(function (a) { return a.tier === "driver"; });
   if (!drivers.length) return [];
-  var driverFrac = drivers.reduce(function (a, d) { return a + (d.share_fraction || 0); }, 0);
+  var driverShareMin = drivers.reduce(function (a, d) { return a + (Number(d.share_min) || 0); }, 0);
   var driverMods = {};
   drivers.forEach(function (d) { if (d.modality_family) driverMods[d.modality_family] = 1; });
-  if (!Object.keys(driverMods).length) return [];
+  if (!Object.keys(driverMods).length || driverShareMin <= 0) return [];
 
   var wbm = workByModality(session);
-  var total = Object.keys(wbm).reduce(function (a, k) { return a + wbm[k]; }, 0);
-  if (total <= 0) return [];
   var driverWork = Object.keys(wbm).reduce(function (a, k) { return a + (driverMods[k] ? wbm[k] : 0); }, 0);
-  var actualFrac = driverWork / total;
-  if (actualFrac + 1e-9 < driverFrac - DRIVER_SHARE_TOL) {
+  // The driver's allocated minutes, at the floor density — the real work that must
+  // fill that share. (A DRIVER_SHARE_TOL grace so a near-miss on a rounding edge
+  // doesn't churn.)
+  var required = driverShareMin * rules.SESSION_WORK_FLOOR * (1 - DRIVER_SHARE_TOL);
+  if (driverWork + 1e-9 < required) {
     var mods = Object.keys(driverMods).join("/");
     return [{
       invariant: "driver_share_underfilled", severity: "regenerate",
-      detail: (session.date || "session") + ": driver goal(s) allocated " + Math.round(driverFrac * 100) +
-        "% of the slot (" + mods + " work) but only " + Math.round(actualFrac * 100) +
-        "% of the actual work is " + mods + " — the driver's share is filled with off-modality (rehab/mobility/accessory) work. Put the driver's own envelope work in first.",
+      detail: (session.date || "session") + ": the driver's " + Math.round(driverShareMin) + "-min share needs ~" +
+        Math.round(driverShareMin * rules.SESSION_WORK_FLOOR) + " min of real " + mods + " work but only ~" +
+        driverWork.toFixed(0) + " min is prescribed — add driver (" + mods + ") sets to FILL the driver's share, don't leave it to rehab/mobility/accessory.",
     }];
   }
   return [];
