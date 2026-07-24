@@ -12522,6 +12522,12 @@ app.get("/api/v2/audit/:profileId", async function(req, res) {
       },
       roadmap_phases: { per_goal: phaseResolutions, macro: macroPhase },
       stage_audit: { per_goal: stageAudit, summary: stageAuditSummary },
+      // A2: the per-goal effective-stage envelopes the planner now receives
+      // (gate-clamped effective stage, advancement disabled) + the rendered block.
+      goal_envelopes: {
+        per_goal: v2GoalEnvelopes(goals, progression, today),
+        rendered: v2Rules.renderEffectiveEnvelopesForPrompt(v2GoalEnvelopes(goals, progression, today)),
+      },
       rendered: { rules: rulesText, progression_table: progressionText, dossier: dossierText },
       prompt_sections: promptSections,
     });
