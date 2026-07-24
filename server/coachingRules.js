@@ -862,6 +862,82 @@ var CRITERION_COMPARATORS = ["gte", "lte", "eq", "trend_up", "trend_flat_or_up"]
 function isCriterionMetric(m) { return !!CRITERION_METRICS[m]; }
 function isCriterionComparator(c) { return CRITERION_COMPARATORS.indexOf(c) >= 0; }
 
+// ── Metric-fits-pattern (A2 — folded A1 follow-up) ──────────────────────────
+// A criterion whose METRIC does not fit its referent pattern's LOGGED SHAPE can
+// NEVER evaluate no matter how much is trained — the permanent-hold bug arriving
+// through a different door than the envelope check. Example found live: a
+// `best_hold_seconds` criterion on `vertical_pull` (a pull-up logs reps, never a
+// hold). The referent constraint guarantees measurability against the envelope;
+// this guarantees the metric fits the pattern.
+//
+// The taxonomy is derived from what the LOG actually carries, not invented. The
+// four VALUE metrics ARE the four measurable `exercises` columns:
+//   reps          -> best_reps          (rep-based)
+//   weight_lbs    -> best_weight_lbs    (load-based)
+//   duration_min  -> best_hold_seconds  (hold, for strength/rehab categories)
+//                 -> best_session_minutes (session length, for cardio/skill categories)
+//   distance_mi   -> (no criterion metric today)
+// Each pattern's set below is which of those columns that movement plausibly
+// populates. sessions_logged (count) and trend are ALWAYS allowed — any pattern
+// is logged as sessions, and a trend rides whatever dominant metric it produces.
+//
+// IMPORTANT distinction, load-bearing: this rejects a SHAPE mismatch (a pull-up
+// can never be a hold), NOT a data gap. A `best_weight_lbs` criterion on
+// `hip_bridge` is ALLOWED here (a hip thrust CAN be loaded) even if the athlete
+// has so far logged only bodyweight bridges — that is a not-yet-logged data gap
+// A2 closes by prescribing weighted bridges, and the resolver correctly reports
+// it UNEVALUABLE-until-logged. Only impossible-by-shape pairs are rejected.
+var PATTERN_VALUE_METRICS = {
+  // resistance — rep + load
+  squat:            ["best_reps", "best_weight_lbs"],
+  hinge:            ["best_reps", "best_weight_lbs"],
+  lunge:            ["best_reps", "best_weight_lbs"],
+  hip_bridge:       ["best_reps", "best_weight_lbs"],
+  horizontal_push:  ["best_reps", "best_weight_lbs"],
+  vertical_push:    ["best_reps", "best_weight_lbs"],
+  horizontal_pull:  ["best_reps", "best_weight_lbs"],
+  vertical_pull:    ["best_reps", "best_weight_lbs"],
+  calf_raise:       ["best_reps", "best_weight_lbs"],
+  direct_arm:       ["best_reps", "best_weight_lbs"],
+  ballistic:        ["best_reps", "best_weight_lbs"],
+  carry:            ["best_weight_lbs", "best_session_minutes", "best_reps"], // load + time under load
+  core_brace:       ["best_reps", "best_hold_seconds", "best_weight_lbs"],    // dead bug reps / plank holds / weighted
+  isometric_hold:   ["best_hold_seconds", "best_weight_lbs"],                 // a hold, never reps
+  // aerobic — session length (distance is not a criterion metric)
+  steady_state:     ["best_session_minutes"],
+  long_duration:    ["best_session_minutes"],
+  tempo:            ["best_session_minutes"],
+  threshold:        ["best_session_minutes"],
+  aerobic_interval: ["best_session_minutes"],
+  sprint_interval:  ["best_session_minutes"],
+  // skill / mobility
+  end_range_hold:   ["best_hold_seconds", "best_reps"],
+  mobility_flow:    ["best_reps"],
+  activation:       ["best_reps"],
+  balance_stability:["best_reps", "best_hold_seconds"],
+  positional_drill: ["best_reps"],
+  reactive_control: ["best_reps"],
+  breathing:        ["best_reps"],
+};
+
+function patternMetrics(token) { return PATTERN_VALUE_METRICS[token] || null; }
+
+/**
+ * Does this metric fit the pattern's logged shape? count (sessions_logged) and
+ * trend always fit; a value metric must be one the pattern plausibly logs.
+ * @returns {{ok:boolean, reason?:string}}
+ */
+function metricFitsPattern(metric, token) {
+  var m = CRITERION_METRICS[metric];
+  if (!m) return { ok: false, reason: "unknown metric '" + metric + "'" };
+  if (m.kind !== "value") return { ok: true };   // count / trend fit any pattern
+  var set = PATTERN_VALUE_METRICS[token];
+  if (!set) return { ok: false, reason: "unknown pattern '" + token + "'" };
+  if (set.indexOf(metric) >= 0) return { ok: true };
+  return { ok: false, reason: "metric '" + metric + "' cannot be measured for pattern '" + token +
+    "' — that movement logs " + set.join(" / ") + ", never " + metric + " (a shape mismatch, not a data gap)" };
+}
+
 // ── Cold-start default stage table (A1 item 6) ──────────────────────────────
 // goal TYPE -> floor stage. Keyed by TYPE, NOT by injury: an injury changes which
 // exercises fill the envelope, never which stage the goal starts at. A brand-new
@@ -931,6 +1007,50 @@ function stageEnvelopeLengths(families) {
   fams.forEach(function (fam) { out[fam] = renderStageEnvelopesForPrompt([fam]).length; });
   out._total = renderStageEnvelopesForPrompt(fams).length;
   return out;
+}
+
+/**
+ * A2 — render the per-goal EFFECTIVE-STAGE envelopes for the planner / variant.
+ * The stage passed in is the GATE-CLAMPED effective stage (never intended, never
+ * the calendar phase), so with advancement disabled it is the current cleared
+ * stage: the envelope fills the current stage's sessions and can never escalate.
+ *
+ * The `session_fill` line is how the §6 thinness is resolved by construction: a
+ * low-fill stage (tissue_tolerance / maintenance / mobility) states an HONESTLY
+ * SHORT session driven by the code envelope — NOT the model relabelling thin
+ * content, and NOT the floor loosening.
+ *
+ * @param {Array} goalEnvelopes  [{ goal, tier, effective_stage, modality_family,
+ *                                  week_pos:{weeks_elapsed, floor_weeks} }]
+ */
+function renderEffectiveEnvelopesForPrompt(goalEnvelopes) {
+  var list = Array.isArray(goalEnvelopes) ? goalEnvelopes.filter(Boolean) : [];
+  if (!list.length) return "";
+  // Drivers first (they structure the week), then maintenance. NB: `|| 1` would
+  // treat driver's rank of 0 as falsy — use an explicit null check.
+  var order = { driver: 0, maintenance: 1, accessory: 2 };
+  var rank = function (t) { return order[t] != null ? order[t] : 1; };
+  list = list.slice().sort(function (a, b) { return rank(a.tier) - rank(b.tier); });
+
+  var L = ["EFFECTIVE-STAGE ENVELOPES (fill each goal's sessions to ITS envelope — you choose exercises + loads INSIDE these code-owned bands; you do NOT change the bands, and you do NOT escalate past the stage shown):"];
+  list.forEach(function (ge) {
+    var e = envelopeFor(ge.effective_stage, ge.modality_family);
+    if (!e) return;
+    var vol = e.working_sets ? (e.working_sets[0] + "-" + e.working_sets[1] + " working sets per exercise")
+      : (e.duration_band ? (e.duration_band[0] + "-" + e.duration_band[1] + " min continuous") : "n/a");
+    var wp = "";
+    if (ge.week_pos && ge.week_pos.weeks_elapsed != null) {
+      wp = " (week " + (ge.week_pos.weeks_elapsed + 1) + " of ~" + (ge.week_pos.floor_weeks || "?") + " in this phase)";
+    }
+    L.push("- " + ge.goal + " [" + (ge.tier || "maintenance") + ", " + ge.modality_family +
+      "] — current cleared stage: " + ge.effective_stage + wp + ". " +
+      vol + "; " + e.intensity_band + "; " + e.rep_scheme + "; mix: " + e.modality_mix +
+      ". Target real working content ~" + e.session_fill + " min per 45-min slot.");
+  });
+  L.push("SESSION-FILL RULE (this is how a session gets an honest length, and it REPLACES any instinct to pad or to relabel):");
+  L.push("- A session serving a goal at capacity / load / power / return_to_sport should FILL a full slot with real work (enough sets/exercises to occupy the target working minutes above). Add sets and exercises, never empty minutes.");
+  L.push("- A session serving ONLY a low-fill stage (tissue_tolerance, maintenance, or a mobility stage) is HONESTLY SHORT: set its duration_min to roughly its envelope's target working content, do NOT stretch it to a default length, and do NOT bolt on maintenance/accessory filler to reach one. The code says these stages fill less; a short honest session is correct here.");
+  return L.join("\n");
 }
 
 // ── Prompt rendering ────────────────────────────────────────────────────────
@@ -1133,6 +1253,7 @@ module.exports = {
   stageIndex, patternStageRank, stageBelow, isStage,
   patternFamily, isMovementPattern, prescribedPatterns, envelopeFor,
   CRITERION_METRICS, CRITERION_COMPARATORS, isCriterionMetric, isCriterionComparator,
+  PATTERN_VALUE_METRICS, patternMetrics, metricFitsPattern,
   COLD_START_RULES, coldStartStage,
-  renderStageEnvelopesForPrompt, stageEnvelopeLengths,
+  renderStageEnvelopesForPrompt, stageEnvelopeLengths, renderEffectiveEnvelopesForPrompt,
 };

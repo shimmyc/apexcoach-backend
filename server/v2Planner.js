@@ -351,6 +351,10 @@ function buildPlannerPrompt(ctx) {
   add("recency", ctx.recencyText);
   add("tiers", renderTierBlock(tiers));
   add("schedule", renderScheduleBlock(schedule, weekDates, anchors));
+  // A2: the per-goal EFFECTIVE-STAGE envelopes (gate-clamped effective stage, never
+  // intended/calendar). Placed above emphasis because it is the actionable
+  // volume/intensity envelope; emphasis is the softer "what to focus on".
+  add("envelopes", rules.renderEffectiveEnvelopesForPrompt(ctx.goalEnvelopes));
   add("emphasis", renderEmphasisBlock(ctx.phaseResolutions));
   add("dossier", ctx.dossierText);
   add("progression", ctx.progressionText);

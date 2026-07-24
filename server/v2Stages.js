@@ -196,6 +196,11 @@ function validateCriterion(criterion, intendedStage) {
         reasons.push("comparator '" + c.comparator + "' requires a numeric threshold");
       }
     }
+    // METRIC-FITS-PATTERN (A2). A value metric the referent pattern's logged shape
+    // can never produce is a permanent-hold bug — reject it at authoring, exactly
+    // like an out-of-envelope referent. count/trend fit any pattern and pass.
+    var fit = rules.metricFitsPattern(c.metric, pat);
+    if (!fit.ok) reasons.push(fit.reason);
   }
 
   var valid = reasons.length === 0;

@@ -253,6 +253,10 @@ function buildVariantPrompt(ctx) {
   if (ctx.dossierText) add("dossier", ctx.dossierText);
   // Only the rule sections a variant actually needs — keeps context small.
   add("rules", rules.renderRulesForPrompt(["readiness", "deload", "interference", "time_compression", "volume", "pain"]));
+  // A2: the SAME effective-stage envelopes the planner used, so a category swap
+  // refills to the right stage's volume/intensity — it must not delete real work
+  // (e.g. a bike) and backfill with padding, and must not escalate past the stage.
+  if (ctx.envelopeText) add("envelope", ctx.envelopeText);
   // The same work-budget guidance the planner uses AND the server enforces — a
   // swap must fill the time with real work, not inflate segment minutes.
   add("work_budget", rules.renderWorkBudgetGuidance());

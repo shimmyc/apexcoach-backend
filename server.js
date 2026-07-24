@@ -12330,6 +12330,26 @@ function v2StageAuditForGoal(goal, progression, today) {
 }
 
 /**
+ * A2 — build the per-goal EFFECTIVE-STAGE envelope inputs for the planner/variant.
+ * The stage comes from the GATE-CLAMPED effective stage (v2StageAuditForGoal →
+ * resolveEffectiveStage with advancement DISABLED), NEVER from intended_stage or
+ * the calendar phase — so the envelope can only fill the current cleared stage
+ * and can never escalate. Accessory goals are excluded (bolt-ons, no envelope).
+ */
+function v2GoalEnvelopes(goals, progression, today) {
+  return (Array.isArray(goals) ? goals : [])
+    .filter(function (g) { return g && String(g.tier || "maintenance") !== "accessory"; })
+    .map(function (g) {
+      var sa = v2StageAuditForGoal(g, progression, today);
+      return {
+        goal: g.title, tier: g.tier || "maintenance",
+        effective_stage: sa.effective_stage, modality_family: sa.modality_family,
+        verdict: sa.verdict, week_pos: sa.dwell,
+      };
+    });
+}
+
+/**
  * GET /api/v2/audit/:profileId — admin-gated, READ-ONLY, writes nothing.
  *
  * The Phase 2 proof: assembles the progression state, the dossier the builder
@@ -12787,6 +12807,8 @@ async function loadV2Context(pid, opts) {
     checkins: checkins, microGoals: microGoals,
     dossier: dossierObj, dossierBuilt: dossierBuilt, recency: recency,
     phaseResolutions: phaseResolutions,
+    // A2: per-goal effective-stage envelopes (gate-clamped, advancement disabled).
+    goalEnvelopes: v2GoalEnvelopes(goals, progression, today),
     engineV2: pd.engine_v2 === true,
   };
 }
@@ -12839,6 +12861,7 @@ app.post("/api/v2/plan/:profileId", async function(req, res) {
       athleteName: ctxData.profileRow.name,
       tiers: tiers, schedule: schedule, weekDates: weekDates, anchors: anchors,
       phaseResolutions: ctxData.phaseResolutions,
+      goalEnvelopes: ctxData.goalEnvelopes,
       dossierText: dossierText, progressionText: progressionText, recencyText: recencyText,
       microGoals: ctxData.microGoals,
       defaults: ctxData.profileData.defaults,
@@ -13258,6 +13281,8 @@ async function v2BuildAlternates(ctx, primarySession) {
       profileId: ctx.profileId, body: { category: swapCategory }, dossier: ctx.dossierObj,
       cacheObj: null, primary: primarySession, isAnchor: false, today: ctx.today,
       readinessText: ctx.readinessText, recencyText: ctx.recencyText, dossierText: ctx.dossierText,
+      // A2: the nightly swap respects the same envelope as the planner.
+      envelopeText: ctx.goalEnvelopes ? v2Rules.renderEffectiveEnvelopesForPrompt(ctx.goalEnvelopes) : "",
       stream: false,
     });
     out.model_calls++;
@@ -13377,7 +13402,7 @@ async function v2NightlyForProfile(pid, opts) {
       if (autoreg.usage) { out.usage.autoregulator = autoreg.usage; out.tokens.input += autoreg.usage.input_tokens || 0; out.tokens.output += autoreg.usage.output_tokens || 0; }
 
       var isAnchorToday = todayRow.movable === false;
-      var alt = await v2BuildAlternates({ profileId: pid, defaults: ctxData.profileData.defaults, dossierText: dossierText, dossierObj: ctxData.dossier, readinessText: readinessText, recencyText: recencyText, today: today, isAnchorToday: isAnchorToday }, decision.session);
+      var alt = await v2BuildAlternates({ profileId: pid, defaults: ctxData.profileData.defaults, dossierText: dossierText, dossierObj: ctxData.dossier, readinessText: readinessText, recencyText: recencyText, today: today, isAnchorToday: isAnchorToday, goalEnvelopes: ctxData.goalEnvelopes }, decision.session);
       out.stages.alternates = { count: alt.alternates.length, model_calls: alt.model_calls, code_derived: alt.code_derived, swap_error: alt.swap_error || null, breakdown: alt.alternates.map(function (a) { return { key: a.key, source: a.source, problems: (a.problems || []).length }; }) };
       (alt.usage || []).forEach(function (u) { out.tokens.input += (u.usage.input_tokens || 0); out.tokens.output += (u.usage.output_tokens || 0); });
       out.usage.alternates = alt.usage;
@@ -13445,9 +13470,16 @@ async function v2GenerateVariant(args) {
 
   // 3. MODEL — everything else (intensity, category, style, free-text, readiness
   //    signal, or a duration increase). Streamed Haiku, small context.
+  // A2: the same effective-stage envelope block the planner used, so a category
+  // swap refills to the right stage's volume and cannot escalate. From ctxData
+  // when the caller has it (variant endpoint), or a pre-rendered envelopeText
+  // (nightly swap). Best-effort — absent it, the work-budget guidance still governs.
+  var envelopeText = args.envelopeText ||
+    (args.ctxData && args.ctxData.goalEnvelopes ? v2Rules.renderEffectiveEnvelopesForPrompt(args.ctxData.goalEnvelopes) : "");
   var prompt = v2Variant.buildVariantPrompt({
     intent: intent, primary: primary, isAnchor: args.isAnchor,
     readinessText: args.readinessText, recencyText: args.recencyText, dossierText: args.dossierText,
+    envelopeText: envelopeText,
   });
   console.log("[v2Variant] profile " + args.profileId + " sections " + JSON.stringify(prompt.sections));
 

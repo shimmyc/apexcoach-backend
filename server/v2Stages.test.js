@@ -349,3 +349,87 @@ test("clampAuthoredPhase: valid criteria pass, invalid ones are separated", func
   assert.strictEqual(out.valid_criteria.length, 1);
   assert.strictEqual(out.invalid_criteria.length, 1);
 });
+
+// ── 8. METRIC-FITS-PATTERN (A2 — folded A1 follow-up) ───────────────────────
+
+test("metricFitsPattern: rejects a value metric the pattern's logged shape can never produce", function () {
+  assert.strictEqual(rules.metricFitsPattern("best_hold_seconds", "vertical_pull").ok, false); // a pull-up is never a hold
+  assert.strictEqual(rules.metricFitsPattern("best_weight_lbs", "steady_state").ok, false);     // a bike has no weight
+  assert.strictEqual(rules.metricFitsPattern("best_session_minutes", "squat").ok, false);       // a squat is not timed
+  assert.strictEqual(rules.metricFitsPattern("best_reps", "isometric_hold").ok, false);         // you do not rep a hold
+});
+
+test("metricFitsPattern: allows a plausible-but-not-yet-logged metric (data gap, not shape mismatch)", function () {
+  // A hip thrust CAN be loaded — allow it even if only bodyweight bridges are logged so far.
+  assert.strictEqual(rules.metricFitsPattern("best_weight_lbs", "hip_bridge").ok, true);
+  assert.strictEqual(rules.metricFitsPattern("best_hold_seconds", "isometric_hold").ok, true);
+});
+
+test("metricFitsPattern: count and trend fit ANY pattern", function () {
+  rules.MODALITY_FAMILIES.forEach(function () {}); // no-op guard
+  Object.keys(rules.MOVEMENT_PATTERNS).forEach(function (tok) {
+    assert.strictEqual(rules.metricFitsPattern("sessions_logged", tok).ok, true, "sessions_logged fits " + tok);
+    assert.strictEqual(rules.metricFitsPattern("trend", tok).ok, true, "trend fits " + tok);
+  });
+});
+
+test("validateCriterion: a metric/pattern SHAPE MISMATCH is rejected at authoring (the permanent-hold bug closed)", function () {
+  // This is exactly the A1 live failure: hold-seconds on a rep-based pattern.
+  var v = v2s.validateCriterion(
+    { metric: "best_hold_seconds", comparator: "gte", threshold: 90, referent: { type: "pattern", value: "vertical_pull" } },
+    "capacity");
+  assert.strictEqual(v.valid, false);
+  assert.ok(v.reasons.join(" ").indexOf("shape mismatch") >= 0);
+});
+
+test("validateCriterion: a plausible-but-unlogged metric still passes authoring (resolves UNEVALUABLE until logged, A2 fixes)", function () {
+  var v = v2s.validateCriterion(
+    { metric: "best_weight_lbs", comparator: "gte", threshold: 20, referent: { type: "pattern", value: "hip_bridge" } },
+    "capacity");
+  assert.strictEqual(v.valid, true);
+});
+
+test("every MOVEMENT_PATTERN has a PATTERN_VALUE_METRICS entry (no pattern is un-checkable)", function () {
+  Object.keys(rules.MOVEMENT_PATTERNS).forEach(function (tok) {
+    assert.ok(Array.isArray(rules.patternMetrics(tok)) && rules.patternMetrics(tok).length > 0, tok + " has value metrics");
+  });
+});
+
+// ── 9. EFFECTIVE-STAGE ENVELOPE RENDER (A2) ─────────────────────────────────
+
+test("renderEffectiveEnvelopesForPrompt: renders the stage it is GIVEN (the effective stage), not a higher one", function () {
+  var block = rules.renderEffectiveEnvelopesForPrompt([
+    { goal: "Build Muscle", tier: "driver", effective_stage: "capacity", modality_family: "resistance", week_pos: { weeks_elapsed: 1, floor_weeks: 8 } },
+  ]);
+  assert.ok(block.indexOf("current cleared stage: capacity") >= 0);
+  assert.ok(block.indexOf("3-5 working sets") >= 0);      // capacity/resistance band
+  assert.ok(block.indexOf("week 2 of ~8") >= 0);          // week position surfaced
+  assert.ok(block.indexOf("load") < 0 || block.indexOf("load / power") >= 0); // does not silently escalate to a 'load' envelope
+});
+
+test("renderEffectiveEnvelopesForPrompt: a low-fill stage carries the honest-shorten rule, drivers sort first, empty in -> empty out", function () {
+  assert.strictEqual(rules.renderEffectiveEnvelopesForPrompt([]), "");
+  var block = rules.renderEffectiveEnvelopesForPrompt([
+    { goal: "Fix Pubic Osteitis", tier: "maintenance", effective_stage: "tissue_tolerance", modality_family: "resistance", week_pos: { weeks_elapsed: 0, floor_weeks: 5 } },
+    { goal: "Build Muscle", tier: "driver", effective_stage: "capacity", modality_family: "resistance", week_pos: { weeks_elapsed: 1, floor_weeks: 8 } },
+  ]);
+  // driver sorts before maintenance
+  assert.ok(block.indexOf("Build Muscle") < block.indexOf("Fix Pubic Osteitis"));
+  assert.ok(block.indexOf("HONESTLY SHORT") >= 0);
+  assert.ok(block.indexOf("~22 min") >= 0); // tissue_tolerance/resistance fill
+});
+
+test("envelope render reflects the effective stage the gate produced (advancement disabled => never above intended)", function () {
+  // A goal whose intended is 'load' but effective was HELD at 'capacity' must render
+  // the capacity envelope, never load — the envelope draws from effective only.
+  var eff = v2s.resolveEffectiveStage({
+    intended_stage: "load", prior_effective_stage: "capacity",
+    criteria_states: [{ state: "MET" }], gate_inputs: { dwell_met: true, safety: {} },
+  });
+  assert.strictEqual(eff.effective_stage, "capacity");
+  var block = rules.renderEffectiveEnvelopesForPrompt([
+    { goal: "G", tier: "driver", effective_stage: eff.effective_stage, modality_family: "resistance", week_pos: { weeks_elapsed: 3, floor_weeks: 6 } },
+  ]);
+  assert.ok(block.indexOf("current cleared stage: capacity") >= 0);
+  assert.ok(block.indexOf("cleared stage: load") < 0);
+});
