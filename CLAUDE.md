@@ -2457,35 +2457,138 @@ was exercised via `schedStartAIBuild` + a simulated rebuild rather than a real H
 
 ---
 
-## NEXT SESSION STARTS HERE — PT BRAIN, SESSION B (updated 2026-07-25, Session 15)
+## PT Brain — Session B (2026-07-25, Session 16): Layer 2, living adaptation
 
-> **⚠ STATUS: PT Brain SESSION A IS SHIPPED AND VERIFIED (Session 15, 2026-07-25).** See
-> "PT Brain — Session A" directly above for the full implementation record and the live
-> verification table. Design of record: `ROADMAP.md` §7 → "NEXT DIRECTION — the 'PT Brain'".
+**The calendar does not advance you; doing the work does.** `position_week` is computed in code
+by replaying the log — the AI narrates it and never authors it (the v2 work-floor lesson,
+ROADMAP §6). New-shape roadmaps only; legacy 3+2 roadmaps get no `arc_state` and keep
+time-elapsed progress. Additive jsonb (`roadmap.arc_state`, `roadmap.arc_origin`,
+`goal.arc_transition_at`) — **no DDL**, no npm deps, no v2 files, macro paths and every
+`fetchAI` builder untouched (the Layer 4 boundary).
+
+### The replay
+`computeArcState(goal, ctx)` is a **pure replay from scratch** on every evaluation — idempotent,
+drift-free. Weeks are athlete-local Mon–Sun buckets built from **date strings**, so there is no
+midnight/TZ edge inside the replay; the only TZ-sensitive input is where it stops, from
+`localToday(profile)`. The first bucket is truncated to the real start and its requirement is
+**prorated** (`max(1, ceil(spw × days / 7))`), so a Friday start asks for 1 session, not 5.
+Malformed `workouts.date` rows are dropped, not text-sorted.
+
+Earning: meets required `+1.0`; ≥50% `+0.5`; zero `+0`. A contiguous run of `Z ≥ 2` zero-weeks
+decays by `(Z−1) × ARC_DECAY_RATES[goal_type]` — the first zero week is already paid for by
+earning `+0` while the calendar advances, so charging from the second avoids double-counting and
+gives a no-cliff curve. Rates: `rehab 1.5, endurance 1.0, habit 1.0, strength_load 0.5,
+body_comp 0.5, skill 0.1`.
+
+### ⚠ `arc_origin` is immutable, and that is load-bearing
+`applyTimelineFlex` calls `resequenceNearTermDates`, which rebuilds the phase calendar forward
+from **today**. Reading the replay start (or the fetch window) from `near[0].start_date` therefore
+moved the origin on every flex — this caused two separate live failures (see below). The phase
+calendar is for **display**; the arc replays from `roadmap.arc_origin`, pinned once at first
+evaluation and never moved.
+
+### Qualifying sessions — the keystone join's first consumer
+**Tier 1** (a schedule item whose `goal_ids` includes the goal), each labelled with its real
+confidence: muscle-mapped `frequency_target` → the **factored** `makeTargetMatcher` (`precise`);
+`anchor` → weekday + category agreement (`category`); empty-muscle target (yoga/rehab/mobility,
+where `activityMuscles()` returns `[]` and the exercises-table bar can never be cleared) →
+category agreement (`category`); `addon` → day-level presence (`presence`).
+**Tier 2** (no linked item) → keyword matching, **intersected with done workouts**, weak tokens
+dropped (`single` was substring-matching "Single-Arm Lat Pulldown") — `keyword`.
+Anything below `precise` renders a "link this goal to your schedule" nudge. Nothing pretends.
+
+`makeTargetMatcher` was lifted **verbatim** out of `buildWeekSkeleton` so the week preview and
+the arc share one implementation — asserted byte-identical (`5ef8579eefec6577…`).
+
+### Timeline flex — code-owned, durations only
+Only `upcoming` phases are adjusted (a phase the athlete is inside is never retro-resized), the
+count never changes, `MAX_FLEX_WEEKS = 4`, each phase clamped to `[2,6]`. When the drift cannot
+be absorbed it sets **`needs_regeneration`** rather than adding phases. Fires only on
+`|drift| ≥ 2` sustained across 2 evaluations, and **the streak resets after a successful flex**
+so one condition cannot re-stretch the roadmap on every save.
+
+### Where it runs
+Fire-and-forget from `POST /api/workouts` beside `maybeAdaptAllRoadmaps` — **zero AI calls**, so
+no added latency. **Reads stay read-only**: `arc_state` is served as stored with a client-side
+staleness note, never recomputed-and-written on read (the `ensureGoalIds` antipattern). A status
+transition stamps `arc_transition_at`, which widens `maybeAdaptAllRoadmaps`' staleness gate so
+the goal adapts early. `adaptGoalRoadmap` gains an **ARC STATE** prompt block plus an **ARC
+REALITY** system rule; `enforcePhaseShape` still gates the result.
+
+### Display
+`recomputeRoadmapProgress` branches: arc present → phase status from **cumulative budgets vs
+earned position**; absent → the date path, byte-identical. Status chip, earned-position/drift
+lines, confidence nudge, and — **loud, not muted** — a caution-bordered banner with an inline
+regenerate action plus a visible warning on the Profile-tab goal card when `needs_regeneration`.
+
+### FOUR BUGS FOUND LIVE (none by inspection)
+1. **Arc origin moved** on every flex → 3 weeks of real history evaluated to position 0.
+2. **Fetch window** keyed off phase dates too → 18 real qualifying sessions became 9.
+3. **Flex compounded** — `flex_streak` never reset.
+4. **`re_ramp.started_date`** reported the latest decay week, not the start (it renders as
+   "since <date>").
+
+### Verified live (profile 4)
+| Check | Result |
+|---|---|
+| week-preview across the factoring | sha256 **identical** before/after |
+| (a) bench, 3 clean weeks linked | `position 3`, `precise`, `tier 1`, via `target:Upper Body Strength` |
+| (b) real 22-day-plus gap | hand-checked: peak 4.5 → Z=4 → `(4−1)×0.5 = 1.5` → **position 3.0**, `re_ramp{from 3, target 4.5, since 2026-07-06}`, `re_ramping` |
+| decay rates | 21 unit tests on the shipped fn: Z=3 → rehab 3.0, endurance 2.0, strength 1.0, skill 0.2 |
+| flex both directions | 20 unit tests: ahead `[6,5,5]`→ phase3 `3`, est 16–28→14–26; behind `[4,3]`→ phase2 `5`, est 4–10→6–12; clamp + no-upcoming → `needs_regeneration`, count never changes |
+| flex live | clamped (upcoming 12w, needed +4, max 12) → `needs_regeneration: true` |
+| (e) unlinked goal | `tier 2`, `confidence keyword`, nudge renders, nothing throws |
+| (f) legacy 3+2 | 3 legacy roadmaps: `arc_state` **absent**, `arc_origin` absent, date-derived status |
+| (g) negotiation | round 2 opens "You already applied a lever…"; levers `slower,capacity,sequence` unchanged |
+| (h) **real** Build-with-AI (Haiku) | confirm fired ("2 items linked"), accepted, **2 links carried forward** by activity match; a renamed item correctly lost its link. **Closes the Session A gap.** |
+| loud regen surface | banner + inline button + `RE-RAMPING` chip + 2 goal-card ⚠ flags, screenshotted |
+| **profile 1** | goals sha256 **`0901b047d1c95f50…` identical**; zero `arc_state` |
+
+**Not verified live:** (c) rehab-vs-skill decay contrast and (d) the shorten direction of flex —
+both covered deterministically by unit tests against the real shipped functions, but not
+exercised end-to-end on real data.
+
+---
+
+## NEXT SESSION STARTS HERE — PT BRAIN, SESSION C (updated 2026-07-25, Session 16)
+
+> **⚠ STATUS: PT Brain SESSIONS A AND B ARE SHIPPED AND VERIFIED** (Sessions 15 and 16,
+> 2026-07-25). See "PT Brain — Session A" and "PT Brain — Session B" above for the full
+> implementation records and live verification tables. Design of record: `ROADMAP.md` §7 →
+> "NEXT DIRECTION — the 'PT Brain'".
 >
-> **THE NEXT BUILD SESSION IS SESSION B — Layer 2 (`arc_state`, earned position).** It is
-> **unblocked**: Session 14's audit confirmed zero corrupted phase dates in production, which
-> was its only stated blocker. Layer 2 is where the keystone join finally gets a consumer.
+> **THE NEXT BUILD SESSION IS SESSION C — Layer 3, the coexistence engine. DESIGN DISCUSSION
+> FIRST — the North Star explicitly says do NOT blind-build it.** The open design items named
+> there are the **write-vs-propose UX** (the verdict WRITES the schedule, but the athlete
+> controls the spectrum from manual anchors to full AI fill) and the **spectrum control** itself.
 >
-> **What Session B inherits:**
-> - **`goal_ids` exists on schedule items but NOTHING READS IT.** Session A was write-side only.
->   Layer 2's earned-position math is computed from the log *through this join* — it is the first
->   consumer. **Resolve dangling ids defensively**: nothing validates that a linked goal still
->   exists (ROADMAP §6, PT Brain item 5).
-> - **`goal.estimate` + `goal.roadmap.estimate`** are live and diverge deliberately between a
->   dial change and its regeneration. `arc_state` should sit beside them on the roadmap.
-> - **Profile 4 is the test bed**, flipped to v1, carrying its cloned real training history
->   (which is exactly what Layer 2's gap/re-ramp math needs) plus 3 goals built under the new
->   shape (rehab 2-phase, bench 3+1, marathon mid-negotiation) and a deliberately PAUSED goal.
-> - **`arc_state` is already in G1's protected-field list**, so the Profile Builder cannot
->   destroy it — no revisit needed there.
-> - **Read ROADMAP §6 → "PT Brain Session A — Known Limitations" first.** Item 1 (the negotiation
->   can loop) and item 5 (dangling `goal_ids`) both touch Layer 2's surface.
+> **What Session C inherits:**
+> - **The capacity fit check already exists and is proven** (`computeCapacityFit`, two axes:
+>   minutes and recoverable hard sessions; `DONE`/`PAUSED` excluded). Layer 3 adds the
+>   GATE → capacity sum → COEXIST | SEQUENCE classifier and the persisted verdict at
+>   `profiles.roadmap_data.coexistence`. **None of that storage exists yet — Session A
+>   deliberately wrote nothing** (verified: no `coexistence` key on any goal or on `roadmap_data`).
+> - **The keystone join now has a real consumer** (`arcLinkedItems`/`arcQualifyingDates`), so
+>   Layer 3 writing `times_per_week` into the schedule will immediately feed Layer 2's earned
+>   position. That coupling is the point — and the risk: a verdict that rewrites the schedule
+>   changes what "qualifying" means for every linked goal.
+> - **`arc_state` is live** and is the honest input for "is this athlete actually keeping up with
+>   the goals they already have" — which is exactly the question SEQUENCE should ask before
+>   handing the lead over at ~75% of the lead's arc.
+> - **Dangling `goal_ids` are still not validated** (ROADMAP §6, Session A item 5). Layer 3
+>   should resolve them defensively when it writes the schedule.
+> - **Macro-roadmap paths are still 3+2 and untouched** (`MACRO_ROADMAP_SYS`,
+>   `adaptMacroRoadmap`) — deliberately deferred to Layer 3, which is when the macro roadmap
+>   finally has a reason to change.
 >
-> **DESIGN FIRST, do not blind-build:** ROADMAP §7 logs "Goal completion behavior" (stop /
-> hold at maintenance / roll into a higher goal) as an item to **design before the Layer 2
-> build** — a completed goal's arc must stop advancing, and whether it keeps consuming capacity
-> is an open question. Related prior art: the ACHIEVED MILESTONES never-auto-escalate precedent.
+> **Read ROADMAP §6 → "PT Brain Session B — Known Limitations" before starting.** Item 1 (arc
+> evaluation only runs on a workout save — the honest open gap) and item 2 (anchor/addon matching
+> is structurally weaker) both bear on what Layer 3 can rely on.
+>
+> **Still logged as DESIGN-FIRST, not built:** goal completion behavior (stop / hold at
+> maintenance / roll into a higher goal) — a completed goal's arc must stop advancing and its
+> capacity claim is an open question. Prior art: the ACHIEVED MILESTONES never-auto-escalate
+> precedent. **Layer 4 (session depth) remains independent and can slot in anywhere.**
 >
 > **Engine v2 remains PAUSED and its strategy REJECTED going forward.** Everything documented below
 > about v2 stays accurate as history and is deliberately preserved — but the queued v2 work (B

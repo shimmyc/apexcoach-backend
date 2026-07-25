@@ -4,6 +4,36 @@
 > Pairs with `CLAUDE.md` (deep implementation notes) and `FORMULAS.md` (readiness/sleep math).
 > Last updated: 2026-07-25.
 >
+> **2026-07-25 session #37 — PT BRAIN SESSION B SHIPPED: Layer 2, living adaptation (earned
+> arc position).** The calendar no longer advances you; doing the work does. `position_week` is
+> a pure code-owned replay of the log — the AI narrates it and never authors it. Applies to
+> new-shape roadmaps only; legacy 3+2 roadmaps get no `arc_state` and keep time-elapsed
+> progress. **Profile 1 goals byte-identical (sha256 `0901b047d1c95f50…`), and the week-preview
+> skeleton is byte-identical across the matcher factoring (`5ef8579eefec6577…`).**
+>
+> **FOUR REAL BUGS FOUND LIVE**, none by inspection, all fixed and re-verified:
+> 1. **The arc origin moved.** `computeArcState` read its replay start from `near[0].start_date`,
+>    but `applyTimelineFlex` → `resequenceNearTermDates` rebuilds the phase calendar forward from
+>    *today* — so every flex reset the origin, collapsing `calendar_week` to 1 and wiping every
+>    earned week. Two goals with 3 weeks of real history evaluated to position 0. Now an
+>    immutable `roadmap.arc_origin`, pinned once.
+> 2. **Same bug class, other half of the function:** the workouts/exercises fetch window was also
+>    keyed off `near[0].start_date`, so after a flex it narrowed to "since today". A goal with 18
+>    real qualifying sessions evaluated against the 9 inside the phase window.
+> 3. **Timeline flex compounded.** `flex_streak` kept incrementing while a drift persisted, so a
+>    sustained condition re-stretched the roadmap on every workout save. The streak now resets
+>    after a successful flex.
+> 4. **`re_ramp.started_date` reported the latest decay week, not the start** — it renders as
+>    "re-ramping since <date>", so it has to mean that.
+>
+> **Also closed this session:** ROADMAP §9 **F1** (standing since 2026-07-19) —
+> `resequence-roadmap` took the server clock where it must take the athlete's day;
+> `loadProfileWithGoals` now selects `timezone`. And the §6 **negotiation-loop** item — a round
+> counter escalates the framing toward capacity from round 2 without touching the three levers.
+>
+> Full record: `CLAUDE.md` → **"PT Brain — Session B"**. **Next is Session C (Layer 3,
+> coexistence) — design discussion FIRST, per §7. Layer 4 remains independent.**
+>
 > **2026-07-25 session #36 — PT BRAIN SESSION A SHIPPED: keystone join + Layer 1 (honest
 > per-goal timelines + aggressiveness dial) + global capacity + intake negotiation.**
 > Two-phase session per §0.2 (audit + plan → approval → build). Profile 4 was flipped to v1
@@ -2297,6 +2327,40 @@ All verified present in `server.js`. `:id`/`:userId` = profile id.
   `SELECT` instead). Also worth knowing: the PATCH writes `cleanProfileData(pd)`, so it
   simultaneously re-sanitizes every string in the column.
 
+### PT Brain Session B — Known Limitations (2026-07-25, session #37)
+
+1. **Arc evaluation only runs on a workout SAVE.** An athlete who logs nothing for weeks never
+   gets their decay applied until they log again — the exact case decay exists to model. The
+   admin sweep (`POST /api/debug/evaluate-arcs/:profileId`, dry-run default) forces it, but is
+   deliberately **not wired to any interval**. This is the honest open gap; a daily tick is the
+   fix and needs its own decision (the in-process hourly interval is unreliable on Render's
+   Hobby plan — see the Engine v2 nightly notes).
+2. **Anchor and addon matching are structurally weaker than target matching, by necessity.**
+   `activityMuscles()` returns `[]` for mobility/yoga/rehab/meditation, so those can never clear
+   the exercises-table bar. Anchors fall back to weekday + category agreement, addons to
+   day-level presence, empty-muscle targets to category agreement. Each is labelled
+   `category`/`presence` in `arc_state.evidence` and **never called `precise`**, and the UI shows
+   a link nudge below `precise` — but an athlete whose linked item is an addon is being tracked
+   by "did you train at all that day".
+3. **Tier 2 keyword matching is genuinely imprecise.** Weak tokens are dropped (`single`, `lbs`,
+   pure digits) and it is intersected with done workouts, but it still substring-matches exercise
+   names. Verified live: the unlinked rehab goal resolved `tier: 2, confidence: "keyword"`.
+4. **`applyTimelineFlex` only adjusts `upcoming` phases.** An athlete deep into their LAST phase
+   has nothing to flex, so the roadmap goes straight to `needs_regeneration`. That is the
+   designed honest outcome, but it means a long final phase absorbs no drift at all.
+5. **`arc_origin` is pinned at first evaluation, not at generation.** A roadmap generated weeks
+   before Layer 2 shipped gets an origin of its first phase's `start_date` at first evaluation —
+   correct — but a roadmap whose phases were resequenced before that first evaluation inherits
+   the resequenced date. Only affects roadmaps straddling this deploy.
+6. **Flex fires off `flex_streak >= 2` consecutive EVALUATIONS, not elapsed time.** Several
+   workout saves in quick succession accumulate the streak faster than two real weeks would.
+   The post-flex reset bounds the damage to one flex per two evaluations, but the streak is not
+   time-aware.
+7. **`recomputeRoadmapProgress` is not called by `GET /api/profiles/:id`**, so the raw profile
+   payload shows `progress_pct: undefined` on non-current legacy phases. Pre-existing, unchanged
+   by this session, and the goal endpoints do recompute — noted because it is visible when
+   reading profile JSON directly.
+
 ### PT Brain Session A — Known Limitations (2026-07-25, session #36)
 
 1. **The negotiation can loop when a goal is genuinely too big for the week.** Applying the
@@ -2628,8 +2692,8 @@ after Layer 1 ships.
 | Session | Scope |
 |---|---|
 | **A** | ✅ **SHIPPED 2026-07-25 (session #36).** Keystone join + Layer 1 + capacity + intake negotiation |
-| **B** | Layer 2 — **UNBLOCKED** (session #35 confirmed zero corrupted phase dates in production). **This is next.** |
-| **C** | Layer 3 — **design discussion first** |
+| **B** | ✅ **SHIPPED 2026-07-25 (session #37).** Layer 2 — arc_state, gap decay + re-ramp, code-owned timeline flex, first consumer of `goal_ids` |
+| **C** | Layer 3 — **design discussion first. This is next.** |
 | **Layer 4** | Independent; slots in anywhere |
 
 #### Storage shape as built (session #36 refinement, approved)
@@ -2662,6 +2726,13 @@ dial 2→3, `goal.estimate` read `16–28 @3x` while `roadmap.estimate` still re
   goals. Deliberate reordering stays in the existing Prioritize UI. The wanted addition is an
   **explicit** action: ask the AI to propose an optimized order, **show the proposed order**
   before applying, and offer **one-tap revert** to the prior ranking.
+- **Intake question overlap audit (logged session #37, DO NOT BUILD).** Step 3 now captures
+  frequency and session duration **structurally** (`goal_type`, `demand`, `assumed_frequency`),
+  but the older Haiku-generated intake questions still ask for the same things in prose ("how
+  much time can you give this?"), so the athlete answers twice and the roadmap prompt receives
+  both. Audit which questions are now redundant and trim them in a dedicated session. **Must not
+  break existing `intake_answers`** — they are keyed by question `key` and are read back by the
+  roadmap generator and the Step 3 plan-setup call.
 - **`goal_ids` in the Build-with-AI schedule skeleton.** Deferred from session #36. The builder
   already has the athlete's goals in its prompt and could link at build time, but it is a Haiku
   call whose output would need its own validation (real goal UUIDs, no hallucinated ids). The
@@ -3177,6 +3248,17 @@ Macro roadmap shape (stored on `profiles.roadmap_data`):
 - [ ] **Add `workouts.duration_minutes` column** so manual session durations count in analytics without relying on summed `exercises.duration_minutes`.
 - [ ] **Rename `?max_intraday=` → `?max_calls=`** in `/api/debug/backfill-wearable-hr` (the budget now covers TCX **+** intraday calls, not just intraday). Keep `max_intraday` as an alias for back-compat.
 - [ ] **Retire the legacy `tokens` table** path once confirmed no profile depends on it.
+- [ ] **Arc evaluation has no time-based trigger (session #37).** It hangs off `POST /api/workouts`
+  only, so an athlete who stops logging never accrues decay — the case decay exists to model.
+  `POST /api/debug/evaluate-arcs/:profileId` (admin, dry-run default) forces it manually.
+  Deliberately not wired to an interval this session; needs a decision on the mechanism.
+- [x] **✅ RESOLVED session #37 — F1: `resequenceNearTermDates` caller used the SERVER clock.**
+  The admin repair endpoint now passes `localToday(loaded.profile)`, and `loadProfileWithGoals`
+  selects `timezone` so every caller can resolve the athlete's day. Open since 2026-07-19.
+- [x] **✅ RESOLVED session #37 — the negotiation loop.** A round counter (advisory, clamped
+  1–9) escalates the framing toward capacity from round 2; the three levers and their order are
+  unchanged. Verified live: round 2's `conflict_note` opens "You already applied a lever to get
+  here, and the week still doesn't fit."
 - [ ] **PT Brain Session A leftovers (session #36).** (a) The negotiation loop has no round
   counter — see §6 item 1; the fix is escalating copy, never a fourth lever. (b) `/estimate`
   and `/plan-setup` write before the athlete commits (§6 items 2–3) — a draft/commit split
