@@ -6234,11 +6234,18 @@ async function evaluateArcsForProfile(profileId, opts) {
 
   var today = localToday(profileRow);   // athlete-local, never the server clock
 
-  // Earliest arc start across all arc goals bounds both fetches.
+  // Earliest arc origin across all arc goals bounds both fetches. This MUST read
+  // arc_origin first, for the same reason computeArcState does: applyTimelineFlex
+  // resequences phase dates forward from today, so keying the fetch window off
+  // near[0].start_date silently narrows it to "since today" after any flex and
+  // starves the replay of the very history it is supposed to replay. Found live,
+  // session #37 — the symptom was a goal with 18 real qualifying sessions
+  // evaluating against only the 9 that happened to fall inside the phase window.
   var earliest = today;
   arcGoals.forEach(function(g) {
     var n = g.roadmap.phases.filter(function(p) { return p.type === "near_term"; })[0];
-    var s = (n && n.start_date) || (g.roadmap.generated_at ? String(g.roadmap.generated_at).slice(0, 10) : null);
+    var s = g.roadmap.arc_origin || (n && n.start_date) ||
+      (g.roadmap.generated_at ? String(g.roadmap.generated_at).slice(0, 10) : null);
     if (s && s < earliest) earliest = s;
   });
 
