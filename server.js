@@ -6028,7 +6028,13 @@ function computeArcState(goal, ctx) {
   var near = rm.phases.filter(function(p) { return p && p.type === "near_term"; });
   if (!near.length) return null;
 
-  var startYmd = near[0].start_date || (rm.generated_at ? String(rm.generated_at).slice(0, 10) : null);
+  // THE ARC ORIGIN IS IMMUTABLE. It must NOT be read from near[0].start_date on
+  // every evaluation: applyTimelineFlex calls resequenceNearTermDates, which
+  // rebuilds the phase calendar forward from TODAY, so reading the phase date
+  // would move the origin every time the timeline flexed — collapsing
+  // calendar_week to 1 and wiping every earned week. Found live, session #37.
+  // The phase calendar is for display; the arc replays from its own fixed origin.
+  var startYmd = rm.arc_origin || near[0].start_date || (rm.generated_at ? String(rm.generated_at).slice(0, 10) : null);
   var todayYmd = ctx.today;
   if (!startYmd || !todayYmd || startYmd > todayYmd) return null;
 
@@ -6148,6 +6154,12 @@ function applyTimelineFlex(goal, arc, todayYmd) {
   // gets its SECOND deliberate caller here (it was repair-only until now).
   var dateChanges = resequenceNearTermDates(rm.phases, todayYmd);
 
+  // Reset the streak after a successful flex so it must RE-ACCUMULATE before
+  // flexing again. Without this, a sustained drift re-flexes on every single
+  // evaluation and compounds — several workout saves in a row would stretch the
+  // roadmap repeatedly off one underlying condition. Found live, session #37.
+  arc.flex_streak = 0;
+
   var delta = bounded - upcomingWeeks;   // negative = shortened
   if (goal.estimate) {
     goal.estimate.total_weeks_low = Math.max(1, (numOrNull(goal.estimate.total_weeks_low) || 1) + delta);
@@ -6255,6 +6267,13 @@ async function evaluateArcsForProfile(profileId, opts) {
         try { kwDates = await getGoalSessionDates(profileId, g.title, earliest); } catch (e) { kwDates = []; }
       }
       var qualifying = arcQualifyingDates({ linkedItems: linked, workouts: workouts, matcher: matcher, keywordDates: kwDates });
+      // Pin the immutable arc origin once, before anything can resequence the
+      // phase calendar out from under it.
+      if (!g.roadmap.arc_origin) {
+        var n0 = g.roadmap.phases.filter(function(p) { return p && p.type === "near_term"; })[0];
+        g.roadmap.arc_origin = (n0 && n0.start_date) ||
+          (g.roadmap.generated_at ? String(g.roadmap.generated_at).slice(0, 10) : today);
+      }
       var prevStatus = (g.roadmap.arc_state && g.roadmap.arc_state.status) || null;
       var arc = computeArcState(g, { today: today, qualifying: qualifying });
       if (!arc) { report.push({ goal: g.title, skipped: "not_arc_eligible" }); continue; }
