@@ -2459,6 +2459,11 @@ app.post("/api/workouts", async function(req, res) {
     if (body.profile_id) clearProgressBriefCache(body.profile_id);
     // Fire-and-forget weekly roadmap maintenance — adapts BOTH per-goal roadmaps
     // and the structured macro roadmap when >7 days stale (shared context fetch).
+    // PT Brain Layer 2 — arc evaluation. Runs BEFORE the adapt sweep is awaited
+    // by neither (both fire-and-forget), and contains ZERO AI calls, so it adds
+    // no latency to the save path. A status transition it records is picked up
+    // by the NEXT save's adapt sweep.
+    if (body.profile_id) evaluateArcsForProfile(body.profile_id).catch(function(e) { console.error("[Arc] evaluation error:", e.message); });
     if (body.profile_id) maybeAdaptAllRoadmaps(body.profile_id).catch(function(e) { console.error("Roadmap adaptation error:", e); });
 
     // Auto-import on save: opportunistically look for a same-day Fitbit activity
@@ -4832,8 +4837,39 @@ function computePhaseProgress(phase, exerciseContext) {
 //   start_date > today                => upcoming
 // Then current phases get a fresh time-based estimate, complete = 100, upcoming
 // = 0. Horizon phases are left untouched. Mutates phases in place and returns it.
+// PT Brain Layer 2: for a roadmap carrying arc_state, phase status and progress
+// come from EARNED POSITION against cumulative phase budgets, not elapsed dates.
+// Legacy roadmaps (no arc_state) fall through to the date path below, byte-identical.
+function recomputeRoadmapProgressFromArc(roadmap) {
+  var arc = roadmap.arc_state;
+  var near = roadmap.phases.filter(function(p) { return p && p.type === "near_term"; });
+  if (!near.length) return roadmap;
+  var pos = numOrNull(arc.position_week) || 0;
+  var cum = 0, foundCurrent = false;
+  near.forEach(function(p, i) {
+    var dur = numOrNull(p.duration_weeks) || 0;
+    var start = cum, end = cum + dur;
+    cum = end;
+    var isLast = i === near.length - 1;
+    if (pos >= end && !isLast) { p.status = "complete"; p.progress_pct = 100; return; }
+    if (!foundCurrent && (pos < end || isLast)) {
+      p.status = "current";
+      foundCurrent = true;
+      // Within-phase earned fraction, capped at 90 like the date path so a phase
+      // never auto-completes itself.
+      var frac = dur > 0 ? ((pos - start) / dur) * 100 : 0;
+      p.progress_pct = Math.max(0, Math.min(90, Math.round(frac)));
+      return;
+    }
+    p.status = "upcoming";
+    p.progress_pct = 0;
+  });
+  return roadmap;
+}
+
 function recomputeRoadmapProgress(roadmap, exerciseContext) {
   if (!roadmap || !Array.isArray(roadmap.phases)) return roadmap;
+  if (roadmap.arc_state) return recomputeRoadmapProgressFromArc(roadmap);
   var todayMs = Date.parse(new Date().toISOString().slice(0, 10) + "T00:00:00");
   var foundCurrent = false;
   roadmap.phases.forEach(function(p) {
@@ -5055,6 +5091,45 @@ function activityMuscles(activity) {
   return Object.keys(set);
 }
 
+// ── FACTORED TARGET MATCHER (PT Brain Layer 2, session #37) ──────────────────
+// Lifted VERBATIM out of buildWeekSkeleton so the arc replay and the week
+// preview share ONE implementation and can never disagree about what counts as
+// a qualifying session. Behaviour is byte-identical to the closure it replaces:
+// a workout satisfies a target only when it is done AND its exercise rows carry
+// >= 2 DISTINCT names mapping to the target's required muscle groups, excluding
+// grip_forearms-only exercises (Dead Hang, farmer carry, bar hang…).
+//
+// ⚠ KNOWN, PRE-EXISTING LIMIT (audited session #37): activityMuscles() returns
+// [] for mobility / yoga / rehab / meditation activities, so `satisfies` is
+// ALWAYS false for those targets. That is why Layer 2 needs the lower-confidence
+// tiers in arcQualifyingWeeks() — this matcher covers muscle-mapped work only.
+function makeTargetMatcher(exercises) {
+  var exGroupsByWorkout = {}; // wid -> { name(lc): groups[] }
+  (exercises || []).forEach(function(e) {
+    if (!e || e.workout_id == null) return;
+    var nm = String(e.name || "").toLowerCase().trim();
+    if (!nm) return;
+    var bucket = exGroupsByWorkout[e.workout_id] = exGroupsByWorkout[e.workout_id] || {};
+    if (!bucket[nm]) bucket[nm] = muscleGroupsForExercise(e.name);
+  });
+  function isGripOnly(groups) { return groups.length === 1 && groups[0] === "grip_forearms"; }
+  return {
+    groupsByWorkout: exGroupsByWorkout,
+    satisfies: function(w, reqMuscles) {
+      if (!w || w.done !== true || !reqMuscles || !reqMuscles.length) return false;
+      var bucket = exGroupsByWorkout[w.id];
+      if (!bucket) return false;
+      var n = 0;
+      Object.keys(bucket).forEach(function(nm) {
+        var g = bucket[nm];
+        if (!g.length || isGripOnly(g)) return; // unmapped or grip-only never counts
+        if (g.some(function(mg) { return reqMuscles.indexOf(mg) >= 0; })) n++;
+      });
+      return n >= 2;
+    },
+  };
+}
+
 // STEP 1 — pure-JS rule engine. Returns the 7-day skeleton array.
 function buildWeekSkeleton(schedule, workouts, exercises, today) {
   schedule = schedule || {};
@@ -5085,34 +5160,11 @@ function buildWeekSkeleton(schedule, workouts, exercises, today) {
   var doneByDate = {};
   (workouts || []).forEach(function(w) { if (w && w.date && w.done && !doneByDate[w.date]) doneByDate[w.date] = w; });
 
-  // Distinct exercise NAMES per workout_id, each pre-classified to its muscle
-  // groups via MUSCLE_GROUP_MAP. Done-counting uses THIS (the exercises table),
-  // never workout.type — the AI-generated title is polluted by micro-goal
-  // exercises (e.g. a Dead-Hang-only session gets titled "Strength (Upper Body)").
-  var exGroupsByWorkout = {}; // wid -> { name(lc): groups[] }
-  (exercises || []).forEach(function(e) {
-    if (!e || e.workout_id == null) return;
-    var nm = String(e.name || "").toLowerCase().trim();
-    if (!nm) return;
-    var bucket = exGroupsByWorkout[e.workout_id] = exGroupsByWorkout[e.workout_id] || {};
-    if (!bucket[nm]) bucket[nm] = muscleGroupsForExercise(e.name);
-  });
-  function isGripOnly(groups) { return groups.length === 1 && groups[0] === "grip_forearms"; }
-  // A workout counts toward a target only when it is done AND its exercises
-  // contain >= 2 DISTINCT names mapping to the target's required muscle groups,
-  // EXCLUDING grip_forearms-only exercises (Dead Hang, farmer carry, bar hang…).
-  function workoutSatisfiesTarget(w, reqMuscles) {
-    if (!w || w.done !== true || !reqMuscles || !reqMuscles.length) return false;
-    var bucket = exGroupsByWorkout[w.id];
-    if (!bucket) return false;
-    var n = 0;
-    Object.keys(bucket).forEach(function(nm) {
-      var g = bucket[nm];
-      if (!g.length || isGripOnly(g)) return; // unmapped or grip-only never counts
-      if (g.some(function(mg) { return reqMuscles.indexOf(mg) >= 0; })) n++;
-    });
-    return n >= 2;
-  }
+  // Done-counting uses the exercises table via the SHARED matcher (factored out
+  // above, session #37), never workout.type — the AI-generated title is polluted
+  // by micro-goal exercises (e.g. a Dead-Hang-only session gets titled "Strength
+  // (Upper Body)"). Same implementation the arc replay uses.
+  var workoutSatisfiesTarget = makeTargetMatcher(exercises).satisfies;
 
   // (e) MUSCLE-GROUP RECOVERY MAP — most-recent worked time (ms) per specific
   // muscle group, from each exercise row of ACTUAL (done) workouts in the last
@@ -5818,6 +5870,428 @@ function applyPhasePlanToPhases(phases, plan) {
   return fixes;
 }
 
+// ── PT BRAIN · LAYER 2 — arc state (earned position) ─────────────────────────
+// THE CALENDAR DOES NOT ADVANCE YOU; DOING THE WORK DOES.
+//
+// position_week is computed HERE, deterministically, by replaying the log. The
+// AI never authors it — it narrates it. That is the direct lesson of the
+// rejected v2 work-floor (ROADMAP §6): a model must not optimize its own
+// progress metric. Everything below is a PURE REPLAY FROM SCRATCH on every
+// evaluation, so it is idempotent and cannot accumulate drift.
+//
+// Applies to NEW-SHAPE roadmaps only (those with an `estimate`). Legacy 3+2
+// roadmaps get no arc_state and keep time-elapsed progress, exactly as before.
+
+// Weeks of earned position lost per week of a gap, by goal nature. Applied as
+// (Z - 1) x RATE for a contiguous run of Z >= 2 zero-weeks: the FIRST zero week
+// is already paid for by earning +0 while the calendar advances, so charging
+// decay from the second avoids double-counting and gives a no-cliff curve.
+var ARC_DECAY_RATES = {
+  rehab: 1.5,          // detrains fastest — tissue tolerance falls away quickly
+  endurance: 1.0,      // roughly one week back per week off
+  habit: 1.0,          // a broken habit restarts near where it began
+  strength_load: 0.5,  // ~one week back per two weeks off
+  body_comp: 0.5,
+  skill: 0.1,          // motor patterns persist — a gap costs almost nothing
+};
+var ARC_DEFAULT_DECAY_RATE = 0.75;
+var ARC_STALE_MS = 24 * 60 * 60 * 1000;
+var MAX_FLEX_WEEKS = 4;
+var ARC_FLEX_STREAK_REQUIRED = 2;
+
+// ── string-date week helpers (no Date object arithmetic in the buckets) ──────
+// The replay compares YYYY-MM-DD strings, which carry no time component, so
+// there is NO midnight/timezone boundary inside it at all. The only
+// TZ-sensitive input is where the replay STOPS, which callers supply from
+// localToday(profile) — never the server clock.
+function arcAddDays(ymd, n) {
+  var ms = Date.parse(String(ymd).slice(0, 10) + "T12:00:00");
+  if (isNaN(ms)) return null;
+  return ymdLocal(new Date(ms + n * 86400000));
+}
+function arcMondayOfStr(ymd) {
+  var ms = Date.parse(String(ymd).slice(0, 10) + "T12:00:00");
+  if (isNaN(ms)) return null;
+  var dow = new Date(ms).getDay();           // 0=Sun..6=Sat
+  return arcAddDays(ymd, dow === 0 ? -6 : (1 - dow));
+}
+
+// Mon–Sun buckets from startYmd through todayYmd. The FIRST bucket is truncated
+// to the real start date and its requirement is PRORATED, so a Friday start asks
+// for 1 session rather than the full week's five.
+function arcWeekBuckets(startYmd, todayYmd, sessionsPerWeek) {
+  var buckets = [];
+  if (!startYmd || !todayYmd) return buckets;
+  var spw = Math.max(1, Number(sessionsPerWeek) || 1);
+  var cursor = arcMondayOfStr(startYmd);
+  if (!cursor) return buckets;
+  var guard = 0;
+  while (cursor <= todayYmd && guard++ < 520) {
+    var weekEnd = arcAddDays(cursor, 6);
+    var from = (cursor < startYmd) ? startYmd : cursor;   // truncate the first bucket
+    var to = (weekEnd > todayYmd) ? todayYmd : weekEnd;
+    var days = Math.round((Date.parse(to + "T12:00:00") - Date.parse(from + "T12:00:00")) / 86400000) + 1;
+    if (days > 0) {
+      buckets.push({
+        week_start: cursor, from: from, to: to, days: days,
+        required: Math.max(1, Math.ceil(spw * days / 7)),
+        partial: days < 7,
+      });
+    }
+    cursor = arcAddDays(cursor, 7);
+  }
+  return buckets;
+}
+
+// Which schedule items are linked to this goal, and how confidently each can be
+// matched. Tier 1 = the keystone join's first consumer.
+function arcLinkedItems(schedule, goalId) {
+  var out = [];
+  if (!schedule || !goalId) return out;
+  var linked = function(it) { return it && Array.isArray(it.goal_ids) && it.goal_ids.indexOf(goalId) >= 0; };
+  var anchors = (schedule.anchors && typeof schedule.anchors === "object") ? schedule.anchors : {};
+  Object.keys(anchors).forEach(function(day) {
+    (Array.isArray(anchors[day]) ? anchors[day] : []).forEach(function(a) {
+      if (linked(a)) out.push({ kind: "anchor", day: day, activity: a.activity || "", confidence: "category" });
+    });
+  });
+  (Array.isArray(schedule.frequency_targets) ? schedule.frequency_targets : []).forEach(function(t) {
+    if (!linked(t)) return;
+    var muscles = activityMuscles(t.activity);
+    out.push({
+      kind: "target", activity: t.activity || "", muscles: muscles,
+      // activityMuscles() is [] for mobility/yoga/rehab — those can never clear
+      // the exercises-table bar, so they drop to category agreement and SAY SO.
+      confidence: muscles.length ? "precise" : "category",
+    });
+  });
+  (Array.isArray(schedule.addons) ? schedule.addons : []).forEach(function(a) {
+    if (linked(a)) out.push({ kind: "addon", activity: a.activity || "", confidence: "presence" });
+  });
+  return out;
+}
+
+// Distinct dates on which this goal was trained, plus the confidence of that
+// judgement. Tier 1 (linked schedule items) when any exist, else Tier 2.
+function arcQualifyingDates(opts) {
+  var items = opts.linkedItems || [];
+  var workouts = opts.workouts || [];
+  var matcher = opts.matcher;
+  var dates = {}, confidences = {}, via = [];
+
+  if (items.length) {
+    var doneW = workouts.filter(function(w) { return w && w.done === true && w.date; });
+    items.forEach(function(it) {
+      var hit = [];
+      if (it.kind === "target" && it.confidence === "precise") {
+        hit = doneW.filter(function(w) { return matcher.satisfies(w, it.muscles); });
+      } else if (it.kind === "anchor") {
+        var cat = inferWorkoutCategoryServer(it.activity);
+        hit = doneW.filter(function(w) {
+          var d = Date.parse(w.date + "T12:00:00");
+          if (isNaN(d)) return false;
+          var dayKey = PREVIEW_DAYS[(new Date(d).getDay() + 6) % 7];
+          return dayKey === it.day && inferWorkoutCategoryServer(w.type) === cat;
+        });
+      } else if (it.kind === "target") {                       // empty-muscle target
+        var tcat = inferWorkoutCategoryServer(it.activity);
+        hit = doneW.filter(function(w) { return inferWorkoutCategoryServer(w.type) === tcat; });
+      } else {                                                 // addon — presence only
+        hit = doneW.slice();
+      }
+      if (hit.length) via.push(it.kind + ":" + it.activity + (it.day ? ("@" + it.day) : ""));
+      hit.forEach(function(w) {
+        dates[w.date] = true;
+        // Keep the STRONGEST confidence that produced this date.
+        var rank = { precise: 3, category: 2, presence: 1 };
+        if (!confidences[w.date] || rank[it.confidence] > rank[confidences[w.date]]) confidences[w.date] = it.confidence;
+      });
+    });
+    var levels = Object.keys(dates).map(function(d) { return confidences[d]; });
+    var worst = levels.indexOf("presence") >= 0 ? "presence"
+      : levels.indexOf("category") >= 0 ? "category" : (levels.length ? "precise" : "precise");
+    return { dates: Object.keys(dates).sort(), confidence: worst, matched_via: via, tier: 1 };
+  }
+
+  // TIER 2 — no linked schedule item. Keyword matching over exercise dates,
+  // INTERSECTED with done workouts. Genuinely lower confidence and labelled so.
+  var doneDates = {};
+  workouts.forEach(function(w) { if (w && w.done === true && w.date) doneDates[w.date] = true; });
+  var kwDates = (opts.keywordDates || []).filter(function(d) { return doneDates[d]; });
+  return { dates: kwDates.slice().sort(), confidence: "keyword", matched_via: [], tier: 2 };
+}
+
+// THE REPLAY. Pure, deterministic, idempotent. Returns the arc_state object.
+function computeArcState(goal, ctx) {
+  var rm = goal && goal.roadmap;
+  if (!rm || !rm.estimate || !Array.isArray(rm.phases)) return null;   // legacy → no arc, ever
+  var near = rm.phases.filter(function(p) { return p && p.type === "near_term"; });
+  if (!near.length) return null;
+
+  var startYmd = near[0].start_date || (rm.generated_at ? String(rm.generated_at).slice(0, 10) : null);
+  var todayYmd = ctx.today;
+  if (!startYmd || !todayYmd || startYmd > todayYmd) return null;
+
+  var spw = (goal.demand && numOrNull(goal.demand.sessions_per_week)) || 1;
+  var buckets = arcWeekBuckets(startYmd, todayYmd, spw);
+  var qualifying = ctx.qualifying || { dates: [], confidence: "keyword", matched_via: [], tier: 2 };
+
+  // Bucket the qualifying dates (Date.parse guard drops malformed rows).
+  var byWeek = {};
+  qualifying.dates.forEach(function(d) {
+    if (isNaN(Date.parse(String(d).slice(0, 10) + "T12:00:00"))) return;
+    var wk = arcMondayOfStr(d);
+    if (!wk) return;
+    (byWeek[wk] = byWeek[wk] || {})[d] = true;   // distinct DAYS per week
+  });
+
+  var position = 0, zeroRun = 0, reRamp = null, preGapPeak = 0;
+  buckets.forEach(function(b) {
+    var got = Object.keys(byWeek[b.week_start] || {}).length;
+    if (got >= b.required) { position += 1; zeroRun = 0; }
+    else if (got >= Math.ceil(b.required / 2)) { position += 0.5; zeroRun = 0; }
+    else {
+      if (zeroRun === 0) preGapPeak = position;
+      zeroRun += 1;
+    }
+    // Apply decay at the END of a run (i.e. the first non-zero week after it),
+    // and also while the run is still open so a live gap shows its real cost.
+    if (zeroRun >= 2) {
+      var rate = ARC_DECAY_RATES[goal.goal_type] != null ? ARC_DECAY_RATES[goal.goal_type] : ARC_DEFAULT_DECAY_RATE;
+      var decayed = Math.max(0, preGapPeak - (zeroRun - 1) * rate);
+      if (decayed < position) position = decayed;
+      if (preGapPeak > decayed) {
+        reRamp = { from_week: Math.round(decayed * 10) / 10, target_week: Math.round(preGapPeak * 10) / 10, started_date: b.week_start };
+      }
+    }
+  });
+  position = Math.max(0, Math.round(position * 10) / 10);
+  if (reRamp && position >= reRamp.target_week) reRamp = null;   // re-ramp complete
+
+  var calendarWeek = buckets.length;
+  var drift = Math.round((position - calendarWeek) * 10) / 10;
+
+  // Evidence — last 28 days.
+  var since28 = arcAddDays(todayYmd, -27);
+  var q28 = qualifying.dates.filter(function(d) { return d >= since28 && d <= todayYmd; }).length;
+  var expected28 = Math.round(spw * 4);
+  var longestGap = 0, prev = startYmd;
+  qualifying.dates.forEach(function(d) {
+    var g = Math.round((Date.parse(d + "T12:00:00") - Date.parse(prev + "T12:00:00")) / 86400000);
+    if (g > longestGap) longestGap = g;
+    prev = d;
+  });
+  var tailGap = Math.round((Date.parse(todayYmd + "T12:00:00") - Date.parse(prev + "T12:00:00")) / 86400000);
+  if (tailGap > longestGap) longestGap = tailGap;
+
+  var status;
+  if (String(goal.status || "").toUpperCase() === "PAUSED") status = "paused";
+  else if (reRamp) status = "re_ramping";
+  else if (zeroRun >= 2) status = "stalled";
+  else if (drift >= 2) status = "ahead";
+  else if (drift <= -2) status = "behind";
+  else status = "on_track";
+
+  var prevArc = rm.arc_state || null;
+  var sustained = (Math.abs(drift) >= 2 && prevArc && Math.abs(numOrNull(prevArc.drift) || 0) >= 2 &&
+    ((drift > 0) === ((numOrNull(prevArc.drift) || 0) > 0)));
+
+  return {
+    position_week: position,
+    calendar_week: calendarWeek,
+    drift: drift,
+    status: status,
+    re_ramp: reRamp,
+    evidence: {
+      qualifying_sessions_28d: q28,
+      expected_28d: expected28,
+      longest_gap_days: longestGap,
+      confidence: qualifying.confidence,
+      matched_via: qualifying.matched_via,
+      tier: qualifying.tier,
+    },
+    flex_streak: sustained ? ((prevArc && numOrNull(prevArc.flex_streak) || 0) + 1) : (Math.abs(drift) >= 2 ? 1 : 0),
+    needs_regeneration: !!(prevArc && prevArc.needs_regeneration),
+    last_evaluated: new Date().toISOString(),
+  };
+}
+
+// TIMELINE FLEX — code-owned, DURATIONS ONLY. The phase COUNT never changes
+// (enforcePhaseShape stays authoritative) and a phase the athlete is currently
+// INSIDE is never retro-resized. Returns a change report, or null for a no-op.
+function applyTimelineFlex(goal, arc, todayYmd) {
+  if (!arc || Math.abs(arc.drift) < 2) return null;
+  if ((arc.flex_streak || 0) < ARC_FLEX_STREAK_REQUIRED) return null;   // sustained only
+  var rm = goal.roadmap;
+  var near = rm.phases.filter(function(p) { return p && p.type === "near_term"; });
+  var upcoming = near.filter(function(p) { return p.status === "upcoming"; });
+  if (!upcoming.length) {
+    // Nothing left to absorb the change. Do NOT add phases — say so loudly.
+    arc.needs_regeneration = true;
+    return { flexed: false, needs_regeneration: true, reason: "no_upcoming_phases" };
+  }
+
+  var upcomingWeeks = upcoming.reduce(function(a, p) { return a + (numOrNull(p.duration_weeks) || 0); }, 0);
+  var adjust = Math.max(-MAX_FLEX_WEEKS, Math.min(MAX_FLEX_WEEKS, Math.round(arc.drift)));
+  var target = upcomingWeeks - adjust;
+  var lo = upcoming.length * PHASE_MIN_WEEKS, hi = upcoming.length * PHASE_MAX_WEEKS;
+  var bounded = Math.max(lo, Math.min(hi, target));
+  var clamped = bounded !== target;
+  if (bounded === upcomingWeeks) return clamped ? (arc.needs_regeneration = true, { flexed: false, needs_regeneration: true, reason: "clamped_no_room" }) : null;
+
+  var base = Math.floor(bounded / upcoming.length);
+  var rem = bounded - base * upcoming.length;
+  var before = upcoming.map(function(p) { return p.duration_weeks; });
+  upcoming.forEach(function(p, i) { p.duration_weeks = base + (i < rem ? 1 : 0); });
+
+  // Rebuild the calendar forward from the current phase. resequenceNearTermDates
+  // gets its SECOND deliberate caller here (it was repair-only until now).
+  var dateChanges = resequenceNearTermDates(rm.phases, todayYmd);
+
+  var delta = bounded - upcomingWeeks;   // negative = shortened
+  if (goal.estimate) {
+    goal.estimate.total_weeks_low = Math.max(1, (numOrNull(goal.estimate.total_weeks_low) || 1) + delta);
+    goal.estimate.total_weeks_high = Math.max(goal.estimate.total_weeks_low, (numOrNull(goal.estimate.total_weeks_high) || 1) + delta);
+    var note = delta < 0
+      ? " You're running about " + Math.abs(adjust) + " week(s) ahead of plan — the remaining phases are shortened to match."
+      : " Planned " + ((goal.demand && goal.demand.sessions_per_week) || "?") + "x/week, averaging closer to " +
+        Math.max(0, Math.round(((arc.evidence.qualifying_sessions_28d || 0) / 4) * 10) / 10) + "x — this is now " +
+        goal.estimate.total_weeks_low + "-" + goal.estimate.total_weeks_high + " weeks.";
+    goal.estimate.basis = String(goal.estimate.basis || "") + note;
+  }
+  if (rm.estimate) { rm.estimate = JSON.parse(JSON.stringify(goal.estimate)); }
+  if (clamped) arc.needs_regeneration = true;
+
+  return {
+    flexed: true, direction: delta < 0 ? "shortened" : "lengthened",
+    weeks_delta: delta, before: before,
+    after: upcoming.map(function(p) { return p.duration_weeks; }),
+    date_changes: dateChanges, clamped: clamped,
+    needs_regeneration: !!arc.needs_regeneration,
+  };
+}
+
+// TIER 2 fallback source. A lean sibling of getGoalExerciseContext that returns
+// the DISTINCT DATE LIST that function already computes internally and throws
+// away, with two corrections that matter for arc accuracy:
+//   1. INTERSECTED with done workouts — getGoalExerciseContext reads `exercises`
+//      directly and would count an orphaned row.
+//   2. Numeric and weak tokens dropped. extractGoalKeywords("Bench press 175 lbs
+//      for a single") yields "single", which substring-matches "Single-Arm Lat
+//      Pulldown" — a real false positive, not a hypothetical.
+// Still genuinely lower confidence, and labelled "keyword" wherever it is used.
+var ARC_WEAK_KEYWORDS = { single: 1, lbs: 1, reps: 1, week: 1, day: 1, days: 1, time: 1, goal: 1, get: 1, one: 1 };
+async function getGoalSessionDates(profileId, title, sinceYmd) {
+  var kws = extractGoalKeywords(title).filter(function(k) {
+    return !/^\d+$/.test(k) && !ARC_WEAK_KEYWORDS[k];
+  });
+  if (!kws.length) return [];
+  var r = await fetch(SUPABASE_URL + "/rest/v1/exercises?profile_id=eq." + profileId +
+    "&date=gte." + sinceYmd + "&select=name,date&order=date.asc&limit=5000", { headers: sbHeaders() });
+  var rows = await r.json();
+  if (!Array.isArray(rows)) return [];
+  var seen = {};
+  rows.forEach(function(ex) {
+    var n = String(ex.name || "").toLowerCase();
+    if (!ex.date) return;
+    if (kws.some(function(k) { return n.indexOf(k) >= 0; })) seen[ex.date] = true;
+  });
+  return Object.keys(seen).sort();
+}
+
+// Evaluate every arc-eligible goal on a profile. ZERO AI CALLS — pure code, so
+// it adds no latency to the workout-save path it hangs off. Writes arc_state,
+// applies timeline flex, and stamps arc_transition_at on a status change so the
+// next maybeAdaptAllRoadmaps picks the goal up early.
+async function evaluateArcsForProfile(profileId, opts) {
+  opts = opts || {};
+  if (!profileId) return null;
+  var pr = await fetch(SUPABASE_URL + "/rest/v1/profiles?id=eq." + profileId +
+    "&select=id,profile_data,timezone", { headers: sbHeaders() });
+  var prows = await pr.json();
+  if (!Array.isArray(prows) || !prows.length) return null;
+  var profileRow = prows[0];
+  var pd = profileRow.profile_data || {};
+  var goals = Array.isArray(pd.goals) ? pd.goals : [];
+
+  var arcGoals = goals.filter(function(g) {
+    return g && g.roadmap && g.roadmap.estimate && Array.isArray(g.roadmap.phases) &&
+      g.roadmap.phases.some(function(p) { return p && p.type === "near_term"; });
+  });
+  if (!arcGoals.length) return { evaluated: 0, goals: [], reason: "no_arc_eligible_goals" };
+
+  var today = localToday(profileRow);   // athlete-local, never the server clock
+
+  // Earliest arc start across all arc goals bounds both fetches.
+  var earliest = today;
+  arcGoals.forEach(function(g) {
+    var n = g.roadmap.phases.filter(function(p) { return p.type === "near_term"; })[0];
+    var s = (n && n.start_date) || (g.roadmap.generated_at ? String(g.roadmap.generated_at).slice(0, 10) : null);
+    if (s && s < earliest) earliest = s;
+  });
+
+  var wRes = await fetch(SUPABASE_URL + "/rest/v1/workouts?profile_id=eq." + profileId +
+    "&date=gte." + earliest + "&select=id,date,done,type&order=date.asc&limit=2000", { headers: sbHeaders() });
+  var workouts = await wRes.json();
+  if (!Array.isArray(workouts)) workouts = [];
+  // Drop malformed date rows rather than text-sorting them (ROADMAP §6).
+  workouts = workouts.filter(function(w) { return w && w.date && !isNaN(Date.parse(String(w.date).slice(0, 10) + "T12:00:00")); });
+
+  var eRes = await fetch(SUPABASE_URL + "/rest/v1/exercises?profile_id=eq." + profileId +
+    "&date=gte." + earliest + "&select=workout_id,name,date&order=date.asc&limit=8000", { headers: sbHeaders() });
+  var exercises = await eRes.json();
+  if (!Array.isArray(exercises)) exercises = [];
+
+  var matcher = makeTargetMatcher(exercises);
+  var schedule = pd.schedule || {};
+  var report = [], changed = false;
+
+  for (var i = 0; i < arcGoals.length; i++) {
+    var g = arcGoals[i];
+    try {
+      var linked = arcLinkedItems(schedule, g.id);
+      var kwDates = [];
+      if (!linked.length) {
+        try { kwDates = await getGoalSessionDates(profileId, g.title, earliest); } catch (e) { kwDates = []; }
+      }
+      var qualifying = arcQualifyingDates({ linkedItems: linked, workouts: workouts, matcher: matcher, keywordDates: kwDates });
+      var prevStatus = (g.roadmap.arc_state && g.roadmap.arc_state.status) || null;
+      var arc = computeArcState(g, { today: today, qualifying: qualifying });
+      if (!arc) { report.push({ goal: g.title, skipped: "not_arc_eligible" }); continue; }
+
+      var flex = applyTimelineFlex(g, arc, today);
+      g.roadmap.arc_state = arc;
+      changed = true;
+
+      if (prevStatus && prevStatus !== arc.status) {
+        // Status transition → let the next weekly sweep adapt this goal early.
+        g.arc_transition_at = new Date().toISOString();
+      }
+      report.push({
+        goal: g.title, goal_id: g.id, position_week: arc.position_week, calendar_week: arc.calendar_week,
+        drift: arc.drift, status: arc.status, prev_status: prevStatus,
+        confidence: arc.evidence.confidence, tier: arc.evidence.tier,
+        qualifying_dates: qualifying.dates.length, matched_via: arc.evidence.matched_via,
+        re_ramp: arc.re_ramp, needs_regeneration: arc.needs_regeneration, flex: flex,
+      });
+    } catch (e) {
+      console.error("[Arc] evaluation failed for goal " + (g.id || "?") + ": " + e.message);
+      report.push({ goal: g.title, error: e.message });
+    }
+  }
+
+  if (changed && !opts.dryRun) {
+    await fetch(SUPABASE_URL + "/rest/v1/profiles?id=eq." + profileId, {
+      method: "PATCH", headers: sbHeaders("return=minimal"),
+      body: JSON.stringify({ profile_data: cleanProfileData(pd) }),
+    });
+  }
+  console.log("[Arc] evaluated " + report.length + " goal(s) for profile " + profileId +
+    (opts.dryRun ? " (DRY RUN)" : "") + ": " +
+    report.map(function(x) { return (x.goal || "?") + "=" + (x.status || x.skipped || x.error); }).join(", "));
+  return { evaluated: report.length, today: today, dry_run: !!opts.dryRun, goals: report };
+}
+
 // Deterministic invariant, run AFTER an adapt. Prompt rules are probabilistic —
 // the enforceSingleCurrentPhase precedent. A reshape here would silently convert
 // a variable-count roadmap back into 3+2 (or vice versa) and destroy the plan the
@@ -5853,7 +6327,9 @@ function findGoalById(profileData, goalId) {
 // Load a profile row + its profile_data (with goal ids ensured in memory).
 // Throws a 404-tagged error if missing. Returns { profile, profileData }.
 async function loadProfileWithGoals(profileId) {
-  var r = await fetch(SUPABASE_URL + "/rest/v1/profiles?id=eq." + profileId + "&select=id,profile_data,coaching_brief", { headers: sbHeaders() });
+  // `timezone` is selected so callers can resolve the ATHLETE'S calendar day via
+  // localToday() rather than the server clock (the F1 bug class, ROADMAP §9).
+  var r = await fetch(SUPABASE_URL + "/rest/v1/profiles?id=eq." + profileId + "&select=id,profile_data,coaching_brief,timezone", { headers: sbHeaders() });
   var rows = await r.json();
   if (!rows || !rows.length) { var err = new Error("Profile not found"); err.status = 404; throw err; }
   var profileData = rows[0].profile_data || {};
@@ -6105,6 +6581,25 @@ async function backfillMissingEmphasis(goalTitle, phases) {
   }
 }
 
+// The ARC STATE prompt block. Code owns every number in it; the model narrates.
+function renderArcStateForPrompt(goal) {
+  var arc = goal && goal.roadmap && goal.roadmap.arc_state;
+  if (!arc) return "";
+  var near = goal.roadmap.phases.filter(function(p) { return p && p.type === "near_term"; });
+  var totalNear = near.reduce(function(a, p) { return a + (numOrNull(p.duration_weeks) || 0); }, 0);
+  var L = ["ARC STATE (computed from the log — the ONLY source of progress facts; never restate or recompute these numbers):"];
+  L.push("  Earned position: week " + arc.position_week + " of " + totalNear + " near-term   Calendar: week " + arc.calendar_week + "   Drift: " + (arc.drift > 0 ? "+" : "") + arc.drift);
+  L.push("  Status: " + arc.status +
+    (arc.re_ramp ? (" (re-ramping from week " + arc.re_ramp.from_week + " toward week " + arc.re_ramp.target_week + ", since " + arc.re_ramp.started_date + ")") : ""));
+  var ev = arc.evidence || {};
+  L.push("  Evidence: " + (ev.qualifying_sessions_28d || 0) + " qualifying sessions in the last 28d vs " +
+    (ev.expected_28d || 0) + " expected; longest gap " + (ev.longest_gap_days || 0) + " days");
+  L.push("  Confidence: " + (ev.confidence || "unknown") +
+    (ev.matched_via && ev.matched_via.length ? (" (matched via " + ev.matched_via.join(", ") + ")") : " (no linked schedule item — keyword matched)"));
+  if (arc.needs_regeneration) L.push("  NOTE: this roadmap can no longer absorb the athlete's drift by adjusting phase lengths.");
+  return L.join("\n") + "\n\n";
+}
+
 async function adaptGoalRoadmap(goal, notes, workouts, trigger, goalExCtx) {
   var today = new Date().toISOString().slice(0, 10);
   var workoutsStr = (workouts || []).map(function(w) { return w.date + ": " + (w.type || "Workout"); }).join("\n");
@@ -6122,9 +6617,11 @@ async function adaptGoalRoadmap(goal, notes, workouts, trigger, goalExCtx) {
     "ALSO run two checks that are NOT completion tests:\n" +
     "1. DATE ROLLOVER: if a phase's end_date has passed, it must not remain \"current\" — mark it \"complete\" and make the next phase \"current\", even if its completion_signals were never met. Exactly one near_term phase may be \"current\".\n" +
     "2. PREMISE VALIDITY: each phase's name and targets assume a context (an injury flare, a training pause, a deload, a travel block). If the recent training evidence shows that context has ENDED — e.g. the athlete has resumed training after a documented pause — rewrite that phase's name and targets to drop the stale premise. Do not silently keep a phase whose framing is no longer true. If the premise still holds, leave the phase alone.\n\n" +
-    "These two checks are the ONLY reasons to change a phase that its completion_signals have not justified. Everything else: keep what is valid.";
+    "3. ARC REALITY: if an ARC STATE block is present in the user message, it was COMPUTED FROM THE ATHLETE'S ACTUAL LOG and is the only source of progress facts. Phase content must match it — an athlete who is re_ramping gets rebuild-the-base content, not the volume the phase originally called for; an athlete who is ahead gets content that reflects where they actually are. NEVER state a position, drift, week number or session count that is not in that block, and never contradict it.\n\n" +
+    "These checks are the ONLY reasons to change a phase that its completion_signals have not justified. Everything else: keep what is valid.";
   var userMsg = "GOAL: " + (goal.title || "Untitled") + "\n\n" +
     "CURRENT ROADMAP:\n" + JSON.stringify(goal.roadmap) + "\n\n" +
+    renderArcStateForPrompt(goal) +
     "EXERCISE CONTEXT FOR THIS GOAL:\n" + (goalExCtx ? JSON.stringify(goalExCtx) : "none") + "\n\n" +
     "ATHLETE CHECK-IN:\n" + (notes || buildWeeklyReviewContext(workouts)) + "\n\n" +
     "RECENT WORKOUTS (last 10):\n" + (workoutsStr || "none") + "\n\n" +
@@ -6214,8 +6711,16 @@ async function maybeAdaptAllRoadmaps(profileId) {
     return isNaN(t) || (nowMs - t) > WEEK_MS;
   };
 
+  // PT Brain Layer 2: an arc STATUS TRANSITION (on_track→behind, →re_ramping, …)
+  // pulls a goal forward even when it is not yet 7 days stale — the phase content
+  // is now demonstrably wrong for where the athlete actually is.
+  var transitionPending = function(g) {
+    if (!g || !g.arc_transition_at) return false;
+    if (!g.last_adapted_at) return true;
+    return Date.parse(g.arc_transition_at) > Date.parse(g.last_adapted_at);
+  };
   var dueGoals = goals.filter(function(g) {
-    return g && g.intake_completed && g.roadmap && isStale(g.last_adapted_at);
+    return g && g.intake_completed && g.roadmap && (isStale(g.last_adapted_at) || transitionPending(g));
   });
   var macroDue = !!(roadmapData && isStale(rdUpdatedAt));
   if (!dueGoals.length && !macroDue) return;
@@ -6479,7 +6984,16 @@ app.post("/api/profiles/:id/goals/:goalId/negotiate", async function(req, res) {
 
     var others = fit.counted.filter(function(c) { return c.goal_id !== goal.id; });
     var mv = (goal.demand && goal.demand.min_viable_sessions_per_week) || 1;
-    var userMsg = "THE ARITHMETIC (already computed — do not recalculate):\n" +
+    // ROUND COUNTER (session #37, closes the §6 negotiation-loop item). Advisory
+    // ONLY — it changes the FRAMING, never the resolution set. `slower` and
+    // `sequence` both floor at min_viable, so on a goal that genuinely does not
+    // fit they become idempotent and the athlete can bounce between them; from
+    // round 2 the copy says so and points at the real exit.
+    var round = Math.max(1, Math.min(9, Math.round(numOrNull(req.body && req.body.round) || 1)));
+    var escalation = round >= 2
+      ? "ESCALATION — this is negotiation round " + round + " for this goal. The athlete has ALREADY applied a lever and the week still does not fit. Say that plainly in conflict_note. Frame ADDING CAPACITY as the realistic exit; do NOT present \"go slower\" or \"sequence\" as if they will resolve it this time.\n\n"
+      : "";
+    var userMsg = escalation + "THE ARITHMETIC (already computed — do not recalculate):\n" +
       "  Weekly time available: " + fit.minutes_available + " min (" + fit.capacity.days_per_week + " days x " + fit.capacity.minutes_per_day + " min)\n" +
       "  Weekly time committed: " + fit.minutes_needed + " min" + (fit.minutes_over > 0 ? ("  → OVER BY " + fit.minutes_over + " min") : "  → fits") + "\n" +
       "  Hard sessions available: " + fit.hard_available + "/week\n" +
@@ -6506,7 +7020,14 @@ app.post("/api/profiles/:id/goals/:goalId/negotiate", async function(req, res) {
     var valid = REQUIRED.every(function(k) { return byLever[k]; });
 
     var lowerFreq = Math.max(mv, Math.max(1, ((goal.demand && goal.demand.sessions_per_week) || 2) - 1));
-    var fallbackDetail = {
+    var fallbackDetail = round >= 2 ? {
+      slower: "You already went slower and it still does not fit — " + lowerFreq + "x/week is not the lever here.",
+      capacity: "This is the one that actually resolves it. You need about " +
+        Math.ceil((fit.minutes_needed) / fit.capacity.days_per_week) + " min/day across " +
+        fit.capacity.days_per_week + " days (you have " + fit.capacity.minutes_per_day + " min/day)" +
+        (fit.hard_over > 0 ? (", and " + fit.hard_needed + " hard sessions/week rather than " + fit.hard_available + ".") : "."),
+      sequence: "Holding this at " + mv + "x/week has not freed enough of the week — the constraint is the week itself.",
+    } : {
       slower: "Train this " + lowerFreq + "x/week instead. It fits your week, and the timeline stretches honestly to match.",
       capacity: "You would need about " + Math.ceil((fit.minutes_needed) / fit.capacity.days_per_week) +
         " min/day across " + fit.capacity.days_per_week + " days (you have " + fit.capacity.minutes_per_day + " min/day)" +
@@ -6526,9 +7047,12 @@ app.post("/api/profiles/:id/goals/:goalId/negotiate", async function(req, res) {
     if (!valid) console.warn("[PTBrain] negotiate: model returned an invalid lever set — using code-authored fallback");
 
     res.json({
-      success: true, fits: false, fit: fit,
+      success: true, fits: false, fit: fit, round: round,
       conflict_note: (parsed.conflict_note ? String(parsed.conflict_note).slice(0, 400)
-        : ("This goal needs " + fit.minutes_needed + " min/week but you have " + fit.minutes_available + ".")),
+        : (round >= 2
+          ? ("You've already adjusted this goal and the week still doesn't fit — it needs " +
+             fit.minutes_needed + " min against the " + fit.minutes_available + " you have.")
+          : ("This goal needs " + fit.minutes_needed + " min/week but you have " + fit.minutes_available + "."))),
       options: options,
       model_levers_valid: valid,
       suggested: { slower_frequency: lowerFreq, min_viable: mv },
@@ -6536,6 +7060,29 @@ app.post("/api/profiles/:id/goals/:goalId/negotiate", async function(req, res) {
   } catch (e) {
     console.error("[PTBrain] negotiate error:", e.message);
     res.status(e.status || 500).json({ success: false, error: e.message });
+  }
+});
+
+// ── ADMIN: arc sweep ─────────────────────────────────────────────────────────
+//   POST /api/debug/evaluate-arcs/:profileId?secret=...&apply=1
+// DRY RUN by default. The honest gap this closes only partly: arc evaluation
+// normally hangs off a workout SAVE, so an athlete who logs nothing for weeks
+// never gets their decay applied until they log again. This endpoint forces an
+// evaluation. It is deliberately NOT wired to any interval this session —
+// tracked as an open item in ROADMAP §9.
+app.post("/api/debug/evaluate-arcs/:profileId", async function(req, res) {
+  if (process.env.ADMIN_SECRET) {
+    var gotA = req.query.secret || req.headers["x-admin-secret"];
+    if (gotA !== process.env.ADMIN_SECRET) return res.status(403).json({ success: false, error: "forbidden" });
+  }
+  try {
+    var apply = req.query.apply === "1" || req.query.apply === "true";
+    var out = await evaluateArcsForProfile(req.params.profileId, { dryRun: !apply });
+    if (!out) return res.status(404).json({ success: false, error: "profile not found" });
+    res.json(Object.assign({ success: true }, out));
+  } catch (e) {
+    console.error("[Arc] sweep error:", e.message);
+    res.status(500).json({ success: false, error: e.message });
   }
 });
 
@@ -10127,7 +10674,12 @@ app.post("/api/debug/resequence-roadmap/:profileId/:goalId", async function(req,
         .map(function(p) { return { name: p.name, status: p.status, start_date: p.start_date, end_date: p.end_date, duration_weeks: p.duration_weeks, emphasis_count: (p.emphasis || []).length }; });
     };
     var before = JSON.parse(JSON.stringify(snap()));
-    var changes = resequenceNearTermDates(goal.roadmap.phases, ymdLocal(new Date()));
+    // F1 FIX (ROADMAP §9, standing since 2026-07-19, closed session #37): this
+    // took ymdLocal(new Date()) — the SERVER clock — where it must take the
+    // athlete's calendar day. At 03:xx UTC the server is already on tomorrow,
+    // so the repair started the current phase "tomorrow" and the rec prompt
+    // resolved to the phase that had just completed for the rest of that day.
+    var changes = resequenceNearTermDates(goal.roadmap.phases, localToday(loaded.profile));
     var after = snap();
     var payload = {
       success: true, dry_run: !applyR, goal: goal.title,

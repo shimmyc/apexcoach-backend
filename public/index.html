@@ -413,6 +413,19 @@ input[type=range]{width:100%;accent-color:var(--accent)}
 #goal-roadmap-view .grv-est-basis{font-size:12px;color:var(--text-muted);line-height:1.65;margin-top:6px}
 #goal-roadmap-view .grv-est-stale{font-size:11px;color:var(--color-caution);line-height:1.6;margin-top:8px;background:var(--bg-surface-2);border-radius:10px;padding:8px 10px}
 #goal-roadmap-view .grv-est-dial{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-top:12px}
+/* PT Brain Layer 2 (session #37) — arc chip, evidence lines, LOUD regen banner */
+#goal-roadmap-view .grv-arc-chip{font-size:9px;letter-spacing:.08em;font-weight:700;background:var(--bg-surface-2);padding:3px 8px;border-radius:9999px;margin-left:auto}
+#goal-roadmap-view .grv-arc-line{font-size:12px;color:var(--text-muted);line-height:1.65;margin-top:6px}
+#goal-roadmap-view .grv-arc-line b{color:var(--text-primary);font-family:'JetBrains Mono',monospace;font-size:11px}
+#goal-roadmap-view .grv-arc-nudge{font-size:11px;color:var(--text-muted);line-height:1.6;margin-top:8px;background:var(--bg-surface-2);border-radius:10px;padding:8px 10px}
+#goal-roadmap-view .grv-arc-nudge b{color:var(--accent-ember)}
+#goal-roadmap-view .grv-arc-stale{font-size:11px;color:var(--text-muted);font-style:italic;margin-top:6px}
+#goal-roadmap-view .grv-regen-banner{background:var(--bg-surface-2);border:1px solid var(--color-caution);border-left:3px solid var(--color-caution);border-radius:14px;padding:13px 15px;margin-bottom:14px}
+#goal-roadmap-view .grv-regen-head{display:flex;align-items:center;gap:8px;font-size:14px;font-weight:700;color:var(--color-caution)}
+#goal-roadmap-view .grv-regen-body{font-size:12px;color:var(--text-primary);line-height:1.6;margin-top:6px}
+#goal-roadmap-view .grv-regen-btn{width:100%;height:38px;margin-top:11px;background:var(--color-caution);color:#111;border:none;border-radius:12px;font-size:13px;font-weight:700;cursor:pointer;font-family:'Inter',sans-serif}
+/* Goal-card indicator (Profile tab) — same caution language as GAPS TO ADDRESS */
+#tab-profile .goal-regen-flag{display:flex;align-items:flex-start;gap:8px;margin-top:10px;background:var(--bg-surface-2);border-left:3px solid var(--color-caution);border-radius:10px;padding:8px 10px;font-size:11px;line-height:1.55;color:var(--color-caution)}
 /* ── COACH CHAT — persistent AI conversation (scoped to #chat-view) ──────── */
 #chat-view{position:fixed;inset:0;z-index:48;background:var(--bg-base);flex-direction:column;overflow:hidden}
 #chat-view.cv-open{animation:cvSlideIn .26s ease}
@@ -6325,6 +6338,12 @@ function renderProfileGoals() {
     }
     // ENGINE v2 (flagged profiles only): per-goal tier selector.
     if (isV2Profile() && typeof v2GoalTierHtml === 'function') html += v2GoalTierHtml(i);
+    // PT Brain Layer 2 — a roadmap that can no longer absorb the athlete's drift
+    // gets a VISIBLE indicator on the card itself, not just inside the drill-down.
+    var gArc = g.roadmap && g.roadmap.arc_state;
+    if (gArc && gArc.needs_regeneration) {
+      html += '<div class="goal-regen-flag"><span>&#9888;</span><span>Roadmap needs regenerating — your training has drifted past what it can absorb</span></div>';
+    }
     // Living Goal Roadmap drill-down entry point.
     if (g.id) {
       html += '<div onclick="openGoalRoadmap(\'' + attrEsc(g.id) + '\')" style="margin-top:12px;color:var(--accent-ember);font-size:12px;font-weight:600;cursor:pointer">View Roadmap &rarr;</div>';
@@ -6659,6 +6678,8 @@ var grvPlan = null;            // { goal_type, demand, assumed_frequency, ration
 var grvCapacity = null;        // profile_data.capacity, or the draft being captured
 var grvCapacityNeeded = false; // true when the profile has no capacity yet
 var grvNegotiation = null;     // { conflict_note, options[], fit }
+var grvNegRound = 0;           // negotiation round for grvNegRoundGoalId (session #37)
+var grvNegRoundGoalId = null;
 var GRV_GOAL_TYPES = ['rehab', 'strength_load', 'endurance', 'skill', 'habit', 'body_comp'];
 var GRV_GOAL_TYPE_LABELS = {
   rehab: 'Rehab', strength_load: 'Strength / Muscle', endurance: 'Endurance',
@@ -7412,9 +7433,16 @@ function grvSubmitPlan(extra) {
 // only renders what it returns.
 function grvStartNegotiation(goalId, estimateResp) {
   var p = grvPersonalizeEl();
-  if (p) p.innerHTML = '<div style="text-align:center;padding:30px 20px"><p style="font-size:13px;color:var(--text-muted);animation:pulse 1.4s ease-in-out infinite">This doesn’t fit your week — working out your options…</p></div>';
+  // ROUND COUNTER (session #37). `slower` and `sequence` both floor at min_viable,
+  // so on a goal that genuinely doesn't fit they become idempotent and the athlete
+  // can bounce between them. From round 2 the server escalates the FRAMING toward
+  // capacity — the levers and their order never change.
+  if (grvNegRoundGoalId !== goalId) { grvNegRoundGoalId = goalId; grvNegRound = 0; }
+  grvNegRound += 1;
+  if (p) p.innerHTML = '<div style="text-align:center;padding:30px 20px"><p style="font-size:13px;color:var(--text-muted);animation:pulse 1.4s ease-in-out infinite">' +
+    (grvNegRound >= 2 ? 'Still doesn’t fit — looking again…' : 'This doesn’t fit your week — working out your options…') + '</p></div>';
   fetch('/api/profiles/' + currentProfileId + '/goals/' + encodeURIComponent(goalId) + '/negotiate', {
-    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({})
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ round: grvNegRound })
   })
     .then(function(r) { return r.json(); })
     .then(function(d) {
@@ -7448,7 +7476,10 @@ function grvRenderStep4() {
     h += '<div class="grv-lever-detail">' + grvEsc(o.detail) + '</div>';
     h += '</div>';
   }
-  h += '<div class="grv-note" style="margin-top:10px">Pick one — these are the only three ways this resolves honestly.</div>';
+  h += '<div class="grv-note" style="margin-top:10px">' +
+    (n.round >= 2
+      ? 'You’ve already adjusted this once. Making room in the week is the lever that actually resolves it.'
+      : 'Pick one — these are the only three ways this resolves honestly.') + '</div>';
   h += '</div>';
   p.innerHTML = h;
 }
@@ -7524,6 +7555,51 @@ function grvShowFullError(msg, retryFn) {
 }
 function grvRetry() { if (grvRetryFn) grvRetryFn(); }
 
+// ─── PT BRAIN · LAYER 2 — arc display helpers ───────────────────────────────
+var GRV_ARC_CHIP = {
+  on_track:   { label: 'ON TRACK',    color: 'var(--color-positive)' },
+  ahead:      { label: 'AHEAD',       color: 'var(--color-positive)' },
+  behind:     { label: 'BEHIND',      color: 'var(--color-caution)' },
+  stalled:    { label: 'STALLED',     color: 'var(--color-danger)' },
+  re_ramping: { label: 'RE-RAMPING',  color: 'var(--accent-ember)' },
+  paused:     { label: 'PAUSED',      color: 'var(--text-muted)' }
+};
+function grvArcChipHtml(arc) {
+  var c = GRV_ARC_CHIP[arc.status] || { label: String(arc.status || '').toUpperCase(), color: 'var(--text-muted)' };
+  return '<span class="grv-arc-chip" style="color:' + c.color + '">' + c.label + '</span>';
+}
+// Reads stay READ-ONLY (no write-on-read) — a stale arc renders a muted note and
+// is refreshed by the next workout save.
+function grvArcStale(arc) {
+  if (!arc || !arc.last_evaluated) return true;
+  var t = Date.parse(arc.last_evaluated);
+  return isNaN(t) || (Date.now() - t) > 24 * 3600 * 1000;
+}
+function grvRegenerateFromBanner() {
+  var g = grvFindGoal(grvGoalId);
+  if (!g) return;
+  var goalId = grvGoalId;
+  var c = grvContentEl();
+  if (c) c.innerHTML = '<div style="display:flex;flex-direction:column;align-items:center;padding:70px 20px;text-align:center">' +
+    '<div style="width:14px;height:14px;border-radius:50%;background:var(--accent-ember);animation:pulse 1.2s ease-in-out infinite;margin-bottom:16px"></div>' +
+    '<p style="font-size:13px;color:var(--text-muted)">Rebuilding your roadmap&hellip;</p></div>';
+  fetch('/api/profiles/' + currentProfileId + '/goals/' + encodeURIComponent(goalId) + '/roadmap?mode=regenerate', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({})
+  })
+    .then(function(r) { return r.json(); })
+    .then(function(data) {
+      if (!data || !data.success || !data.goal) throw new Error((data && data.error) || 'regenerate failed');
+      if (grvGoalId !== goalId) return;
+      grvUpdateCachedGoal(data.goal);
+      renderGoalRoadmap(data.goal);
+      if (typeof renderProfileGoals === 'function') renderProfileGoals();
+    })
+    .catch(function() {
+      if (grvGoalId !== goalId) return;
+      grvShowFullError('Could not regenerate — try again', function() { grvRegenerateFromBanner(); });
+    });
+}
+
 // PT Brain: the honest estimate + the aggressiveness dial, rendered above the
 // phase cards. A6 — a LEGACY roadmap (profile 1's three, profile 4's clones) has
 // no estimate and never will unless deliberately regenerated, which is out of
@@ -7541,9 +7617,40 @@ function grvEstimateHeaderHtml(goal) {
   var stale = !!(est && built && (est.assumed_frequency !== built.assumed_frequency ||
     est.total_weeks_low !== built.total_weeks_low || est.total_weeks_high !== built.total_weeks_high));
 
-  var h = '<div class="grv-est">';
+  var arc = goal.roadmap && goal.roadmap.arc_state;
+
+  // LOUD, not muted. A stalled goal sitting current-forever on its last phase
+  // with only a quiet note is unacceptable — the athlete must not be able to
+  // miss it. Reuses the GAPS TO ADDRESS caution treatment.
+  var h = '';
+  if (arc && arc.needs_regeneration) {
+    h += '<div class="grv-regen-banner">';
+    h += '<div class="grv-regen-head"><span>&#9888;</span><span>This roadmap can\'t stretch further</span></div>';
+    h += '<div class="grv-regen-body">Your training has drifted further than the remaining phases can absorb. Regenerate it to match reality.</div>';
+    h += '<button class="grv-regen-btn" onclick="grvRegenerateFromBanner()">Regenerate this roadmap</button>';
+    h += '</div>';
+  }
+
+  h += '<div class="grv-est">';
   h += '<div class="grv-est-top"><span class="grv-est-range">' + shown.total_weeks_low + '–' + shown.total_weeks_high + ' weeks</span>';
-  h += '<span class="grv-est-freq">at ' + shown.assumed_frequency + '×/week</span></div>';
+  h += '<span class="grv-est-freq">at ' + shown.assumed_frequency + '×/week</span>';
+  if (arc) h += grvArcChipHtml(arc);
+  h += '</div>';
+  if (arc) {
+    h += '<div class="grv-arc-line">Earned position <b>week ' + arc.position_week + '</b> · calendar week ' +
+      arc.calendar_week + ' · drift ' + (arc.drift > 0 ? '+' : '') + arc.drift + '</div>';
+    if (arc.re_ramp) {
+      h += '<div class="grv-arc-line">Re-ramping from week ' + arc.re_ramp.from_week + ' back toward week ' +
+        arc.re_ramp.target_week + ' (since ' + grvEsc(arc.re_ramp.started_date) + ')</div>';
+    }
+    var ev = arc.evidence || {};
+    if (ev.confidence && ev.confidence !== 'precise') {
+      h += '<div class="grv-arc-nudge">Tracking this goal by ' +
+        (ev.confidence === 'keyword' ? 'exercise names' : ev.confidence === 'presence' ? 'training-day presence' : 'workout category') +
+        '. <b>Link it to a schedule item</b> in your Schedule card for precise tracking.</div>';
+    }
+    if (grvArcStale(arc)) h += '<div class="grv-arc-stale">Updating&hellip; this will refresh next time you log a workout.</div>';
+  }
   if (shown.basis) h += '<div class="grv-est-basis">' + grvEsc(shown.basis) + '</div>';
   if (stale) {
     h += '<div class="grv-est-stale">Your settings changed — this roadmap was built from ' +
