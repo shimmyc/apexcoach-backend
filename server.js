@@ -6051,13 +6051,13 @@ function computeArcState(goal, ctx) {
     (byWeek[wk] = byWeek[wk] || {})[d] = true;   // distinct DAYS per week
   });
 
-  var position = 0, zeroRun = 0, reRamp = null, preGapPeak = 0;
+  var position = 0, zeroRun = 0, reRamp = null, preGapPeak = 0, runId = 0;
   buckets.forEach(function(b) {
     var got = Object.keys(byWeek[b.week_start] || {}).length;
     if (got >= b.required) { position += 1; zeroRun = 0; }
     else if (got >= Math.ceil(b.required / 2)) { position += 0.5; zeroRun = 0; }
     else {
-      if (zeroRun === 0) preGapPeak = position;
+      if (zeroRun === 0) { preGapPeak = position; runId += 1; }   // a new gap run
       zeroRun += 1;
     }
     // Apply decay at the END of a run (i.e. the first non-zero week after it),
@@ -6067,12 +6067,22 @@ function computeArcState(goal, ctx) {
       var decayed = Math.max(0, preGapPeak - (zeroRun - 1) * rate);
       if (decayed < position) position = decayed;
       if (preGapPeak > decayed) {
-        reRamp = { from_week: Math.round(decayed * 10) / 10, target_week: Math.round(preGapPeak * 10) / 10, started_date: b.week_start };
+        // started_date is when THIS re-ramp began (the first week that decayed),
+        // not the most recent week of the run — it is rendered to the athlete as
+        // "since <date>", so it has to mean what it says.
+        var startedDate = (reRamp && reRamp._run === runId) ? reRamp.started_date : b.week_start;
+        reRamp = {
+          from_week: Math.round(decayed * 10) / 10,
+          target_week: Math.round(preGapPeak * 10) / 10,
+          started_date: startedDate,
+          _run: runId,
+        };
       }
     }
   });
   position = Math.max(0, Math.round(position * 10) / 10);
   if (reRamp && position >= reRamp.target_week) reRamp = null;   // re-ramp complete
+  if (reRamp) delete reRamp._run;                                // internal bookkeeping only
 
   var calendarWeek = buckets.length;
   var drift = Math.round((position - calendarWeek) * 10) / 10;
