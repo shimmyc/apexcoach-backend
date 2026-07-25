@@ -2321,12 +2321,14 @@ Each item below is self-contained — no other doc/session context should be nee
 ## 7. Roadmap — Features To Build
 
 > **⚠ 2026-07-24 (session #34) — the head of the queue changed.** The Engine v2 arc is **PAUSED**
-> and its strategy rejected going forward; focus reverts to **v1**. The current forward direction is
-> **"NEXT DIRECTION — the 'real personal trainer' brain"** (below, a DESIGN TARGET not yet approved
-> for build), and the **immediate next step is an AUDIT of what v1 already persists** for roadmaps,
-> timelines and multi-goal scheduling. The pre-existing priority list below (Fitbit→Google Health
-> cutover work, etc.) is **unchanged and still valid** — the pivot removes the v2 items from the
-> front of the queue, it does not re-order anything else.
+> and its strategy rejected going forward; focus reverts to **v1**.
+>
+> **⚠ UPDATED 2026-07-25 (session #35) — the forward direction is now APPROVED as the North Star.**
+> It is **"NEXT DIRECTION — the 'PT Brain'"** (below), and the pre-build audit that gated it has
+> been run. **The next build session is Session A** (keystone join + Layer 1 + capacity + intake
+> negotiation). The pre-existing priority list below (Fitbit→Google Health cutover work, etc.) is
+> **unchanged and still valid** — the pivot removed the v2 items from the front of the queue, it did
+> not re-order anything else.
 
 **Priority order (updated 2026-07-18 after the session #29 daily_recs outage).** Items 1–3 were **deprioritized during the outage firefight** (profile 1's recs were failing — see the session #29 banner) but remain the active cycle; the Sept-2026 Fitbit shutdown deadline hasn't moved.
 
@@ -2362,38 +2364,196 @@ Each item below is self-contained — no other doc/session context should be nee
   verifier), so **audit-first**. Would also need a persistence seam (per-profile setting) that
   the ephemeral `recLengthChoice` deliberately is not.
 
-### NEXT DIRECTION — the "real personal trainer" brain (2026-07-24, session #34)
+### NEXT DIRECTION — the "PT Brain" (2026-07-25, session #35)
 
-> **⚠ DESIGN TARGET — NOT YET APPROVED FOR BUILD.** This replaces the Engine v2 arc as the forward
-> direction. It is a **v1-based** design: v1 already produces the depth and already coexists
-> multiple goals per session, so this **ADDS to v1** — it does not rebuild it in parallel (that
-> approach is explicitly rejected, §6 → "Rejected Approaches & Lessons — Engine v2 arc").
+> **⚠ DESIGN TARGET — APPROVED AS NORTH STAR; BUILD PROCEEDS ONE LAYER PER SESSION.**
+> The four-layer model below was designed in full on paper and approved. It replaces the Engine v2
+> arc as the forward direction. It is a **v1-based** design: v1 already produces the depth and
+> already coexists multiple goals per session, so this **ADDS to v1** — it does not rebuild it in
+> parallel (that approach is explicitly rejected, §6 → "Rejected Approaches & Lessons — Engine v2
+> arc", item 4).
+>
+> **Approval is of the DESIGN, not of a blanket build.** Each layer is still its own session, with
+> its generated goals/roadmaps **tested before proceeding** to the next, and each still gets an
+> audit-report-first pass per §0.2 where it touches data flow. **Roadmap/goal CREATION stays on the
+> Sonnet model (quality-critical), not Haiku** — the standing model-routing rule.
 
-**Method.** Design the **full model ON PAPER first**, then build **ONE layer at a time**, with each
-layer's generated goals/roadmaps **tested before proceeding** to the next. **Roadmap/goal CREATION
-uses the Sonnet model (quality-critical), not Haiku.**
+---
 
-**The four layers (a design target, not a build spec):**
+#### KEYSTONE JOIN — build FIRST, alongside Layer 1
 
-1. **Honest per-goal timeline.** A realistic duration estimated **per goal from its own nature**,
-   not a fixed 12-week block — hand PT ~4–8 weeks; 135→175 bench ~3–6 months; marathon ~1 year.
-2. **Living adaptation.** Timeline and arc-position flex with **real performance and real gaps, in
-   both directions**: faster than expected → pull the timeline in; slower → spread it; a month off
-   → step back and re-ramp.
-3. **Coexistence engine.** Classify goals as **COEXIST / SEQUENCE / GATE** against the athlete's
-   real weekly **time + recovery budget**, and **be honest when goals don't fit** — require picking
-   a lead rather than silently under-serving everything. (This framing is new; neither v1 nor v2
-   had it.)
-4. **Session depth.** **Keep v1's existing depth.** Port v2's hand-verified
-   `estimateSegmentWorkMinutes` into v1 as a **DISPLAY/CONTENT RECONCILER that enforces depth** —
-   explicitly **NOT** as the rejected 0.70 work-floor gate.
+Schedule items gain goal linkage:
 
-**IMMEDIATE NEXT STEP — an AUDIT, not a build.** Audit what **v1 already persists** for roadmaps,
-timelines and multi-goal scheduling — **Living Goal Roadmaps** (`profile_data.goals[].roadmap`:
-phases, `weekly_targets`, `completion_signals`, `duration_weeks`, `adaptation_log`), the **Macro
-Roadmap** (`profiles.roadmap_data`), and the **schedule system** (`profile_data.schedule` v2 —
-anchors / frequency targets / add-ons) — so the paper model is designed **against what exists**
-rather than from scratch. Per §0.2, anything touching data flow is audit-report-first anyway.
+- `profile_data.schedule.frequency_targets[i].goal_ids = ["<goal uuid>", …]`
+- the **same optional field** on `anchors[day][i]` and on `addons[i]`
+
+**Additive, jsonb-only, no DDL.** This is the join that lets roadmap phases inherit the schedule's
+real done-vs-needed status tracking — closing the "**no status tracking at all**" gap named in the
+Division-of-Labour paragraph of `CLAUDE.md` → "Goal Roadmap Emphasis in the Rec Prompt". Today the
+schedule knows `Upper Body Strength 0/1 [NEEDED]` and the roadmap knows what to emphasize, and
+nothing connects the two. Layer 2's earned-position math is computed from the log **through this
+join**, so it cannot ship without it.
+
+---
+
+#### LAYER 1 — HONEST PER-GOAL TIMELINE (+ aggressiveness dial)
+
+**New goal fields** (on `profile_data.goals[i]`):
+
+- `goal_type` — `rehab | strength_load | endurance | skill | habit | body_comp`
+- `demand` — `{ sessions_per_week, minutes_per_session, hard: bool, min_viable_sessions_per_week }`
+
+**New roadmap field** (on `goals[i].roadmap`):
+
+- `estimate` — `{ total_weeks_low, total_weeks_high, assumed_frequency, basis }`, where `basis` is
+  the honest, plain-language **"why this long."**
+
+**Phase count DERIVES from the estimate.** Near-term phases cover roughly the next **12–16 weeks**;
+horizon phases cover the remainder. **The fixed 3 near_term + 2 horizon skeleton is retired** — a
+6-week rehab goal gets ~2 near-term + 0 horizon; a 1-year goal gets 3+3. **Same generator, variable
+output.** The existing phase-card UI is unchanged — only the card count varies.
+
+**AGGRESSIVENESS DIAL.** `assumed_frequency` is user-settable at goal creation and editable later.
+Changing it **re-estimates the timeline and re-runs the capacity check**. It is **CODE-GATED BY
+`goal_type`**, not prompt-gated:
+
+| `goal_type` | dial |
+|---|---|
+| `rehab` | **LOCKED.** Timeline moves only on real healing evidence via Layer 2 — **never on effort.** Show the honest reason in the UI. |
+| `strength_load`, `endurance`, `body_comp` | available |
+| `skill` | in between — more training helps, but the ceiling is real |
+
+**This gate lives in code, not in a prompt.**
+
+---
+
+#### CAPACITY — global, on the profile, NOT per-goal
+
+```
+profile_data.capacity = { days_per_week, minutes_per_day, hard_sessions_per_week, protected_days[] }
+```
+
+**Two axes on purpose: time AND recoverable hard sessions.** CNS load is usually the binding
+constraint, not the clock. **Captured at first goal creation, not at onboarding.**
+
+---
+
+#### INTAKE NEGOTIATION — Layer 3's conflict check, moved forward to goal creation
+
+After intake answers, **before roadmap generation**, code sums the new goal's `demand` plus all
+existing goals' `demand` against `capacity`. If it doesn't fit, the AI surfaces the conflict and
+negotiates using **EXACTLY three levers**:
+
+1. **Go slower** — longer timeline at lower frequency.
+2. **Add capacity** — more days or longer sessions ("at 30 min/day you get one of these; at 50 you
+   get both").
+3. **Sequence** — one leads, the other holds at `min_viable`.
+
+**The resolution set is bounded to those three. The AI never freestyles another outcome.**
+
+---
+
+#### LAYER 2 — LIVING ADAPTATION (earned position, not elapsed time)
+
+**New persisted object** `goals[i].roadmap.arc_state` — additive jsonb, no DDL:
+
+```
+{ position_week, calendar_week, drift,
+  status: on_track|ahead|behind|stalled|re_ramping|paused,
+  re_ramp: {from_week, target_week, started_date} | null,
+  evidence: {qualifying_sessions_28d, expected_28d, longest_gap_days},
+  last_evaluated }
+```
+
+**CORE RULE: the calendar does not advance you; doing the work does.**
+
+- Week meets the phase's expected frequency → **+1**
+- Partial, ≥50% → **+0.5**
+- Zero → **0**, with decay after **2 consecutive zero weeks**
+- A gap of N weeks steps position **BACK** by `f(N, goal_type)` — endurance ~1:1, strength ~1 per 2
+  off, skill ~0, rehab fast — and sets `re_ramping`
+
+**`position_week` is COMPUTED IN CODE, deterministically, from the log via the keystone join. The
+AI never owns the number** — it narrates it and rewrites phase content when thresholds are crossed.
+This is the direct lesson of the rejected v2 work-floor (§6, item 1): **a model must not optimize
+its own progress metric.**
+
+**Timeline flexes both directions.** Sustained drift **> +2** → pull remaining phases in; **< −2** →
+spread them and say so in `timeline_note`. Actual frequency below `assumed_frequency` → stretch
+proportionally with an honest note.
+
+**Replaces time-elapsed `progress_pct`** with `position_week / total_weeks` (earned progress). Same
+progress-bar UI, different number, plus a small `re_ramping` status chip.
+
+---
+
+#### LAYER 3 — COEXISTENCE ENGINE
+
+> **⚠ DESIGN DISCUSSION STILL REQUIRED BEFORE ITS BUILD SESSION — do NOT blind-build.**
+
+Classifier ordering: **GATE → capacity sum (code) → COEXIST | SEQUENCE.**
+
+Verdict persisted at `profiles.roadmap_data.coexistence`:
+
+```
+{ verdict, capacity_used, lead_goal_id, maintenance_goal_ids[], gated[],
+  conflict_note, next_review, athlete_decision_required }
+```
+
+**SEQUENCE handoff fires at ~75% of the lead's arc.**
+
+The verdict **WRITES the schedule** (`times_per_week` from the allocation; maintenance goals at
+`min_viable`) — **but the athlete controls the spectrum**: set anchor days manually, let the AI fill
+fully, or anywhere in between. The AI adapts around anchors and pushes missed work later, extending
+the existing 7-day-preview carry-forward.
+
+**Open design items for that session: the write-vs-propose UX, and the spectrum control.**
+
+---
+
+#### LAYER 4 — SESSION DEPTH
+
+- Swap `estimateExerciseMinutes`'s role for the salvaged, hand-verified
+  `estimateSegmentWorkMinutes` (from `server/coachingRules.js` — §6 SALVAGE list).
+- Add a **depth floor expressed as CONTENT**: a minimum number of **distinct movements per
+  section**, scaled to section minutes and type (e.g. a 25-minute Main carries **≥4 movements**).
+  **Explicitly NOT a time-fill ratio** — that is the rejected 0.70 gate (§6, item 1).
+- **Prompt-side first.** `verifyRecTimeBudget` stays **warn-only**. Only add a regenerate loop if a
+  week of live use shows the prompt alone doesn't hold.
+- **New input: `arc_state` drives prescribed volume/intensity**, so a re-ramp visibly **is** a
+  re-ramp.
+
+---
+
+#### EXERCISE SELECTION — DECIDED
+
+The AI **continues to prescribe from its own knowledge as free text**. The wger catalog is **NOT**
+injected into the rec prompt and the model is **NOT** constrained to it — that is the same failure
+shape as the rejected 0.70 gate (§6, item 1): optimizing the measurable at the cost of session
+quality. **Improve exact/alias match rates and catalog top-ups for gaps instead.** Revisit only
+after Layer 1 ships.
+
+---
+
+#### TEST STRATEGY
+
+- **Profile 4 is the test bed**, with `engine_v2` flipped **OFF first**. This is a **flag flip
+  only** — **NOT** the full v2 decommission, which stays a separate parked task.
+- Profile 4 **keeps its cloned real training history** (needed to test Layer 2's gap/re-ramp math)
+  and gets **fresh-built goals under the new shape**.
+- **Profile 1 migrates later**, by deliberate roadmap regeneration once the shape is proven —
+  a **flagged decision**, since it overwrites roadmaps carrying real adaptation history.
+
+---
+
+#### BUILD ORDER
+
+| Session | Scope |
+|---|---|
+| **A** | Keystone join + Layer 1 + capacity + intake negotiation |
+| **B** | Layer 2 — **blocked on** the corrupted-phase-date repair (§9, E7) being confirmed clear |
+| **C** | Layer 3 — **design discussion first** |
+| **Layer 4** | Independent; slots in anywhere |
 
 ### Engine v2 — Planner / Autoregulator (parallel build, feature-flagged)
 

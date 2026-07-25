@@ -1000,13 +1000,17 @@ app.get("/api/profiles/:id", async function(req, res) {
     if (!rows || !rows.length) return res.json({ success: false, error: "Profile not found." });
     var p = rows[0];
     var pd = cleanProfileData(p.profile_data || {});
-    // Backfill stable goal ids; persist (fire-and-forget) only if any were added.
-    if (ensureGoalIds(pd)) {
+    // Backfill stable goal ids + normalise PT-Brain goal shape; persist
+    // (fire-and-forget) only if either actually changed something. Neither
+    // invents values — see ensureGoalDefaults' contract.
+    var idsAdded = ensureGoalIds(pd);
+    var shapeFixed = ensureGoalDefaults(pd);
+    if (idsAdded || shapeFixed) {
       fetch(SUPABASE_URL + "/rest/v1/profiles?id=eq." + req.params.id, {
         method: "PATCH",
         headers: sbHeaders("return=minimal"),
         body: JSON.stringify({ profile_data: pd }),
-      }).catch(function(e) { console.error("[Goals] ensureGoalIds persist failed:", e.message); });
+      }).catch(function(e) { console.error("[Goals] ensureGoalIds/Defaults persist failed:", e.message); });
     }
     res.json({ success: true, profile: Object.assign({
       id: p.id, name: p.name, avatar_color: p.avatar_color,
@@ -1024,6 +1028,12 @@ app.post("/api/profiles", async function(req, res) {
     if (!body.name || !body.pin || String(body.pin).length !== 4) {
       return res.status(400).json({ success: false, error: "Name and 4-digit PIN required." });
     }
+    // A4 (session #35): profile CREATION previously ran neither of these, so an
+    // onboarding-generated goals[] arrived with no ids and an unnormalised shape
+    // until the first GET/PATCH happened to heal it. Cheapest place to fix it.
+    var newPd = cleanProfileData(body.profile_data || {});
+    ensureGoalIds(newPd);
+    ensureGoalDefaults(newPd);
     var r = await fetch(SUPABASE_URL + "/rest/v1/profiles", {
       method: "POST",
       headers: sbHeaders(),
@@ -1031,7 +1041,7 @@ app.post("/api/profiles", async function(req, res) {
         name: body.name,
         pin: hashPin(body.pin),
         avatar_color: body.avatar_color || "#22c97a",
-        profile_data: cleanProfileData(body.profile_data || {}),
+        profile_data: newPd,
       }),
     });
     var data = await r.json();
@@ -1114,7 +1124,8 @@ app.patch("/api/profiles/:id", async function(req, res) {
         }
       }
       var cleanedMerged = cleanProfileData(merged);
-      ensureGoalIds(cleanedMerged); // newly added goals always get a stable id
+      ensureGoalIds(cleanedMerged);      // newly added goals always get a stable id
+      ensureGoalDefaults(cleanedMerged); // and a well-formed (never invented) PT-Brain shape
       updatePayload.profile_data = cleanedMerged;
     }
 
@@ -2690,6 +2701,14 @@ var CALL_TYPE_MODEL = {
   goal_roadmap_generate: MODEL_SONNET,
   macro_roadmap_generate: MODEL_SONNET,
   coach_chat:        MODEL_SONNET,
+  // PT Brain Layer 1 (session #35). All three are quality-critical authoring
+  // calls on the goal-creation path, so they follow the standing rule that
+  // roadmap/goal CREATION runs on Sonnet. NOTE: goal_timeline_estimate is
+  // deliberately NOT named `goal_estimate` — that key was retired as dead in
+  // session #31 (ROADMAP §9) and must not be resurrected.
+  goal_plan_setup:        MODEL_SONNET,
+  goal_timeline_estimate: MODEL_SONNET,
+  goal_negotiate:         MODEL_SONNET,
   // Cheap tasks — Haiku
   format_notes:      MODEL_HAIKU,
   goal_intake_questions: MODEL_HAIKU,
@@ -5449,6 +5468,376 @@ function ensureGoalIds(profileData) {
   return changed;
 }
 
+// ── PT BRAIN · LAYER 1 — goal shape, capacity, phase-plan derivation ─────────
+// See ROADMAP §7 "NEXT DIRECTION — the 'PT Brain'". Everything here is CODE-
+// OWNED on purpose: the model authors words, never the numbers it is judged on.
+// All storage is additive jsonb on existing columns — no DDL anywhere.
+
+var GOAL_TYPES = ["rehab", "strength_load", "endurance", "skill", "habit", "body_comp"];
+
+// The aggressiveness dial is gated HERE, in code, not in a prompt. rehab is
+// locked because tissue heals on its own timeline — training more often does not
+// shorten it, and the timeline may only move on real healing evidence (Layer 2).
+var DIAL_LOCKED_TYPES = ["rehab"];
+
+var NEAR_TERM_MAX_WEEKS = 16;   // near-term phases cover ~the next 12-16 weeks
+var PHASE_MIN_WEEKS = 2;
+var PHASE_MAX_WEEKS = 6;
+var HORIZON_BLOCK_WEEKS = 12;   // horizon phases are roughly quarters
+var MAX_NEAR_TERM_PHASES = 4;
+var MAX_HORIZON_PHASES = 3;
+
+// A goal the athlete has stopped or finished is not consuming this week, so it
+// must not force a capacity negotiation. Approved decision, session #35.
+var CAPACITY_EXCLUDED_STATUSES = ["DONE", "PAUSED"];
+
+// Shape NORMALIZER, deliberately not a value inventor. It guarantees goal_type
+// is one of the enum values or null, and that a PRESENT demand is well-formed —
+// it never fabricates a demand for a goal the athlete has not specced. Writing
+// real defaults onto every bare goal would immediately blow the capacity sum
+// with numbers nobody entered; null-safety at the read sites is the right
+// defence. Mirrors ensureGoalIds' contract: mutates in place, returns `changed`.
+function ensureGoalDefaults(profileData) {
+  if (!profileData || typeof profileData !== "object" || !Array.isArray(profileData.goals)) return false;
+  var changed = false;
+  profileData.goals.forEach(function(g) {
+    if (!g || typeof g !== "object") return;
+
+    // goal_type: enum or null. An unrecognised value is nulled, never guessed.
+    if (g.goal_type !== undefined && g.goal_type !== null) {
+      if (GOAL_TYPES.indexOf(String(g.goal_type)) < 0) { g.goal_type = null; changed = true; }
+    }
+
+    // demand: normalise ONLY when present.
+    if (g.demand === undefined || g.demand === null) return;
+    if (typeof g.demand !== "object" || Array.isArray(g.demand)) { g.demand = null; changed = true; return; }
+
+    var d = g.demand;
+    var spw = numOrNull(d.sessions_per_week);
+    var mps = numOrNull(d.minutes_per_session);
+    if (d.sessions_per_week !== spw) { d.sessions_per_week = spw; changed = true; }
+    if (d.minutes_per_session !== mps) { d.minutes_per_session = mps; changed = true; }
+    var hard = !!d.hard;
+    if (d.hard !== hard) { d.hard = hard; changed = true; }
+
+    // min_viable is DERIVED from a value already present, never invented from
+    // nothing: absent + a known sessions_per_week => equal to it (the honest
+    // reading of "the least that still makes progress" when unspecified).
+    var mv = numOrNull(d.min_viable_sessions_per_week);
+    if (mv == null && spw != null) mv = spw;
+    if (mv != null && spw != null && mv > spw) mv = spw;
+    if (mv != null && mv < 1) mv = 1;
+    if (d.min_viable_sessions_per_week !== mv) { d.min_viable_sessions_per_week = mv; changed = true; }
+  });
+  return changed;
+}
+
+function clampNum(v, lo, hi, fallback) {
+  var n = numOrNull(v);
+  if (n == null) return fallback;
+  if (n < lo) return lo;
+  if (n > hi) return hi;
+  return Math.round(n);
+}
+
+// Normalise an AI-proposed / client-supplied demand into the stored shape.
+function normalizeDemand(raw) {
+  if (!raw || typeof raw !== "object") return null;
+  var spw = clampNum(raw.sessions_per_week, 1, 7, null);
+  var mps = clampNum(raw.minutes_per_session, 5, 180, null);
+  if (spw == null || mps == null) return null;
+  var mv = clampNum(raw.min_viable_sessions_per_week, 1, spw, spw);
+  return {
+    sessions_per_week: spw,
+    minutes_per_session: mps,
+    hard: !!raw.hard,
+    min_viable_sessions_per_week: mv,
+  };
+}
+
+function normalizeCapacity(raw) {
+  if (!raw || typeof raw !== "object") return null;
+  var days = clampNum(raw.days_per_week, 1, 7, null);
+  var mins = clampNum(raw.minutes_per_day, 10, 300, null);
+  if (days == null || mins == null) return null;
+  var hard = clampNum(raw.hard_sessions_per_week, 0, 7, Math.min(days, 3));
+  var prot = Array.isArray(raw.protected_days)
+    ? raw.protected_days.map(function(d) { return String(d).slice(0, 3).toLowerCase(); })
+        .filter(function(d) { return ["mon","tue","wed","thu","fri","sat","sun"].indexOf(d) >= 0; })
+    : [];
+  return { days_per_week: days, minutes_per_day: mins, hard_sessions_per_week: hard, protected_days: prot };
+}
+
+// THE FIT CHECK — pure arithmetic, run in code. The model is never given the
+// sum to compute; it is given the answer and asked to explain it.
+//
+// TWO AXES, deliberately: minutes AND recoverable hard sessions. Session COUNT
+// vs days_per_week is NOT an axis — v1 routinely stacks several goals into one
+// session, so "6 sessions across 4 days" is normal, not a conflict.
+//
+// opts.overrideGoalId + opts.overrideDemand let the caller test a not-yet-saved
+// demand for one goal without mutating anything.
+function computeCapacityFit(profileData, opts) {
+  opts = opts || {};
+  var cap = normalizeCapacity(profileData && profileData.capacity);
+  var goals = (profileData && Array.isArray(profileData.goals)) ? profileData.goals : [];
+  var counted = [], excluded = [];
+  var minutesNeeded = 0, hardNeeded = 0;
+
+  goals.forEach(function(g) {
+    if (!g || typeof g !== "object") return;
+    var status = String(g.status || "").toUpperCase();
+    if (CAPACITY_EXCLUDED_STATUSES.indexOf(status) >= 0) {
+      excluded.push({ goal_id: g.id || null, title: g.title || "", reason: "status:" + status });
+      return;
+    }
+    var d = (opts.overrideGoalId && g.id === opts.overrideGoalId && opts.overrideDemand)
+      ? opts.overrideDemand : g.demand;
+    d = normalizeDemand(d);
+    if (!d) {
+      excluded.push({ goal_id: g.id || null, title: g.title || "", reason: "no_demand" });
+      return;
+    }
+    var mins = d.sessions_per_week * d.minutes_per_session;
+    minutesNeeded += mins;
+    if (d.hard) hardNeeded += d.sessions_per_week;
+    counted.push({
+      goal_id: g.id || null, title: g.title || "",
+      sessions_per_week: d.sessions_per_week, minutes_per_session: d.minutes_per_session,
+      hard: d.hard, minutes: mins,
+    });
+  });
+
+  if (!cap) {
+    // No capacity captured yet — we cannot judge, so we do not block. The Step 3
+    // screen captures it before this ever matters for a real goal.
+    return {
+      has_capacity: false, fits: true, minutes_needed: minutesNeeded, minutes_available: null,
+      hard_needed: hardNeeded, hard_available: null, minutes_over: 0, hard_over: 0,
+      counted: counted, excluded: excluded, capacity: null,
+    };
+  }
+
+  var minutesAvailable = cap.days_per_week * cap.minutes_per_day;
+  var hardAvailable = cap.hard_sessions_per_week;
+  var minutesOver = Math.max(0, minutesNeeded - minutesAvailable);
+  var hardOver = Math.max(0, hardNeeded - hardAvailable);
+  return {
+    has_capacity: true,
+    fits: minutesOver === 0 && hardOver === 0,
+    minutes_needed: minutesNeeded, minutes_available: minutesAvailable,
+    hard_needed: hardNeeded, hard_available: hardAvailable,
+    minutes_over: minutesOver, hard_over: hardOver,
+    counted: counted, excluded: excluded, capacity: cap,
+  };
+}
+
+function formatMonthRange(startWeek, endWeek) {
+  var m1 = Math.max(1, Math.floor((startWeek - 1) / 4.345) + 1);
+  var m2 = Math.max(m1, Math.ceil(endWeek / 4.345));
+  return m1 === m2 ? ("month " + m1) : ("months " + m1 + "–" + m2);
+}
+
+// PHASE-PLAN DERIVATION — the retirement of the fixed "3 near_term + 2 horizon"
+// skeleton AND of the integer 4-6 duration_weeks clamp. Same generator, variable
+// output: the COUNT and each phase's week budget are computed here, from the
+// estimate, and handed to the model as fixed slots to fill.
+//
+// Every budget this produces lands in [PHASE_MIN_WEEKS, PHASE_MAX_WEEKS] by
+// construction for nearSpan 1..16 (verified at every integer).
+//
+// Worked targets (ROADMAP §7): 6-wk rehab -> 2 near [3,3] + 0 horizon;
+// 3-6mo strength -> 3 near [6,5,5] + 1 horizon; 1yr endurance -> 3 near + 3 horizon.
+function derivePhasePlan(estimate) {
+  var lo = numOrNull(estimate && estimate.total_weeks_low);
+  var hi = numOrNull(estimate && estimate.total_weeks_high);
+  if (lo != null && lo <= 0) lo = null;
+  if (hi != null && hi <= 0) hi = null;
+  if (lo == null && hi == null) return null;      // caller falls back to legacy shape
+  if (lo == null) lo = hi;
+  if (hi == null) hi = lo;
+  if (hi < lo) { var swap = lo; lo = hi; hi = swap; }
+
+  var W = Math.max(1, Math.round((lo + hi) / 2));
+  var nearSpan = Math.min(W, NEAR_TERM_MAX_WEEKS);
+
+  var nearCount = Math.round(nearSpan / 5);
+  if (nearCount < 1) nearCount = 1;
+  if (nearCount > MAX_NEAR_TERM_PHASES) nearCount = MAX_NEAR_TERM_PHASES;
+  // A goal of 5+ weeks always gets at least two phases — one undifferentiated
+  // block is not a plan. (This is what turns a 6-week rehab into [3,3].)
+  if (nearSpan >= 5 && nearCount < 2) nearCount = 2;
+
+  var base = Math.floor(nearSpan / nearCount);
+  var rem = nearSpan - base * nearCount;
+  var near = [];
+  for (var i = 0; i < nearCount; i++) near.push(base + (i < rem ? 1 : 0));  // remainder front-loaded
+
+  var horizon = [];
+  var remainder = W - nearSpan;
+  if (remainder > 0) {
+    var hCount = Math.round(remainder / HORIZON_BLOCK_WEEKS);
+    if (hCount < 1) hCount = 1;
+    if (hCount > MAX_HORIZON_PHASES) hCount = MAX_HORIZON_PHASES;
+    var hBase = Math.floor(remainder / hCount);
+    var hRem = remainder - hBase * hCount;
+    var cursor = nearSpan;
+    for (var j = 0; j < hCount; j++) {
+      var span = hBase + (j < hRem ? 1 : 0);
+      var startW = cursor + 1, endW = cursor + span;
+      horizon.push({ start_week: startW, end_week: endW, estimated_range: formatMonthRange(startW, endW) });
+      cursor = endW;
+    }
+  }
+
+  return {
+    total_weeks: W, near_term_weeks: near, near_term_count: near.length,
+    horizon: horizon, horizon_count: horizon.length, source: "estimate",
+  };
+}
+
+// Resolve the plan a generation should build to. A goal with a real estimate
+// gets the derived variable-count plan. A LEGACY goal (no estimate — profile 1's
+// three roadmaps, profile 4's clones) keeps its existing shape so a regenerate
+// never silently reshapes a roadmap carrying real adaptation history. A goal
+// with neither falls back to the historic 3+2, with estimated_range left for the
+// model to author exactly as it always did.
+function resolvePhasePlanForGoal(goal) {
+  var derived = derivePhasePlan(goal && goal.estimate);
+  if (derived) return derived;
+
+  var phases = (goal && goal.roadmap && Array.isArray(goal.roadmap.phases)) ? goal.roadmap.phases : null;
+  if (phases && phases.length) {
+    var near = phases.filter(function(p) { return p && p.type === "near_term"; });
+    var hor = phases.filter(function(p) { return p && p.type === "horizon"; });
+    if (near.length) {
+      return {
+        total_weeks: null,
+        // NOT clamped to [PHASE_MIN,PHASE_MAX]: a legacy phase may legitimately
+        // be longer (profile 1's "Strength & Integration" is 8 weeks), and
+        // regenerating must never silently shrink it.
+        near_term_weeks: near.map(function(p) { return numOrNull(p.duration_weeks) || 5; }),
+        near_term_count: near.length,
+        horizon: hor.map(function() { return { start_week: null, end_week: null, estimated_range: null }; }),
+        horizon_count: hor.length,
+        source: "existing_roadmap",
+      };
+    }
+  }
+  return {
+    total_weeks: null, near_term_weeks: [5, 5, 5], near_term_count: 3,
+    horizon: [{ start_week: null, end_week: null, estimated_range: null },
+              { start_week: null, end_week: null, estimated_range: null }],
+    horizon_count: 2, source: "legacy_default",
+  };
+}
+
+// Render the code-owned plan into the two prompt blocks the generator obeys.
+function renderPhasePlanForPrompt(plan, estimate) {
+  var L = [];
+  if (estimate && (estimate.total_weeks_low != null || estimate.total_weeks_high != null)) {
+    L.push("TIMELINE ESTIMATE (computed, authoritative — your timeline_range and timeline_note MUST agree with this):");
+    L.push("  " + estimate.total_weeks_low + "–" + estimate.total_weeks_high + " weeks at " +
+      (estimate.assumed_frequency != null ? estimate.assumed_frequency : "?") + " session(s)/week.");
+    if (estimate.basis) L.push("  Basis: " + estimate.basis);
+    L.push("");
+  }
+  L.push("PHASE PLAN (code-derived — fill these EXACT slots, in this order):");
+  plan.near_term_weeks.forEach(function(w, i) {
+    L.push("  near_term " + (i + 1) + " — duration_weeks: " + w);
+  });
+  if (!plan.horizon_count) {
+    L.push("  (no horizon phases — the whole goal sits inside the near term)");
+  } else {
+    plan.horizon.forEach(function(h, i) {
+      L.push("  horizon " + (i + 1) + " — estimated_range: " +
+        (h.estimated_range ? ("\"" + h.estimated_range + "\" (copy verbatim)") : "AUTHOR YOUR OWN"));
+    });
+  }
+  return L.join("\n") + "\n";
+}
+
+// Enforce the code-owned plan on what the model actually returned. Structure
+// only — names, weekly_targets, emphasis and completion_signals are never
+// touched. Mutates `phases` in place; returns a list of corrections for logging.
+//
+// When the model returns FEWER near-term phases than the plan asked for, the
+// budgets are redistributed across the phases it did return rather than
+// fabricating an empty phase — so the near-term span still sums to the derived
+// total and the timeline stays honest.
+function applyPhasePlanToPhases(phases, plan) {
+  if (!Array.isArray(phases) || !plan) return [];
+  var fixes = [];
+  var pick = function(t) { return phases.filter(function(p) { return p && p.type === t; }); };
+
+  var hor = pick("horizon");
+  if (hor.length > plan.horizon_count) {
+    var dropH = hor.slice(plan.horizon_count);
+    dropH.forEach(function(h) { var i = phases.indexOf(h); if (i >= 0) phases.splice(i, 1); });
+    fixes.push("dropped " + dropH.length + " extra horizon phase(s) (plan has " + plan.horizon_count + ")");
+    hor = pick("horizon");
+  }
+
+  var near = pick("near_term");
+  if (near.length > plan.near_term_count) {
+    var dropN = near.slice(plan.near_term_count);
+    dropN.forEach(function(p) { var i = phases.indexOf(p); if (i >= 0) phases.splice(i, 1); });
+    fixes.push("dropped " + dropN.length + " extra near_term phase(s) (plan has " + plan.near_term_count + ")");
+    near = pick("near_term");
+  }
+
+  var plannedSpan = plan.near_term_weeks.reduce(function(a, b) { return a + b; }, 0);
+  if (near.length) {
+    var budgets;
+    if (near.length === plan.near_term_count) {
+      budgets = plan.near_term_weeks.slice();
+    } else {
+      var base = Math.floor(plannedSpan / near.length);
+      var rem = plannedSpan - base * near.length;
+      budgets = [];
+      for (var i = 0; i < near.length; i++) budgets.push(base + (i < rem ? 1 : 0));
+      fixes.push("model returned " + near.length + "/" + plan.near_term_count +
+        " near_term phases — budgets redistributed to preserve the " + plannedSpan + "-week span");
+    }
+    near.forEach(function(p, idx) {
+      if (numOrNull(p.duration_weeks) !== budgets[idx]) {
+        fixes.push("'" + (p.name || "?") + "' duration_weeks " + p.duration_weeks + "→" + budgets[idx]);
+        p.duration_weeks = budgets[idx];
+      }
+    });
+  }
+
+  hor.forEach(function(h, idx) {
+    var slot = plan.horizon[idx];
+    if (slot && slot.estimated_range && h.estimated_range !== slot.estimated_range) {
+      fixes.push("horizon " + (idx + 1) + " estimated_range → " + slot.estimated_range);
+      h.estimated_range = slot.estimated_range;
+    }
+  });
+
+  return fixes;
+}
+
+// Deterministic invariant, run AFTER an adapt. Prompt rules are probabilistic —
+// the enforceSingleCurrentPhase precedent. A reshape here would silently convert
+// a variable-count roadmap back into 3+2 (or vice versa) and destroy the plan the
+// timeline was derived from. Scoped EXACTLY to the COUNT: content edits within
+// phases (names, targets, emphasis, signals, dates, status) pass freely.
+function enforcePhaseShape(prevPhases, nextPhases) {
+  var count = function(arr, t) {
+    return (Array.isArray(arr) ? arr : []).filter(function(p) { return p && p.type === t; }).length;
+  };
+  var pn = count(prevPhases, "near_term"), ph = count(prevPhases, "horizon");
+  var nn = count(nextPhases, "near_term"), nh = count(nextPhases, "horizon");
+  if (pn !== nn || ph !== nh) {
+    var e = new Error("Adapt reshaped the roadmap (near_term " + pn + "→" + nn +
+      ", horizon " + ph + "→" + nh + ") — rejected, roadmap left unchanged");
+    e.code = "phase_shape_changed";
+    throw e;
+  }
+  return true;
+}
+
 // Find a goal by id in profile_data.goals[]. Returns { goal, index }; throws a
 // 404-tagged error when absent (route catch maps e.status → HTTP status).
 function findGoalById(profileData, goalId) {
@@ -5719,7 +6108,16 @@ async function backfillMissingEmphasis(goalTitle, phases) {
 async function adaptGoalRoadmap(goal, notes, workouts, trigger, goalExCtx) {
   var today = new Date().toISOString().slice(0, 10);
   var workoutsStr = (workouts || []).map(function(w) { return w.date + ": " + (w.type || "Workout"); }).join("\n");
-  var sys = "You are a fitness coach adapting an athlete's training roadmap for a specific goal based on their recent training and (optionally) a check-in. Return ONLY valid JSON with the same shape as the existing roadmap: { timeline_range: string, timeline_note: string, date_confidence: 'high'|'medium'|'low', phases: [...] }. Preserve the structure: 3 near_term phases (type: 'near_term', each with name, duration_weeks, weekly_targets, emphasis and completion_signals — never drop name or duration_weeks) followed by 2 horizon phases (type: 'horizon', milestone-based). duration_weeks MUST be a single INTEGER (e.g. 5), never a string and never a range like \"4-6\" — phases are sequenced on a calendar from it. " +
+  // PT Brain (session #35): the phase COUNT is no longer fixed at 3+2 — it is
+  // derived per goal from its honest timeline estimate, so an adapt must not
+  // reshape it. enforcePhaseShape() below backs this rule up in code.
+  var prevNear = (goal.roadmap && Array.isArray(goal.roadmap.phases))
+    ? goal.roadmap.phases.filter(function(p) { return p && p.type === "near_term"; }).length : 0;
+  var prevHor = (goal.roadmap && Array.isArray(goal.roadmap.phases))
+    ? goal.roadmap.phases.filter(function(p) { return p && p.type === "horizon"; }).length : 0;
+  var sys = "You are a fitness coach adapting an athlete's training roadmap for a specific goal based on their recent training and (optionally) a check-in. Return ONLY valid JSON with the same shape as the existing roadmap: { timeline_range: string, timeline_note: string, date_confidence: 'high'|'medium'|'low', phases: [...] }. " +
+    "Preserve THIS roadmap's existing structure EXACTLY: return the SAME number of near_term phases (" + prevNear + ") and the SAME number of horizon phases (" + prevHor + "), in the same order, as the roadmap you were given. Some roadmaps have 3 near_term + 2 horizon; others have a different count that was computed for that goal's real timeline. The count is NOT yours to change — never add, drop, merge or split a phase. " +
+    "Each near_term phase keeps name, duration_weeks, weekly_targets, emphasis and completion_signals — never drop name or duration_weeks. Each horizon phase keeps milestone and estimated_range. duration_weeks MUST be a single INTEGER (e.g. 5), never a string and never a range like \"4-6\" — phases are sequenced on a calendar from it. " +
     "Advance phase status (upcoming -> current -> complete) when completion_signals are met. Keep phases that are still valid — only change what the recent training or check-in justifies. Be concise.\n\n" +
     "ALSO run two checks that are NOT completion tests:\n" +
     "1. DATE ROLLOVER: if a phase's end_date has passed, it must not remain \"current\" — mark it \"complete\" and make the next phase \"current\", even if its completion_signals were never met. Exactly one near_term phase may be \"current\".\n" +
@@ -5741,6 +6139,11 @@ async function adaptGoalRoadmap(goal, notes, workouts, trigger, goalExCtx) {
   var text = await callAISystem(sys, userMsg, 2000, MODEL_SONNET);
   var parsed = parseAIJson(text);
   if (!parsed || !Array.isArray(parsed.phases)) throw new Error("AI returned an invalid adapted roadmap");
+  // PT Brain (session #35): deterministic shape invariant, scoped EXACTLY to the
+  // near_term/horizon COUNT. Content edits inside phases pass freely; only a
+  // reshape throws, which leaves the stored roadmap untouched (last_adapted_at
+  // only advances on success, so the weekly trigger retries on the next save).
+  enforcePhaseShape(goal.roadmap && goal.roadmap.phases, parsed.phases);
   assignNearTermDates(parsed.phases, today); // fills only missing dates; preserves existing
   // Keep emphasis[] in step with the adapted targets. The adapt prompt now asks
   // for it, but the adapt model is Haiku and may omit it — and a roadmap that
@@ -5845,6 +6248,290 @@ async function maybeAdaptAllRoadmaps(profileId) {
   });
   console.log("[Roadmap] weekly adapted " + dueGoals.length + " goal(s)" + (macroChanged ? " + macro" : "") + " for profile " + profileId);
 }
+
+// ── PT BRAIN · LAYER 1 ROUTES — plan-setup → estimate → negotiate ────────────
+// Three SHORT Sonnet calls, deliberately kept as separate requests rather than
+// folded into POST /roadmap. That endpoint is already a non-streamed 2500-token
+// Sonnet generation sitting near Render's ~25s ceiling; chaining another model
+// call inside it would push it over. The client already chains sequential
+// requests here (generatePersonalizedRoadmap), so this is the same pattern.
+
+var PLAN_SETUP_SYS =
+  "You are a strength & conditioning coach reading an athlete's goal and their intake answers, and proposing HOW they will train for it. " +
+  "Return ONLY valid JSON: { \"goal_type\": string, \"sessions_per_week\": integer, \"minutes_per_session\": integer, \"hard\": boolean, \"min_viable_sessions_per_week\": integer, \"rationale\": string }.\n" +
+  "goal_type MUST be exactly one of: rehab, strength_load, endurance, skill, habit, body_comp.\n" +
+  "  rehab = recovering from or managing an injury; the constraint is tissue healing.\n" +
+  "  strength_load = moving more weight or building muscle.\n" +
+  "  endurance = aerobic or muscular stamina over time/distance.\n" +
+  "  skill = a technical or sport skill where practice quality dominates.\n" +
+  "  habit = consistency itself is the goal (a daily practice).\n" +
+  "  body_comp = weight or body-composition change.\n" +
+  "sessions_per_week (1-7) is the frequency this goal realistically needs — not the maximum the athlete could do.\n" +
+  "minutes_per_session (5-180) is the time this goal needs PER session, not their whole session length.\n" +
+  "hard = true only if a typical session leaves them genuinely fatigued and competes for recovery (heavy lifting, hard intervals, sparring). Mobility, rehab drills, easy aerobic work and short daily habits are NOT hard.\n" +
+  "min_viable_sessions_per_week is the least that still makes real progress — never more than sessions_per_week.\n" +
+  "rationale is ONE short sentence the athlete will read. Be concrete, never generic.";
+
+var ESTIMATE_SYS =
+  "You are a strength & conditioning coach giving an athlete an HONEST timeline for one goal. " +
+  "Return ONLY valid JSON: { \"total_weeks_low\": integer, \"total_weeks_high\": integer, \"basis\": string }.\n" +
+  "Estimate from the GOAL'S OWN NATURE and the athlete's real starting point — never from a fixed block length. " +
+  "Hand/finger PT is often 4-8 weeks. A 40lb bench increase is often 3-6 months. A first marathon is often a year. A black belt is years. Do not compress a slow goal to look encouraging.\n" +
+  "The range must be REAL: widen it when uncertain rather than narrowing it. total_weeks_high must be >= total_weeks_low.\n" +
+  "basis is the plain-language 'why this long' the athlete reads — 2 sentences maximum, naming the actual limiter (tissue healing time, rate of strength adaptation, aerobic base building, skill reps required) and the assumed frequency. No hedging, no motivational filler.\n" +
+  "If the assumed frequency is low for the goal, say so in basis and let the range reflect it.";
+
+var NEGOTIATE_SYS =
+  "You are an honest strength coach telling an athlete their new goal does not fit the training week they actually have. " +
+  "You are given the ARITHMETIC — it is already computed and correct. Never recalculate it, never soften it, never suggest the numbers might work out anyway.\n" +
+  "Return ONLY valid JSON: { \"conflict_note\": string, \"options\": [ { \"lever\": string, \"label\": string, \"detail\": string } ] }.\n" +
+  "conflict_note: 1-2 sentences naming the specific shortfall in the athlete's own terms.\n" +
+  "You MUST return EXACTLY THREE options, with lever values exactly \"slower\", \"capacity\", \"sequence\", IN THAT ORDER. No other option is permitted. Do NOT invent a fourth path, do NOT suggest dropping a goal, do NOT suggest they 'just try it and see'.\n" +
+  "  slower  — same goal, lower weekly frequency, honestly longer timeline. State the new frequency and roughly how much longer it takes.\n" +
+  "  capacity — what would have to change, using the concrete math you were given (e.g. 'at 30 min/day you fit one of these; at 50 you fit both').\n" +
+  "  sequence — this goal starts at its minimum viable frequency while another goal leads. Name which goal leads and roughly when this one takes over.\n" +
+  "label is a short button-sized phrase (max 6 words). detail is 1-2 plain sentences. Never write numbers that contradict the arithmetic you were given.";
+
+// Clamp an AI plan-setup proposal into the stored shape. A goal_type the model
+// got wrong becomes null rather than a guess — the UI then requires a pick.
+function normalizePlanSetup(parsed, goal) {
+  parsed = parsed || {};
+  var gt = GOAL_TYPES.indexOf(String(parsed.goal_type)) >= 0 ? String(parsed.goal_type) : null;
+  var demand = normalizeDemand({
+    sessions_per_week: parsed.sessions_per_week,
+    minutes_per_session: parsed.minutes_per_session,
+    hard: parsed.hard,
+    min_viable_sessions_per_week: parsed.min_viable_sessions_per_week,
+  });
+  return {
+    goal_type: gt,
+    demand: demand,
+    assumed_frequency: demand ? demand.sessions_per_week : null,
+    rationale: parsed.rationale ? String(parsed.rationale).slice(0, 400) : "",
+    dial_locked: gt != null && DIAL_LOCKED_TYPES.indexOf(gt) >= 0,
+    goal_title: goal && goal.title ? goal.title : "",
+  };
+}
+
+// STEP 3 — propose goal_type + demand from the goal and its intake answers.
+// Persists the proposal so the dial lock can be enforced server-side on the
+// next call (a locked goal_type ignores any client-supplied frequency change).
+app.post("/api/profiles/:id/goals/:goalId/plan-setup", async function(req, res) {
+  try {
+    var loaded = await loadProfileWithGoals(req.params.id);
+    var found = findGoalById(loaded.profileData, req.params.goalId);
+    var goal = found.goal;
+
+    var answers = (req.body && Array.isArray(req.body.answers) && req.body.answers.length)
+      ? req.body.answers : (Array.isArray(goal.intake_answers) ? goal.intake_answers : []);
+    var ansStr = answers.map(function(a) {
+      return (a && (a.question || a.key) ? (a.question || a.key) : "?") + ": " + ((a && a.answer) || "");
+    }).join("\n");
+    var ctx = (loaded.profileData.ai_prompt_context || "").substring(0, 600);
+
+    var userMsg = "GOAL: " + (goal.title || "Untitled") + "\n" +
+      "DESCRIPTION: " + (goal.description || "none") + "\n\n" +
+      "INTAKE ANSWERS:\n" + (ansStr || "none") + "\n\n" +
+      "ATHLETE PROFILE:\n" + (ctx || "none") + "\n\n" +
+      "Propose how this athlete should train for THIS goal.";
+
+    var text = await callAISystem(PLAN_SETUP_SYS, userMsg, 500, modelForCallType("goal_plan_setup"));
+    var proposal = normalizePlanSetup(parseAIJson(text), goal);
+
+    // Persist the proposal so /estimate has a server-side value to enforce the
+    // dial lock against. The athlete can still change either on the Step 3
+    // screen — except the frequency of a dial-locked goal_type.
+    if (proposal.goal_type) goal.goal_type = proposal.goal_type;
+    if (proposal.demand) goal.demand = proposal.demand;
+    await saveGoalToProfile(req.params.id, loaded.profileData, found.index, goal);
+
+    res.json({
+      success: true,
+      proposal: proposal,
+      goal_types: GOAL_TYPES,
+      dial_locked_types: DIAL_LOCKED_TYPES,
+      capacity: normalizeCapacity(loaded.profileData.capacity),
+      capacity_needed: !normalizeCapacity(loaded.profileData.capacity),
+    });
+  } catch (e) {
+    console.error("[PTBrain] plan-setup error:", e.message);
+    res.status(e.status || 500).json({ success: false, error: e.message });
+  }
+});
+
+// STEP 3 CONTINUE — persist the confirmed shape, estimate the honest timeline,
+// and run the CODE fit check. Also the single entry point for every negotiation
+// lever and for a later dial change: the caller just re-posts modified inputs.
+app.post("/api/profiles/:id/goals/:goalId/estimate", async function(req, res) {
+  try {
+    var body = req.body || {};
+    var loaded = await loadProfileWithGoals(req.params.id);
+    var found = findGoalById(loaded.profileData, req.params.goalId);
+    var goal = found.goal;
+
+    // 1. goal_type (client may change it on the Step 3 screen).
+    var gt = GOAL_TYPES.indexOf(String(body.goal_type)) >= 0 ? String(body.goal_type)
+      : (GOAL_TYPES.indexOf(String(goal.goal_type)) >= 0 ? String(goal.goal_type) : null);
+    if (!gt) return res.status(400).json({ success: false, error: "goal_type required (one of " + GOAL_TYPES.join(", ") + ")" });
+
+    // 2. demand — normalised, then the SERVER-AUTHORITATIVE dial lock. For a
+    //    locked goal_type the athlete cannot move the frequency at all: any
+    //    incoming sessions_per_week is discarded in favour of the stored one.
+    //    The client mirrors this in the UI, but this is the enforcement.
+    var demand = normalizeDemand(body.demand) || normalizeDemand(goal.demand);
+    if (!demand) return res.status(400).json({ success: false, error: "demand required" });
+    var dialLocked = DIAL_LOCKED_TYPES.indexOf(gt) >= 0;
+    var dialOverridden = false;
+    if (dialLocked) {
+      var storedFreq = (goal.demand && numOrNull(goal.demand.sessions_per_week)) || null;
+      if (storedFreq != null && storedFreq !== demand.sessions_per_week) {
+        demand.sessions_per_week = storedFreq;
+        if (demand.min_viable_sessions_per_week > storedFreq) demand.min_viable_sessions_per_week = storedFreq;
+        dialOverridden = true;
+      }
+    }
+
+    // 3. capacity — only ever written from athlete-confirmed control values.
+    if (body.capacity) {
+      var cap = normalizeCapacity(body.capacity);
+      if (cap) loaded.profileData.capacity = cap;
+    }
+
+    goal.goal_type = gt;
+    goal.demand = demand;
+
+    // 4. The honest estimate (Sonnet, short).
+    var ctx2 = (loaded.profileData.ai_prompt_context || "").substring(0, 500);
+    var ansStr2 = (Array.isArray(goal.intake_answers) ? goal.intake_answers : [])
+      .map(function(a) { return (a.question || a.key || "?") + ": " + (a.answer || ""); }).join("\n").slice(0, 1500);
+    var eUser = "GOAL: " + (goal.title || "Untitled") + "\n" +
+      "GOAL TYPE: " + gt + "\n" +
+      "DESCRIPTION: " + (goal.description || "none") + "\n" +
+      "PLANNED FREQUENCY: " + demand.sessions_per_week + " session(s)/week, " + demand.minutes_per_session + " min each" +
+      (demand.hard ? " (hard sessions)" : "") + "\n\n" +
+      "INTAKE ANSWERS:\n" + (ansStr2 || "none") + "\n\n" +
+      "ATHLETE PROFILE:\n" + (ctx2 || "none") + "\n\n" +
+      "How long will this honestly take?";
+    var eText = await callAISystem(ESTIMATE_SYS, eUser, 400, modelForCallType("goal_timeline_estimate"));
+    var eParsed = parseAIJson(eText) || {};
+    var lo = clampNum(eParsed.total_weeks_low, 1, 520, null);
+    var hi = clampNum(eParsed.total_weeks_high, 1, 520, null);
+    if (lo == null && hi == null) throw new Error("AI returned no usable timeline estimate");
+    if (lo == null) lo = hi;
+    if (hi == null) hi = lo;
+    if (hi < lo) { var sw = lo; lo = hi; hi = sw; }
+
+    var basis = eParsed.basis ? String(eParsed.basis).slice(0, 600) : "";
+    // A negotiation lever can attach an honest note explaining the resolution.
+    if (body.basis_note) basis = (basis ? basis + " " : "") + String(body.basis_note).slice(0, 300);
+
+    goal.estimate = {
+      total_weeks_low: lo, total_weeks_high: hi,
+      assumed_frequency: demand.sessions_per_week,
+      basis: basis,
+    };
+
+    await saveGoalToProfile(req.params.id, loaded.profileData, found.index, goal);
+
+    // 5. CODE fit check + the derived plan (returned so the UI can show the shape
+    //    before generation, and so tests can assert budgets sum to the estimate).
+    var fit = computeCapacityFit(loaded.profileData, {});
+    var plan = derivePhasePlan(goal.estimate);
+
+    if (body.lever) console.log("[PTBrain] negotiation lever '" + body.lever + "' applied to goal " + goal.id);
+
+    res.json({
+      success: true, estimate: goal.estimate, phase_plan: plan, fit: fit,
+      goal_type: gt, demand: demand, dial_locked: dialLocked, dial_override_applied: dialOverridden,
+      capacity: normalizeCapacity(loaded.profileData.capacity),
+    });
+  } catch (e) {
+    console.error("[PTBrain] estimate error:", e.message);
+    res.status(e.status || 500).json({ success: false, error: e.message });
+  }
+});
+
+// STEP 4 — only reached when the code fit check fails. The model writes the
+// framing; the resolution set is BOUNDED to three levers and validated here.
+app.post("/api/profiles/:id/goals/:goalId/negotiate", async function(req, res) {
+  try {
+    var loaded = await loadProfileWithGoals(req.params.id);
+    var found = findGoalById(loaded.profileData, req.params.goalId);
+    var goal = found.goal;
+    var fit = computeCapacityFit(loaded.profileData, {});
+    if (fit.fits) return res.json({ success: true, fits: true, fit: fit });
+
+    var others = fit.counted.filter(function(c) { return c.goal_id !== goal.id; });
+    var mv = (goal.demand && goal.demand.min_viable_sessions_per_week) || 1;
+    var userMsg = "THE ARITHMETIC (already computed — do not recalculate):\n" +
+      "  Weekly time available: " + fit.minutes_available + " min (" + fit.capacity.days_per_week + " days x " + fit.capacity.minutes_per_day + " min)\n" +
+      "  Weekly time committed: " + fit.minutes_needed + " min" + (fit.minutes_over > 0 ? ("  → OVER BY " + fit.minutes_over + " min") : "  → fits") + "\n" +
+      "  Hard sessions available: " + fit.hard_available + "/week\n" +
+      "  Hard sessions committed: " + fit.hard_needed + "/week" + (fit.hard_over > 0 ? ("  → OVER BY " + fit.hard_over) : "  → fits") + "\n\n" +
+      "THE NEW GOAL: " + (goal.title || "Untitled") + " (" + (goal.goal_type || "?") + ") — " +
+        (goal.demand ? (goal.demand.sessions_per_week + "x/week, " + goal.demand.minutes_per_session + " min, min viable " + mv + "x/week") : "no demand") + "\n" +
+      (goal.estimate ? ("CURRENT ESTIMATE: " + goal.estimate.total_weeks_low + "-" + goal.estimate.total_weeks_high + " weeks at " + goal.estimate.assumed_frequency + "x/week\n") : "") + "\n" +
+      "ALREADY COMMITTED GOALS:\n" +
+      (others.length ? others.map(function(c) {
+        return "  - " + c.title + ": " + c.sessions_per_week + "x/week, " + c.minutes_per_session + " min" + (c.hard ? " (hard)" : "");
+      }).join("\n") : "  (none)") + "\n\n" +
+      "Explain the conflict and give exactly the three permitted options.";
+
+    var text = await callAISystem(NEGOTIATE_SYS, userMsg, 700, modelForCallType("goal_negotiate"));
+    var parsed = parseAIJson(text) || {};
+
+    // BOUNDED RESOLUTION SET — validated in code. The model can never emit a
+    // fourth outcome; a malformed response falls back to code-authored levers
+    // rather than showing the athlete whatever it happened to return.
+    var REQUIRED = ["slower", "capacity", "sequence"];
+    var opts = Array.isArray(parsed.options) ? parsed.options : [];
+    var byLever = {};
+    opts.forEach(function(o) { if (o && REQUIRED.indexOf(String(o.lever)) >= 0) byLever[String(o.lever)] = o; });
+    var valid = REQUIRED.every(function(k) { return byLever[k]; });
+
+    var lowerFreq = Math.max(mv, Math.max(1, ((goal.demand && goal.demand.sessions_per_week) || 2) - 1));
+    var fallbackDetail = {
+      slower: "Train this " + lowerFreq + "x/week instead. It fits your week, and the timeline stretches honestly to match.",
+      capacity: "You would need about " + Math.ceil((fit.minutes_needed) / fit.capacity.days_per_week) +
+        " min/day across " + fit.capacity.days_per_week + " days (you have " + fit.capacity.minutes_per_day + " min/day)" +
+        (fit.hard_over > 0 ? (", and " + fit.hard_needed + " hard sessions/week rather than " + fit.hard_available + ".") : "."),
+      sequence: "Start this goal at its minimum (" + mv + "x/week) while " +
+        (others.length ? others[0].title : "your current goal") + " leads, then swap the lead over.",
+    };
+    var options = REQUIRED.map(function(k) {
+      var o = valid ? byLever[k] : null;
+      return {
+        lever: k,
+        label: (o && o.label) ? String(o.label).slice(0, 60)
+          : (k === "slower" ? "Go slower" : k === "capacity" ? "Make more room" : "Sequence them"),
+        detail: (o && o.detail) ? String(o.detail).slice(0, 400) : fallbackDetail[k],
+      };
+    });
+    if (!valid) console.warn("[PTBrain] negotiate: model returned an invalid lever set — using code-authored fallback");
+
+    res.json({
+      success: true, fits: false, fit: fit,
+      conflict_note: (parsed.conflict_note ? String(parsed.conflict_note).slice(0, 400)
+        : ("This goal needs " + fit.minutes_needed + " min/week but you have " + fit.minutes_available + ".")),
+      options: options,
+      model_levers_valid: valid,
+      suggested: { slower_frequency: lowerFreq, min_viable: mv },
+    });
+  } catch (e) {
+    console.error("[PTBrain] negotiate error:", e.message);
+    res.status(e.status || 500).json({ success: false, error: e.message });
+  }
+});
+
+// Read-only capacity + fit snapshot for the Profile-tab card.
+app.get("/api/profiles/:id/capacity", async function(req, res) {
+  try {
+    var loaded = await loadProfileWithGoals(req.params.id);
+    res.json({ success: true, capacity: normalizeCapacity(loaded.profileData.capacity), fit: computeCapacityFit(loaded.profileData, {}) });
+  } catch (e) {
+    res.status(e.status || 500).json({ success: false, error: e.message });
+  }
+});
 
 // GET intake questions for a goal — generates them (Haiku) on first call.
 app.get("/api/profiles/:id/goals/:goalId/intake", async function(req, res) {
@@ -5952,20 +6639,48 @@ async function generateGoalRoadmapForGoal(profileId, goalId, mode) {
   var goalExCtx = await getGoalExerciseContext(profileId, extractGoalKeywords(goal.title), 90);
   var fullEx = await getFullExerciseContext(profileId, 60);
 
-  var sys = "You are an elite fitness coach building a personalized training roadmap. Return ONLY valid JSON matching this exact shape: { timeline_range: string (e.g. '3-6 months' or '8-15 years'), timeline_note: string (1-2 sentences: realistic range for this goal type based on evidence, narrowed by their specific starting point and training frequency), date_confidence: 'high'|'medium'|'low', phases: [...] }. Use 3 near-term phases then 2 horizon phases. Use EXACTLY these JSON keys — do not rename or substitute them (\"title\" and \"duration\" are WRONG):\nnear_term phase: { \"name\": \"Foundation & Awareness\", \"type\": \"near_term\", \"duration_weeks\": 5, \"weekly_targets\": [\"2-3 specific actionable items\"], \"emphasis\": [\"2-4 short imperative phrases\"], \"completion_signals\": [\"2-3 measurable achievements\"], \"status\": \"current\" }\nhorizon phase: { \"name\": \"Full Activity Return\", \"type\": \"horizon\", \"milestone\": \"what defines this\", \"estimated_range\": \"9-14 months\", \"status\": \"upcoming\" }\nname and duration_weeks are REQUIRED on every near_term phase. duration_weeks must be an INTEGER (4-6), never a string like \"Weeks 1-5\". Each near_term phase must ALSO include emphasis: an array of 2-4 short imperative phrases (3-12 words) naming what the athlete's sessions should EMPHASIZE in that phase. emphasis is consumed by the daily recommendation engine, so: NEVER include session counts or weekly frequencies in it (a separate scheduling system owns those), ALWAYS preserve load, weight, rep-scheme and hold-duration language (\"weighted glute bridges 10-20 lbs\", \"bodyweight squats toward 3x20\"), and EXCLUDE anything a workout generator cannot act on (nutrition, journaling, subjective observations, life-context reminders). Use evidence-based timelines — strength research, weight loss rates, skill acquisition data. Widen the range rather than narrow it when uncertain. Be concise — each phase description maximum 2 sentences. The first near_term phase status is 'current', rest are 'upcoming'.";
+  // PT Brain Layer 1 (session #35): the phase COUNT and each phase's week budget
+  // are CODE-DERIVED from the goal's honest timeline estimate and handed to the
+  // model as fixed slots. This retires both the fixed "3 near-term then 2
+  // horizon" skeleton and the integer 4-6 duration_weeks clamp — the clamp IS
+  // the derived budget now. A legacy goal with no estimate keeps its existing
+  // shape so a regenerate never reshapes a roadmap carrying real history.
+  var phasePlan = resolvePhasePlanForGoal(goal);
+  var planBlock = renderPhasePlanForPrompt(phasePlan, goal.estimate);
+
+  var sys = "You are an elite fitness coach building a personalized training roadmap. Return ONLY valid JSON matching this exact shape: { timeline_range: string (e.g. '3-6 months' or '8-15 years'), timeline_note: string (1-2 sentences: realistic range for this goal type based on evidence, narrowed by their specific starting point and training frequency), date_confidence: 'high'|'medium'|'low', phases: [...] }. " +
+    "Use EXACTLY the phase plan given in the PHASE PLAN block of the user message: that many near_term phases, in that order, each with the duration_weeks stated there, then that many horizon phases. Do NOT add, drop, merge, split or re-length any phase — the shape is not yours to choose. " +
+    (phasePlan.horizon_count === 0
+      ? "This goal has NO horizon phases: return near_term phases ONLY. The whole goal sits inside the near term. "
+      : "") +
+    "Use EXACTLY these JSON keys — do not rename or substitute them (\"title\" and \"duration\" are WRONG):\nnear_term phase: { \"name\": \"Foundation & Awareness\", \"type\": \"near_term\", \"duration_weeks\": 5, \"weekly_targets\": [\"2-3 specific actionable items\"], \"emphasis\": [\"2-4 short imperative phrases\"], \"completion_signals\": [\"2-3 measurable achievements\"], \"status\": \"current\" }\nhorizon phase: { \"name\": \"Full Activity Return\", \"type\": \"horizon\", \"milestone\": \"what defines this\", \"estimated_range\": \"9-14 months\", \"status\": \"upcoming\" }\nname and duration_weeks are REQUIRED on every near_term phase. duration_weeks is SUPPLIED per phase in the PHASE PLAN block — copy it verbatim as an integer, never choose your own value. Where a horizon phase's estimated_range is supplied, copy it verbatim; where it says AUTHOR YOUR OWN, write your own range string. " +
+    "Where a TIMELINE ESTIMATE block is present it states the honest total for this goal — your timeline_range and timeline_note MUST agree with it and must never state a different total. Each near_term phase must ALSO include emphasis: an array of 2-4 short imperative phrases (3-12 words) naming what the athlete's sessions should EMPHASIZE in that phase. emphasis is consumed by the daily recommendation engine, so: NEVER include session counts or weekly frequencies in it (a separate scheduling system owns those), ALWAYS preserve load, weight, rep-scheme and hold-duration language (\"weighted glute bridges 10-20 lbs\", \"bodyweight squats toward 3x20\"), and EXCLUDE anything a workout generator cannot act on (nutrition, journaling, subjective observations, life-context reminders). Use evidence-based timelines — strength research, weight loss rates, skill acquisition data. Widen the range rather than narrow it when uncertain. Be concise — each phase description maximum 2 sentences. The first near_term phase status is 'current', rest are 'upcoming'.";
   var userMsg = "GOAL: " + (goal.title || "Untitled") + " (" + (goal.type || "general") + ")\n" +
-    "DESCRIPTION: " + (goal.description || "none") + "\n\n" +
+    "DESCRIPTION: " + (goal.description || "none") + "\n" +
+    (goal.goal_type ? ("GOAL TYPE: " + goal.goal_type + "\n") : "") +
+    (goal.demand ? ("PLANNED DEMAND: " + goal.demand.sessions_per_week + " session(s)/week, " +
+      goal.demand.minutes_per_session + " min each" + (goal.demand.hard ? " (hard)" : "") +
+      ", minimum viable " + goal.demand.min_viable_sessions_per_week + "/week\n") : "") + "\n" +
     "INTAKE ANSWERS:\n" + (answersStr || "none") + "\n\n" +
     "EXERCISE CONTEXT FOR THIS GOAL:\n" + JSON.stringify(goalExCtx) + "\n\n" +
     "OVERALL TRAINING PICTURE:\n" + JSON.stringify(fullEx) + "\n\n" +
     "RECENT WORKOUTS (last 20):\n" + (workoutsStr || "none") + "\n\n" +
     "ATHLETE PROFILE:\n" + (ctx || "none") + "\n\n" +
     "COACHING BRIEF:\n" + (brief || "none") + "\n\n" +
+    planBlock + "\n" +
     "Today's date: " + today + "\n\nBuild a realistic, phased roadmap for this specific goal.";
 
   var text = await callAISystem(sys, userMsg, 2500, MODEL_SONNET);
   var parsed = parseAIJson(text);
   if (!parsed || !Array.isArray(parsed.phases)) throw new Error("AI returned an invalid roadmap");
+  // PT Brain: the plan is code-owned, so a model that ignored a slot count or
+  // substituted its own duration_weeks / estimated_range is corrected here
+  // rather than trusted. Content (names, targets, emphasis, signals) is left
+  // exactly as authored.
+  var planFixes = applyPhasePlanToPhases(parsed.phases, phasePlan);
+  if (planFixes.length) {
+    console.warn("[Roadmap] phase plan enforced for '" + (goal.title || "?") + "': " + planFixes.join("; "));
+  }
   assignNearTermDates(parsed.phases, today);
   // emphasis[] is requested natively by the generation prompt now; backfill any
   // phase the model omitted so the daily-rec block is never missing it.
@@ -5981,11 +6696,18 @@ async function generateGoalRoadmapForGoal(profileId, goalId, mode) {
 
   var now = new Date().toISOString();
   var prevRoadmap = goal.roadmap;
+  // PT Brain two-field estimate shape (approved session #35): goal.estimate is
+  // the CURRENT estimate the dial reads/writes; roadmap.estimate is a COPY taken
+  // at generation — what THIS roadmap was actually built from. They diverge only
+  // between a dial change and its regeneration completing, which is exactly how
+  // the UI can honestly say "your roadmap is behind your current settings".
+  var builtFrom = goal.estimate ? JSON.parse(JSON.stringify(goal.estimate)) : null;
   if (mode === "regenerate" && prevRoadmap) {
     goal.roadmap = {
       timeline_range: parsed.timeline_range || null,
       timeline_note: parsed.timeline_note || null,
       date_confidence: parsed.date_confidence || null,
+      estimate: builtFrom,
       phases: parsed.phases,
       generated_at: now,
       version: (prevRoadmap.version || 1) + 1,
@@ -6000,6 +6722,7 @@ async function generateGoalRoadmapForGoal(profileId, goalId, mode) {
       timeline_range: parsed.timeline_range || null,
       timeline_note: parsed.timeline_note || null,
       date_confidence: parsed.date_confidence || null,
+      estimate: builtFrom,
       phases: parsed.phases,
       generated_at: now,
       version: 1,

@@ -379,6 +379,40 @@ input[type=range]{width:100%;accent-color:var(--accent)}
 #goal-roadmap-view .grv-back{background:transparent;border:none;color:var(--accent-ember);font-size:14px;font-weight:600;cursor:pointer;padding:4px 0;font-family:'Inter',sans-serif;flex-shrink:0}
 #goal-roadmap-view .grv-title{font-size:17px;font-weight:700;color:var(--text-primary);text-align:center;flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 #goal-roadmap-view .grv-content{flex:1;overflow-y:auto;padding:16px 16px 40px;-webkit-overflow-scrolling:touch}
+/* PT Brain Layer 1 (session #35) — Step 3 plan setup, Step 4 negotiation, and
+   the estimate/dial header. All scoped to #goal-roadmap-view; no global class. */
+#goal-roadmap-view .grv-field{margin-bottom:14px}
+#goal-roadmap-view .grv-flabel{font-size:12px;font-weight:600;color:var(--text-primary);margin-bottom:6px}
+#goal-roadmap-view .grv-note{font-size:11px;color:var(--text-muted);line-height:1.6;margin-top:6px}
+#goal-roadmap-view .grv-note-lock{color:var(--color-caution)}
+#goal-roadmap-view .grv-lock{font-size:9px;letter-spacing:.08em;font-weight:700;color:var(--color-caution);background:var(--bg-surface-2);padding:2px 6px;border-radius:9999px;margin-left:6px}
+#goal-roadmap-view .grv-pills{display:flex;flex-wrap:wrap;gap:6px}
+#goal-roadmap-view .grv-pill{background:var(--bg-surface-2);border:1px solid var(--border-subtle);color:var(--text-muted);border-radius:9999px;padding:7px 13px;font-size:12px;cursor:pointer;font-family:'Inter',sans-serif}
+#goal-roadmap-view .grv-pill.on{background:var(--accent-ember);border-color:var(--accent-ember);color:#fff;font-weight:600}
+#goal-roadmap-view .grv-stepper{display:inline-flex;align-items:center;gap:10px;background:var(--bg-surface-2);border-radius:9999px;padding:4px 6px}
+#goal-roadmap-view .grv-stepper button{background:transparent;border:none;color:var(--accent-ember);font-size:17px;font-weight:700;width:28px;height:28px;cursor:pointer;line-height:1}
+#goal-roadmap-view .grv-stepper-val{font-size:15px;font-weight:700;color:var(--text-primary);min-width:22px;text-align:center;font-family:'Fraunces',serif}
+#goal-roadmap-view .grv-select{background:var(--bg-surface-2);border:1px solid var(--border-subtle);color:var(--text-primary);border-radius:10px;padding:8px 10px;font-size:13px;font-family:'Inter',sans-serif;width:auto}
+#goal-roadmap-view .grv-check{display:flex;align-items:center;gap:8px;cursor:pointer;font-size:13px;color:var(--text-primary)}
+#goal-roadmap-view .grv-check input{width:15px;height:15px;accent-color:var(--accent-ember);flex-shrink:0}
+#goal-roadmap-view .grv-primary{width:100%;height:44px;margin-top:8px;background:var(--accent-ember);color:#fff;border:none;border-radius:14px;font-size:14px;font-weight:600;cursor:pointer;font-family:'Inter',sans-serif}
+#goal-roadmap-view .grv-cap{background:var(--bg-surface-1);border:1px solid var(--border-subtle);border-radius:14px;padding:14px;margin:4px 0 14px}
+#goal-roadmap-view .grv-caprow{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:8px;font-size:13px;color:var(--text-primary)}
+#goal-roadmap-view .grv-fit{background:var(--bg-surface-2);border-radius:12px;padding:10px 12px;margin-bottom:12px}
+#goal-roadmap-view .grv-fit div{display:flex;justify-content:space-between;gap:10px;font-size:12px;color:var(--text-muted);padding:3px 0}
+#goal-roadmap-view .grv-fit b{color:var(--text-primary);font-family:'JetBrains Mono',monospace;font-size:11px}
+#goal-roadmap-view .grv-lever{background:var(--bg-surface-1);border:1px solid var(--border-subtle);border-radius:14px;padding:13px 15px;margin-bottom:9px;cursor:pointer}
+#goal-roadmap-view .grv-lever:hover{border-color:var(--accent-ember)}
+#goal-roadmap-view .grv-lever-label{font-size:14px;font-weight:700;color:var(--accent-ember);margin-bottom:4px}
+#goal-roadmap-view .grv-lever-detail{font-size:12px;color:var(--text-muted);line-height:1.6}
+#goal-roadmap-view .grv-est{background:var(--bg-surface-1);border:1px solid var(--border-subtle);border-radius:16px;padding:14px 16px;margin-bottom:14px}
+#goal-roadmap-view .grv-est-legacy{font-size:12px;color:var(--text-muted);font-style:italic;line-height:1.6}
+#goal-roadmap-view .grv-est-top{display:flex;align-items:baseline;gap:8px;flex-wrap:wrap}
+#goal-roadmap-view .grv-est-range{font-family:'Fraunces',serif;font-size:20px;font-weight:700;color:var(--text-primary)}
+#goal-roadmap-view .grv-est-freq{font-size:12px;color:var(--text-muted)}
+#goal-roadmap-view .grv-est-basis{font-size:12px;color:var(--text-muted);line-height:1.65;margin-top:6px}
+#goal-roadmap-view .grv-est-stale{font-size:11px;color:var(--color-caution);line-height:1.6;margin-top:8px;background:var(--bg-surface-2);border-radius:10px;padding:8px 10px}
+#goal-roadmap-view .grv-est-dial{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-top:12px}
 /* ── COACH CHAT — persistent AI conversation (scoped to #chat-view) ──────── */
 #chat-view{position:fixed;inset:0;z-index:48;background:var(--bg-base);flex-direction:column;overflow:hidden}
 #chat-view.cv-open{animation:cvSlideIn .26s ease}
@@ -497,6 +531,29 @@ input[type=range]{width:100%;accent-color:var(--accent)}
 #week-preview-section .wp-skel{display:flex;align-items:center;gap:8px;color:var(--text-muted);font-size:13px;padding:6px 8px}
 /* Training-blueprint collapse toggle (Schedule card) */
 #schedule-card #schedule-grid.bp-collapsed{display:none}
+/* PT Brain · capacity card (session #35), scoped to #capacity-card */
+#capacity-card{display:none}
+#capacity-card .cap-head{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:10px}
+#capacity-card .cap-edit{background:transparent;border:none;color:var(--accent-ember);font-size:12px;font-weight:600;cursor:pointer;font-family:'Inter',sans-serif}
+#capacity-card .cap-row{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:5px 0;font-size:13px;color:var(--text-muted)}
+#capacity-card .cap-row b{color:var(--text-primary);font-family:'JetBrains Mono',monospace;font-size:12px}
+#capacity-card .cap-erow{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:6px 0;font-size:13px;color:var(--text-primary)}
+#capacity-card .cap-stepper{display:inline-flex;align-items:center;gap:9px;background:var(--bg-surface-2);border-radius:9999px;padding:3px 6px}
+#capacity-card .cap-stepper button{background:transparent;border:none;color:var(--accent-ember);font-size:16px;font-weight:700;width:26px;height:26px;cursor:pointer;line-height:1}
+#capacity-card .cap-stepper b{font-size:14px;color:var(--text-primary);min-width:20px;text-align:center;font-family:'Fraunces',serif}
+#capacity-card .cap-select{background:var(--bg-surface-2);border:1px solid var(--border-subtle);color:var(--text-primary);border-radius:10px;padding:7px 9px;font-size:13px;font-family:'Inter',sans-serif;width:auto}
+#capacity-card .cap-pills{display:flex;flex-wrap:wrap;gap:5px}
+#capacity-card .cap-pill{background:transparent;border:1px solid var(--border-subtle);color:var(--text-muted);border-radius:9999px;padding:5px 11px;font-size:11px;cursor:pointer;font-family:'Inter',sans-serif}
+#capacity-card .cap-pill.on{background:var(--accent-ember);border-color:var(--accent-ember);color:#fff;font-weight:600}
+#capacity-card .cap-readout{margin-top:10px;background:var(--bg-surface-2);border-radius:12px;padding:9px 11px;font-size:12px;color:var(--text-primary);line-height:1.6}
+#capacity-card .cap-readout.over{color:var(--color-caution)}
+#capacity-card .cap-note{font-size:11px;color:var(--text-muted);line-height:1.6;margin-top:6px}
+/* Keystone join · goal picker (session #35), scoped to #schedule-card */
+#schedule-card .sched-goals{margin-top:10px;padding-top:9px;border-top:1px solid var(--border-subtle)}
+#schedule-card .sched-goals-label{font-size:11px;color:var(--text-muted);margin-bottom:6px}
+#schedule-card .sched-goals-pills{display:flex;flex-wrap:wrap;gap:5px}
+#schedule-card .sched-goal-pill{background:transparent;border:1px solid var(--border-subtle);color:var(--text-muted);border-radius:9999px;padding:5px 10px;font-size:11px;cursor:pointer;font-family:'Inter',sans-serif;max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+#schedule-card .sched-goal-pill.on{background:var(--accent-cornerman);border-color:var(--accent-cornerman);color:#fff;font-weight:600}
 #schedule-card .bp-toggle-row{display:flex;align-items:center;justify-content:space-between;gap:10px;cursor:pointer;padding:2px 0}
 #schedule-card .bp-toggle-label{font-size:12px;text-transform:uppercase;letter-spacing:0.06em;color:var(--text-muted);font-weight:600}
 #schedule-card .bp-toggle-edit{font-size:12px;font-weight:600;color:var(--accent-ember);white-space:nowrap}
@@ -1009,6 +1066,7 @@ input[type=range]{width:100%;accent-color:var(--accent)}
 
     <!-- GROUP (b) — coaching / AI. Focus Override moved here (2026-07-16):
          it's an AI-behavior control, same family as Coaching Brief/Roadmap. -->
+    <div class="card" id="capacity-card"></div>
     <div class="card" id="focus-override-card"></div>
     <div id="coaching-brief-card"></div>
 
@@ -6290,6 +6348,121 @@ function renderProfileGoals() {
 // of goal ids) — reset from the stored value on every render.
 var foScopeSelection = 'all';
 
+// ── PT BRAIN · CAPACITY CARD (Profile tab) ───────────────────────────────────
+// Global, on the profile — NOT per-goal. Two axes on purpose: time AND
+// recoverable hard sessions, because CNS load is usually the binding constraint,
+// not the clock. Captured inline at first goal creation; edited here afterwards.
+var capEditMode = false;
+var capDraft = null;
+var capFit = null;
+
+function renderCapacityCard() {
+  var card = document.getElementById('capacity-card');
+  if (!card) return;
+  var cap = (currentProfileData && currentProfileData.capacity) || null;
+  if (!cap && !capEditMode) {
+    // Nothing captured yet and nothing to edit — the card would be noise. It
+    // appears the moment a goal's intake captures capacity.
+    card.style.display = 'none';
+    return;
+  }
+  card.style.display = 'block';
+  var c = capEditMode ? (capDraft || Object.assign({}, cap)) : cap;
+  var h = '<div class="cap-head"><p class="clabel" style="margin:0">TRAINING CAPACITY</p>' +
+    '<button class="cap-edit" onclick="capToggleEdit()">' + (capEditMode ? '✓ Done' : '✏️ Edit') + '</button></div>';
+
+  if (!capEditMode) {
+    var mins = (c.days_per_week || 0) * (c.minutes_per_day || 0);
+    h += '<div class="cap-row"><span>' + (c.days_per_week || 0) + ' days × ' + (c.minutes_per_day || 0) + ' min</span><b>' + mins + ' min/week</b></div>';
+    h += '<div class="cap-row"><span>Hard sessions you can recover from</span><b>' + (c.hard_sessions_per_week || 0) + '/week</b></div>';
+    if ((c.protected_days || []).length) {
+      h += '<div class="cap-row"><span>Protected days</span><b>' + (c.protected_days || []).map(function(d) { return d.charAt(0).toUpperCase() + d.slice(1); }).join(', ') + '</b></div>';
+    }
+    if (capFit && capFit.has_capacity) {
+      var over = capFit.minutes_over > 0 || capFit.hard_over > 0;
+      h += '<div class="cap-readout' + (over ? ' over' : '') + '">Committed: ' + capFit.minutes_needed + ' of ' + capFit.minutes_available +
+        ' min/week · ' + capFit.hard_needed + ' of ' + capFit.hard_available + ' hard sessions' + (over ? ' — over capacity' : '') + '</div>';
+      if (capFit.counted && capFit.counted.length) {
+        h += '<div class="cap-note">From: ' + capFit.counted.map(function(x) { return escHtml(x.title); }).join(' · ') + '</div>';
+      }
+      var noDemand = (capFit.excluded || []).filter(function(x) { return x.reason === 'no_demand'; }).length;
+      if (noDemand) h += '<div class="cap-note">' + noDemand + ' goal' + (noDemand === 1 ? '' : 's') + ' not yet planned — they don’t count toward this until their roadmap is built.</div>';
+    }
+  } else {
+    h += '<div class="cap-erow"><span>Days per week</span>' + capStepperHtml('capStep(\'days_per_week\',', c.days_per_week) + '</div>';
+    h += '<div class="cap-erow"><span>Minutes per day</span><select class="cap-select" onchange="capSet(\'minutes_per_day\',this.value)">';
+    var opts = [20, 30, 45, 60, 75, 90, 120];
+    if (opts.indexOf(c.minutes_per_day) < 0 && c.minutes_per_day) opts.push(c.minutes_per_day);
+    opts.sort(function(a, b) { return a - b; });
+    for (var i = 0; i < opts.length; i++) h += '<option value="' + opts[i] + '"' + (opts[i] === c.minutes_per_day ? ' selected' : '') + '>' + opts[i] + ' min</option>';
+    h += '</select></div>';
+    h += '<div class="cap-erow"><span>Hard sessions per week</span>' + capStepperHtml('capStep(\'hard_sessions_per_week\',', c.hard_sessions_per_week) + '</div>';
+    h += '<div class="cap-note" style="margin-top:2px">Sessions that leave you genuinely tired.</div>';
+    h += '<div style="font-size:12px;font-weight:600;color:var(--text-primary);margin:10px 0 6px">Protected days</div><div class="cap-pills">';
+    for (var d = 0; d < GRV_DAYS.length; d++) {
+      var day = GRV_DAYS[d];
+      var on = (c.protected_days || []).indexOf(day) >= 0;
+      h += '<button type="button" class="cap-pill' + (on ? ' on' : '') + '" onclick="capToggleDay(\'' + day + '\')">' + day.charAt(0).toUpperCase() + day.slice(1) + '</button>';
+    }
+    h += '</div>';
+  }
+  card.innerHTML = h;
+}
+
+function capStepperHtml(fnPrefix, value) {
+  return '<span class="cap-stepper"><button type="button" onclick="' + fnPrefix + '-1)">&minus;</button>' +
+    '<b>' + (value == null ? '—' : value) + '</b>' +
+    '<button type="button" onclick="' + fnPrefix + '1)">+</button></span>';
+}
+function capToggleEdit() {
+  if (capEditMode) { capEditMode = false; capPersist(); return; }
+  capDraft = Object.assign({ days_per_week: 4, minutes_per_day: 45, hard_sessions_per_week: 2, protected_days: [] },
+    (currentProfileData && currentProfileData.capacity) || {});
+  if (!Array.isArray(capDraft.protected_days)) capDraft.protected_days = [];
+  capEditMode = true;
+  renderCapacityCard();
+}
+function capSet(field, value) { if (capDraft) { capDraft[field] = parseInt(value, 10) || capDraft[field]; renderCapacityCard(); } }
+function capStep(field, delta) {
+  if (!capDraft) return;
+  var lo = field === 'hard_sessions_per_week' ? 0 : 1;
+  var v = (capDraft[field] || 0) + delta;
+  if (v < lo) v = lo; if (v > 7) v = 7;
+  capDraft[field] = v; renderCapacityCard();
+}
+function capToggleDay(day) {
+  if (!capDraft) return;
+  var arr = capDraft.protected_days || (capDraft.protected_days = []);
+  var i = arr.indexOf(day);
+  if (i >= 0) arr.splice(i, 1); else arr.push(day);
+  renderCapacityCard();
+}
+function capPersist() {
+  if (!capDraft) { renderCapacityCard(); return; }
+  if (currentProfileData) currentProfileData.capacity = capDraft;
+  try { localStorage.setItem('ac_profile_data', JSON.stringify(currentProfileData)); } catch (e) {}
+  var body = { profile_data: { capacity: capDraft } };   // PATCH merges at the top level
+  capDraft = null;
+  renderCapacityCard();
+  if (!currentProfileId) return;
+  fetch('/api/profiles/' + currentProfileId, {
+    method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body)
+  }).then(function() { loadCapacityFit(); })
+    .catch(function(e) { console.warn('[Capacity] save skipped:', e && e.message); });
+}
+function loadCapacityFit() {
+  if (!currentProfileId) return;
+  fetch('/api/profiles/' + currentProfileId + '/capacity')
+    .then(function(r) { return r.json(); })
+    .then(function(d) {
+      if (!d || !d.success) return;
+      capFit = d.fit || null;
+      if (d.capacity && currentProfileData) currentProfileData.capacity = d.capacity;
+      renderCapacityCard();
+    })
+    .catch(function() { /* non-fatal — the card just shows no readout */ });
+}
+
 function renderFocusOverrideCard() {
   var el = document.getElementById('focus-override-card');
   if (!el) return;
@@ -6459,6 +6632,8 @@ function foPersist(fo, reason) {
   if (currentProfileData) currentProfileData.focus_override = fo;
   try { localStorage.setItem('ac_profile_data', JSON.stringify(currentProfileData)); } catch (e) {}
   renderFocusOverrideCard();
+  renderCapacityCard();
+  loadCapacityFit();
   if (currentProfileId) {
     fetch('/api/profiles/' + currentProfileId, {
       method: 'PATCH',
@@ -6478,6 +6653,23 @@ var grvGoalId = null;          // id of the goal currently open in the drill-dow
 var grvUserStatement = '';     // free-text statement from step 1
 var grvIntakeQuestions = [];   // questions returned by GET .../intake
 var grvRetryFn = null;         // retry handler for error states
+// PT Brain Layer 1 (session #35) — Step 3 (plan setup) + Step 4 (negotiation).
+var grvPendingAnswers = null;  // intake answers held while Step 3/4 run
+var grvPlan = null;            // { goal_type, demand, assumed_frequency, rationale, dial_locked }
+var grvCapacity = null;        // profile_data.capacity, or the draft being captured
+var grvCapacityNeeded = false; // true when the profile has no capacity yet
+var grvNegotiation = null;     // { conflict_note, options[], fit }
+var GRV_GOAL_TYPES = ['rehab', 'strength_load', 'endurance', 'skill', 'habit', 'body_comp'];
+var GRV_GOAL_TYPE_LABELS = {
+  rehab: 'Rehab', strength_load: 'Strength / Muscle', endurance: 'Endurance',
+  skill: 'Skill', habit: 'Habit', body_comp: 'Body Comp'
+};
+// Mirrors the server's DIAL_LOCKED_TYPES. The SERVER is authoritative — this is
+// UX only, so a stale client can never actually move a locked frequency.
+var GRV_DIAL_LOCKED = ['rehab'];
+var GRV_DIAL_LOCK_REASON = 'Tissue heals on its own timeline, not on effort. Training more often won’t shorten this — the timeline moves when the healing evidence does.';
+var GRV_SKILL_NOTE = 'More practice helps, but the ceiling here is real — expect diminishing returns past about 4×/week.';
+var GRV_DAYS = ['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun'];
 var grvCloseTimer = null;
 
 function grvEsc(s) { var d = document.createElement('div'); d.textContent = (s == null ? '' : s); return d.innerHTML; }
@@ -6929,20 +7121,14 @@ function renderTemplateRoadmap(goal) {
   var c = grvContentEl(); if (!c) return;
   var h = '';
   h += '<div style="background:var(--bg-surface-2);color:var(--color-caution);border-radius:12px;padding:12px 16px;margin-bottom:16px;font-size:13px;line-height:1.5">&#128203; Template Roadmap — Chat with your coach to personalize this for you</div>';
-  var names = ['Phase 1: Build Foundation', 'Phase 2: Progress', 'Phase 3: Momentum'];
-  for (var i = 0; i < 3; i++) {
-    h += '<div style="background:var(--bg-surface-2);border-radius:12px;padding:14px 16px;margin-bottom:8px">';
-    h += '<div style="font-size:14px;font-weight:600;color:var(--text-primary);margin-bottom:8px">' + names[i] + '</div>';
-    h += '<div style="height:5px;background:var(--bg-surface-1);border-radius:3px;overflow:hidden;margin-bottom:8px"><div style="height:100%;width:0%;background:var(--color-positive)"></div></div>';
-    h += '<div style="font-size:13px;color:var(--text-muted);font-style:italic;line-height:1.8">Answer the questions below to fill this in<br>Answer the questions below to fill this in</div>';
-    h += '</div>';
-  }
-  for (var j = 0; j < 2; j++) {
-    h += '<div style="background:var(--bg-surface-2);border-left:3px solid var(--accent-cornerman);border-radius:12px;padding:14px 16px;margin-bottom:8px">';
-    h += '<div style="font-size:9px;text-transform:uppercase;letter-spacing:0.08em;font-weight:600;color:var(--accent-cornerman);margin-bottom:4px">Horizon</div>';
-    h += '<div style="font-size:14px;color:var(--text-muted);font-style:italic">Your long-term destination</div>';
-    h += '</div>';
-  }
+  // PT Brain: COUNT-NEUTRAL. The real phase count is derived per goal from its
+  // honest timeline (a 6-week rehab goal gets ~2 phases and no horizon), so this
+  // placeholder must not promise a fixed 3+2 shape it may not deliver.
+  h += '<div style="background:var(--bg-surface-2);border-radius:12px;padding:14px 16px;margin-bottom:8px">';
+  h += '<div style="font-size:14px;font-weight:600;color:var(--text-primary);margin-bottom:8px">Your phases</div>';
+  h += '<div style="height:5px;background:var(--bg-surface-1);border-radius:3px;overflow:hidden;margin-bottom:8px"><div style="height:100%;width:0%;background:var(--color-positive)"></div></div>';
+  h += '<div style="font-size:13px;color:var(--text-muted);font-style:italic;line-height:1.7">Answer the questions below and your coach will build these — how many phases you get depends on how long this goal honestly takes.</div>';
+  h += '</div>';
   h += '<div id="grv-personalize"></div>';
   c.innerHTML = h;
   grvRenderStep1();
@@ -7035,7 +7221,266 @@ function grvBuildRoadmap() {
   if (grvUserStatement && answers.length) {
     answers[0].answer = 'In my own words: ' + grvUserStatement + '\n\n' + answers[0].answer;
   }
-  generatePersonalizedRoadmap(grvGoalId, answers);
+  // PT Brain: Step 3 now sits between the answers and generation.
+  grvPendingAnswers = answers;
+  grvStartPlanSetup(grvGoalId, answers);
+}
+
+// ─── PT BRAIN · STEP 3 — "How you'll train for this" ────────────────────────
+// Captures goal_type + demand (the AI proposes, the athlete confirms/edits) and,
+// the first time only, global capacity. The aggressiveness dial is the
+// sessions-per-week stepper; it is rendered locked for a dial-locked goal_type
+// with the honest reason shown. The SERVER enforces the lock regardless.
+function grvStartPlanSetup(goalId, answers) {
+  var p = grvPersonalizeEl();
+  if (p) p.innerHTML = '<div style="text-align:center;padding:30px 20px"><p style="font-size:13px;color:var(--text-muted);animation:pulse 1.4s ease-in-out infinite">Working out how you’ll train for this…</p></div>';
+  fetch('/api/profiles/' + currentProfileId + '/goals/' + encodeURIComponent(goalId) + '/plan-setup', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ answers: answers })
+  })
+    .then(function(r) { return r.json(); })
+    .then(function(d) {
+      if (grvGoalId !== goalId) return;
+      if (!d || !d.success || !d.proposal) throw new Error((d && d.error) || 'plan setup failed');
+      grvPlan = d.proposal;
+      grvCapacityNeeded = !!d.capacity_needed;
+      grvCapacity = d.capacity || { days_per_week: 4, minutes_per_day: 45, hard_sessions_per_week: 2, protected_days: [] };
+      grvRenderStep3();
+    })
+    .catch(function() {
+      if (grvGoalId !== goalId) return;
+      grvShowPersonalizeError('Could not set up your plan — try again', function() { grvStartPlanSetup(goalId, answers); });
+    });
+}
+
+function grvDialLocked() { return !!(grvPlan && GRV_DIAL_LOCKED.indexOf(grvPlan.goal_type) >= 0); }
+
+function grvRenderStep3() {
+  var p = grvPersonalizeEl(); if (!p || !grvPlan) return;
+  var d = grvPlan.demand || { sessions_per_week: 3, minutes_per_session: 30, hard: false, min_viable_sessions_per_week: 2 };
+  var locked = grvDialLocked();
+  var h = '<div class="grv-step3" style="margin-top:20px">';
+  h += '<div style="font-size:15px;font-weight:700;color:var(--text-primary);margin-bottom:4px">How you’ll train for this</div>';
+  if (grvPlan.rationale) h += '<div style="font-size:12px;color:var(--text-muted);line-height:1.6;margin-bottom:14px">' + grvEsc(grvPlan.rationale) + '</div>';
+
+  // Goal type pills
+  h += '<div class="grv-field"><div class="grv-flabel">What kind of goal is this?</div><div class="grv-pills">';
+  for (var i = 0; i < GRV_GOAL_TYPES.length; i++) {
+    var t = GRV_GOAL_TYPES[i];
+    var on = grvPlan.goal_type === t;
+    h += '<button type="button" class="grv-pill' + (on ? ' on' : '') + '" onclick="grvSetGoalType(\'' + t + '\')">' + grvEsc(GRV_GOAL_TYPE_LABELS[t]) + '</button>';
+  }
+  h += '</div></div>';
+
+  // The dial
+  h += '<div class="grv-field"><div class="grv-flabel">Sessions per week' + (locked ? ' <span class="grv-lock">LOCKED</span>' : '') + '</div>';
+  h += grvStepperHtml('grvDialStep', d.sessions_per_week, locked);
+  if (locked) h += '<div class="grv-note grv-note-lock">' + grvEsc(GRV_DIAL_LOCK_REASON) + '</div>';
+  else if (grvPlan.goal_type === 'skill') h += '<div class="grv-note">' + grvEsc(GRV_SKILL_NOTE) + '</div>';
+  h += '</div>';
+
+  // Minutes per session
+  h += '<div class="grv-field"><div class="grv-flabel">Minutes per session</div><select class="grv-select" onchange="grvSetDemand(\'minutes_per_session\', this.value)">';
+  var mins = [10, 15, 20, 30, 45, 60, 75, 90];
+  if (mins.indexOf(d.minutes_per_session) < 0) mins.push(d.minutes_per_session);
+  mins.sort(function(a, b) { return a - b; });
+  for (var m = 0; m < mins.length; m++) h += '<option value="' + mins[m] + '"' + (mins[m] === d.minutes_per_session ? ' selected' : '') + '>' + mins[m] + ' min</option>';
+  h += '</select></div>';
+
+  // Hard flag
+  h += '<div class="grv-field"><label class="grv-check"><input type="checkbox"' + (d.hard ? ' checked' : '') + ' onchange="grvSetDemand(\'hard\', this.checked)"><span>These are hard sessions</span></label>';
+  h += '<div class="grv-note">Counts against recovery, not just time — heavy lifting, hard intervals, sparring.</div></div>';
+
+  // Minimum viable
+  h += '<div class="grv-field"><div class="grv-flabel">Minimum that still makes progress</div>';
+  h += grvStepperHtml('grvMinViableStep', d.min_viable_sessions_per_week, false);
+  h += '</div>';
+
+  if (grvCapacityNeeded) h += grvCapacityBlockHtml();
+
+  h += '<button id="grv-plan-btn" onclick="grvSubmitPlan()" class="grv-primary">Continue &rarr;</button>';
+  h += '</div>';
+  p.innerHTML = h;
+}
+
+function grvStepperHtml(fnName, value, disabled) {
+  var dis = disabled ? ' disabled style="opacity:.35;cursor:not-allowed"' : '';
+  return '<div class="grv-stepper"><button type="button" onclick="' + fnName + '(-1)"' + dis + '>&minus;</button>' +
+    '<span class="grv-stepper-val">' + (value == null ? '—' : value) + '</span>' +
+    '<button type="button" onclick="' + fnName + '(1)"' + dis + '>+</button></div>';
+}
+
+function grvCapacityBlockHtml() {
+  var c = grvCapacity || {};
+  var h = '<div class="grv-cap"><div class="grv-flabel" style="margin-bottom:2px">First — how much training can you actually recover from?</div>';
+  h += '<div class="grv-note" style="margin-bottom:10px">Asked once. You can change it any time on your Profile.</div>';
+  h += '<div class="grv-caprow"><span>Days per week</span>' + grvStepperHtml('grvCapStep_days', c.days_per_week, false) + '</div>';
+  h += '<div class="grv-caprow"><span>Minutes per day</span><select class="grv-select" onchange="grvCapSet(\'minutes_per_day\', this.value)">';
+  var opts = [20, 30, 45, 60, 75, 90, 120];
+  for (var i = 0; i < opts.length; i++) h += '<option value="' + opts[i] + '"' + (opts[i] === c.minutes_per_day ? ' selected' : '') + '>' + opts[i] + ' min</option>';
+  h += '</select></div>';
+  h += '<div class="grv-caprow"><span>Hard sessions per week</span>' + grvStepperHtml('grvCapStep_hard', c.hard_sessions_per_week, false) + '</div>';
+  h += '<div class="grv-note" style="margin:2px 0 8px">Sessions that leave you genuinely tired.</div>';
+  h += '<div class="grv-flabel" style="margin-bottom:6px">Protected days (optional)</div><div class="grv-pills">';
+  for (var d2 = 0; d2 < GRV_DAYS.length; d2++) {
+    var day = GRV_DAYS[d2];
+    var on = (c.protected_days || []).indexOf(day) >= 0;
+    h += '<button type="button" class="grv-pill' + (on ? ' on' : '') + '" onclick="grvCapToggleDay(\'' + day + '\')">' + day.charAt(0).toUpperCase() + day.slice(1) + '</button>';
+  }
+  h += '</div></div>';
+  return h;
+}
+
+function grvSetGoalType(t) {
+  if (!grvPlan) return;
+  grvPlan.goal_type = t;
+  grvRenderStep3();   // re-render: the dial lock depends on goal_type
+}
+function grvSetDemand(field, value) {
+  if (!grvPlan || !grvPlan.demand) return;
+  if (field === 'hard') grvPlan.demand.hard = !!value;
+  else grvPlan.demand[field] = parseInt(value, 10) || grvPlan.demand[field];
+}
+function grvDialStep(delta) {
+  if (!grvPlan || !grvPlan.demand || grvDialLocked()) return;
+  var v = (grvPlan.demand.sessions_per_week || 1) + delta;
+  if (v < 1) v = 1; if (v > 7) v = 7;
+  grvPlan.demand.sessions_per_week = v;
+  if (grvPlan.demand.min_viable_sessions_per_week > v) grvPlan.demand.min_viable_sessions_per_week = v;
+  grvRenderStep3();
+}
+function grvMinViableStep(delta) {
+  if (!grvPlan || !grvPlan.demand) return;
+  var max = grvPlan.demand.sessions_per_week || 1;
+  var v = (grvPlan.demand.min_viable_sessions_per_week || 1) + delta;
+  if (v < 1) v = 1; if (v > max) v = max;
+  grvPlan.demand.min_viable_sessions_per_week = v;
+  grvRenderStep3();
+}
+function grvCapSet(field, value) { if (grvCapacity) grvCapacity[field] = parseInt(value, 10) || grvCapacity[field]; }
+function grvCapStep_days(delta) {
+  if (!grvCapacity) return;
+  var v = (grvCapacity.days_per_week || 1) + delta; if (v < 1) v = 1; if (v > 7) v = 7;
+  grvCapacity.days_per_week = v; grvRenderStep3();
+}
+function grvCapStep_hard(delta) {
+  if (!grvCapacity) return;
+  var v = (grvCapacity.hard_sessions_per_week || 0) + delta; if (v < 0) v = 0; if (v > 7) v = 7;
+  grvCapacity.hard_sessions_per_week = v; grvRenderStep3();
+}
+function grvCapToggleDay(day) {
+  if (!grvCapacity) return;
+  var arr = grvCapacity.protected_days || (grvCapacity.protected_days = []);
+  var i = arr.indexOf(day);
+  if (i >= 0) arr.splice(i, 1); else arr.push(day);
+  grvRenderStep3();
+}
+
+// Step 3 "Continue" → persist shape + estimate + CODE fit check. Fits → straight
+// to generation (the athlete never sees Step 4). Doesn't fit → Step 4.
+function grvSubmitPlan(extra) {
+  if (!grvPlan || !grvPlan.goal_type) { if (typeof showToast === 'function') showToast('Pick a goal type first'); return; }
+  var goalId = grvGoalId;
+  var btn = document.getElementById('grv-plan-btn');
+  if (btn) { btn.disabled = true; btn.textContent = 'Working out your timeline…'; btn.style.opacity = '0.6'; }
+  var body = Object.assign({
+    goal_type: grvPlan.goal_type,
+    demand: grvPlan.demand,
+    capacity: grvCapacityNeeded ? grvCapacity : undefined
+  }, extra || {});
+  fetch('/api/profiles/' + currentProfileId + '/goals/' + encodeURIComponent(goalId) + '/estimate', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body)
+  })
+    .then(function(r) { return r.json(); })
+    .then(function(d) {
+      if (grvGoalId !== goalId) return;
+      if (!d || !d.success) throw new Error((d && d.error) || 'estimate failed');
+      grvCapacityNeeded = false;
+      grvCapacity = d.capacity || grvCapacity;
+      if (d.demand) grvPlan.demand = d.demand;
+      if (d.fit && d.fit.fits === false) { grvStartNegotiation(goalId, d); return; }
+      generatePersonalizedRoadmap(goalId, grvPendingAnswers || []);
+    })
+    .catch(function() {
+      if (grvGoalId !== goalId) return;
+      grvShowPersonalizeError('Could not work out your timeline — try again', function() { grvRenderStep3(); });
+    });
+}
+
+// ─── PT BRAIN · STEP 4 — negotiation (only when the fit check fails) ─────────
+// EXACTLY three levers, in a fixed order. The server validates the set; this
+// only renders what it returns.
+function grvStartNegotiation(goalId, estimateResp) {
+  var p = grvPersonalizeEl();
+  if (p) p.innerHTML = '<div style="text-align:center;padding:30px 20px"><p style="font-size:13px;color:var(--text-muted);animation:pulse 1.4s ease-in-out infinite">This doesn’t fit your week — working out your options…</p></div>';
+  fetch('/api/profiles/' + currentProfileId + '/goals/' + encodeURIComponent(goalId) + '/negotiate', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({})
+  })
+    .then(function(r) { return r.json(); })
+    .then(function(d) {
+      if (grvGoalId !== goalId) return;
+      if (!d || !d.success) throw new Error((d && d.error) || 'negotiate failed');
+      if (d.fits) { generatePersonalizedRoadmap(goalId, grvPendingAnswers || []); return; }
+      grvNegotiation = d;
+      grvRenderStep4();
+    })
+    .catch(function() {
+      if (grvGoalId !== goalId) return;
+      grvShowPersonalizeError('Could not load your options — try again', function() { grvStartNegotiation(goalId, estimateResp); });
+    });
+}
+
+function grvRenderStep4() {
+  var p = grvPersonalizeEl(); if (!p || !grvNegotiation) return;
+  var n = grvNegotiation, f = n.fit || {};
+  var h = '<div class="grv-step3" style="margin-top:20px">';
+  h += '<div style="font-size:15px;font-weight:700;color:var(--color-caution);margin-bottom:6px">This doesn’t fit your week</div>';
+  h += '<div style="font-size:13px;color:var(--text-primary);line-height:1.6;margin-bottom:10px">' + grvEsc(n.conflict_note || '') + '</div>';
+  h += '<div class="grv-fit">';
+  h += '<div><span>Time</span><b>' + f.minutes_needed + ' / ' + f.minutes_available + ' min per week</b></div>';
+  h += '<div><span>Hard sessions</span><b>' + f.hard_needed + ' / ' + f.hard_available + ' per week</b></div>';
+  h += '</div>';
+  var opts = Array.isArray(n.options) ? n.options : [];
+  for (var i = 0; i < opts.length; i++) {
+    var o = opts[i];
+    h += '<div class="grv-lever" onclick="grvApplyLever(\'' + grvEsc(o.lever) + '\')">';
+    h += '<div class="grv-lever-label">' + grvEsc(o.label) + '</div>';
+    h += '<div class="grv-lever-detail">' + grvEsc(o.detail) + '</div>';
+    h += '</div>';
+  }
+  h += '<div class="grv-note" style="margin-top:10px">Pick one — these are the only three ways this resolves honestly.</div>';
+  h += '</div>';
+  p.innerHTML = h;
+}
+
+// BOUNDED WRITES. Every lever re-posts to /estimate with modified inputs; there
+// is no separate write path and no coexistence verdict is stored (that's Layer 3).
+function grvApplyLever(lever) {
+  if (!grvNegotiation || !grvPlan) return;
+  var s = grvNegotiation.suggested || {};
+  var p = grvPersonalizeEl();
+  if (p) p.innerHTML = '<div style="text-align:center;padding:30px 20px"><p style="font-size:13px;color:var(--text-muted);animation:pulse 1.4s ease-in-out infinite">Applying that…</p></div>';
+
+  if (lever === 'slower') {
+    var nf = s.slower_frequency || Math.max(1, (grvPlan.demand.sessions_per_week || 2) - 1);
+    grvPlan.demand.sessions_per_week = nf;
+    if (grvPlan.demand.min_viable_sessions_per_week > nf) grvPlan.demand.min_viable_sessions_per_week = nf;
+    grvNegotiation = null;
+    grvSubmitPlan({ lever: 'slower', basis_note: 'Frequency lowered to ' + nf + '×/week so this fits alongside your other goals — the timeline reflects that.' });
+    return;
+  }
+  if (lever === 'sequence') {
+    var mv = s.min_viable || grvPlan.demand.min_viable_sessions_per_week || 1;
+    grvPlan.demand.sessions_per_week = mv;
+    grvNegotiation = null;
+    grvSubmitPlan({ lever: 'sequence', basis_note: 'Starting at the minimum that still makes progress (' + mv + '×/week) while another goal leads; this one takes the lead later.' });
+    return;
+  }
+  // capacity — the athlete edits the real numbers themselves, never the model's
+  // prose. Back to Step 3 with the capacity block forced open.
+  grvNegotiation = null;
+  grvCapacityNeeded = true;
+  grvRenderStep3();
 }
 
 function generatePersonalizedRoadmap(goalId, answers) {
@@ -7079,6 +7524,102 @@ function grvShowFullError(msg, retryFn) {
 }
 function grvRetry() { if (grvRetryFn) grvRetryFn(); }
 
+// PT Brain: the honest estimate + the aggressiveness dial, rendered above the
+// phase cards. A6 — a LEGACY roadmap (profile 1's three, profile 4's clones) has
+// no estimate and never will unless deliberately regenerated, which is out of
+// scope. It must degrade to a plain note, never render blank and never expose a
+// dial that has nothing to re-estimate from.
+function grvEstimateHeaderHtml(goal) {
+  var est = goal && goal.estimate;
+  var built = goal && goal.roadmap && goal.roadmap.estimate;
+  if (!est && !built) {
+    return '<div class="grv-est grv-est-legacy">No timeline estimate recorded for this roadmap — it predates honest timelines. ' +
+      'Regenerating this goal would add one.</div>';
+  }
+  var shown = est || built;
+  var locked = GRV_DIAL_LOCKED.indexOf(goal.goal_type) >= 0;
+  var stale = !!(est && built && (est.assumed_frequency !== built.assumed_frequency ||
+    est.total_weeks_low !== built.total_weeks_low || est.total_weeks_high !== built.total_weeks_high));
+
+  var h = '<div class="grv-est">';
+  h += '<div class="grv-est-top"><span class="grv-est-range">' + shown.total_weeks_low + '–' + shown.total_weeks_high + ' weeks</span>';
+  h += '<span class="grv-est-freq">at ' + shown.assumed_frequency + '×/week</span></div>';
+  if (shown.basis) h += '<div class="grv-est-basis">' + grvEsc(shown.basis) + '</div>';
+  if (stale) {
+    h += '<div class="grv-est-stale">Your settings changed — this roadmap was built from ' +
+      built.total_weeks_low + '–' + built.total_weeks_high + ' weeks at ' + built.assumed_frequency +
+      '×/week. Rebuild it to catch up.</div>';
+  }
+  h += '<div class="grv-est-dial">';
+  h += '<span class="grv-flabel" style="margin:0">Sessions per week</span>';
+  h += grvStepperHtml('grvDialAdjust', shown.assumed_frequency, locked);
+  h += '</div>';
+  if (locked) h += '<div class="grv-note grv-note-lock">' + grvEsc(GRV_DIAL_LOCK_REASON) + '</div>';
+  else if (goal.goal_type === 'skill') h += '<div class="grv-note">' + grvEsc(GRV_SKILL_NOTE) + '</div>';
+  h += '</div>';
+  return h;
+}
+
+// Moving the dial from the roadmap view: re-estimate, re-run the fit check, then
+// regenerate via mode:"regenerate" so version increments and adaptation_log is
+// APPENDED to, never reset (the session #6 precedent).
+function grvDialAdjust(delta) {
+  var goal = grvFindGoal(grvGoalId);
+  if (!goal) return;
+  if (GRV_DIAL_LOCKED.indexOf(goal.goal_type) >= 0) return;   // server enforces too
+  var est = goal.estimate || (goal.roadmap && goal.roadmap.estimate);
+  if (!est) return;                                            // A6 legacy: no dial
+  var v = (est.assumed_frequency || 1) + delta;
+  if (v < 1) v = 1; if (v > 7) v = 7;
+  if (v === est.assumed_frequency) return;
+
+  var demand = Object.assign({}, goal.demand || {}, { sessions_per_week: v });
+  if (demand.min_viable_sessions_per_week == null || demand.min_viable_sessions_per_week > v) demand.min_viable_sessions_per_week = v;
+  if (demand.minutes_per_session == null) demand.minutes_per_session = 45;
+
+  var goalId = grvGoalId;
+  var c = grvContentEl();
+  if (c) c.innerHTML = '<div style="display:flex;flex-direction:column;align-items:center;padding:70px 20px;text-align:center">' +
+    '<div style="width:14px;height:14px;border-radius:50%;background:var(--accent-ember);animation:pulse 1.2s ease-in-out infinite;margin-bottom:16px"></div>' +
+    '<p style="font-size:13px;color:var(--text-muted)">Re-estimating at ' + v + '×/week…</p></div>';
+
+  fetch('/api/profiles/' + currentProfileId + '/goals/' + encodeURIComponent(goalId) + '/estimate', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ goal_type: goal.goal_type, demand: demand })
+  })
+    .then(function(r) { return r.json(); })
+    .then(function(d) {
+      if (!d || !d.success) throw new Error((d && d.error) || 'estimate failed');
+      if (grvGoalId !== goalId) return null;
+      if (d.fit && d.fit.fits === false) {
+        // Same bounded negotiation as goal creation.
+        grvPlan = { goal_type: goal.goal_type, demand: d.demand, assumed_frequency: v, rationale: '' };
+        grvPendingAnswers = Array.isArray(goal.intake_answers) ? goal.intake_answers : [];
+        renderGoalRoadmap(grvFindGoal(goalId) || goal);
+        grvStartNegotiation(goalId, d);
+        return null;
+      }
+      if (c) c.innerHTML = '<div style="display:flex;flex-direction:column;align-items:center;padding:70px 20px;text-align:center">' +
+        '<div style="width:14px;height:14px;border-radius:50%;background:var(--accent-ember);animation:pulse 1.2s ease-in-out infinite;margin-bottom:16px"></div>' +
+        '<p style="font-size:13px;color:var(--text-muted)">Rebuilding your roadmap…</p></div>';
+      return fetch('/api/profiles/' + currentProfileId + '/goals/' + encodeURIComponent(goalId) + '/roadmap?mode=regenerate', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({})
+      }).then(function(r2) { return r2.json(); });
+    })
+    .then(function(data) {
+      if (!data) return;
+      if (!data.success || !data.goal) throw new Error((data && data.error) || 'regenerate failed');
+      if (grvGoalId !== goalId) return;
+      grvUpdateCachedGoal(data.goal);
+      renderGoalRoadmap(data.goal);
+      if (typeof renderProfileGoals === 'function') renderProfileGoals();
+    })
+    .catch(function() {
+      if (grvGoalId !== goalId) return;
+      grvShowFullError('Could not update the timeline — try again', function() { var g = grvFindGoal(goalId); if (g) renderGoalRoadmap(g); });
+    });
+}
+
 function grvPhaseDateRange(p) {
   if (!p || !p.start_date) return '';
   function fmt(d) { var dt = new Date(String(d).slice(0, 10) + 'T12:00:00'); if (isNaN(dt.getTime())) return ''; return dt.toLocaleDateString('en-US', { month: 'short', day: 'numeric' }); }
@@ -7103,6 +7644,7 @@ function renderGoalRoadmap(goal) {
   h += '</div>';
   if (rm.timeline_note) h += '<p style="font-size:13px;color:var(--text-muted);font-style:italic;line-height:1.6">' + grvEsc(rm.timeline_note) + '</p>';
   h += '</div>';
+  h += grvEstimateHeaderHtml(goal);
   // Near-term phases.
   for (var i = 0; i < phases.length; i++) {
     var p = phases[i];
@@ -11014,7 +11556,10 @@ function schedRenderDayEditor(day) {
   h += '<div style="display:flex;gap:12px;align-items:center;margin-top:10px">';
   h += '<button onclick="schedSaveAnchor(\'' + day + '\')" style="background:var(--accent-ember);border:none;color:#fff;border-radius:9999px;padding:7px 16px;font-size:12px;font-weight:600;cursor:pointer">Set Anchor</button>';
   if (existing) h += '<button onclick="schedRemoveAnchor(\'' + day + '\')" style="background:transparent;border:none;color:var(--color-danger);font-size:11px;cursor:pointer">Remove</button>';
-  h += '</div></div>';
+  h += '</div>';
+  // Goal picker only once an anchor actually exists to attach links to.
+  if (existing) h += schedGoalPickerHtml('anchor', 0, existing, day);
+  h += '</div>';
   return h;
 }
 function schedTapDay(day) {
@@ -11032,7 +11577,15 @@ function schedSaveAnchor(day) {
   var durEl = document.getElementById('sched-anchor-dur');
   var act = actEl ? actEl.value.trim() : '';
   if (!act) { schedRemoveAnchor(day); return; }
-  currentSchedule.anchors[day] = [{ activity: act, duration: durEl ? schedParseDur(durEl.value) : null }];
+  // G2 (session #35) — MERGE, don't replace. This used to assign a fresh object
+  // literal on every "Set Anchor" tap, which silently destroyed any extra key on
+  // the anchor (the keystone join's goal_ids, and anything added later). Spread
+  // the previous anchor so unknown keys survive an ordinary edit.
+  var prevAnchor = (Array.isArray(currentSchedule.anchors[day]) && currentSchedule.anchors[day][0]) || null;
+  currentSchedule.anchors[day] = [Object.assign({}, prevAnchor || {}, {
+    activity: act,
+    duration: durEl ? schedParseDur(durEl.value) : null
+  })];
   schedOpenDay = null; schedPersist(); renderSchedule();
 }
 function schedRemoveAnchor(day) {
@@ -11083,8 +11636,51 @@ function schedTargetRow(x, idx) {
   h += '<div style="display:flex;align-items:center;gap:6px"><span style="font-size:11px;color:var(--text-muted)">x/week</span>' + schedStepper('schedTargetStep(' + idx + ',-1)', 'schedTargetStep(' + idx + ',1)', x.times_per_week || 1) + '</div>';
   h += '<select onchange="schedTargetSet(' + idx + ',\'suggested_day\',this.value)" style="width:auto">' + schedDayOptions(x.suggested_day) + '</select>';
   h += schedDurSelect('', x.duration, [15,30,45,60,75,90], true, 'schedCustomDur(this);schedTargetSet(' + idx + ',\'duration\',this.value)');
+  h += '</div>';
+  h += schedGoalPickerHtml('target', idx, x);
+  h += '</div>';
+  return h;
+}
+
+// ── Keystone join · goal picker ──────────────────────────────────────────────
+// Minimal multi-select over the athlete's goals, matching the existing editor
+// style. WRITE SIDE ONLY this session — no consumer reads goal_ids yet.
+function schedGoalPickerHtml(kind, idx, item, day) {
+  var goals = (currentProfileData && Array.isArray(currentProfileData.goals)) ? currentProfileData.goals : [];
+  if (!goals.length) return '';
+  var sel = schedGoalIdsOf(item);
+  var h = '<div class="sched-goals"><div class="sched-goals-label">Serves which goal' + (sel.length === 1 ? '' : 's') + '?</div><div class="sched-goals-pills">';
+  for (var i = 0; i < goals.length; i++) {
+    var g = goals[i];
+    if (!g || !g.id) continue;
+    var on = sel.indexOf(g.id) >= 0;
+    var arg = "'" + kind + "'," + idx + ",'" + g.id + "'" + (day ? (",'" + day + "'") : '');
+    h += '<button type="button" class="sched-goal-pill' + (on ? ' on' : '') + '" onclick="schedToggleGoalLink(' + arg + ')">' +
+      escHtml(g.title || 'Goal') + '</button>';
+  }
   h += '</div></div>';
   return h;
+}
+
+function schedGoalItem(kind, idx, day) {
+  if (kind === 'target') return currentSchedule.frequency_targets[idx];
+  if (kind === 'addon') return currentSchedule.addons[idx];
+  if (kind === 'anchor') {
+    var arr = currentSchedule.anchors[day];
+    return (Array.isArray(arr) && arr[idx]) ? arr[idx] : null;
+  }
+  return null;
+}
+
+function schedToggleGoalLink(kind, idx, goalId, day) {
+  var item = schedGoalItem(kind, idx, day);
+  if (!item) return;
+  var arr = Array.isArray(item.goal_ids) ? item.goal_ids : [];
+  var at = arr.indexOf(goalId);
+  if (at >= 0) arr.splice(at, 1); else arr.push(goalId);
+  if (arr.length) item.goal_ids = arr; else delete item.goal_ids;  // absent, not []
+  schedPersist();
+  renderSchedule();
 }
 // Default for the "stackable" toggle, by activity keyword: ON for light /
 // recovery work (yoga, pilates, stretch, meditation, mobility, rehab, pt), OFF
@@ -11150,7 +11746,9 @@ function schedAddonRow(x, idx) {
   h += '<div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center">';
   h += schedDurSelect('', x.duration, [5,10,15,20,30], false, 'schedAddonSet(' + idx + ',\'duration\',this.value)');
   h += '<div style="display:flex;align-items:center;gap:6px"><span style="font-size:11px;color:var(--text-muted)">days/week</span>' + schedStepper('schedAddonStep(' + idx + ',-1)', 'schedAddonStep(' + idx + ',1)', x.days_per_week || 1) + '</div>';
-  h += '</div></div>';
+  h += '</div>';
+  h += schedGoalPickerHtml('addon', idx, x);
+  h += '</div>';
   return h;
 }
 function schedAddonSet(idx, field, value) {
@@ -11234,12 +11832,71 @@ function schedRenderEmptyState() {
 
 var SCHED_AI_PREFS = ['Prefer weekdays', 'Prefer weekends', 'Avoid Mondays', 'Morning sessions', 'Evening sessions', 'Include recovery days'];
 
+// ── Keystone join helpers (session #35) ──────────────────────────────────────
+// Every schedule item may carry an optional goal_ids: [<goal uuid>, …]. NOTHING
+// reads it yet — Layer 2 is the first consumer. This session only guarantees it
+// can be SET and that it survives every existing write path.
+function schedGoalIdsOf(item) { return (item && Array.isArray(item.goal_ids)) ? item.goal_ids : []; }
+function schedCountGoalLinks(sched) {
+  var n = 0;
+  if (!sched) return 0;
+  var anchors = sched.anchors || {};
+  for (var d in anchors) {
+    if (!anchors.hasOwnProperty(d)) continue;
+    var arr = Array.isArray(anchors[d]) ? anchors[d] : [];
+    for (var i = 0; i < arr.length; i++) n += schedGoalIdsOf(arr[i]).length ? 1 : 0;
+  }
+  (sched.frequency_targets || []).forEach(function(t) { if (schedGoalIdsOf(t).length) n++; });
+  (sched.addons || []).forEach(function(a) { if (schedGoalIdsOf(a).length) n++; });
+  return n;
+}
+function schedActivityKey(s) { return String(s || '').trim().toLowerCase().replace(/\s+/g, ' '); }
+
 function schedStartAIBuild() {
+  // G3 (session #35) — the AI builder REBUILDS currentSchedule wholesale from
+  // model output, so any goal link on an existing item would be destroyed. In
+  // practice the builder is only reachable from the empty state (nothing to
+  // destroy), but the empty-state gate could move, so confirm explicitly and
+  // carry links forward on the way back out (see schedApplyAIBuild).
+  var linked = schedCountGoalLinks(currentSchedule);
+  if (linked > 0) {
+    var ok = confirm('Rebuilding will replace your schedule. ' + linked + ' item' + (linked === 1 ? '' : 's') +
+      ' currently linked to a goal — links are carried over where the activity name still matches, otherwise they are lost. Continue?');
+    if (!ok) return;
+  }
+  schedAIPrevSchedule = JSON.parse(JSON.stringify(currentSchedule || {}));
   schedAIData = { days: 3, fixedDays: {}, prefs: [], includes: '' };
   schedAIStep = 1;
   schedAIBuilding = false;
   schedAIActive = true;
   renderSchedule();
+}
+var schedAIPrevSchedule = null;
+
+// Carry goal links across a wholesale rebuild, matched by normalised activity
+// name (ids are regenerated by the builder, so they cannot be the join key).
+function schedCarryGoalLinks(prev, next) {
+  if (!prev || !next) return 0;
+  var carried = 0;
+  var index = {};
+  var add = function(item) {
+    var k = schedActivityKey(item && item.activity);
+    if (k && schedGoalIdsOf(item).length) index[k] = schedGoalIdsOf(item);
+  };
+  var pa = prev.anchors || {};
+  for (var d in pa) { if (pa.hasOwnProperty(d)) (Array.isArray(pa[d]) ? pa[d] : []).forEach(add); }
+  (prev.frequency_targets || []).forEach(add);
+  (prev.addons || []).forEach(add);
+
+  var apply = function(item) {
+    var k = schedActivityKey(item && item.activity);
+    if (k && index[k] && !schedGoalIdsOf(item).length) { item.goal_ids = index[k].slice(); carried++; }
+  };
+  var na = next.anchors || {};
+  for (var d2 in na) { if (na.hasOwnProperty(d2)) (Array.isArray(na[d2]) ? na[d2] : []).forEach(apply); }
+  (next.frequency_targets || []).forEach(apply);
+  (next.addons || []).forEach(apply);
+  return carried;
 }
 function schedAICancel() {
   schedAIActive = false; schedAIBuilding = false; schedAIData = null; schedAIStep = 1;
@@ -11441,6 +12098,12 @@ function schedAISubmit() {
       for (var ai = 0; ai < currentSchedule.addons.length; ai++) {
         if (!currentSchedule.addons[ai].id) currentSchedule.addons[ai].id = schedNextId(currentSchedule.addons, 'ao');
       }
+      // G3 — carry any goal links from the pre-rebuild schedule across, matched
+      // by activity name. Links whose activity no longer exists are genuinely
+      // gone; the confirm in schedStartAIBuild already warned about that.
+      var carried = schedCarryGoalLinks(schedAIPrevSchedule, currentSchedule);
+      schedAIPrevSchedule = null;
+      if (carried) console.log('[Schedule] carried ' + carried + ' goal link(s) across the AI rebuild');
       schedAIBuilding = false; schedAIActive = false; schedAIData = null; schedAIStep = 1; schedEditMode = false;
       schedPersist();
       renderSchedule();
@@ -16258,6 +16921,67 @@ function pbReviewSelectPill(sectionId, questionKey, value) {
   }
 }
 
+// ── G1 · Profile-Builder goal merge guard (session #35) ──────────────────────
+// Fields the AI must never be able to drop or overwrite. They are either machine
+// identity (id), expensive generated state (roadmap, estimate, intake), or the
+// PT-Brain shape the capacity arithmetic depends on. arc_state is listed ahead
+// of Layer 2 so this never has to be revisited.
+var PB_PROTECTED_GOAL_FIELDS = [
+  'id', 'roadmap', 'estimate', 'goal_type', 'demand',
+  'intake_questions', 'intake_answers', 'intake_completed',
+  'last_adapted_at', 'target_date', 'tier', 'priority', 'arc_state'
+];
+
+function pbGoalKey(g) { return String((g && g.title) || '').trim().toLowerCase().replace(/\s+/g, ' '); }
+
+// Merge the AI's goals array onto the stored one.
+//  - matched by id, falling back to normalised title
+//  - stored WINS on every protected field; the AI wins on prose (title,
+//    description, status, emoji, …)
+//  - a stored goal the AI omitted is KEPT, never deleted
+//  - genuinely new AI goals are appended
+//  - STORED ORDER IS PRESERVED. Array order IS goal priority (goals[0] = #1,
+//    driving the rec prompt's 40/25/15% weighting), so letting the AI reorder
+//    would silently re-rank the athlete's priorities as a side effect of
+//    answering questions about mindset. Deliberate reordering stays available
+//    through the Prioritize UI.
+function mergeGoalsPreservingProtected(storedGoals, aiGoals) {
+  var stored = Array.isArray(storedGoals) ? storedGoals : [];
+  if (!Array.isArray(aiGoals)) return stored.slice();   // AI dropped goals entirely → keep ours
+
+  var byId = {}, byTitle = {};
+  for (var i = 0; i < aiGoals.length; i++) {
+    var a = aiGoals[i];
+    if (!a || typeof a !== 'object') continue;
+    if (a.id) byId[a.id] = a;
+    var k = pbGoalKey(a);
+    if (k && !byTitle[k]) byTitle[k] = a;
+  }
+
+  var out = [], consumed = [];
+  for (var s = 0; s < stored.length; s++) {
+    var sg = stored[s];
+    if (!sg || typeof sg !== 'object') { out.push(sg); continue; }
+    var match = (sg.id && byId[sg.id]) || byTitle[pbGoalKey(sg)] || null;
+    if (!match) { out.push(sg); continue; }              // AI omitted it — keep ours untouched
+    consumed.push(match);
+    var merged = Object.assign({}, match);
+    for (var f = 0; f < PB_PROTECTED_GOAL_FIELDS.length; f++) {
+      var key = PB_PROTECTED_GOAL_FIELDS[f];
+      if (Object.prototype.hasOwnProperty.call(sg, key)) merged[key] = sg[key];
+      else delete merged[key];                            // the AI cannot invent these either
+    }
+    out.push(merged);
+  }
+  for (var n = 0; n < aiGoals.length; n++) {
+    var ng = aiGoals[n];
+    if (!ng || typeof ng !== 'object') continue;
+    if (consumed.indexOf(ng) >= 0) continue;
+    out.push(ng);                                         // genuinely new goal → append
+  }
+  return out;
+}
+
 function pbSaveReviewSection(sectionId) {
   var section = null;
   for (var i = 0; i < PB_SECTIONS.length; i++) {
@@ -16597,6 +17321,15 @@ function pbFinishSection(el) {
     var raw = (data.content && data.content[0]) ? data.content[0].text : '{}';
     var cleaned = raw.indexOf('{') >= 0 ? raw.substring(raw.indexOf('{'), raw.lastIndexOf('}') + 1) : '{}';
     var updatedData = JSON.parse(cleaned);
+    // G1 (session #35) — CODE-ENFORCED MERGE GUARD. This path hands the entire
+    // profile_data to a model and stores whatever comes back, and PATCH replaces
+    // goals[] wholesale (it merges only at the top level of profile_data). The
+    // prompt asks the model not to remove anything, but a prompt is not a
+    // guarantee: a dropped roadmap / id / intake / goal_type / demand is silent
+    // and unrecoverable. Enforce it instead.
+    updatedData.goals = mergeGoalsPreservingProtected(
+      (currentProfileData && currentProfileData.goals) || [], updatedData.goals);
+
     var sections = updatedData.profile_sections_completed || [];
     if (sections.indexOf(sectionId) < 0) sections.push(sectionId);
     updatedData.profile_sections_completed = sections;

@@ -2259,14 +2259,41 @@ All new CSS scoped under `#v2-today` / `#v2-week-card` / `#v2-variant` / `#v2-sh
 (valid, applies document-wide; confirmed rendering correctly in the live app). No migration — every
 field already exists.
 
-## NEXT SESSION STARTS HERE — STRATEGIC PIVOT (2026-07-24, Session 13)
+## NEXT SESSION STARTS HERE — PT BRAIN, SESSION A (updated 2026-07-25, Session 14)
 
-> **⚠ READ THIS BEFORE THE ENGINE v2 SECTIONS BELOW. The Engine v2 arc is PAUSED. Focus reverts
-> to v1.** Everything documented below about v2 remains accurate as history and is deliberately
-> preserved — but the queued v2 work (B advancement, D within-phase ramp, the session-composition
-> settings UI) is **no longer the next thing to build**, and the v2 strategy itself is REJECTED
-> going forward. See **"Strategic Pivot — Engine v2 paused, v1 is the go-forward engine"**
-> directly below for what replaces it, what was rejected and why, and what to salvage.
+> **⚠ STATUS: the "PT Brain" four-layer design is APPROVED AS THE NORTH STAR and is written into
+> `ROADMAP.md` §7 → "NEXT DIRECTION — the 'PT Brain'". The pre-build audit that gated it has been
+> RUN (Session 14, 2026-07-25). NO FEATURE CODE was written in that session.**
+>
+> **The next build session is SESSION A: keystone join + Layer 1 (honest per-goal timeline +
+> aggressiveness dial) + capacity + intake negotiation.** Read ROADMAP §7 for the full approved
+> design before starting; the layer definitions, the code-gated rehab dial, the three negotiation
+> levers and the build order all live there, not here.
+>
+> **Pre-build audit results carried forward** (full report was delivered in-thread; it is written
+> into the docs at close-out, not by the audit session itself):
+> - The `3 near_term + 2 horizon` skeleton is **PROMPT-enforced, never code-enforced** — no code
+>   counts or slices phases, so Layer 1's variable phase count needs prompt edits plus a derived
+>   phase-count input, not a structural refactor.
+> - **Zero schedule items carry any goal reference today** — the keystone join is a clean additive
+>   field. `loadSchedule()` preserves unknown keys on target/anchor/addon OBJECTS; the ✨ Build-with-AI
+>   schedule builder is the one path that would DESTROY them.
+> - **No corrupted phase dates exist in production** — all 8 roadmaps across all 5 profiles are
+>   clean. The §9 E7 corruption was already repaired. Layer 2 is UNBLOCKED.
+> - **Profile 4 is still `engine_v2 = true`**; the flip is a single merge-safe
+>   `PATCH /api/profiles/4 {"profile_data":{"engine_v2":false}}` and v1 provably ignores every piece
+>   of v2 residue.
+> - **`emphasis` is 100% populated on per-goal roadmaps, 0% on the MACRO roadmap** — inert today
+>   (the rec prompt reads only per-goal emphasis), but a real gap.
+> - **The Profile-Builder "goals" section is the dangerous goal-write path** — it hands the whole
+>   `profile_data` to an AI and stores what comes back, so any new goal field must be defended in
+>   code, not by a prompt instruction.
+>
+> **Engine v2 remains PAUSED and its strategy REJECTED going forward.** Everything documented below
+> about v2 stays accurate as history and is deliberately preserved — but the queued v2 work (B
+> advancement, D within-phase ramp, the session-composition settings UI) is **not the next thing to
+> build**. See **"Strategic Pivot — Engine v2 paused, v1 is the go-forward engine"** directly below
+> for what was rejected and why, and what to salvage.
 
 ### The pivot in one paragraph
 
