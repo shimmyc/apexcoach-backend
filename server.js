@@ -6136,7 +6136,16 @@ async function adaptGoalRoadmap(goal, notes, workouts, trigger, goalExCtx) {
   // input + <=6k output tokens per weekly run across all goals with roadmaps
   // (~0.39M input / 0.31M output per YEAR), so the ~3x delta is a few dollars
   // annually and scales with goals, not with recs or users.
-  var text = await callAISystem(sys, userMsg, 2000, MODEL_SONNET);
+  // max_tokens 2000 -> 3000 (session #35, found live). The adapt must return the
+  // FULL roadmap — every phase with its name, targets, emphasis and completion
+  // signals — and a 5-phase roadmap does not fit in 2000 output tokens, so the
+  // JSON was being cut mid-array and parseAIJson threw. Reproduced 3/3 on a real
+  // 3+2 roadmap, failing at the same byte offset every time. Generation of the
+  // same structure already used 2500; adapt reproduces MORE per phase, so it
+  // gets 3000. This is not specific to the new prompt — any 5-phase roadmap was
+  // near the edge — but the stricter "keep every field" wording pushed it over,
+  // and a silent adapt failure is invisible (fire-and-forget, console.error only).
+  var text = await callAISystem(sys, userMsg, 3000, MODEL_SONNET);
   var parsed = parseAIJson(text);
   if (!parsed || !Array.isArray(parsed.phases)) throw new Error("AI returned an invalid adapted roadmap");
   // PT Brain (session #35): deterministic shape invariant, scoped EXACTLY to the
