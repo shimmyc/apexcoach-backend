@@ -2,7 +2,47 @@
 
 > Single reference for anyone joining the project or picking it back up after a break.
 > Pairs with `CLAUDE.md` (deep implementation notes) and `FORMULAS.md` (readiness/sleep math).
-> Last updated: 2026-07-24.
+> Last updated: 2026-07-25.
+>
+> **2026-07-25 session #36 — PT BRAIN SESSION A SHIPPED: keystone join + Layer 1 (honest
+> per-goal timelines + aggressiveness dial) + global capacity + intake negotiation.**
+> Two-phase session per §0.2 (audit + plan → approval → build). Profile 4 was flipped to v1
+> as pre-work and is now the PT-Brain test bed. **Profile 1 untouched — its 8 goals are
+> byte-identical (sha256 `0901b047d1c95f50` before and after).**
+>
+> **What shipped.** The fixed "3 near_term + 2 horizon" skeleton and the integer 4–6
+> `duration_weeks` clamp are **retired for per-goal roadmaps**. Phase count and each phase's
+> week budget are now **derived in code** from an honest per-goal timeline estimate and handed
+> to the model as fixed slots — the model authors words, never the numbers it is judged on.
+> **Macro-roadmap paths are deliberately untouched** (`MACRO_ROADMAP_SYS`, `adaptMacroRoadmap`)
+> and keep 3+2 until Layer 3.
+>
+> **Verified live on profile 4, all three worked targets hit exactly:**
+> (a) rehab wrist goal → estimate 4–10 wk → **2 near-term phases `[4,3]`, 0 horizon**, dial
+> locked; (b) 135→175 bench → estimate 16–32 wk (~3.7–7.4 months) → **3 near `[6,5,5]` + 1
+> horizon "months 4–6"**, dial live; (c) marathon → **negotiation fired** with exactly three
+> levers in order `slower/capacity/sequence`. Budgets sum to the derived total in every case.
+>
+> **Server-authoritative dial lock PROVEN**, not asserted: a request that tried to move the
+> rehab goal's frequency 5→7 was overridden back to 5 (`dial_override_applied:true`).
+>
+> **TWO REAL BUGS FOUND LIVE** (neither by inspection), both fixed and re-verified:
+> 1. **`adaptGoalRoadmap` silently dropped `roadmap.estimate`** — it rebuilds the roadmap object
+>    from scratch and had no `estimate` key, so the first check-in after generation wiped the
+>    record of what the roadmap was built from and the staleness banner could never fire again.
+> 2. **`adaptGoalRoadmap` truncated a 5-phase roadmap at `max_tokens: 2000`** — reproduced 3/3
+>    at the same byte offset. **This is the 3+2 legacy shape, i.e. profile 1's three roadmaps**,
+>    and the weekly auto-adapt is fire-and-forget with `console.error` only, so a systematic
+>    failure there would have been invisible. Raised to 3000.
+>
+> **A third destroy-site was found in Phase 1 that the brief hadn't listed:** `schedSaveAnchor`
+> replaced the anchor with a fresh object literal on every "Set Anchor" tap, destroying any
+> extra key — including the new `goal_ids`. That is the *normal* editing path and far more
+> likely to fire than the Build-with-AI builder. Fixed to merge; verified end-to-end.
+>
+> Full implementation record: `CLAUDE.md` → **"PT Brain — Session A"**. Design of record:
+> §7 → "NEXT DIRECTION — the 'PT Brain'". **Next build session is Session B (Layer 2,
+> `arc_state`)** — unblocked, since Session 0 confirmed there are no corrupted phase dates.
 > **§0 "How We Work — Standing Conventions" is required reading before any session work begins.**
 >
 > **Doc accuracy notes:** Sections 2, 4, and 10 were verified directly against `server.js`,
@@ -2257,6 +2297,43 @@ All verified present in `server.js`. `:id`/`:userId` = profile id.
   `SELECT` instead). Also worth knowing: the PATCH writes `cleanProfileData(pd)`, so it
   simultaneously re-sanitizes every string in the column.
 
+### PT Brain Session A — Known Limitations (2026-07-25, session #36)
+
+1. **The negotiation can loop when a goal is genuinely too big for the week.** Applying the
+   `slower` or `sequence` lever re-posts to `/estimate`; if the result still doesn't fit, the
+   athlete lands back on Step 4. Because `sequence` sets frequency to `min_viable` and
+   `suggested.slower_frequency` is floored at `min_viable`, both levers become idempotent and
+   the athlete can bounce between them. **There IS an exit — the `capacity` lever returns to
+   Step 3 with the capacity controls open — but it is not signposted**, and a goal that cannot
+   fit at any frequency cannot be created at all. Observed in test (c): after applying
+   `sequence`, the week still needed 345 of 300 min. **Deliberately not fixed in Session A** —
+   widening the resolution set is exactly what the bounded-three-lever design forbids. The
+   likely fix is a `round` counter passed to `/negotiate` so the copy escalates ("time or hard
+   capacity is the only remaining lever"), not a fourth lever.
+2. **`/estimate` persists `goal_type`/`demand`/`capacity` before the fit check runs.** A goal
+   whose negotiation the athlete abandons mid-flow keeps the demand it was last posted with, so
+   it counts toward the capacity sum despite having no roadmap. Self-corrects the moment the
+   athlete finishes or edits the goal. Accepted: the alternative is a draft/commit split that
+   Session A doesn't need.
+3. **`plan-setup` writes its proposal to the goal immediately.** This is what makes the dial lock
+   server-authoritative (`/estimate` compares against a stored value), but it means merely
+   *opening* the plan-setup step stamps a `goal_type` and `demand` on the goal even if the
+   athlete backs out. Same self-correcting property as (2).
+4. **A model that returns fewer near-term phases than the plan asked for is accepted, not
+   padded.** `applyPhasePlanToPhases` redistributes the planned span across the phases it did
+   return so the total stays honest, rather than fabricating an empty phase. Extra phases ARE
+   dropped. Logged when it happens; not observed in any live run this session.
+5. **`goal_ids` has no consumer.** Session A is write-side only by design — Layer 2 is the first
+   reader. Until then a link is inert data, and nothing validates that a linked goal still
+   exists (a deleted goal leaves a dangling id). Layer 2 must resolve dangling ids defensively.
+6. **The capacity card is hidden until capacity exists.** Correct for a fresh profile, but it
+   means there is no way to set capacity from the Profile tab *before* creating a goal — the
+   first capture is inside goal intake by design. If that ordering ever needs to change, the
+   card's `display:none` empty-state branch is the single place to edit.
+7. **Profile 4's 8 cloned goals carry no `demand`**, so they contribute zero to the capacity sum
+   and its readout reflects only the goals planned under the new shape. Correct behavior (we
+   never invent a demand), but worth knowing when reading profile 4's numbers.
+
 ### Rejected Approaches & Lessons — Engine v2 arc (2026-07-24 pivot, session #34)
 
 > **These four are REJECTED. Do not re-propose them.** Each is logged with its reason so the next
@@ -2550,10 +2627,45 @@ after Layer 1 ships.
 
 | Session | Scope |
 |---|---|
-| **A** | Keystone join + Layer 1 + capacity + intake negotiation |
-| **B** | Layer 2 — **blocked on** the corrupted-phase-date repair (§9, E7) being confirmed clear |
+| **A** | ✅ **SHIPPED 2026-07-25 (session #36).** Keystone join + Layer 1 + capacity + intake negotiation |
+| **B** | Layer 2 — **UNBLOCKED** (session #35 confirmed zero corrupted phase dates in production). **This is next.** |
 | **C** | Layer 3 — **design discussion first** |
 | **Layer 4** | Independent; slots in anywhere |
+
+#### Storage shape as built (session #36 refinement, approved)
+
+The North Star named `estimate` as a roadmap field. As built it lives in **two** places, because
+the estimate is produced *before* the roadmap exists (it is what the phase plan is derived from):
+
+| Location | Meaning |
+|---|---|
+| `goal.estimate` | the **current** estimate — what the dial reads and writes |
+| `goal.roadmap.estimate` | a **copy taken at generation** — what *this roadmap* was actually built from |
+
+They are normally identical and diverge only between a dial change and its regeneration
+completing. That divergence is a **feature**: it is how the UI honestly says "your roadmap is
+behind your current settings." A single field cannot express it. Verified live: after moving the
+dial 2→3, `goal.estimate` read `16–28 @3x` while `roadmap.estimate` still read `16–32 @2x`.
+
+#### Also logged this session (DO NOT BUILD — design items)
+
+- **Goal completion behavior.** When a goal is accomplished, the athlete chooses: **stop
+  entirely / hold at maintenance level / roll into a new higher goal.** Interacts with Layer 2
+  `arc_state` (a completed goal's arc must stop advancing) and with the capacity sum (a goal held
+  at maintenance still consumes budget; one that stops does not — today `DONE` is simply
+  excluded). **Design before the Layer 2 build.** Related prior art: the **ACHIEVED MILESTONES**
+  never-auto-escalate precedent (`CLAUDE.md` → "Progression Signals in the Daily Rec Prompt") —
+  a completed milestone becomes a *baseline* to work at or above, and the app asks the athlete
+  rather than inventing the next tier. The same principle should govern goal completion.
+- **Ask-AI-to-optimize goal order.** Session #36's merge guard makes stored goal order
+  authoritative (array order IS priority), so the Profile Builder can no longer silently re-rank
+  goals. Deliberate reordering stays in the existing Prioritize UI. The wanted addition is an
+  **explicit** action: ask the AI to propose an optimized order, **show the proposed order**
+  before applying, and offer **one-tap revert** to the prior ranking.
+- **`goal_ids` in the Build-with-AI schedule skeleton.** Deferred from session #36. The builder
+  already has the athlete's goals in its prompt and could link at build time, but it is a Haiku
+  call whose output would need its own validation (real goal UUIDs, no hallucinated ids). The
+  G3 confirm + carry-forward guard ships instead. Cheap to add later.
 
 ### Engine v2 — Planner / Autoregulator (parallel build, feature-flagged)
 
@@ -3065,6 +3177,27 @@ Macro roadmap shape (stored on `profiles.roadmap_data`):
 - [ ] **Add `workouts.duration_minutes` column** so manual session durations count in analytics without relying on summed `exercises.duration_minutes`.
 - [ ] **Rename `?max_intraday=` → `?max_calls=`** in `/api/debug/backfill-wearable-hr` (the budget now covers TCX **+** intraday calls, not just intraday). Keep `max_intraday` as an alias for back-compat.
 - [ ] **Retire the legacy `tokens` table** path once confirmed no profile depends on it.
+- [ ] **PT Brain Session A leftovers (session #36).** (a) The negotiation loop has no round
+  counter — see §6 item 1; the fix is escalating copy, never a fourth lever. (b) `/estimate`
+  and `/plan-setup` write before the athlete commits (§6 items 2–3) — a draft/commit split
+  would close it. (c) `goal_ids` are never validated against live goals; Layer 2 must resolve
+  dangling ids defensively. (d) The macro roadmap still hardcodes 3+2 in `MACRO_ROADMAP_SYS`
+  (`server.js`) and `adaptMacroRoadmap` — deliberately out of Session A's scope, revisit with
+  Layer 3.
+- [ ] **`adaptGoalRoadmap`'s output size is not monitored.** Session #36 raised `max_tokens`
+  2000 → 3000 after a live 3/3 reproduction of mid-array JSON truncation on a 5-phase roadmap.
+  3000 covers today's shapes with headroom, but nothing *measures* how close a given adapt gets,
+  and the failure mode is a silent `console.error` inside a fire-and-forget weekly trigger. A
+  cheap guard: log output token usage per adapt and warn above ~80% of the cap. Same class as
+  the §9 "5 silent-failure sites" item.
+- [ ] **The goal-progress POST 413s for a large profile (found session #36, pre-existing).**
+  `fetchGoalProgress` (`public/index.html`) posts `workoutLog.slice(0,90)` plus **every**
+  exercise session, which exceeds the body limit on a profile with a full history — observed on
+  profile 4 (a clone of profile 1's real log) as `413` followed by
+  `[Goals] Progress fetch error: SyntaxError: Unexpected token '<'`. Unrelated to session #36's
+  changes (that path was untouched); surfaced because profile 4 became a browser test bed for
+  the first time. Fix is to send aggregates rather than raw rows, or to let the server fetch
+  its own data as the roadmap endpoints already do.
 - [ ] **Regenerate the logo with a transparent background.** `public/logo.png` currently has a solid (black) background; a transparent PNG would let the figure float on the app background instead of a black box. (Also tracked in §7 → Next up.)
 - [ ] **Drive Fitbit → Google Health migration before the Sept-2026 shutdown.** The Google Health API v4 adapter is ✅ built (§3); the remaining work is getting every active Fitbit profile to reconnect via the reconsent banner so no one loses sync at cutover.
 - [ ] **Drop the Fitbit adapter + legacy Fitbit paths after September 2026** once all active profiles have migrated to Google Health: remove the `profiles.fitbit_*` columns, the legacy `/auth` + `/callback` routes, `buildDailyData` / `runFitbitBackfill`, the `getValidProfileToken` Fitbit special-case inside `getValidWearableToken`, the Fitbit-first preference logic in `findWearableMatchOnSave` + the `unmatched-fitbit` endpoint, and the `wearables/fitbit.js` adapter.
