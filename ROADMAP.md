@@ -2,12 +2,68 @@
 
 > Single reference for anyone joining the project or picking it back up after a break.
 > Pairs with `CLAUDE.md` (deep implementation notes) and `FORMULAS.md` (readiness/sleep math).
-> Last updated: 2026-07-20.
+> Last updated: 2026-07-24.
 > **§0 "How We Work — Standing Conventions" is required reading before any session work begins.**
 >
 > **Doc accuracy notes:** Sections 2, 4, and 10 were verified directly against `server.js`,
 > `wearables/`, and `migrations/` rather than transcribed. Where the original brief differed
 > from the live code, the doc follows the code and flags it with **⚠ Correction**.
+>
+> **2026-07-24 session #34 — ⚠ STRATEGIC PIVOT: Engine v2 PAUSED, focus reverts to v1.
+> DOCUMENTATION-ONLY session — no code, no migrations, no flag changes, nothing reverted.**
+> Read this before any Engine v2 material further down; it changes what the next thread should
+> build, not what was built. Full record: `CLAUDE.md` → **"Strategic Pivot — Engine v2 paused,
+> v1 is the go-forward engine"**; rejected approaches in §6 → **"Rejected Approaches & Lessons —
+> Engine v2 arc"**; forward direction in §7 → **"NEXT DIRECTION — the 'real personal trainer'
+> brain"**.
+>
+> **What happened.** The athlete used Engine v2 on his real profile and judged the v2 SESSIONS a
+> **depth regression from v1**. Three findings, in order:
+> 1. **v1 was never the problem.** Profile 1 has been on v1 throughout and every v2 session
+>    verified it byte-identical. v1 produces genuinely deep multi-goal sessions — a real example
+>    this session: a **60-minute rec with 16 exercises across 4 labeled sections** (Hand & Wrist,
+>    Warm-up, Main Yoga Flow, Posture & Core add-on) with real autoregulation reasoning from HRV
+>    and weekly-target status. **That depth is the target state and STAYS.**
+> 2. **The v2 sessions were thin BY CONSTRUCTION.** The **0.70 work-floor invariant (§6)** rewarded
+>    "technically fills the time," and the model satisfied it the cheap way — few exercises,
+>    inflated per-segment minutes — rather than prescribing rich multi-exercise blocks. Optimizing
+>    that proxy metric produced sparse sessions. **This is now understood as the root cause of the
+>    depth complaint, not a tuning issue.** No floor value fixes it.
+> 3. **A context check was run against the PREVIOUS thread's actual statements** to settle a
+>    disagreement about what had been claimed regarding v1. Recorded so it is not re-litigated:
+>    (a) **v1 is NOT context-starved** — it feeds 13 ordered blocks and its length guard was raised
+>    **6000 → 28000** in session #17; the "can't see enough context" problem was **v2's PLANNER**;
+>    (b) **"high randomness" was a real finding about the `extract_exercises` call** (temperature),
+>    **NOT** about v1 daily-rec generation; (c) **"doesn't scale as it learns" is real but was a
+>    v2-PLANNER gap** (no phase/progression context), not a v1 defect — though v1 **does** lack
+>    **persisted progression memory**, which is the real forward-looking gap.
+>
+> **Decisions recorded.** Focus reverts to **v1**; new capability is ADDED to v1. **v2 code REMAINS
+> in the repo, flag-gated off — NOT deleted, NOT reverted, NO tables dropped**, preserved for
+> possible future reference. **Profile 4 was NOT flipped this session** — the revert audit/execution
+> was scoped, then the athlete chose to pivot to forward design instead; its honest current state is
+> **still `engine_v2 = true`, still carrying the cloned data and the v2 writes**. Formally
+> decommissioning v2 is a separate future task. **The next direction is NOT "finish v2."**
+>
+> **Four approaches REJECTED** (details + reasons in §6): the 0.70 work-floor as a session-quality
+> gate; "honestly shorten light/rehab days"; bolting maintenance-tier filler onto a thin driver
+> skeleton; and **rebuilding v1's capability as a from-scratch parallel engine — the entire v2
+> strategy** (lesson: ADD to v1, which already produces the depth and already coexists multiple
+> goals per session).
+>
+> **Next direction (DESIGN TARGET, not approved for build).** A "real personal trainer" brain,
+> designed ON PAPER first, then built ONE layer at a time with each layer's generated goals/roadmaps
+> tested before proceeding; roadmap/goal CREATION on **Sonnet** (quality-critical), not Haiku. Four
+> layers: honest per-goal timeline → living adaptation → coexistence engine (COEXIST/SEQUENCE/GATE)
+> → session depth. **The immediate next step is an AUDIT** of what v1 already persists for roadmaps,
+> timelines and multi-goal scheduling (Living Goal Roadmaps, Macro Roadmap, the schedule system —
+> anchors / frequency targets / add-ons), so the paper model is designed against what exists. **Not
+> a build session.**
+>
+> **Salvage from v2:** `estimateSegmentWorkMinutes` / `estimateSessionWorkMinutes` (hand-verified,
+> reusable in v1 as a **content reconciler** enforcing depth — explicitly NOT the 0.70 gate) and
+> the COEXIST/SEQUENCE/GATE + honest-timeline framing (genuinely new). **NOT salvaged:** the
+> single-plan model, the allocation invariant, and the alternate-card UI.
 >
 > **2026-07-22 session #33** (Profile-4 clone + Engine v2 Phases 1–2. Audit-report-first and
 > gated at every step; Phase 1 was audit-only, Phase 2 ends here with no Phase 3 work started):
@@ -1661,6 +1717,30 @@ All verified present in `server.js`. `:id`/`:userId` = profile id.
 
 ## 6. Known Limitations
 
+> **⚠ 2026-07-24 (session #34): every Engine v2 item in this section is now HISTORY of a PAUSED
+> arc, not an open work queue.** v2 remains in the repo, flag-gated off; nothing was reverted. Read
+> **"Rejected Approaches & Lessons — Engine v2 arc"** at the end of this section before proposing
+> any fix to a v2 limitation below — four approaches are explicitly rejected and must not be
+> re-proposed. Current-state entry: **"Engine v2 arc PAUSED — current state of record"**, directly
+> below.
+
+- **Engine v2 arc PAUSED — current state of record (2026-07-24, session #34).** Recorded so the
+  next thread does not misread the v2 sections as in-flight work.
+  - **v2 code REMAINS in the repo, flag-gated off** (`profile_data.engine_v2`). NOT deleted, NOT
+    reverted, NO tables dropped (`training_blocks`, `planned_sessions` and the v2 profile columns
+    all remain, with their migrations still applied). Preserved for possible future reference.
+  - **Profile 4 was NOT flipped this session.** The revert audit/execution was scoped, then the
+    athlete chose to pivot to forward design instead. **Honest current state: profile 4 is still
+    `engine_v2 = true`, still carrying the cloned training history and the v2 writes** (blocks,
+    planned sessions, `v2_daily_cache*`, `dossier*`, goal tiers, `schedule_v3`, `v2_preferences`).
+    The nightly job and the v2 UI therefore still apply to it. **Formally decommissioning v2 —
+    flipping the flag, deciding what to do with the v2 rows/tables — is a separate future task with
+    its own scope**, deliberately not started.
+  - **Profile 1 and every non-flagged profile are unaffected** and always were — v1 byte-identical
+    throughout the arc, re-verified at every v2 session.
+  - **The queued v2 work (B advancement, D within-phase ramp, the session-composition settings UI)
+    is PARKED**, not cancelled, but is **no longer the next thing to build**. B's hard prerequisite
+    (threshold plausibility) still stands if the arc is ever resumed.
 - **Supabase "Premature close" on every query (2026-06-18 — ✅ root-caused & mostly resolved 2026-06-19, see the banner at the top of this file).** Root cause: the `apexcoach` Supabase project's compute was sized at **Nano** despite being on the Pro plan; the (now code-fixed) daily-recs retry storm drove connection volume into Nano's memory ceiling, which surfaced as "Premature close" on every PostgREST call. Fixed by upgrading compute **Nano → Micro**. A **residual** intermittent "Premature close" on `workouts` and Fitbit's `oauth2/token` (a node-fetch stream-dies-mid-body-read failure mode) was separately fixed with a retry wrapper (`c88b186`, `f1aef8a`) and an `invalid_grant`-guarded Fitbit refresh retry (`78ba684`). No further "Premature close" reports since the many features shipped in the following weeks (Focus Override, Coach Chat, timezone fix) — treat as resolved unless it recurs.
 - **Fitbit Server-type app → no intraday HR.** Peak HR falls back to TCX `MaximumHeartRateBpm`, then to a zone-floor estimate. (Confirm the registered app type in the Fitbit dev portal to know which path is active.)
 - **Peak HR historical backfill** — a subset of older sessions (~24) only ever yields **estimated** peak values (no measured/sampled peak recoverable).
@@ -1939,6 +2019,18 @@ All verified present in `server.js`. `:id`/`:userId` = profile id.
     the margins. The allocation mechanism is the right fix and resolves the composition problem; full
     closure awaits better model compliance on rehab-tagged strength days (candidate: bias the driver
     share to loaded compounds via the envelope's rep-scheme) or the honest-shorten of low-fill days (D).
+  - **⚠ SUPERSEDED BY THE 2026-07-24 PIVOT (session #34) — this entry is now HISTORY, not a work item.**
+    The whole arc above chased thinness inside v2. The pivot re-frames the root cause one level higher:
+    **the 0.70 work floor was itself the wrong gate.** It rewarded "technically fills the time," and the
+    model satisfied it the cheap way — few exercises with inflated per-segment minutes — instead of
+    prescribing rich multi-exercise blocks. Optimizing that proxy is what produced the sparse sessions
+    the athlete rejected as a **depth regression from v1**. The floor is **REJECTED as a session-quality
+    gate** (see "Rejected Approaches & Lessons — Engine v2 arc" at the end of this section); any future
+    time/content reconciliation must enforce **DEPTH (real exercise count per block)**, not
+    estimated-minutes-meets-stated-minutes. **Nothing here was reverted** — the floor, the estimator, the
+    driver-share invariant and the allocation contract all remain in the flag-gated v2 code exactly as
+    described above. The estimator functions themselves are on the SALVAGE list (reusable in v1 as a
+    depth-enforcing content reconciler); the floor **as a gate** is not.
 - **Engine v2 — metric-fits-pattern DONE in A2, threshold-plausibility is a BEFORE-B BLOCKER (2026-07-23).**
   The two A1 evaluator follow-ups (below) split: (1) **metric-fits-pattern — FIXED in A2.** `validateCriterion`
   now rejects a value metric that cannot fit its referent pattern's logged shape (hold-seconds on a
@@ -2165,6 +2257,51 @@ All verified present in `server.js`. `:id`/`:userId` = profile id.
   `SELECT` instead). Also worth knowing: the PATCH writes `cleanProfileData(pd)`, so it
   simultaneously re-sanitizes every string in the column.
 
+### Rejected Approaches & Lessons — Engine v2 arc (2026-07-24 pivot, session #34)
+
+> **These four are REJECTED. Do not re-propose them.** Each is logged with its reason so the next
+> working thread does not re-tread rejected ground. Full narrative: `CLAUDE.md` → "Strategic Pivot —
+> Engine v2 paused, v1 is the go-forward engine".
+
+1. **The 0.70 work-floor as a session-quality gate — REJECTED.** It incentivizes padding and sparse
+   sessions: it measures a **proxy** (time-fill) rather than the goal (**content depth**). The model
+   satisfied it the cheap way — few exercises with inflated per-segment minutes — which is precisely
+   what produced the thin sessions the athlete rejected. **Any future time/content reconciliation
+   must enforce DEPTH (real exercise count per block), not just estimated-minutes-meets-stated-
+   minutes.** Note this rejects the floor **as a gate**, not the estimator functions behind it —
+   those are on the salvage list below.
+2. **"Honestly shorten light/rehab days" (the Session 10 recommendation) — REJECTED.** Real PT
+   protocols fill full sessions and progress across weeks; the athlete confirmed doing genuine
+   45-minute sessions in the early phase of this exact injury. The thinness was a **missing
+   progression model**, not a correct low volume, so shortening the label to match thin content
+   accepts a thin prescription as correct when it is not.
+3. **Bolting maintenance-tier filler onto a thin driver skeleton — REJECTED.** It starves the driver
+   goal and papers over the same gap; this is the mixed-session under-fill that dogged the whole arc.
+4. **Rebuilding v1's capability as a from-scratch parallel engine (the ENTIRE v2 strategy) —
+   REJECTED as the strategy going forward.** **Lesson: ADD to v1.** v1 already produces the depth
+   (a real 60-min rec with 16 exercises across 4 labeled sections, with autoregulation reasoning from
+   HRV and weekly-target status) and already coexists multiple goals in a single session. Do not
+   replace it.
+
+**Context-check findings — settled, do not re-litigate.** Checked against the previous thread's
+actual statements: (a) **v1 is NOT context-starved** — 13 ordered blocks, length guard raised
+6000 → 28000 in session #17; the "can't see enough context" problem was **v2's PLANNER**. (b)
+**"High randomness" was a real finding about the `extract_exercises` call** (temperature), **NOT**
+about v1 daily-rec generation. (c) **"Doesn't scale as it learns" was a v2-PLANNER gap** (no
+phase/progression context), not a v1 defect — though v1 genuinely lacks **persisted progression
+memory**, which is the real forward-looking gap the next design targets.
+
+**SALVAGE from v2 — carry these forward:**
+- **`estimateSegmentWorkMinutes` / `estimateSessionWorkMinutes`** (`server/coachingRules.js`) —
+  hand-verified accurate. Reusable in v1 as a **DISPLAY/CONTENT RECONCILER enforcing depth**,
+  explicitly **NOT** as the rejected 0.70 gate.
+- **The COEXIST / SEQUENCE / GATE framing and the honest-timeline idea** — genuinely new (neither v1
+  nor v2 had them); the novel part of the next design.
+- **NOT salvaged:** the single-plan model, the allocation invariant, and the alternate-card UI —
+  either regressions, or solutions to problems v1 does not have.
+
+---
+
 ### Coach Chat / Timezone — Known Issues & Deferred (2026-07-15)
 
 Each item below is self-contained — no other doc/session context should be needed to pick it up.
@@ -2182,6 +2319,14 @@ Each item below is self-contained — no other doc/session context should be nee
 ---
 
 ## 7. Roadmap — Features To Build
+
+> **⚠ 2026-07-24 (session #34) — the head of the queue changed.** The Engine v2 arc is **PAUSED**
+> and its strategy rejected going forward; focus reverts to **v1**. The current forward direction is
+> **"NEXT DIRECTION — the 'real personal trainer' brain"** (below, a DESIGN TARGET not yet approved
+> for build), and the **immediate next step is an AUDIT of what v1 already persists** for roadmaps,
+> timelines and multi-goal scheduling. The pre-existing priority list below (Fitbit→Google Health
+> cutover work, etc.) is **unchanged and still valid** — the pivot removes the v2 items from the
+> front of the queue, it does not re-order anything else.
 
 **Priority order (updated 2026-07-18 after the session #29 daily_recs outage).** Items 1–3 were **deprioritized during the outage firefight** (profile 1's recs were failing — see the session #29 banner) but remain the active cycle; the Sept-2026 Fitbit shutdown deadline hasn't moved.
 
@@ -2217,7 +2362,50 @@ Each item below is self-contained — no other doc/session context should be nee
   verifier), so **audit-first**. Would also need a persistence seam (per-profile setting) that
   the ephemeral `recLengthChoice` deliberately is not.
 
+### NEXT DIRECTION — the "real personal trainer" brain (2026-07-24, session #34)
+
+> **⚠ DESIGN TARGET — NOT YET APPROVED FOR BUILD.** This replaces the Engine v2 arc as the forward
+> direction. It is a **v1-based** design: v1 already produces the depth and already coexists
+> multiple goals per session, so this **ADDS to v1** — it does not rebuild it in parallel (that
+> approach is explicitly rejected, §6 → "Rejected Approaches & Lessons — Engine v2 arc").
+
+**Method.** Design the **full model ON PAPER first**, then build **ONE layer at a time**, with each
+layer's generated goals/roadmaps **tested before proceeding** to the next. **Roadmap/goal CREATION
+uses the Sonnet model (quality-critical), not Haiku.**
+
+**The four layers (a design target, not a build spec):**
+
+1. **Honest per-goal timeline.** A realistic duration estimated **per goal from its own nature**,
+   not a fixed 12-week block — hand PT ~4–8 weeks; 135→175 bench ~3–6 months; marathon ~1 year.
+2. **Living adaptation.** Timeline and arc-position flex with **real performance and real gaps, in
+   both directions**: faster than expected → pull the timeline in; slower → spread it; a month off
+   → step back and re-ramp.
+3. **Coexistence engine.** Classify goals as **COEXIST / SEQUENCE / GATE** against the athlete's
+   real weekly **time + recovery budget**, and **be honest when goals don't fit** — require picking
+   a lead rather than silently under-serving everything. (This framing is new; neither v1 nor v2
+   had it.)
+4. **Session depth.** **Keep v1's existing depth.** Port v2's hand-verified
+   `estimateSegmentWorkMinutes` into v1 as a **DISPLAY/CONTENT RECONCILER that enforces depth** —
+   explicitly **NOT** as the rejected 0.70 work-floor gate.
+
+**IMMEDIATE NEXT STEP — an AUDIT, not a build.** Audit what **v1 already persists** for roadmaps,
+timelines and multi-goal scheduling — **Living Goal Roadmaps** (`profile_data.goals[].roadmap`:
+phases, `weekly_targets`, `completion_signals`, `duration_weeks`, `adaptation_log`), the **Macro
+Roadmap** (`profiles.roadmap_data`), and the **schedule system** (`profile_data.schedule` v2 —
+anchors / frequency targets / add-ons) — so the paper model is designed **against what exists**
+rather than from scratch. Per §0.2, anything touching data flow is audit-report-first anyway.
+
 ### Engine v2 — Planner / Autoregulator (parallel build, feature-flagged)
+
+> **⚠ ARC PAUSED 2026-07-24 (session #34) — this whole block is the RECORD of a completed-then-
+> paused build, NOT an open queue.** The athlete judged the v2 sessions a **depth regression from
+> v1**; focus reverts to v1 and the **v2 strategy itself is rejected going forward** (see the top
+> banner, §6 → "Engine v2 arc PAUSED — current state of record" and "Rejected Approaches &
+> Lessons"). **v2 code remains in the repo, flag-gated off — nothing deleted, nothing reverted, no
+> tables dropped; profile 4 is still `engine_v2 = true`.** The queued items named throughout this
+> block — **(B) advancement, (D) within-phase ramp, the session-composition settings UI** — are
+> **PARKED, not next**. Do not start them without an explicit decision to resume the arc. The
+> forward direction is the section directly above.
 
 > **✅ ENGINE v2 COMPLETE (all 7 phases, 2026-07-22).** A feature-flagged two-cadence coaching
 > engine running on profile 4, with profile 1 / all v1 profiles byte-identical throughout.
@@ -2270,8 +2458,10 @@ Each item below is self-contained — no other doc/session context should be nee
 > expanded = the real `session.why`), gives anchor-day miss-class alternates their own legible
 > "If you can't make it" grouping, and marks sessions that persisted while flagged. Display only,
 > zero writes, 213 v2 tests. See "Engine v2 — Session 12" in CLAUDE.md.
-> **Still queued behind it, unchanged: (B) advancement — with threshold plausibility as a HARD
-> prerequisite (§6) — (D) the within-phase ramp, and the session-composition settings UI.**
+> **~~Still queued behind it, unchanged: (B) advancement — with threshold plausibility as a HARD
+> prerequisite (§6) — (D) the within-phase ramp, and the session-composition settings UI.~~
+> ⚠ PARKED 2026-07-24 (session #34)** — all three are parked with the rest of the v2 arc, not next.
+> B's threshold-plausibility prerequisite still stands if the arc is ever resumed.
 >
 > **UX findings from the 2026-07-22 close-out** (live profile-4 screenshots) are logged in §6:
 > non-set-based segments render as fake single sets, doubled superset-rest parens, and a v2 Today
@@ -2632,6 +2822,29 @@ Macro roadmap shape (stored on `profiles.roadmap_data`):
 
 ## 9. Technical Debt & Cleanup
 
+- [ ] **Engine v2 is now flag-gated dormant code — a decommission decision is OUTSTANDING (added
+  2026-07-24, session #34).** The arc is paused and its strategy rejected going forward (§6, §7),
+  but **nothing was deleted or reverted, deliberately**: `server/coachingRules.js`,
+  `v2Progression.js`, `v2Dossier.js`, `v2Planner.js`, `v2Autoregulator.js`, `v2Readiness.js`,
+  `v2Variant.js`, `v2Stages.js`, their ~213 tests, the `/api/v2/*` routes, the nightly job + hourly
+  interval, the flagged `#v2-*` UI, the v2 Coach Chat tools, and the `training_blocks` /
+  `planned_sessions` tables + v2 profile columns (all migrations **run in production**) all remain.
+  It is preserved for possible future reference and is inert for every non-flagged profile. **What
+  is actually outstanding:** decide whether v2 is resumed, left dormant indefinitely, or formally
+  decommissioned — and if decommissioned, what happens to the v2 rows/tables. **Do not delete
+  anything opportunistically**; this is its own scoped task.
+- [ ] **Profile 4 is still `engine_v2 = true` and still carries v2 data (added 2026-07-24, session
+  #34).** The revert was scoped this session and deliberately not executed — the athlete pivoted to
+  forward design instead. Consequences while it stays flagged: the nightly job still runs for it,
+  the v2 UI still renders for it, and its cloned training history + v2 writes (blocks, planned
+  sessions, `v2_daily_cache*`, `dossier*`, tiers, `schedule_v3`, `v2_preferences`) remain in place.
+  Harmless for profile 1 and every other profile (v1 byte-identical throughout the arc, re-verified
+  at every v2 session), but it means **profile 4 is not a clean v1 test profile** until flipped.
+- [ ] **Port `estimateSegmentWorkMinutes` into v1 as a DEPTH reconciler — salvage item, not yet
+  scoped (added 2026-07-24, session #34).** The estimator is hand-verified accurate and is layer 4
+  of the forward design (§7). **It must NOT be ported as the 0.70 work-floor gate** — that gate is
+  rejected (§6 → "Rejected Approaches & Lessons"); the v1 use is enforcing **real exercise count per
+  block**, not estimated-minutes-meets-stated-minutes. Gated behind the v1 persistence audit.
 - [x] **Drop the deprecated `fitbit_pending_imports` queue.** ✅ **Code + column both done 2026-07-17** — confirmed zero call sites (grep before removal), then deleted `diffAndQueueFitbitImports()`/`mapFitbitActivityType()`/`FITBIT_ACTIVITY_TYPE_MAP` and both endpoints from `server.js`. `migrations/2026-07-17_drop_fitbit_pending_imports.sql` **run in production** — column no longer exists.
 - [x] **Retire the legacy text roadmap (now unblocked).** ✅ **Code + columns both done 2026-07-17** — confirmed no external consumer reads `profiles.roadmap`/`roadmap_updated_at` (neither `life-os-summary` nor `PROFILE_SELECT_BASE` select them), then removed `GET/POST /api/profiles/:id/roadmap`, `loadRoadmap`/`renderRoadmapContent`/`generateRoadmap`, and the hidden `#roadmap-card`. `migrations/2026-07-17_drop_legacy_roadmap.sql` **run in production** — both columns gone.
 - [ ] **`ai_prompt_context` embeds a goal list that drifts from `goals[]` (found session #31).**

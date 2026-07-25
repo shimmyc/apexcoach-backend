@@ -274,6 +274,13 @@ Calculated from workoutLog entries where done=true. Counts backwards from today 
 
 ## Daily AI Recommendation Prompt Architecture
 
+> **This is the v1 engine, and as of 2026-07-24 it is the GO-FORWARD engine** — Engine v2 is
+> paused and flag-gated off (see "Strategic Pivot — Engine v2 paused, v1 is the go-forward
+> engine"). v1 produces the deep, multi-goal, multi-section sessions that are the target state;
+> new capability gets **added here**, not rebuilt in parallel. v1 is **not** context-starved (13
+> ordered blocks; the length guard is 28000 chars since session 17). Its real forward-looking gap
+> is **persisted progression memory**, which the next design addresses.
+
 `fetchAI()` in public/index.html builds the Anthropic API request as a split **system** + **user** message (Anthropic Messages API), not a single user blob.
 
 **System prompt (`buildSystemPrompt`)** — persona, coaching style, equipment/location/duration prefs, rules, an **expert reasoning standard** (see below), and JSON response shape. Opens with the ApexCoach persona: "an elite, deeply personal AI fitness coach… You adapt to real human life… You never suggest something contraindicated by their injuries. You always factor in their micro-goals as non-negotiable daily commitments." Rules include the compound Posture/PT add-on on every Strength session (naming 2–3 specific movements). When called in `mode: 'reroll'` the system prompt appends an instruction to generate meaningfully different options than the previously-shown headlines. When called in `mode: 'category'` it narrows to a single category.
@@ -2252,7 +2259,141 @@ All new CSS scoped under `#v2-today` / `#v2-week-card` / `#v2-variant` / `#v2-sh
 (valid, applies document-wide; confirmed rendering correctly in the live app). No migration — every
 field already exists.
 
-## Engine v2 — NEXT SESSION STARTS HERE (updated 2026-07-24, Session 12 close-out)
+## NEXT SESSION STARTS HERE — STRATEGIC PIVOT (2026-07-24, Session 13)
+
+> **⚠ READ THIS BEFORE THE ENGINE v2 SECTIONS BELOW. The Engine v2 arc is PAUSED. Focus reverts
+> to v1.** Everything documented below about v2 remains accurate as history and is deliberately
+> preserved — but the queued v2 work (B advancement, D within-phase ramp, the session-composition
+> settings UI) is **no longer the next thing to build**, and the v2 strategy itself is REJECTED
+> going forward. See **"Strategic Pivot — Engine v2 paused, v1 is the go-forward engine"**
+> directly below for what replaces it, what was rejected and why, and what to salvage.
+
+### The pivot in one paragraph
+
+The athlete used Engine v2 on his real profile and judged the v2 SESSIONS a **depth regression
+from v1**. v1 was never the problem: profile 1 has been on v1 throughout, every v2 session verified
+it byte-identical, and v1 produces genuinely deep multi-goal sessions (a real example this session:
+a 60-minute recommendation with **16 exercises across 4 labeled sections** — Hand & Wrist, Warm-up,
+Main Yoga Flow, Posture & Core add-on — with real autoregulation reasoning from HRV and weekly
+target status). **That depth is the target state and it STAYS.** The v2 sessions were thin *by
+construction*: the 0.70 work-floor invariant rewarded "technically fills the time," and the model
+satisfied it the cheap way — few exercises with inflated per-segment minutes — rather than
+prescribing rich multi-exercise blocks. Optimizing that proxy metric is now understood as the
+**root cause** of the depth complaint, not a tuning issue.
+
+### What to do next (NOT a build spec)
+
+The next direction is a **"real personal trainer" brain**, designed ON PAPER first as a full model,
+then built ONE layer at a time with each layer's generated goals/roadmaps tested before proceeding.
+Four layers — **a DESIGN TARGET, not yet approved for build**: honest per-goal timeline → living
+adaptation → coexistence engine (COEXIST/SEQUENCE/GATE) → session depth. Full description in the
+pivot section below and in ROADMAP §7.
+
+**The immediate next step is an AUDIT** — what v1 already persists for roadmaps, timelines, and
+multi-goal scheduling (Living Goal Roadmaps, Macro Roadmap, the schedule system: anchors /
+frequency targets / add-ons) — so the paper model is designed against what exists rather than from
+scratch. Not a build session.
+
+---
+
+## Strategic Pivot — Engine v2 paused, v1 is the go-forward engine (2026-07-24, Session 13)
+
+**Documentation-only session. No code, no migrations, no flag changes, nothing reverted.** This
+section records a strategic decision so the next working thread does not re-tread rejected ground.
+It is **additive** — no Engine v2 documentation was deleted or altered; the v2 arc history below
+stays intact.
+
+### What happened, in order
+
+1. **v1 was never the problem.** Profile 1 (main) has been on v1 throughout; every v2 session
+   verified it byte-identical. v1 produces genuinely deep, multi-goal sessions — the 16-exercise /
+   4-section / 60-minute example above, with autoregulation reasoning drawn from HRV and weekly
+   target status. **That depth is the target state and stays.**
+2. **The v2 sessions were thin BY CONSTRUCTION.** The 0.70 work-floor invariant (ROADMAP §6)
+   rewarded "technically fills the time." The model satisfied it the cheap way — few exercises,
+   inflated per-segment minutes — instead of prescribing rich multi-exercise blocks. Optimizing
+   that proxy produced sparse sessions. This is the root cause of the depth complaint, **not** a
+   tuning problem, and not something a different floor value would fix.
+3. **A context check was run against the PREVIOUS thread's actual statements** to resolve a
+   disagreement about what had been claimed regarding v1. Findings, recorded so they are not
+   re-litigated:
+   - **v1 is NOT context-starved.** It feeds 13 ordered blocks, and its length guard was raised
+     **6000 → 28000** in session 17. The "can't see enough context" problem was **v2's PLANNER**,
+     not v1.
+   - **"High randomness" was a real finding about the `extract_exercises` call** (temperature),
+     **NOT** about v1 daily-rec generation. See "AI Temperature Policy" above.
+   - **"Doesn't scale as it learns" is real but was a v2-PLANNER gap** (no phase/progression
+     context), not a v1 defect. v1 *does* lack **persisted progression memory** — that is the real
+     forward-looking gap, and it is what the next direction addresses.
+
+### Decisions
+
+- **Focus reverts to v1.** v1 is the engine that ships; new capability is ADDED to v1.
+- **v2 code REMAINS in the repo, flag-gated off.** NOT deleted, NOT reverted, NO tables dropped.
+  It is preserved for possible future reference.
+- **Profile 4 was NOT flipped this session.** The revert audit/execution was scoped, then the
+  athlete chose to pivot to forward design instead. **Its honest current state: still
+  `engine_v2 = true`, still carrying the cloned data and the v2 writes** (`training_blocks`,
+  `planned_sessions`, `v2_daily_cache*`, `dossier*`, tiers, `schedule_v3`). If v2 is ever formally
+  decommissioned, that is a separate future task with its own scope.
+- **The next direction is NOT "finish v2."** It is a new, v1-based design (below).
+
+### REJECTED APPROACHES — do not re-propose
+
+Also recorded in ROADMAP §6 → "Rejected Approaches & Lessons — Engine v2 arc".
+
+1. **The 0.70 work-floor as a session-quality gate — REJECTED.** It incentivizes padding and
+   sparse sessions; it measures a proxy (time-fill) not the goal (content depth). Any future
+   time/content reconciliation must enforce **DEPTH** (real exercise count per block), not just
+   estimated-minutes-meets-stated-minutes.
+2. **"Honestly shorten light/rehab days" (Session 10 rec) — REJECTED.** Real PT protocols fill
+   full sessions and progress; the thinness was a missing progression model, not a correct low
+   volume.
+3. **Bolting maintenance-tier filler onto a thin driver skeleton — REJECTED.** It starves the
+   driver goal and produced the mixed-session under-fill that dogged the whole arc.
+4. **Rebuilding v1's capability as a from-scratch parallel engine (the entire v2 strategy) —
+   REJECTED as the strategy going forward.** Lesson: **ADD to v1**, which already produces the
+   depth and already coexists multiple goals in a single session. Do not replace it.
+
+### NEXT DIRECTION — forward pointer, NOT a build spec
+
+A **"real personal trainer" brain**, designed ON PAPER first (full model), then built ONE layer at
+a time, with each layer's generated goals/roadmaps tested before proceeding. **Roadmap/goal
+CREATION uses the Sonnet model (quality-critical), not Haiku.** Four layers:
+
+1. **Honest per-goal timeline** — realistic duration estimated per goal from its nature, not a
+   fixed 12-week block (hand PT ~4–8 wk; 135→175 bench ~3–6 mo; marathon ~1 yr).
+2. **Living adaptation** — timeline and arc-position flex with real performance and real gaps, in
+   **both** directions (faster → pull in; slower → spread; month off → step back and re-ramp).
+3. **Coexistence engine** — classify goals as **COEXIST / SEQUENCE / GATE** against the athlete's
+   real weekly time + recovery budget; be honest when goals don't fit and require picking a lead.
+4. **Session depth** — keep v1's existing depth; port v2's hand-verified
+   `estimateSegmentWorkMinutes` into v1 as a **DISPLAY/CONTENT RECONCILER** that enforces depth,
+   explicitly **NOT** as the rejected 0.70 gate.
+
+**These four layers are a DESIGN TARGET, not yet approved for build.** The immediate next step is
+an **AUDIT** of what v1 already persists for roadmaps, timelines, and multi-goal scheduling
+(Living Goal Roadmaps, Macro Roadmap, and the schedule system — anchors / frequency targets /
+add-ons), so the paper model is designed against what exists rather than from scratch.
+
+### SALVAGE list — what to carry forward from v2
+
+- **`estimateSegmentWorkMinutes` / `estimateSessionWorkMinutes`** (`server/coachingRules.js`) —
+  hand-verified accurate; reusable in v1 as a **content reconciler** (enforcing depth), never as
+  the 0.70 gate.
+- **The COEXIST / SEQUENCE / GATE framing and the honest-timeline idea** — genuinely new (neither
+  v1 nor v2 had them), and the novel part of the next design.
+- **NOT salvaged:** the single-plan model, the allocation invariant, and the alternate-card UI —
+  either regressions, or solutions to problems v1 does not have.
+
+---
+
+## Engine v2 — arc state at pause (was "NEXT SESSION STARTS HERE", superseded 2026-07-24, Session 13)
+
+> **⚠ PARKED.** The queue below was accurate as of the Session 12 close-out and is kept verbatim
+> as the record of where the v2 arc stopped. It is **no longer the next work** — see the strategic
+> pivot above. Do not start item 1 (B) from this list without an explicit decision to resume the
+> v2 arc.
 
 Engine v2 is code-complete across all 7 phases plus Sessions 8-12, verified live on profile 4,
 profile 1 byte-identical throughout. **The athlete-facing surface is now DONE** — Session 12's
