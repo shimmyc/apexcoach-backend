@@ -6169,6 +6169,13 @@ async function adaptGoalRoadmap(goal, notes, workouts, trigger, goalExCtx) {
     timeline_range: parsed.timeline_range || prev.timeline_range || null,
     timeline_note: parsed.timeline_note || prev.timeline_note || null,
     date_confidence: parsed.date_confidence || prev.date_confidence || null,
+    // CARRY THE ESTIMATE FORWARD. Found live (session #35): an adapt rebuilt the
+    // roadmap object from scratch and silently dropped roadmap.estimate, so the
+    // roadmap lost its record of what it was built from and the "your settings
+    // changed, rebuild this" staleness check could never fire again. An adapt
+    // reshapes phase CONTENT — it never re-estimates the timeline, so the
+    // estimate the roadmap was generated from is still the correct one.
+    estimate: prev.estimate || null,
     phases: parsed.phases,
     generated_at: prev.generated_at || now,           // preserve original generation time
     version: (typeof prev.version === "number" ? prev.version : 1) + 1,
