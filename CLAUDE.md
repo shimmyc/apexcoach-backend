@@ -1730,7 +1730,14 @@ bare `console.log` that read like success. Practical damage: the briefs were gui
 chars and `exerciseHistory` cut to top-5 **on every call**, silently discarding part of the
 session #30 (B33a) PERSONAL BEST progression signal.
 Now **28000**, above the real untrimmed total, so the ladder fires only on a genuinely oversized
-prompt (verified: `trims: none` on a normal day). Raising the *input* budget is safe for latency —
+prompt (~~verified: `trims: none` on a normal day~~ — **⚠ STALE, corrected 2026-07-25 session #39:
+a real `auditOnly` run against profile 1 reports `_startedAt 28336` · `_total 26582` ·
+`_budget 28000` · `_trims "historicalBrief->400"`, so the FIRST rung already fires on a normal day.
+The guard is still working — the total lands under budget and `exerciseHistory` survives intact at
+2,903 chars — but real headroom is **1,418 chars**, not "none used". Component breakdown at that
+measurement: systemPrompt 6934 · roadmapEmphasis 2112 · exerciseHistory 2903 · coachingBrief 2343 ·
+focusOverride 1861 · fullProfile 1607 · timeBudget 1539 · microGoals 1347. Next rung is
+`coachingBrief 2343→400`, worth ~1,943 chars**). Raising the *input* budget is safe for latency —
 session #29 established generation time is driven by **output** size, still capped by the
 conciseness block. An exhausted-but-still-over state is a `console.warn`. Per-section lengths log
 permanently via `promptSections` (this prompt's bugs have only ever been caught by inspecting the
@@ -2631,6 +2638,168 @@ been seen to fire.
 
 ---
 
+## PT Brain — Session D, PHASE 1 AUDIT RESULT (2026-07-25, session #39)
+
+> **⚠ RECORDED BEFORE ANY BUILD. At the time this section was written, NOTHING had been built —
+> no code, no deploy; the repo was exactly as Session C left it.** This audit was completed in a
+> context that was lost before it reached the docs. It is written down here so a future context
+> loss cannot destroy it again. **These findings are AUTHORITATIVE — do not re-run this audit.**
+
+Layer 4 (session depth) is the last PT Brain layer and the **first one to change code that
+profile 1 runs every day** (`fetchAI`'s daily-rec prompt). Sessions A–C deliberately never touched
+a `fetchAI` builder.
+
+**Benchmark on record — the primary success criterion.** v1's current profile-1 output is a
+**60-min rec, 16 exercises, 4 labeled sections, real autoregulation reasoning**. **Non-regression
+of that depth outranks every feature in Layer 4.** A depth regression here is the exact failure
+that killed Engine v2.
+
+### A1 — ESTIMATOR: keep the existing heuristic (option (c)). APPROVED, SETTLED.
+
+The v2 salvage candidate `estimateSegmentWorkMinutes` (`server/coachingRules.js`) was evaluated
+against real content and **deliberately NOT ported**:
+
+- **Constants identical by construction.** `coachingRules.js` derived them FROM v1:
+  `WORK_MIN_PER_STRENGTH_SET 1.5 = REC_MIN_PER_SET`, `WORK_MIN_PER_MOBILITY_SET 1.0 =
+  REC_MIN_PER_MOBILITY`, `WORK_MIN_REST_PER_HOLD 1.0 =` v1's "+1 min" per hold.
+- **It parses no strings.** It reads STRUCTURED objects (`ex.sets`, `ex.reps`, `ex.time_seconds`,
+  `seg.type`, `seg.duration_min`). v1 rec sections carry FREEFORM strings
+  ("Bench Press 3x8 @ 135lbs"), so a port requires a string→structure parser feeding an estimator
+  that computes what `estimateExerciseMinutes` already computes — **the parser IS the existing
+  function's entire job.**
+- **Its two genuine additions fire ZERO times on real content.** Measured on profile 1's live rec
+  (**32 exercise lines, 11 sections**): whole-segment-bare → declared minutes never applies (only
+  **3/32 lines bare = 9%**, no section all-bare); the segment-type mobility rate is redundant
+  because `recIsMobilityish()` already catches every yoga/mobility name present.
+
+**TAKE ONE THING:** the **all-bare-section rule** as a **3-LINE ADDITION** to
+`estimateExercisesMinutes` (not a port) — now implementable because `sections[].minutes` has
+existed since session #31.
+
+**HARD INVARIANT:** `estimateExerciseMinutes` must remain **ONE implementation with TWO
+consumers** — `buildTimeBudgetContext` (prompt) and `verifyRecTimeBudget` (verifier) — so they can
+never disagree. **Prove this in verification.**
+
+### A1b — EMPIRICAL FINDING: the 0.70 gate would have failed accepted content
+
+Profile 1's live, **athlete-ACCEPTED** rec estimates at **36/60, 23/45, 18/30 min =
+60% / 51% / 60%** of stated time. **Every option would have FAILED a 0.70 work-floor.** Direct
+measured confirmation of the ROADMAP §6 rejection, and the standing constraint for this layer:
+**the depth floor must never become a time floor by another name.**
+
+### A2 — DEPTH FLOOR: table PROPOSED, ONE OPEN GATE
+
+Measured on profile 1's live output (a **mobility/yoga day**) — *section: declared min / distinct
+movements*:
+
+| section | measured |
+|---|---|
+| Warm-up | 8/3 · 5/2 |
+| Main Flow | 30/4 · 25/4 · 18/4 |
+| Posture add-on | 12/3 |
+| Core + Hand | 10/3 |
+| Hand Reset | 5/3 · 5/3 |
+| Dead Hang Everday | 5/1 · 7/1 |
+
+Two findings shape the table:
+1. **A 25–30 min Main carries only 4 movements in ACCEPTED output.** `≥4 at 25 min` exactly
+   ratifies; `≥5` would fail live good content.
+2. **Single-movement habit blocks are correct and common** (Dead Hang appears in all 3 options).
+   Any floor `≥2` would flag them every day.
+
+**Proposed table** — the floor applies only to sections with declared minutes **≥ 8**:
+
+| declared minutes | minimum distinct movements |
+|---|---|
+| `< 8` | **EXEMPT** (habit / reset / single-purpose blocks) |
+| `8–14` | 2 |
+| `15–24` | 3 |
+| `≥ 25` | 4 |
+
+Every live section passes; **two Main sections sit exactly at the line with zero margin**
+(acceptable given the rule is warn-only).
+
+**⚠ THIS IS DERIVED FROM ONE MOBILITY DAY ONLY — the open gate.** A strength-day measurement
+(denser: the benchmark is 16 exercises / 4 sections / 60 min) is required, and the table must be
+**re-derived against both a sparse and a dense day and any revision reported BEFORE anything is
+built against it.** Governing rule: **the floor must RATIFY existing accepted quality, never impose
+a new target — if any threshold would flag good live content, lower it.**
+
+### A3 — ARC BLOCK: APPROVED, SETTLED
+
+`arc_state` is confirmed reachable client-side at
+`currentProfileData.goals[].roadmap.arc_state` (Session B renders the RE-RAMPING chip from it;
+`cleanProfileData` is recursive and type-preserving). **Profile 1 has 8 goals and ZERO arc goals**
+— all legacy roadmaps — so this contributes **0 chars and 0 behaviour change on the
+regression-risk profile.**
+
+Shape: self-capped, **top-3 by priority, protected tier**, mirroring `buildRoadmapEmphasisContext`.
+Header: `ARC STATE (computed from the athlete's log — the ONLY source of these facts)`. One line
+per arc goal (status, earned week vs calendar, drift, `re_ramp` target + since-date). Then an
+INSTRUCTION line: prescribe for the **EARNED** position not the calendar; a re-ramping goal gets a
+lighter rebuild-the-base session and honest framing; **never state a position/drift/week number not
+listed above; never contradict it.** **Reuse the adapt prompt's ARC REALITY wording VERBATIM.**
+
+Cap ≈ 3 goals × ~110 chars + instruction ≤ **500 chars**. Zero arc goals → **empty string, no
+header, no placeholder.**
+
+### A4 — PROMPT BUDGET: measured, APPROVED to proceed
+
+Real `auditOnly` run against profile 1: `_startedAt 28336` · `_total 26582` · `_budget 28000` ·
+`_trims "historicalBrief->400"`.
+
+| component | chars |
+|---|---|
+| systemPrompt | 6934 |
+| roadmapEmphasis | 2112 |
+| exerciseHistory | 2903 |
+| coachingBrief | 2343 |
+| focusOverride | 1861 |
+| fullProfile | 1607 |
+| timeBudget | 1539 |
+| microGoals | 1347 |
+
+**Headroom 1,418.** Projected: profile 1 (0 arc goals) `+~300` depth → ~26,882, headroom
+**~1,118 ✅**; a fully-arc'd profile `+300` depth `+500` arc → ~27,382, headroom **~618 ✅**.
+Untrimmed rises 28,336 → ~29,136 so the ladder trims harder; the next rung
+(`coachingBrief 2343→400`) frees ~1,943.
+
+**This also corrects a stale doc claim** — session #31's "verified: `trims: none` on a normal day"
+is **not** the measured reality; `historicalBrief->400` already fires on a normal day. Corrected in
+place in the "Prompt length guard" section above and in ROADMAP §9.
+
+### A5 — CAPACITY CARD: root cause FOUND, one-liner
+
+**Session C's §6 entry calling this a "render-ordering pass" was a MISDIAGNOSIS.** The premise —
+that `renderCapacityCard()` runs in the Profile render fan-out — is false.
+
+**Actual cause:** Session A appended `renderCapacityCard(); loadCapacityFit();` after
+`renderFocusOverrideCard()`, and that call site landed **INSIDE `foPersist(fo, reason)`**
+(`public/index.html:6843`) — the **Focus-Override SAVE handler**, not the profile render fan-out.
+The card therefore only ever renders when a Focus Override is saved; **never on boot, never on tab
+switch.** The observed symptom (it renders correctly once called) was the function working fine and
+simply not being called.
+
+**Fix:** call both from `showTab()`'s existing `if (name === 'profile')` branch. Leave the
+`foPersist` call in place (harmless).
+
+### A6 — BACK-COMPAT: unchanged
+
+`recOptionSections` / `recOptionExerciseStrings` / `recDeclaredSectionMinutes` remain the single
+seam. **Depth measurement reads through `recOptionSections`**, so a legacy flat rec presents as one
+unlabeled section with no declared minutes and is **exempt under the `<8` gate**. No consumer
+signature changes.
+
+### FILES for the build
+
+**`public/index.html` ONLY.** `buildTimeBudgetContext` (+depth minimums); `verifyRecTimeBudget`
+(+depth reporting, still **warn-only** — never blocks, never auto-regenerates);
+`estimateExercisesMinutes` (all-bare-section rule); a new `buildArcStateContext()` inserted beside
+`roadmapEmphasisContext` as a **protected tier**; `showTab` (capacity fix). **No server changes, no
+`server/` file, no v2 file.**
+
+---
+
 ## NEXT SESSION STARTS HERE — PT BRAIN, LAYER 4 (updated 2026-07-25, Session 17)
 
 > **⚠ STATUS: PT Brain SESSIONS A, B AND C ARE SHIPPED AND VERIFIED** (Sessions 15–17,
@@ -2639,13 +2808,16 @@ been seen to fire.
 > `ROADMAP.md` §7 → "NEXT DIRECTION — the 'PT Brain'".
 >
 > **THE NEXT BUILD SESSION IS LAYER 4 — session depth. It is the LAST layer and it is
-> independent of A/B/C.** From the North Star: swap `estimateExerciseMinutes`'s role for the
-> salvaged, hand-verified `estimateSegmentWorkMinutes` (`server/coachingRules.js`), and add a
-> depth floor expressed as **CONTENT** — a minimum number of **distinct movements per section**,
-> scaled to section minutes and type (e.g. a 25-min Main carries ≥4 movements). **Explicitly NOT
-> a time-fill ratio** — that is the rejected 0.70 gate (§6). **Prompt-side first;**
-> `verifyRecTimeBudget` stays **warn-only**, and a regenerate loop is added only if a week of
-> live use shows the prompt alone doesn't hold.
+> independent of A/B/C. ⚠ ITS PHASE 1 AUDIT IS ALREADY DONE AND RECORDED — see "PT Brain —
+> Session D, PHASE 1 AUDIT RESULT" directly above. Do not re-run it.** The audit **rejected** the
+> `estimateSegmentWorkMinutes` port on measured evidence (keep `estimateExerciseMinutes`; take only
+> the all-bare-section rule as a 3-line addition) and **proposed** the depth-floor table
+> (`<8` exempt · `8–14`→2 · `15–24`→3 · `≥25`→4), which is **derived from one mobility day and
+> still needs a strength-day re-derivation before anything is built against it.** The floor is a
+> minimum number of **distinct movements per section**, **explicitly NOT a time-fill ratio** — that
+> is the rejected 0.70 gate (§6), and profile 1's accepted rec measures 60%/51%/60%, i.e. it would
+> have failed that gate. **Prompt-side first;** `verifyRecTimeBudget` stays **warn-only**, and a
+> regenerate loop is added only if a week of live use shows the prompt alone doesn't hold.
 >
 > **⚠ Layer 4 is the FIRST session that crosses the boundary A/B/C deliberately respected.**
 > Sessions A–C never touched a `fetchAI` builder or the daily-rec prompt. Layer 4 does. Expect
@@ -2657,9 +2829,11 @@ been seen to fire.
 > goals; legacy goals have none, so the builder must tolerate its absence.
 >
 > **Read before starting:** ROADMAP §6 → "PT Brain Session C — Known Limitations" (item 1, the
-> capacity card's render-ordering bug, is a real open UI defect) and "Session B — Known
-> Limitations" (item 1, arc evaluation still has no time-based trigger — app-open narrowed it,
-> did not close it).
+> capacity card — **⚠ its "render-ordering" diagnosis was WRONG; session #39 found the real cause:
+> the render call landed inside `foPersist`, the Focus-Override save handler, so the card only ever
+> renders on a Focus-Override save. One-liner: call it from `showTab()`'s profile branch**) and
+> "Session B — Known Limitations" (item 1, arc evaluation still has no time-based trigger —
+> app-open narrowed it, did not close it).
 >
 > **Still logged as DESIGN-FIRST, not built:** goal completion behavior (stop / hold at
 > maintenance / roll into a higher goal); auto-apply of coexistence proposals as an opt-in
