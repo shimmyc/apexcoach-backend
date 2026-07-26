@@ -2550,45 +2550,120 @@ exercised end-to-end on real data.
 
 ---
 
-## NEXT SESSION STARTS HERE — PT BRAIN, SESSION C (updated 2026-07-25, Session 16)
+## PT Brain — Session C (2026-07-25, Session 17): Layer 3, the coexistence engine
 
-> **⚠ STATUS: PT Brain SESSIONS A AND B ARE SHIPPED AND VERIFIED** (Sessions 15 and 16,
-> 2026-07-25). See "PT Brain — Session A" and "PT Brain — Session B" above for the full
-> implementation records and live verification tables. Design of record: `ROADMAP.md` §7 →
-> "NEXT DIRECTION — the 'PT Brain'".
+**Propose, never write.** The verdict produces a schedule **delta proposal**; approving it is
+what applies it, through the ordinary `schedPersist()` path — so the app still has exactly one
+schedule writer and `goal_ids` round-trip like any athlete edit. Additive jsonb, no DDL, no npm
+deps, no v2 files, macro **phase** paths and every `fetchAI` builder untouched (Layer 4 boundary).
+
+### Storage: `profile_data.coexistence` — and why not `roadmap_data`
+The North Star named `roadmap_data.coexistence`. Phase 1 found two blockers: `roadmap_data` is
+**null on 3 of 5 profiles**, and **both** macro writers (`POST /roadmap-data`,
+`adaptMacroRoadmap`) rebuild the column from a fixed key list and would have silently dropped the
+verdict on the next regenerate or stale workout save — the Session A `roadmap.estimate` bug class,
+caught by inspection this time. `profile_data` always exists, is covered by `cleanProfileData` and
+the PATCH merge, and needs no macro changes. **Proven live: a real macro regenerate left the
+verdict intact.**
+
+### The classifier — `classifyCoexistence()`
+Fixed ordering **GATE → capacity (code) → COEXIST | SEQUENCE**.
+- **GATE**: Sonnet proposes "A must wait for B" with every id validated against real goals; the
+  prompt states plainly that most athletes have zero gates and that priority/busyness are NOT
+  gating reasons. Gates arrive `confirmed:false` and contribute **full** demand until the athlete
+  confirms; a **confirmed** gate contributes **zero** to `computeCapacityFit`. Code enforces.
+- **CAPACITY**: unchanged Session A arithmetic, two axes.
+- **SEQUENCE**: Sonnet picks the lead from priority order + goal type + arc status, with
+  **`arc_state` treated as optional** so legacy goals with no arc can still lead. Code-authored
+  fallback to `goals[0]` (array order IS priority) on any model failure.
+
+### The delta — `buildScheduleDelta()`
+Four ops over **`frequency_targets` only**. Anchors are the athlete's fixed commitments and are
+never read or written. Addons are excluded because presence-level matching cannot verify them.
+
+**`link_existing` is deliberately narrow.** Category agreement alone would attach "Bench press
+175 lbs" to a broad "Upper Body Strength" target. `targetServesGoal()` requires a shared
+**meaningful keyword** between goal title and target activity (numeric/weak tokens dropped, reusing
+the arc stop-list) plus a muscle-disjointness guard. Bench therefore falls through to `create` and
+legitimately gets its own narrow target **alongside** the broad one — that is correct, not
+duplication. "Wrist Rehab" correctly links. **An athlete-typed activity string is never renamed**;
+`link_existing` only adds a `goal_id` and sets the number. A created target sets **`stackable`
+explicitly**, so `schedRenderTargets`' first-edit materialisation cannot silently change it later.
+
+### Triggers
+Goal creation (**record-only** — the Session A negotiation was already the decision, so no
+proposal is produced), capacity edit, dial change, gate decision, and a manual "Re-check my week".
+**Not on workout save.** Handoff detection rides the existing arc evaluation at
+`position_week / W ≥ 0.75` for the current lead only and merely **flags** — no AI call, so the
+save path stays AI-free.
+
+### App-open arc evaluation
+`POST /api/profiles/:id/evaluate-arcs` (user-facing, not admin-gated — same posture as
+`GET /api/v2/today`), fired fire-and-forget from `bootApp`. Server-gated on the existing 24h
+staleness: fresh → `{skipped:true}` with no fetches. **Zero AI calls either way.** Decay now
+accrues across a prolonged break instead of landing all at once on the next workout save.
+
+### Bug found live
+**`capApplyDelta` was not idempotent.** The delta is applied *before* the decision status is
+recorded, so a failure between them (observed: the browser process died mid-flight) left the
+schedule updated with the proposal still `pending` — and re-approving would create a second
+identical target. A `create` now skips when the goal already has a linked target.
+
+### Verified live (profile 4)
+| Check | Result |
+|---|---|
+| Classification | `sequence`, `275/300 min`, **`4/3 hard`** — the hard axis is what broke it |
+| Lead + note | rehab leads; note names the real numbers and why (injury-related, top priority, stalled) |
+| Delta | 3 ops: create rehab target, `drop_to_min_viable` bench's **already-linked** target 2→1, create marathon |
+| (b) REJECT | schedule sha256 **byte-identical**, `status:rejected`, `athlete_decision_required` stays true |
+| (b) APPROVE | 2 targets created with correct `goal_ids`, **explicit `stackable`** (rehab `true`, marathon `false`); anchors untouched |
+| (c) GATE | proposed bench-gated-by-wrist with a sound clinical reason; **confirm → 275→240 min, 4→3 hard, verdict flips to `gated_mixed`**, bench listed `excluded: gated` |
+| (e) app-open | repeat calls same day → `{skipped:true, reason:"fresh"}` |
+| link narrowing | 16 unit tests on shipped fns: bench does **not** attach to "Upper Body Strength"; a real bench target **does** link; typed strings never rewritten |
+| macro survival | a real macro regenerate left `coexistence` intact — the A1 wipe is **moot** |
+| **profile 1** | goals sha256 **identical**; no `coexistence`; `roadmap_data` 5 phases, no coexistence key |
+
+**Not verified live:** (d) the handoff proposal firing at ≥75% (the lead's arc is at week 0 —
+constructing it needs many more logged weeks than the session had budget for), (f)/(g) the
+derived-target-through-the-week-preview check, and the stale branch of app-open evaluation (only
+the fresh/skip branch was exercised). The handoff **code path** is wired and logged; it has not
+been seen to fire.
+
+---
+
+## NEXT SESSION STARTS HERE — PT BRAIN, LAYER 4 (updated 2026-07-25, Session 17)
+
+> **⚠ STATUS: PT Brain SESSIONS A, B AND C ARE SHIPPED AND VERIFIED** (Sessions 15–17,
+> 2026-07-25). Three of the four North Star layers are live. See the "PT Brain — Session A/B/C"
+> sections above for implementation records and live verification tables. Design of record:
+> `ROADMAP.md` §7 → "NEXT DIRECTION — the 'PT Brain'".
 >
-> **THE NEXT BUILD SESSION IS SESSION C — Layer 3, the coexistence engine. DESIGN DISCUSSION
-> FIRST — the North Star explicitly says do NOT blind-build it.** The open design items named
-> there are the **write-vs-propose UX** (the verdict WRITES the schedule, but the athlete
-> controls the spectrum from manual anchors to full AI fill) and the **spectrum control** itself.
+> **THE NEXT BUILD SESSION IS LAYER 4 — session depth. It is the LAST layer and it is
+> independent of A/B/C.** From the North Star: swap `estimateExerciseMinutes`'s role for the
+> salvaged, hand-verified `estimateSegmentWorkMinutes` (`server/coachingRules.js`), and add a
+> depth floor expressed as **CONTENT** — a minimum number of **distinct movements per section**,
+> scaled to section minutes and type (e.g. a 25-min Main carries ≥4 movements). **Explicitly NOT
+> a time-fill ratio** — that is the rejected 0.70 gate (§6). **Prompt-side first;**
+> `verifyRecTimeBudget` stays **warn-only**, and a regenerate loop is added only if a week of
+> live use shows the prompt alone doesn't hold.
 >
-> **What Session C inherits:**
-> - **The capacity fit check already exists and is proven** (`computeCapacityFit`, two axes:
->   minutes and recoverable hard sessions; `DONE`/`PAUSED` excluded). Layer 3 adds the
->   GATE → capacity sum → COEXIST | SEQUENCE classifier and the persisted verdict at
->   `profiles.roadmap_data.coexistence`. **None of that storage exists yet — Session A
->   deliberately wrote nothing** (verified: no `coexistence` key on any goal or on `roadmap_data`).
-> - **The keystone join now has a real consumer** (`arcLinkedItems`/`arcQualifyingDates`), so
->   Layer 3 writing `times_per_week` into the schedule will immediately feed Layer 2's earned
->   position. That coupling is the point — and the risk: a verdict that rewrites the schedule
->   changes what "qualifying" means for every linked goal.
-> - **`arc_state` is live** and is the honest input for "is this athlete actually keeping up with
->   the goals they already have" — which is exactly the question SEQUENCE should ask before
->   handing the lead over at ~75% of the lead's arc.
-> - **Dangling `goal_ids` are still not validated** (ROADMAP §6, Session A item 5). Layer 3
->   should resolve them defensively when it writes the schedule.
-> - **Macro-roadmap paths are still 3+2 and untouched** (`MACRO_ROADMAP_SYS`,
->   `adaptMacroRoadmap`) — deliberately deferred to Layer 3, which is when the macro roadmap
->   finally has a reason to change.
+> **⚠ Layer 4 is the FIRST session that crosses the boundary A/B/C deliberately respected.**
+> Sessions A–C never touched a `fetchAI` builder or the daily-rec prompt. Layer 4 does. Expect
+> the audit to be about `fetchAI`'s assembly order, the 28000-char budget, and the trim ladder —
+> none of which has been read in this arc.
 >
-> **Read ROADMAP §6 → "PT Brain Session B — Known Limitations" before starting.** Item 1 (arc
-> evaluation only runs on a workout save — the honest open gap) and item 2 (anchor/addon matching
-> is structurally weaker) both bear on what Layer 3 can rely on.
+> **Layer 4's one cross-layer input:** `arc_state` should drive prescribed volume/intensity so a
+> re-ramp visibly **is** a re-ramp. `goal.roadmap.arc_state` is live and populated on new-shape
+> goals; legacy goals have none, so the builder must tolerate its absence.
+>
+> **Read before starting:** ROADMAP §6 → "PT Brain Session C — Known Limitations" (item 1, the
+> capacity card's render-ordering bug, is a real open UI defect) and "Session B — Known
+> Limitations" (item 1, arc evaluation still has no time-based trigger — app-open narrowed it,
+> did not close it).
 >
 > **Still logged as DESIGN-FIRST, not built:** goal completion behavior (stop / hold at
-> maintenance / roll into a higher goal) — a completed goal's arc must stop advancing and its
-> capacity claim is an open question. Prior art: the ACHIEVED MILESTONES never-auto-escalate
-> precedent. **Layer 4 (session depth) remains independent and can slot in anywhere.**
+> maintenance / roll into a higher goal); auto-apply of coexistence proposals as an opt-in
+> setting; the intake-question overlap audit.
 >
 > **Engine v2 remains PAUSED and its strategy REJECTED going forward.** Everything documented below
 > about v2 stays accurate as history and is deliberately preserved — but the queued v2 work (B

@@ -4,6 +4,38 @@
 > Pairs with `CLAUDE.md` (deep implementation notes) and `FORMULAS.md` (readiness/sleep math).
 > Last updated: 2026-07-25.
 >
+> **2026-07-25 session #38 — PT BRAIN SESSION C SHIPPED: Layer 3, the coexistence engine.**
+> Classifies the athlete's goals against their real week (GATE → capacity in code →
+> COEXIST | SEQUENCE) and produces a schedule **DELTA PROPOSAL**. **The verdict never mutates
+> the schedule** — approving is what applies it, through the ordinary `schedPersist` path, so the
+> app still has exactly one schedule writer. Profile 1 goals byte-identical
+> (`0901b047d1c95f50…`), no `coexistence` key on profile 1, macro phases untouched.
+>
+> **Storage moved to `profile_data.coexistence` (approved).** Phase 1 found that
+> `roadmap_data` is **null on 3 of 5 profiles**, and that **both** macro writers
+> (`POST /roadmap-data` and `adaptMacroRoadmap`) rebuild the column from a fixed key list and
+> would have silently dropped the verdict on the next regenerate or stale workout save — the
+> Session A `roadmap.estimate` bug class, caught by inspection this time instead of by data loss.
+> **Proven moot live:** a real macro regenerate left `coexistence` intact. Neither macro path was
+> touched.
+>
+> **`link_existing` is deliberately narrow.** Category agreement alone would attach "Bench press
+> 175 lbs" to a broad "Upper Body Strength" target. The test is a shared *meaningful keyword*
+> between goal title and target activity, plus a muscle-disjointness guard — so bench falls
+> through to `create` and legitimately gets its own narrow target alongside the broad one, while
+> "Wrist Rehab" correctly links to the wrist-rehab goal. **An athlete-typed activity string is
+> never renamed.** 16 unit tests on the shipped functions.
+>
+> **One bug found live:** `capApplyDelta` was not idempotent — the delta is applied before the
+> decision status is recorded, so a failure between them left the schedule updated with the
+> proposal still `pending`, and re-approving would duplicate a target. A `create` now skips when
+> the goal already has a linked target.
+>
+> **Also shipped:** app-open arc evaluation (`POST .../evaluate-arcs`, 24h-gated, zero AI calls)
+> so decay accrues across a break instead of landing all at once — this narrows, but does not
+> fully close, the §9 "no time-based trigger" gap. Full record: `CLAUDE.md` → **"PT Brain —
+> Session C"**. **Next: Layer 4 (session depth) — the last layer, and independent.**
+>
 > **2026-07-25 session #37 — PT BRAIN SESSION B SHIPPED: Layer 2, living adaptation (earned
 > arc position).** The calendar no longer advances you; doing the work does. `position_week` is
 > a pure code-owned replay of the log — the AI narrates it and never authors it. Applies to
@@ -2327,6 +2359,30 @@ All verified present in `server.js`. `:id`/`:userId` = profile id.
   `SELECT` instead). Also worth knowing: the PATCH writes `cleanProfileData(pd)`, so it
   simultaneously re-sanitizes every string in the column.
 
+### PT Brain Session C — Known Limitations (2026-07-25, session #38)
+
+1. **The capacity card does not always render on tab switch.** `renderCapacityCard()` runs in the
+   Profile render fan-out, but switching to the Profile tab with a freshly-loaded
+   `profile_data.capacity` left the card `display:none` until something re-rendered it. Observed
+   live; the card and all its content render correctly once called. **Real UI bug, not fixed** —
+   it needs a render-ordering pass rather than another call site bolted on.
+2. **`capApplyDelta` runs before the decision is recorded.** Now idempotent (a `create` skips when
+   the goal already has a linked target), so a failure between the two is recoverable — but the
+   ordering itself is still apply-then-record. Writing the status first would need the server to
+   own the apply, which would give the app a second schedule writer.
+3. **Gate proposals re-run on every classification.** A gate the athlete *declined* is removed
+   from the list, so the next classification can propose the same gate again. Confirmed gates
+   persist correctly. A "declined" tombstone would stop the re-ask; not built.
+4. **`targetServesGoal` is keyword-based.** It correctly refuses "Upper Body Strength" for a bench
+   goal and correctly links "Wrist Rehab", but a target named in words the goal title doesn't use
+   ("Pressing Work" for a bench goal) will fall through to `create`. That is the safe direction —
+   an extra narrow target rather than a wrong attachment — but it is not semantic matching.
+5. **SEQUENCE assumes one lead.** Two genuinely co-equal goals cannot both lead; the second drops
+   to `min_viable`. Correct for the honest-tradeoff design, but worth knowing before Layer 4.
+6. **Handoff only fires for the CURRENT `lead_goal_id`** and only once per lead (guarded by
+   `handoff.lead_goal_id`). A profile that has never been classified has no lead, so no handoff
+   can fire until the first classification runs.
+
 ### PT Brain Session B — Known Limitations (2026-07-25, session #37)
 
 1. **Arc evaluation only runs on a workout SAVE.** An athlete who logs nothing for weeks never
@@ -2693,8 +2749,31 @@ after Layer 1 ships.
 |---|---|
 | **A** | ✅ **SHIPPED 2026-07-25 (session #36).** Keystone join + Layer 1 + capacity + intake negotiation |
 | **B** | ✅ **SHIPPED 2026-07-25 (session #37).** Layer 2 — arc_state, gap decay + re-ramp, code-owned timeline flex, first consumer of `goal_ids` |
-| **C** | Layer 3 — **design discussion first. This is next.** |
-| **Layer 4** | Independent; slots in anywhere |
+| **C** | ✅ **SHIPPED 2026-07-25 (session #38).** Layer 3 — classifier, verdict, propose-and-approve delta, handoff, app-open arc evaluation |
+| **Layer 4** | Independent. **This is next — the last layer.** |
+
+#### Session C — decisions of record
+
+- **Verdict lives at `profile_data.coexistence`**, not `roadmap_data`. See the session #38 banner
+  for why; the macro paths were not touched and the choice is proven live.
+- **Propose, never write.** Approving applies the delta through `schedPersist()`. Rejecting
+  stores the verdict, leaves the schedule byte-identical, and keeps
+  `athlete_decision_required: true`. **Auto-apply is rejected for now** — revisit as an opt-in
+  setting once the athlete has seen enough proposals to trust them.
+- **Anchors are never in a delta.** Deltas touch `frequency_targets` only.
+- **Addons are out of scope and stay untracked** — presence-level matching cannot verify them.
+  **Related clarification (do NOT build):** a goal that genuinely needs only ~10 min/day belongs
+  in the normal goal system as a **low-demand goal with its own tracked `frequency_target`**, not
+  as an addon. It then appears in the roadmap and the capacity math like any other goal. Addons
+  remain what they are: unverified extras layered onto other sessions.
+- **Goal creation classifies in RECORD-ONLY mode** — the Session A negotiation was already the
+  athlete's decision for that moment, so no proposal is produced there.
+
+#### Also logged this session (DO NOT BUILD)
+
+- **Auto-apply as an opt-in setting.** Once proposals have earned trust, a per-profile setting
+  could apply low-risk deltas (frequency changes on already-linked targets) without asking, while
+  still requiring approval for `create` and `link_existing`.
 
 #### Storage shape as built (session #36 refinement, approved)
 
