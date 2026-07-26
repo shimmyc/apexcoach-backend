@@ -6541,6 +6541,15 @@ function capApplyDelta(delta) {
   var applied = 0;
   delta.forEach(function(d) {
     if (d.op === 'create') {
+      // IDEMPOTENCY GUARD (found live, session #38): the delta is applied BEFORE
+      // the decision status is recorded, so a failure between the two left the
+      // schedule updated with the proposal still `pending` — and re-approving
+      // would create a second identical target. A goal that already has a linked
+      // target never gets another one.
+      var already = targets.some(function(x) {
+        return Array.isArray(x.goal_ids) && (d.goal_ids || []).some(function(g) { return x.goal_ids.indexOf(g) >= 0; });
+      });
+      if (already) return;
       targets.push({
         id: schedNextId(targets, 'ft'), activity: d.activity, times_per_week: d.to,
         suggested_day: null, duration: null,
