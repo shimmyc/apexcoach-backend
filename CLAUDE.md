@@ -2800,16 +2800,170 @@ signature changes.
 
 ---
 
-## NEXT SESSION STARTS HERE — PT BRAIN, LAYER 4 (updated 2026-07-25, Session 17)
+## PT Brain — Session D (2026-07-25, session #40): Layer 4, session depth
 
-> **⚠ STATUS: PT Brain SESSIONS A, B AND C ARE SHIPPED AND VERIFIED** (Sessions 15–17,
-> 2026-07-25). Three of the four North Star layers are live. See the "PT Brain — Session A/B/C"
-> sections above for implementation records and live verification tables. Design of record:
-> `ROADMAP.md` §7 → "NEXT DIRECTION — the 'PT Brain'".
+**The last layer. The four-layer PT Brain arc is code-complete.** Five pieces, `public/index.html`
+ONLY — no server change, no `server/` file, no v2 file, no npm dep, SSE streaming untouched, CSS
+untouched (no new CSS at all), macro paths untouched. **The whole diff removes exactly three lines**,
+all signature/call-site edits to `estimateExercisesMinutes`.
+
+**⚠ FIRST PT Brain layer to change code profile 1 runs daily** (`fetchAI`'s prompt). A–C never
+touched a `fetchAI` builder. **Primary criterion was depth NON-REGRESSION, above every feature.**
+
+### The depth floor — CONTENT, never a time ratio
+`REC_DEPTH_TIERS` + `recDepthFloorFor(minutes)`: `<8 EXEMPT · 8–14→2 · 15–24→3 · ≥25→4`.
+Ratified **unchanged** against two real profile-1 days — a mobility/yoga day and a strength day, 12
+gated sections — **zero flagged**. Exempt below 8 min because single-movement habit/reset blocks
+(Dead Hang, hand resets) are correct and common; any floor ≥2 there would flag good content daily.
+
+**Explicitly NOT a time-fill ratio** — that is the rejected 0.70 work-floor (ROADMAP §6). The
+measured proof it had to be rejected: profile 1's own **accepted** recs estimate at **60% / 51% /
+60%** of stated time, so a 0.70 gate would have condemned content the athlete wanted.
+
+**Held AT the line, not dropped a notch — the reasoning, because it will come up again.** The number
+has two consumers with opposite failure modes. **In the prompt it is a TARGET**: state a minimum
+below accepted quality and the model has licence to produce less, which is the depth regression this
+layer exists to prevent. **In the verifier it is a TRIPWIRE**: at the line it fires the moment a
+section drops one movement below anything ever accepted. The prompt role wins because the costs are
+asymmetric — a false warn is one console line; a low minimum is lost depth on every rec, every day.
+Mitigation: `margin` is reported per section so an at-the-line pass stays legible. 5 of 12 gated
+sections sit at margin 0. **If spurious warns recur in real use, drop `≥25` to 3; never raise a tier.**
+
+`recSectionMovementCount()` counts **distinct** movements by name via `splitExerciseName`, so
+"Push-Up 3x12" + "Push-Up 3x15" collapse to one — listing the same movement twice buys no depth. A
+digit-leading name that strips to empty falls back to the raw string, so it still counts.
+
+`recOptionDepth(o)` reads through **`recOptionSections`**, so a legacy flat rec presents as one
+unlabeled section with no declared minutes → floor 0 → **exempt by construction**. A cached
+pre-sections rec can never be flagged.
+
+### All-bare-section rule — the ONE thing taken from v2
+`estimateExercisesMinutes(list, declaredMinutes)` gained an **optional** second argument: when every
+line in a section is bare (no minutes, no sets×hold, no sets×secs, no sets×reps — `recLineIsBare`
+mirrors `estimateExerciseMinutes`' own cases 1–4), the section is a continuous time block and its
+declared minutes are the better estimate. Every pre-existing caller passes one argument and is
+byte-identical.
+
+**`estimateSegmentWorkMinutes` was NOT ported** — evaluated against real content and rejected:
+constants identical to v1 by construction, it parses no strings while rec sections are freeform
+strings, and its two genuine additions fire zero times on the mobility day. **HARD INVARIANT held:
+`estimateExerciseMinutes` is ONE implementation with TWO consumers** (`buildTimeBudgetContext`,
+`verifyRecTimeBudget`).
+
+**⚠ Correction to the Phase 1 audit:** A1 said the rule "fires ZERO times" — that was the mobility
+day only. On the **strength** day it fires on 1 of 11 sections (Hand Rehab: `Wrist Circles` /
+`Reverse Prayer Stretch 30s` / `Slow Fist Open and Close`, declared 5 min → 4.0 → 5.0). Correct and
+tiny, and it is the **only** before/after time delta across either day.
+
+### Prompt side
+`buildSectionDepthContext()` generates the stated rule **FROM `REC_DEPTH_TIERS`**, the same table
+`recDepthFloorFor` reads — so the stated rule and the checked rule cannot drift. Phrased as a FLOOR
+with an explicit anti-padding clause ("never split one movement across two lines, restate it, or add
+filler; if a section only warrants one or two movements, give it FEWER MINUTES rather than padding
+it") — mandating section content **without** that clause is how `format_notes` learned to emit
+"None provided" filler (ROADMAP §9). Embedded inside `buildTimeBudgetContext`, so time and depth are
+one block. **641 chars.**
+
+### `buildArcStateContext()` — the cross-layer input
+Layer 2 computes `position_week` in code by replaying the log; this hands it to the daily rec so a
+re-ramp visibly **is** a re-ramp. Sits immediately after `roadmapEmphasisContext` because it
+**qualifies** it — emphasis says what the phase stresses, arc state says whether the athlete has
+earned their way into it. **Protected tier** (never trimmed) and therefore self-capping: top-3 goals
+by priority (array order IS priority), `ARC_CONTEXT_CHAR_CAP = 950`, and over-cap it drops the
+**lowest-priority whole line** rather than truncating mid-number.
+
+Header per the audit; instruction reuses the **ARC REALITY** wording verbatim from `adaptGoalRoadmap`
+(`server.js`, check 3) — the only edit is the added ", and so must today's session" clause applying
+the same sentence to a rec instead of a phase. **Legacy degrade: a goal with no `arc_state`
+contributes nothing; zero arc goals returns `''` — no header, no placeholder.** Profile 1 has 8 goals
+and ZERO arc goals, so this is **0 chars and 0 behaviour change** on the regression-risk profile.
+
+**⚠ The ≤500-char cap from the audit was not achievable**: the mandated-verbatim instruction is ~430
+chars on its own. Real worst case is ~935 (3 long-titled re-ramping goals).
+
+### A5 — capacity card, and why Session C's diagnosis was wrong
+`renderCapacityCard()` was **never in the profile render fan-out**. Session A's call sits inside
+`foPersist()` (`public/index.html:6843`), the Focus-Override **save** handler — so the card only
+rendered after saving an override; never on boot, never on tab switch. The function was always fine;
+nothing called it. Now called from **`showTab()`'s `if (name === 'profile')` branch** (tab switches,
+plus `loadCapacityFit()` for the server-computed readout) **and** from the **profile render fan-out**
+(boot), which is where Session A meant to put it. The `foPersist` call is left in place, harmless.
+The fan-out deliberately does **not** call `loadCapacityFit()` — it is a hot path that re-runs on many
+profile mutations, and the card renders fine from already-loaded `currentProfileData.capacity`.
+
+### Verification — 77 checks, two harnesses, 77 pass
+Both harnesses extract the **REAL shipped functions** out of `public/index.html` by source slicing and
+evaluate them in a `vm` sandbox — the `v2FoldedCards.test.js` discipline (run the actual code, never a
+hand-copied duplicate), applied to **both** the pre-change (`git show HEAD`) and post-change file so
+before/after is a true comparison.
+
+**PRIMARY (read-only, no writes to profile 1, strength day AND mobility day, before vs after):**
+per-section exercise counts, totals per option, exercise strings and declared minutes all
+**byte-identical** — strength `[[3,4,4,3],[2,3,4,3],[2,3,3]]`, mobility `[[3,4,3,3,1],[2,4,3,1],[4,3]]`,
+legacy `[[4]]`. **Zero depth drop anywhere.** The only time deltas are the two all-bare sections, each
+asserted to BE all-bare.
+
+**A REAL HARNESS BUG WAS FOUND MID-VERIFICATION AND IT MATTERS.** The first run reported 48/49, and
+the cause was the harness, not the product: the brace scanner did not skip comments, so an apostrophe
+in `// the model's own` opened a phantom string and swallowed braces, making `grabFunction`
+over-capture thousands of lines. **The functional tests passed anyway** — which is the danger. Fixed
+with proper comment/string/template/regex-literal handling **plus an over-capture guard that throws**
+(no other column-0 `function` may appear in a slice; every slice must re-parse). Re-run: 49/49.
+
+Other confirmed: floor still catches genuine thinness (a 30-min Main with 2 movements flags, short by
+2); duplicates buy no depth; verifier does not mutate the parsed rec, emits `[Depth]` warns saying
+"nothing was changed", and contains no regeneration call; **every band stated in the prompt matches
+`recDepthFloorFor()` at 8 boundary values**; exactly one `estimateExerciseMinutes`, one
+`estimateExercisesMinutes`, one `REC_DEPTH_TIERS`; legacy rec exempt and still time-verified via the
+heuristic; capacity card idempotent across 5 calls; trim ladder unchanged (same 4 rungs) with all
+seven protected blocks provably absent from it; **zero network/storage writes added anywhere in the
+diff**, `public/index.html` the only file touched.
+
+**Budget:** depth +641, arc up to 935. **Profile 1: 27,223 / 28,000, headroom 777, no extra trim,
+arc 0 chars.** A fully-arc'd profile lands 158 over untrimmed and pays one extra rung
+(`coachingBrief→400`, worth 1,943) — designed behaviour, predicted by A4.
+
+**NOT verified live:** item **(c)** — driving a profile-4 goal into `re_ramping` and confirming a
+generated rec reads as a re-ramp. Needs a deploy plus a real model call. The block's construction and
+constraints are fully verified; the model's response to it is not. **Run this first next session.**
+
+---
+
+## NEXT SESSION STARTS HERE — PT BRAIN ARC COMPLETE (updated 2026-07-25, session #40)
+
+> **⚠ STATUS: ALL FOUR PT BRAIN LAYERS ARE SHIPPED.** A, B and C (sessions #36–38) are shipped
+> **and verified live**. D / Layer 4 (session #40) is **shipped and verified structurally against
+> real profile-1 data (77 checks), but has ONE unverified-live item.**
 >
-> **THE NEXT BUILD SESSION IS LAYER 4 — session depth. It is the LAST layer and it is
-> independent of A/B/C. ⚠ ITS PHASE 1 AUDIT IS ALREADY DONE AND RECORDED — see "PT Brain —
-> Session D, PHASE 1 AUDIT RESULT" directly above. Do not re-run it.** The audit **rejected** the
+> | Layer | State |
+> |---|---|
+> | A — honest timelines + capacity + negotiation | shipped, **verified live** on profile 4 |
+> | B — arc_state, decay, re-ramp, timeline flex | shipped, **verified live** (2 items unit-tested only: rehab-vs-skill decay contrast, the shorten direction of flex) |
+> | C — coexistence engine | shipped, **verified live** (3 items open: handoff firing at ≥75%, derived-target-through-week-preview, stale branch of app-open evaluation) |
+> | D — session depth | shipped; depth non-regression + budget + capacity card **verified**; **item (c) NOT verified live** |
+>
+> **THE ONE CHECK TO RUN FIRST NEXT SESSION — Layer 4 item (c):** on **profile 4**, drive a goal
+> into `re_ramping` (Session B machinery), generate a rec, and confirm it visibly reads as a
+> re-ramp — lighter, rebuild-the-base prescription plus honest framing — **and that no arc number
+> appears that was not in the injected `ARC STATE` block.** Everything about the block's
+> construction is already verified; what is unverified is the model's response to it.
+>
+> **Carried forward, do NOT chase with synthetic data:** Session C's handoff firing,
+> derived-target-through-week-preview, and the stale branch of app-open arc evaluation.
+>
+> **Next build candidates** are the four items logged in ROADMAP §7 under "Logged session #40":
+> **L1** session pacing / circuit-style estimation (time calibration, NOT depth, and NOT a reason to
+> revisit the rejected 0.70 floor), **L2** section-label misplacement (assignment, not depth),
+> **L3** coexistence-awareness absent from the daily rec (closes the Layer 2/3/4 loop), **L4**
+> category + intensity in one action (**audit first — intensity may not reach the category-override
+> path at all, which would be a live bug**). None are built.
+>
+> **⚠ SUPERSEDED — LAYER 4 SHIPPED 2026-07-25 (session #40). See "PT Brain — Session D" above for
+> the implementation record. The paragraph below is the pre-build framing, kept for the record.**
+>
+> ~~THE NEXT BUILD SESSION IS LAYER 4~~ — session depth. It is the LAST layer and it is
+> independent of A/B/C. **Its Phase 1 audit is recorded in "PT Brain — Session D, PHASE 1 AUDIT
+> RESULT" above.** The audit **rejected** the
 > `estimateSegmentWorkMinutes` port on measured evidence (keep `estimateExerciseMinutes`; take only
 > the all-bare-section rule as a 3-line addition) and **proposed** the depth-floor table
 > (`<8` exempt · `8–14`→2 · `15–24`→3 · `≥25`→4), which is **derived from one mobility day and

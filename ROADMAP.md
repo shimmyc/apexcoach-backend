@@ -4,6 +4,84 @@
 > Pairs with `CLAUDE.md` (deep implementation notes) and `FORMULAS.md` (readiness/sleep math).
 > Last updated: 2026-07-25.
 >
+> **2026-07-25 session #40 — PT BRAIN SESSION D SHIPPED: Layer 4, session depth. THE FOUR-LAYER
+> PT BRAIN ARC IS NOW CODE-COMPLETE.** Five pieces, `public/index.html` ONLY — no server change, no
+> `server/` file, no v2 file, no npm dep, SSE path untouched, macro paths untouched. **The entire
+> diff removes exactly THREE lines, all of them signature/call-site edits to one function.**
+>
+> **⚠ This is the FIRST PT Brain layer to change code profile 1 runs every day** (`fetchAI`'s
+> daily-rec prompt). Sessions A–C never touched a `fetchAI` builder. **Primary success criterion was
+> depth NON-REGRESSION, above every feature — and it holds.**
+>
+> **STEP 1 GATE CLOSED — the strength-day measurement.** The athlete generated and pasted a real
+> profile-1 strength-day rec (category-pill path, which writes only `altRec` and never touches the
+> stored daily cache). 3 options / 11 sections / 34 exercise lines, verdict **accepted quality**.
+>
+> **THE TABLE IS RATIFIED UNCHANGED — no revision.** `<8 EXEMPT · 8–14→2 · 15–24→3 · ≥25→4`.
+> Across **12 gated sections spanning both days, ZERO are flagged.** Held **AT the measured line**
+> rather than dropped a notch, and the reason is that the number has two consumers with opposite
+> failure modes: **stated in the prompt it acts as a TARGET** (a minimum below accepted quality
+> invites regression — and non-regression is the primary criterion), while **in the verifier it acts
+> as a TRIPWIRE** (at the line it fires the moment a section drops one movement below anything ever
+> accepted). The prompt role dominates: a false warn costs one console line, a stated-too-low
+> minimum costs real depth on every rec every day. **Mitigation for the zero-margin concern:
+> `margin` is now reported per section**, so an at-the-line pass stays legible. 5 of 12 gated
+> sections sit at exactly zero margin (3 strength Mains, 2 mobility Mains) — the 6th Main (18 min /
+> 4 movements) carries +1.
+>
+> **VERIFICATION — 77 checks across two harnesses, 77 pass**, run against the REAL shipped functions
+> extracted from BOTH the pre-change (`HEAD`) and post-change `public/index.html` by source slicing
+> and evaluated in a `vm` sandbox (the `v2FoldedCards.test.js` discipline: run the actual code, never
+> a hand-copied duplicate). **PRIMARY, read-only, no writes to profile 1, both days:** per-section
+> exercise counts, total exercises per option, exercise strings and declared minutes are all
+> **byte-identical before vs after** — strength `[[3,4,4,3],[2,3,4,3],[2,3,3]]`, mobility
+> `[[3,4,3,3,1],[2,4,3,1],[4,3]]`, legacy `[[4]]`. **Zero depth drop anywhere.**
+>
+> **A REAL EXTRACTION BUG WAS FOUND AND FIXED MID-VERIFICATION, and it matters.** The first harness
+> run reported 48/49 with one structural check failing. The cause was **the harness, not the
+> product**: the brace scanner did not skip comments, so an apostrophe in `// the model's own` opened
+> a phantom string and swallowed braces, making `grabFunction` over-capture thousands of lines. The
+> functional tests had passed *anyway*, which is exactly the danger — a broken extractor that still
+> looks green. Fixed with proper comment/string/template/regex-literal handling **plus an
+> over-capture guard that throws** (no other column-0 `function` may appear inside a slice, and every
+> slice must re-parse). Re-run: **49/49**. This is why the extraction discipline exists.
+>
+> **ONE PHASE 1 FINDING WAS CORRECTED BY REAL DATA.** A1 recorded that the all-bare-section rule
+> "fires ZERO times" — that was measured on the **mobility day only**. On the strength day it fires
+> on **1 of 11 sections** (Hand Rehab: `Wrist Circles` / `Reverse Prayer Stretch 30s` /
+> `Slow Fist Open and Close`, all unquantified, declared 5 min → estimate 4.0 → 5.0). It is a small,
+> correct improvement, and it is the **only** before/after time delta anywhere in either day — every
+> other section's estimate is byte-identical.
+>
+> **PROMPT SIZE OVERSHOT THE PHASE 1 PROJECTION — measured and reported, not glossed.** Depth block
+> **+641** (projected ~300, after a tightening pass from an initial 919); arc block up to **935**
+> (projected ~500 — that estimate did not budget for the mandated-verbatim ARC REALITY instruction,
+> which is ~430 chars on its own). **Profile 1: 27,223 / 28,000, headroom 777, needs no extra trim,
+> and its arc block is 0 chars because it has 8 goals and ZERO arc goals.** A hypothetical
+> fully-arc'd profile lands 158 over the untrimmed budget and pays **one** additional ladder rung
+> (`coachingBrief→400`, worth 1,943) — the designed behaviour A4 predicted. **The trim ladder is
+> unchanged (same 4 rungs) and all seven protected blocks, `arcStateContext` included, are provably
+> absent from it.**
+>
+> **A5 capacity card FIXED, and the Session C diagnosis was wrong.** Confirmed in the live source:
+> `renderCapacityCard()` was never in the profile render fan-out — the call sits inside
+> `foPersist()` at `public/index.html:6843`, the Focus-Override **save** handler. Now called from
+> `showTab()`'s profile branch (tab switches, plus `loadCapacityFit()`) **and** from the profile
+> render fan-out where Session A meant to put it (boot). Verified idempotent across 5 repeated calls
+> against a stub DOM running the real shipped function and its real helpers; empty-state still
+> hides correctly.
+>
+> **NOT verified live (stated plainly):** item **(c)** — driving a profile-4 goal into `re_ramping`
+> and confirming a generated rec visibly reads as a re-ramp. That needs a deploy plus a real model
+> call; the block's **construction** and its content constraints are fully verified, the **model's
+> response to it** is not. Also carried forward unchased, per the brief: Session C's handoff firing,
+> derived-target-through-week-preview, and the stale branch of app-open arc evaluation.
+>
+> Full record: `CLAUDE.md` → **"PT Brain — Session D"**. Limitations: §6 → "PT Brain Session D".
+> Four new backlog items (L1 pacing/circuit estimation, L2 section-label misplacement, L3
+> coexistence-awareness absent from the daily rec, L4 category+intensity in one action) are logged
+> in §7 and were **deliberately NOT built** — scope stayed locked to the five pieces.
+>
 > **2026-07-25 session #39 — PT BRAIN SESSION D, PHASE 1 AUDIT RESULT (RECORDED BEFORE BUILD).**
 > **Nothing was built at the time this was written. No code, no deploy — the repo is exactly as
 > Session C left it.** This banner exists because the Phase 1 audit was completed in a context that
@@ -2456,6 +2534,54 @@ All verified present in `server.js`. `:id`/`:userId` = profile id.
   `SELECT` instead). Also worth knowing: the PATCH writes `cleanProfileData(pd)`, so it
   simultaneously re-sanitizes every string in the column.
 
+### PT Brain Session D — Known Limitations (2026-07-25, session #40)
+
+1. **The depth thresholds sit at ZERO MARGIN on 5 of 12 gated sections** — strength Mains 33/4,
+   22/3, 15/3 and mobility Mains 30/4, 25/4. (The 6th Main, 18 min / 4 movements, carries +1.)
+   Nothing is flagged today, but a section that drops **one** movement below anything ever accepted
+   fires a warn. **Deliberate, not an oversight:** the same number is stated in the prompt (where it
+   acts as a target, so setting it lower invites the depth regression this layer exists to prevent)
+   and applied in the verifier (where at the line it is a tight tripwire). The prompt role dominates
+   because the failure costs are asymmetric — a false warn is one console line, a low minimum is
+   lost depth on every rec. Mitigated by reporting `margin` per section so an at-the-line pass is
+   legible. **If real use produces recurring spurious warns, drop the `≥25` tier to 3 — do NOT
+   raise any tier.**
+2. **Prompt size overshot the Phase 1 projection.** Depth block **+641** chars (projected ~300,
+   after tightening from an initial 919); arc block up to **935** (projected ~500 — that estimate
+   did not budget for the mandated-verbatim ARC REALITY instruction, ~430 chars on its own).
+   Profile 1 is unaffected in practice (**headroom 777, arc block 0 chars, no extra trim**), but a
+   fully-arc'd profile exceeds the untrimmed 28,000 budget by ~158 and therefore pays one extra
+   ladder rung (`coachingBrief→400`). That is the ladder working as designed, and it is bounded to
+   a single rung — but it means a heavily-arc'd athlete trades some coaching-brief context for arc
+   context. Revisit if a real profile ever carries 3 arc goals.
+3. **The all-bare-section rule DOES fire on real content — Phase 1's "fires ZERO times" was
+   measured on the mobility day only.** On the strength day it fires on 1 of 11 sections (Hand
+   Rehab: three unquantified movements, declared 5 min → 4.0 → 5.0). Correct behaviour and tiny in
+   magnitude, and it is the ONLY before/after time delta in either day — but the audit's stated
+   basis for calling the rule inert was incomplete. Recorded so the claim is not repeated.
+4. **The mobility-day fixture's exercise STRINGS are reconstructed, not verbatim.** Its section
+   labels, declared minutes and movement counts are the real Phase 1 measurements (the audit
+   recorded counts, not the 32 raw lines); the individual strings were rebuilt to those counts. The
+   **strength day is fully verbatim.** Depth non-regression is a function of counts and strings
+   being identical **between the two code versions**, which is unaffected — but the mobility day's
+   absolute per-line time estimates are indicative, not measured.
+5. **Item (c) is NOT verified live.** Driving a profile-4 goal into `re_ramping` and confirming a
+   generated rec visibly reads as a re-ramp (lighter prescription, honest framing, no arc number
+   that was not injected) needs a deploy plus a real model call. The block's **construction** is
+   fully verified — verbatim ARC REALITY wording, legacy goals contribute nothing, zero arc goals
+   yields an empty string with no header or placeholder, self-caps at 3, within its char cap — but
+   the **model's response to it** is unverified. **This is the exact check to run first next
+   session.**
+6. **Movement counting is name-based and inherits the `splitExerciseName` limitation.** A
+   digit-leading name ("90/90 Hip Rotation") strips to empty and falls back to the raw string, so it
+   still counts as its own movement and is never lost — but two differently-annotated spellings of
+   the same digit-leading movement would count as two. Same accepted parser trade-off already
+   documented for AI-rec link matching.
+7. **`loadCapacityFit()` now fires a GET on every Profile-tab switch.** Matches the existing
+   `loadLibrary()`-on-library-switch convention and the endpoint is small and read-only, but it is
+   one more request per switch. `renderCapacityCard()` in the boot fan-out deliberately does NOT
+   fetch — it renders from already-loaded `currentProfileData.capacity`.
+
 ### PT Brain Session C — Known Limitations (2026-07-25, session #38)
 
 1. **⚠ CORRECTED 2026-07-25 (session #39 Phase 1 audit) — this was a MISDIAGNOSIS. It is not a
@@ -2894,7 +3020,63 @@ after Layer 1 ships.
 | **A** | ✅ **SHIPPED 2026-07-25 (session #36).** Keystone join + Layer 1 + capacity + intake negotiation |
 | **B** | ✅ **SHIPPED 2026-07-25 (session #37).** Layer 2 — arc_state, gap decay + re-ramp, code-owned timeline flex, first consumer of `goal_ids` |
 | **C** | ✅ **SHIPPED 2026-07-25 (session #38).** Layer 3 — classifier, verdict, propose-and-approve delta, handoff, app-open arc evaluation |
-| **Layer 4** | Independent. **This is next — the last layer. ⚠ Its Phase 1 audit is DONE and recorded (session #39, see the banner at the top of this file and `CLAUDE.md` → "PT Brain — Session D, PHASE 1 AUDIT RESULT") — do NOT re-run it. One gate remains open: a strength-day depth measurement to re-derive the A2 table.** |
+| **D (Layer 4)** | ✅ **SHIPPED 2026-07-25 (session #40).** Session depth — depth floor as CONTENT, arc-state block, all-bare-section rule, capacity-card fix. **The four-layer PT Brain arc is code-complete.** |
+
+#### Session D — decisions of record
+
+- **The depth table is `<8 EXEMPT · 8–14→2 · 15–24→3 · ≥25→4`, ratified UNCHANGED against both a
+  mobility day and a strength day (12 gated sections, zero flagged).**
+- **Thresholds held AT the measured line, not dropped a notch.** The number is stated in the prompt
+  (target role — a low minimum invites regression) and applied in the verifier (tripwire role — at
+  the line it is tight). Prompt role wins on asymmetric cost. If spurious warns appear in real use,
+  **drop `≥25` to 3; never raise a tier.** See §6 → Session D item 1.
+- **`estimateSegmentWorkMinutes` was NOT ported** — measured and rejected (§6 SALVAGE). Only the
+  all-bare-section rule was taken, as a 3-line addition. `estimateExerciseMinutes` remains ONE
+  implementation with TWO consumers.
+- **`verifyRecTimeBudget` stays warn-only.** No regenerate loop was added. Per the North Star, add
+  one only if a week of live use shows the prompt alone does not hold.
+
+#### Logged session #40 — DO NOT BUILD (four items, deliberately not built; scope stayed locked)
+
+- **L1. SESSION PACING / CIRCUIT-STYLE ESTIMATION.** The estimator assumes straight-set training
+  with per-set rest. This athlete trains Main blocks as **circuits**. Live example: Option 1's Main,
+  4 movements × 3 sets, estimated ~33 min; the athlete's own math (~60s work + ~60s rest per
+  movement, circuit) lands at **15–20 min**. So stated section time runs long against how the
+  session is actually performed, which reads as "not dense enough". Likely shape of the fix: a
+  **training-style preference** (straight sets vs circuit/superset) captured on the profile and
+  consumed by **BOTH** `estimateExerciseMinutes` and the TIME BUDGET prompt block — which means it
+  **must preserve the ONE-implementation / two-consumer invariant**. ⚠ This is a **TIME-calibration**
+  issue, explicitly **NOT** a depth issue, and **NOT** a reason to revisit the rejected 0.70
+  work-floor (§6). Medium value, no deadline.
+- **L2. SECTION-LABEL MISPLACEMENT.** When a rec carries both an ADD-ON and a HAND REHAB section,
+  hand-rehab movements land in ADD-ON anyway. Live: Option 1 put `Tabletop Lumbrical Curl` in ADD-ON
+  while HAND REHAB existed below it; Option 2 put both `Tabletop Lumbrical Curl` **and**
+  `Pinky Abduction` in ADD-ON while HAND REHAB existed. Athlete's read: those belong in HAND REHAB,
+  and ADD-ON has room for 2–3 more posture/core movements in the same 10 min. This is section
+  **ASSIGNMENT** (which header a movement goes under), separate from section **DEPTH** (how many per
+  section) — **the depth floor does not fix it.** Fix is prompt-side guidance in the
+  flexible-sections rules block: when a dedicated section exists for a movement class, route those
+  movements there. Cheap, but **must not reintroduce the mandated-section padding trap** (§9
+  "None provided" filler). Low effort, real polish value.
+- **L3. COEXISTENCE-AWARENESS IS ABSENT FROM THE DAILY REC.** Layer 3's verdict
+  (`profile_data.coexistence`: lead goal, maintenance goals, gates) reaches the **schedule** via
+  approved deltas but never reaches `fetchAI`'s prompt. So a session serving a maintenance-tier goal
+  during a SEQUENCE block is never framed as one, and a **gated** goal is not explicitly excluded
+  from rec content. Architecturally this is the same move Layer 4 just made for `arc_state`: a
+  small, self-capped, code-supplied **protected-tier block the model narrates but never authors**.
+  Deliberately out of every session's scope so far — logged as the honest gap, not a defect. Would
+  close the loop between Layers 2, 3 and 4.
+- **L4. CATEGORY + INTENSITY IN ONE ACTION.** Today the category pills fire
+  `filterRecsByCategory` → `fetchAI({alternative:{mode:'category'}})`, while intensity is a separate
+  Low/Medium/High control in `#rec-controls` (`recIntensityChoice`). The athlete wants to pick them
+  together — "Strength Hard", "Cardio Light". **FIRST STEP WHEN PICKED UP IS AN AUDIT, NOT A BUILD:**
+  confirm whether `recIntensityChoice` reaches the category-override call path at all, since the
+  category override prepends a CATEGORY OVERRIDE block that "takes priority over everything else in
+  this message" and swaps `buildScheduleInstruction` for a suppressed note — **intensity may be
+  getting drowned the same way the schedule once drowned the category filter. If it doesn't carry,
+  that is a live bug, not a UX request.** Then design the combined control (likely an intensity
+  choice surfaced on the category pill itself). **Same open question applies to SESSION LENGTH.**
+  Reuses the existing `#rec-controls` surface; no new paradigm.
 
 #### Session C — decisions of record
 
@@ -3476,6 +3658,17 @@ Macro roadmap shape (stored on `profiles.roadmap_data`):
 - [ ] **Add `workouts.duration_minutes` column** so manual session durations count in analytics without relying on summed `exercises.duration_minutes`.
 - [ ] **Rename `?max_intraday=` → `?max_calls=`** in `/api/debug/backfill-wearable-hr` (the budget now covers TCX **+** intraday calls, not just intraday). Keep `max_intraday` as an alias for back-compat.
 - [ ] **Retire the legacy `tokens` table** path once confirmed no profile depends on it.
+- [x] **✅ RESOLVED session #40 — the capacity card never rendered on boot or tab switch.** Session
+  C logged this as needing "a render-ordering pass"; that diagnosis was wrong. `renderCapacityCard()`
+  was never in the profile render fan-out at all — Session A's call landed inside `foPersist()`
+  (`public/index.html:6843`), the Focus-Override **save** handler, so the card only ever appeared
+  after saving an override. Now called from `showTab()`'s profile branch (with `loadCapacityFit()`)
+  and from the profile render fan-out where it was meant to go. Verified idempotent across 5
+  repeated calls against the real shipped function; empty state still hides correctly.
+- [ ] **Layer 4 depth floor may need one tier dropped after real use (session #40).** 5 of 12 gated
+  sections sit at exactly zero margin. Nothing is flagged today, but a one-movement dip warns. If
+  spurious warns recur, **drop the `≥25` tier from 4 to 3 — never raise a tier** (raising imposes a
+  new target on accepted content, the exact thing the floor must not do). §6 → Session D item 1.
 - [ ] **Arc evaluation has no time-based trigger (session #37).** It hangs off `POST /api/workouts`
   only, so an athlete who stops logging never accrues decay — the case decay exists to model.
   `POST /api/debug/evaluate-arcs/:profileId` (admin, dry-run default) forces it manually.

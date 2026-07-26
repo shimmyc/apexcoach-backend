@@ -4703,6 +4703,13 @@ function fetchAI(opts) {
   // (non-negotiable dailies) — coarse to specific. Protected tier: the trim
   // ladder never touches it, and it self-caps at top-3 goals / 4 emphases.
   var roadmapEmphasisContext = buildRoadmapEmphasisContext();
+  // LAYER 4 (2026-07-25): WHERE the athlete actually is on each goal's arc,
+  // computed in code by Layer 2's log replay. Sits immediately after the phase
+  // emphasis because it QUALIFIES it — emphasis says what this phase stresses,
+  // arc state says whether the athlete has actually earned their way into it.
+  // Protected tier, same as roadmapEmphasisContext: never trimmed, self-capping.
+  // Empty string when no goal carries an arc_state (every legacy roadmap).
+  var arcStateContext = buildArcStateContext();
   var muscleRecoveryBlock = buildMuscleRecoveryInstruction();
 
   // #1/#2/#6 — resolve the duration ladder ONCE per call and reuse it for the
@@ -4742,6 +4749,7 @@ function fetchAI(opts) {
       'FULL ATHLETE PROFILE:\n' + fullProfileForPrompt + '\n\n' +
       goalPriorityContext +
       roadmapEmphasisContext +
+      arcStateContext +
       microGoalsContext +
       'WEEKLY SCHEDULE DEFAULTS:\n' + getScheduleText() + '\n';
   };
@@ -4815,6 +4823,7 @@ function fetchAI(opts) {
     fullProfile: fullProfileForPrompt.length,
     goalPriorities: goalPriorityContext.length,
     roadmapEmphasis: roadmapEmphasisContext.length,
+    arcState: arcStateContext.length,
     microGoals: microGoalsContext.length,
     scheduleDefaults: getScheduleText().length,
     _total: totalLen(),
@@ -5817,6 +5826,17 @@ function renderProfileTab() {
 
   // ── FOCUS OVERRIDE ──
   if (typeof renderFocusOverrideCard === 'function') renderFocusOverrideCard();
+
+  // ── TRAINING CAPACITY (A5 fix, 2026-07-25) ──
+  // THIS is where Session A meant to put it. The call it actually added landed
+  // inside foPersist() — the Focus-Override save handler — so the card only
+  // rendered after saving an override. Rendering here covers boot (this fan-out
+  // runs when profile data loads); showTab()'s profile branch covers tab
+  // switches and also calls loadCapacityFit() for the server-computed fit
+  // readout. Deliberately NOT calling loadCapacityFit() here: this fan-out is a
+  // hot path that re-runs on many profile mutations, and the card renders fine
+  // from the already-loaded currentProfileData.capacity without a fetch.
+  if (typeof renderCapacityCard === 'function') renderCapacityCard();
 
   // ── INJURIES ──
   var injHTML = '';
@@ -10518,15 +10538,128 @@ function estimateExerciseMinutes(line) {
   return recIsMobilityish(s) ? REC_MIN_PER_MOBILITY : REC_MIN_PER_SET;
 }
 
+// Does this line carry NO parseable volume at all — no minutes, no sets×hold,
+// no sets×seconds, no sets×reps? Mirrors estimateExerciseMinutes' own cases 1-4
+// exactly, so the two can never disagree about what "bare" means.
+function recLineIsBare(line) {
+  var s = String(line || '');
+  return !/(\d+)\s*(?:min\b|minutes?\b)/i.test(s) &&
+         !/(\d+)\s*[x×]\s*(\d+):(\d{2})/.test(s) &&
+         !/(\d+)\s*[x×]\s*(\d+)\s*s\b/i.test(s) &&
+         !/(\d+)\s*[x×]\s*(\d+)/.test(s);
+}
+
 // Sum a plain exercise list. NO warm-up allowance — callers decide, because a
 // sectioned option that already has an explicit Warm-up section must not have a
 // second flat +5 added on top (that double-count is exactly why all three
 // options flagged over-band on the first verifier run).
-function estimateExercisesMinutes(list) {
+//
+// ALL-BARE SECTION (Layer 4, 2026-07-25) — the ONE thing taken from v2's
+// estimateSegmentWorkMinutes. When EVERY line in a section carries no volume at
+// all, the section is a continuous time block (a flow, a ride, a class) and its
+// own declared minutes are a better estimate than N × the per-line fallback.
+// `declaredMinutes` is OPTIONAL: every pre-existing caller passes one argument
+// and is byte-identical. Measured on profile 1's live rec, this fires on 0 of 11
+// sections (only 3/32 lines are bare, no section all-bare) — a correctness guard
+// for content the current prompt does not produce, not a tuning change.
+// The v2 function itself was NOT ported: its constants are identical to v1's by
+// construction and it parses no strings, while rec sections are freeform strings.
+// See ROADMAP §6 → SALVAGE list.
+function estimateExercisesMinutes(list, declaredMinutes) {
   var arr = list || [];
+  var dm = Number(declaredMinutes);
+  if (arr.length && isFinite(dm) && dm > 0 && arr.every(recLineIsBare)) return dm;
   var total = 0;
   for (var i = 0; i < arr.length; i++) total += estimateExerciseMinutes(arr[i]);
   return total;
+}
+
+// ── DEPTH FLOOR (Layer 4, 2026-07-25) ────────────────────────────────────
+// A minimum number of DISTINCT MOVEMENTS per section, scaled to that section's
+// own declared minutes. Deliberately NOT a time-fill ratio — that is the
+// REJECTED 0.70 work-floor (ROADMAP §6 → "Rejected Approaches & Lessons",
+// item 1). Measured proof the rejection was right: profile 1's own ACCEPTED
+// recs estimate at 60% / 51% / 60% of stated time, so a 0.70 gate would have
+// condemned content the athlete actually wanted.
+//
+// These thresholds RATIFY measured accepted output; they never impose a new
+// target. Derived from TWO real profile-1 days — a mobility/yoga day and a
+// strength day, 12 gated sections between them — and every one passes with zero
+// flags. Sections under REC_DEPTH_EXEMPT_MIN are EXEMPT because
+// single-movement habit and reset blocks (Dead Hang, hand resets) are correct
+// and common: any floor >= 2 there would flag good content every single day.
+//
+// Held AT the measured line rather than dropped a notch, deliberately. The
+// number has two consumers with opposite failure modes: stated in the prompt it
+// acts as a TARGET (a minimum below accepted quality invites regression, and
+// non-regression is the primary success criterion), while in the verifier it
+// acts as a TRIPWIRE (at the line it fires the moment a section drops one
+// movement below anything ever accepted). The prompt role dominates, because a
+// false warn costs one console line and a stated-too-low minimum costs real
+// depth on every rec, every day. Margin is reported alongside each section so an
+// at-the-line pass stays legible.
+var REC_DEPTH_EXEMPT_MIN = 8;
+var REC_DEPTH_TIERS = [
+  { min: 25, movements: 4 },
+  { min: 15, movements: 3 },
+  { min: 8,  movements: 2 },
+];
+
+// 0 == exempt (no floor applies).
+function recDepthFloorFor(minutes) {
+  var m = Number(minutes);
+  if (!isFinite(m) || m < REC_DEPTH_EXEMPT_MIN) return 0;
+  for (var i = 0; i < REC_DEPTH_TIERS.length; i++) {
+    if (m >= REC_DEPTH_TIERS[i].min) return REC_DEPTH_TIERS[i].movements;
+  }
+  return 0;
+}
+
+// Count DISTINCT movements in a section. Distinct by NAME, so listing the same
+// movement twice does not buy depth. Reuses splitExerciseName (the client mirror
+// of the server's stripExerciseAnnotation cut rule) so "Push-Up 3x12" and
+// "Push-Up 3x15" collapse to one. A digit-leading name that strips to empty
+// ("90/90 Hip Rotation" — a known, accepted parser limitation) falls back to the
+// raw string, so it still counts as its own movement and is never silently lost.
+function recSectionMovementCount(exercises) {
+  var seen = {}, n = 0;
+  (exercises || []).forEach(function(x) {
+    var raw = String(x == null ? '' : x).trim();
+    if (!raw) return;
+    var name = '';
+    try { name = (splitExerciseName(raw) || {}).name || ''; } catch (e) { name = ''; }
+    var key = String(name || raw).toLowerCase().replace(/[^a-z0-9]/g, '');
+    if (!key) key = raw.toLowerCase();
+    if (seen[key]) return;
+    seen[key] = 1;
+    n++;
+  });
+  return n;
+}
+
+// Per-section depth for ONE option. Read through recOptionSections, so a LEGACY
+// flat rec presents as a single unlabeled section with NO declared minutes —
+// which makes recDepthFloorFor return 0 and the section exempt. A cached
+// pre-sections rec can therefore never be flagged by this.
+function recOptionDepth(o) {
+  var sections = recOptionSections(o);
+  var out = [];
+  for (var i = 0; i < sections.length; i++) {
+    var declared = Number(sections[i].minutes);
+    var hasMin = isFinite(declared) && declared > 0;
+    var floor = recDepthFloorFor(hasMin ? declared : null);
+    var count = recSectionMovementCount(sections[i].exercises);
+    out.push({
+      label: sections[i].label || null,
+      minutes: hasMin ? declared : null,
+      movements: count,
+      floor: floor,
+      exempt: floor === 0,
+      short_by: floor > 0 && count < floor ? floor - count : 0,
+      margin: floor > 0 ? count - floor : null,
+    });
+  }
+  return out;
 }
 
 // ── OPTION SHAPE (2026-07-20) ────────────────────────────────────────────
@@ -10574,7 +10707,9 @@ function estimateOptionMinutes(optionOrList) {
   }
   var sections = recOptionSections(optionOrList);
   var total = 0;
-  for (var i = 0; i < sections.length; i++) total += estimateExercisesMinutes(sections[i].exercises);
+  for (var i = 0; i < sections.length; i++) {
+    total += estimateExercisesMinutes(sections[i].exercises, sections[i].minutes);
+  }
   if (!recHasWarmupSection(sections)) total += REC_WARMUP_MIN;
   return Math.round(total);
 }
@@ -10612,7 +10747,29 @@ function buildTimeBudgetContext(durations, intensity) {
     'If the target is large, add SETS or another movement rather than inflating the number. ' +
     'If small, cut movements rather than shrinking the stated duration.\n' +
     'ALLOCATE the target ACROSS the option\'s sections: give each section its own rough "minutes", and make those section minutes sum to the option\'s target duration, within the acceptable range above. Only include sections that genuinely apply — a short recovery session may be a single block.\n' +
+    buildSectionDepthContext() +
     'INTENSITY: ' + (intensity || 'Medium') + '. ' + recIntensityGuidance(intensity) + '\n\n';
+}
+
+// SECTION DEPTH minimums — generated FROM the same REC_DEPTH_TIERS table the
+// verifier applies, so the stated rule and the checked rule are one source and
+// cannot drift apart.
+//
+// Phrased as a FLOOR, never a target, and paired with an explicit anti-padding
+// clause: mandating section content without that clause is exactly how
+// `format_notes` learned to emit "None provided" filler (ROADMAP §9).
+function buildSectionDepthContext() {
+  var rows = REC_DEPTH_TIERS.slice().sort(function(a, b) { return a.min - b.min; });
+  var lines = ['- under ' + REC_DEPTH_EXEMPT_MIN + ' min: no minimum — a one-movement habit or reset block is correct; do not pad it'];
+  for (var i = 0; i < rows.length; i++) {
+    var next = rows[i + 1];
+    var band = next ? (rows[i].min + '-' + (next.min - 1) + ' min') : (rows[i].min + ' min or more');
+    lines.push('- ' + band + ': at least ' + rows[i].movements + ' distinct movements');
+  }
+  return 'SECTION DEPTH — minimum DISTINCT movements per section, by that section\'s own stated minutes:\n' +
+    lines.join('\n') + '\n' +
+    'These are FLOORS, not targets — a section already above its floor stays as it is. Meet a floor with REAL movements that serve the session: never split one movement across two lines, restate it with different sets, or add filler. ' +
+    'If a section only warrants one or two movements, give it FEWER MINUTES rather than padding it.\n';
 }
 
 // #6 — intensity shapes volume/density/selection COARSELY. Not a numeric knob.
@@ -10650,11 +10807,32 @@ function verifyRecTimeBudget(parsed, durations) {
       var checkKind = declared != null ? 'section-sum' : 'heuristic';
       var inBand = checkVal >= low && checkVal <= high;
 
+      // DEPTH (Layer 4, 2026-07-25) — distinct movements per section against
+      // the floor, reported ALONGSIDE time, never instead of it. Same posture as
+      // every other check here: WARN-ONLY. It never blocks, never mutates the
+      // rec, and never triggers a regeneration. A legacy/flat option has no
+      // declared section minutes, so every section is exempt and depth_ok is
+      // true by construction.
+      var depth = recOptionDepth(o);
+      var depthShort = depth.filter(function(x) { return x.short_by > 0; });
+      var depthGated = depth.filter(function(x) { return !x.exempt; });
+      var depthTight = depthGated.filter(function(x) { return x.margin === 0; });
+
       report.push({
         option: i + 1, headline: o.headline || '', stated: stated,
         section_sum: declared, estimated: est, checked: checkVal, via: checkKind,
         band: low + '-' + high, in_band: inBand, sections: sections.length,
+        depth: depth, depth_ok: depthShort.length === 0,
+        depth_gated: depthGated.length, depth_at_floor: depthTight.length,
       });
+
+      for (var dI = 0; dI < depthShort.length; dI++) {
+        var ds_ = depthShort[dI];
+        console.warn('[Depth] Option ' + (i + 1) + ' section "' + (ds_.label || '?') +
+          '" declares ' + ds_.minutes + ' min but lists only ' + ds_.movements +
+          ' distinct movement(s) — floor is ' + ds_.floor + ' (short by ' + ds_.short_by +
+          '). WARN ONLY, nothing was changed: "' + (o.headline || '') + '"');
+      }
 
       if (!inBand) {
         console.warn('[TimeBudget] Option ' + (i + 1) + ' OUT OF BAND — stated ' + stated +
@@ -10669,7 +10847,7 @@ function verifyRecTimeBudget(parsed, durations) {
       for (var s = 0; s < sections.length; s++) {
         var secDeclared = Number(sections[s].minutes);
         if (!isFinite(secDeclared) || secDeclared <= 0) continue;
-        var secEst = estimateExercisesMinutes(sections[s].exercises);
+        var secEst = estimateExercisesMinutes(sections[s].exercises, secDeclared);
         if (secEst <= 0) continue;
         if (secEst > secDeclared * 2 || secEst < secDeclared * 0.5) {
           console.warn('[TimeBudget] Option ' + (i + 1) + ' section "' + (sections[s].label || '?') +
@@ -10905,6 +11083,74 @@ function buildRoadmapEmphasisContext() {
   return 'GOAL ROADMAP EMPHASIS (what this phase of each top goal should stress — the SCHEDULE above owns how many sessions and how long; this owns what they emphasize):\n' +
     lines.join('\n') + '\n' + gapBlock +
     '\nINSTRUCTION: shape today\'s options so at least one top-goal emphasis is reflected in the exercise selection, and name which one in goal_reasoning. Do NOT change session count, frequency or duration to satisfy this — those are set by the schedule above.\n\n';
+}
+
+// ── ARC STATE (Layer 4, 2026-07-25) ──────────────────────────────────────
+// Layer 2 computes `position_week` in CODE by replaying the athlete's log; this
+// block hands that to the daily rec so a re-ramp visibly IS a re-ramp. The model
+// NARRATES these numbers and never authors them — the direct lesson of the
+// rejected v2 work-floor (ROADMAP §6, item 1): a model must not optimize its own
+// progress metric.
+//
+// Same contract as buildRoadmapEmphasisContext, which it sits beside: PROTECTED
+// TIER (the trim ladder never touches it) and therefore SELF-CAPPING — top-3
+// goals by priority (array order IS priority), a hard char cap, and truncation
+// by dropping the LOWEST-priority line rather than cutting a line mid-number.
+//
+// LEGACY DEGRADE: a goal with no arc_state contributes nothing at all. Zero arc
+// goals returns '' — no header, no placeholder, no empty block. Profile 1 has 8
+// goals and ZERO arc goals, so this is 0 chars and 0 behaviour change there.
+// Sized so the full top-3 fits: header ~78 + 3 lines ~105 each + the verbatim
+// ARC REALITY instruction ~430. Measured worst case (4 long-titled arc goals,
+// all re-ramping) lands ~825, so the drop-a-line path is reserved for genuinely
+// pathological titles rather than firing on ordinary ones. NOT ~500 as Phase 1
+// projected — that estimate did not budget for the verbatim instruction, which
+// is ~430 chars on its own. Recorded in ROADMAP §6.
+var ARC_CONTEXT_CHAR_CAP = 950;
+
+function buildArcStateContext() {
+  var goals = (currentProfileData && currentProfileData.goals) || [];
+  if (!goals.length) return '';
+
+  var lines = [];
+  for (var i = 0; i < goals.length && lines.length < 3; i++) {
+    var g = goals[i];
+    var arc = g && g.roadmap && g.roadmap.arc_state;
+    if (!arc) continue;                       // legacy goal — contributes nothing
+    var phases = Array.isArray(g.roadmap.phases) ? g.roadmap.phases : [];
+    var totalNear = 0;
+    for (var p = 0; p < phases.length; p++) {
+      if (phases[p] && phases[p].type === 'near_term') totalNear += (Number(phases[p].duration_weeks) || 0);
+    }
+    var drift = Number(arc.drift);
+    var line = '- ' + (g.title || 'Untitled') + ': ' + (arc.status || 'unknown') +
+      ', earned wk ' + arc.position_week + (totalNear ? '/' + totalNear : '') +
+      ' vs calendar ' + arc.calendar_week +
+      (isFinite(drift) ? ', drift ' + (drift > 0 ? '+' : '') + drift : '');
+    if (arc.re_ramp) {
+      line += ' (re-ramp target wk ' + arc.re_ramp.target_week +
+        (arc.re_ramp.started_date ? ', since ' + arc.re_ramp.started_date : '') + ')';
+    }
+    lines.push(line);
+  }
+  if (!lines.length) return '';
+
+  var header = 'ARC STATE (computed from the athlete\'s log — the ONLY source of these facts):\n';
+  // ARC REALITY — reused from the roadmap-adapt system prompt (server.js
+  // `adaptGoalRoadmap`, check 3) so the two surfaces state the identical rule.
+  // The only edit is the added ", and so must today's session" clause, which
+  // applies the same sentence to a daily rec instead of a phase.
+  var instruction = 'INSTRUCTION: the block above was COMPUTED FROM THE ATHLETE\'S ACTUAL LOG and is the only source of progress facts. ' +
+    'Phase content must match it, and so must today\'s session — an athlete who is re_ramping gets rebuild-the-base content, not the volume the phase originally called for; ' +
+    'an athlete who is ahead gets content that reflects where they actually are. ' +
+    'NEVER state a position, drift, week number or session count that is not in that block, and never contradict it.\n\n';
+
+  // Drop lowest-priority lines until the whole block fits. Never truncates a
+  // line: a half-printed week number is worse than an omitted goal.
+  while (lines.length > 1 && (header + lines.join('\n') + '\n' + instruction).length > ARC_CONTEXT_CHAR_CAP) {
+    lines.pop();
+  }
+  return header + lines.join('\n') + '\n' + instruction;
 }
 
 // ─── MICRO-GOAL AI PROMPT BUILDER ──────────────────────────────────────
@@ -17734,6 +17980,16 @@ function showTab(name, btn) {
   if (name === 'profile') {
     if (typeof renderProfileBodyCard === 'function') renderProfileBodyCard();
     if (typeof renderProfileTemplates === 'function') renderProfileTemplates();
+    // A5 (2026-07-25) — the capacity card's REAL bug. Session C logged this as
+    // needing "a render-ordering pass"; that was a misdiagnosis. renderCapacityCard()
+    // was never in the profile render fan-out at all — Session A appended it after
+    // renderFocusOverrideCard(), and that call site sits INSIDE foPersist(), the
+    // Focus-Override SAVE handler. So the card only ever rendered when a Focus
+    // Override was saved: never on boot, never on tab switch. The function was
+    // always fine; nothing was calling it. The foPersist call is left in place
+    // (harmless — it just re-renders an already-correct card after a save).
+    if (typeof renderCapacityCard === 'function') renderCapacityCard();
+    if (typeof loadCapacityFit === 'function') loadCapacityFit();
   }
 }
 
