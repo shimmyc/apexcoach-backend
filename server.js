@@ -5636,11 +5636,22 @@ function computeCapacityFit(profileData, opts) {
   var counted = [], excluded = [];
   var minutesNeeded = 0, hardNeeded = 0;
 
+  // Layer 3: a CONFIRMED gate contributes zero demand — that is what a gate is.
+  // A proposed-but-unconfirmed gate contributes in full.
+  var gatedIds = {};
+  var cxG = (profileData && profileData.coexistence && Array.isArray(profileData.coexistence.gated))
+    ? profileData.coexistence.gated : [];
+  cxG.forEach(function(x) { if (x && x.confirmed === true && x.goal_id) gatedIds[x.goal_id] = x.gated_by || true; });
+
   goals.forEach(function(g) {
     if (!g || typeof g !== "object") return;
     var status = String(g.status || "").toUpperCase();
     if (CAPACITY_EXCLUDED_STATUSES.indexOf(status) >= 0) {
       excluded.push({ goal_id: g.id || null, title: g.title || "", reason: "status:" + status });
+      return;
+    }
+    if (g.id && gatedIds[g.id]) {
+      excluded.push({ goal_id: g.id, title: g.title || "", reason: "gated" });
       return;
     }
     var d = (opts.overrideGoalId && g.id === opts.overrideGoalId && opts.overrideDemand)
@@ -5682,6 +5693,270 @@ function computeCapacityFit(profileData, opts) {
     minutes_over: minutesOver, hard_over: hardOver,
     counted: counted, excluded: excluded, capacity: cap,
   };
+}
+
+// ── PT BRAIN · LAYER 3 — coexistence engine ──────────────────────────────────
+// Classify the athlete's goals against their real week: GATE → capacity (code) →
+// COEXIST | SEQUENCE. The verdict NEVER mutates the schedule. It produces a
+// DELTA PROPOSAL the athlete approves, which is then applied through the normal
+// schedule persist path with goal_ids intact.
+//
+// STORAGE: profile_data.coexistence (session #38 decision). NOT roadmap_data —
+// that column is null on most profiles, and both macro writers rebuild it from a
+// fixed key list and would silently drop the verdict on the next regenerate or
+// stale workout save. profile_data always exists, is covered by cleanProfileData
+// and the PATCH merge, and needs no macro-path changes at all.
+var COEXIST_LEAD_HANDOFF_RATIO = 0.75;
+
+// Does an EXISTING target genuinely serve THIS goal, or does it merely cover the
+// same broad region? Category agreement is too coarse: "Upper Body Strength"
+// covers bench's muscles but is not a bench target, and silently attaching a
+// specific goal to a broad target misrepresents what is being tracked.
+//
+// TEST: the target's activity must share at least one MEANINGFUL keyword with
+// the goal title (weak/numeric tokens dropped, reusing the arc's stop-list), AND
+// their muscle sets must not be positively disjoint. Otherwise fall through to
+// `create` — a goal legitimately ending up with its own narrow target alongside
+// a broader one is CORRECT, not duplication.
+function targetServesGoal(goal, target) {
+  if (!goal || !target || !target.activity) return false;
+  var kws = extractGoalKeywords(goal.title).filter(function(k) {
+    return !/^\d+$/.test(k) && !ARC_WEAK_KEYWORDS[k];
+  });
+  if (!kws.length) return false;
+  var act = String(target.activity).toLowerCase();
+  var shared = kws.filter(function(k) { return act.indexOf(k) >= 0; });
+  if (!shared.length) return false;
+  // Guard: named overlap but provably different muscle work (rare, cheap).
+  var gm = activityMuscles(goal.title), tm = activityMuscles(target.activity);
+  if (gm.length && tm.length && !gm.some(function(m) { return tm.indexOf(m) >= 0; })) return false;
+  return true;
+}
+
+// Goals that carry a demand and are not excluded. Confirmed gates contribute
+// ZERO demand — that is the whole point of a gate.
+function coexistActiveGoals(profileData) {
+  var goals = Array.isArray(profileData && profileData.goals) ? profileData.goals : [];
+  var cx = (profileData && profileData.coexistence) || {};
+  var gatedIds = {};
+  (Array.isArray(cx.gated) ? cx.gated : []).forEach(function(g) {
+    if (g && g.confirmed === true && g.goal_id) gatedIds[g.goal_id] = true;
+  });
+  return goals.filter(function(g) {
+    if (!g || !normalizeDemand(g.demand)) return false;
+    if (CAPACITY_EXCLUDED_STATUSES.indexOf(String(g.status || "").toUpperCase()) >= 0) return false;
+    if (gatedIds[g.id]) return false;
+    return true;
+  });
+}
+
+// Build the schedule DELTA. Frequency targets ONLY — anchors are the athlete's
+// fixed commitments and are never read or written here; addons are excluded
+// because presence-level matching cannot verify them (ROADMAP §7).
+function buildScheduleDelta(profileData, plan) {
+  var schedule = (profileData && profileData.schedule) || {};
+  var targets = Array.isArray(schedule.frequency_targets) ? schedule.frequency_targets : [];
+  var delta = [];
+
+  plan.forEach(function(p) {
+    var goal = p.goal, want = p.times_per_week, why = p.reason;
+    var linked = targets.filter(function(t) { return Array.isArray(t.goal_ids) && t.goal_ids.indexOf(goal.id) >= 0; });
+
+    if (linked.length) {
+      // Already linked → only ever change the number, never the athlete's text.
+      var t = linked[0];
+      var cur = numOrNull(t.times_per_week) || 1;
+      if (cur !== want) {
+        delta.push({
+          op: p.min_viable ? "drop_to_min_viable" : "update_frequency",
+          target_id: t.id || null, activity: t.activity, goal_ids: [goal.id],
+          from: cur, to: want, reason: why,
+        });
+      }
+      return;
+    }
+
+    // Not linked yet — can an EXISTING unlinked target genuinely serve it?
+    var candidate = null;
+    for (var i = 0; i < targets.length; i++) {
+      var c = targets[i];
+      if (Array.isArray(c.goal_ids) && c.goal_ids.length) continue;   // linked elsewhere
+      if (targetServesGoal(goal, c)) { candidate = c; break; }
+    }
+    if (candidate) {
+      delta.push({
+        op: "link_existing", target_id: candidate.id || null, activity: candidate.activity,
+        goal_ids: [goal.id], from: numOrNull(candidate.times_per_week) || 1, to: want,
+        reason: why + " (links your existing \"" + candidate.activity + "\" target)",
+      });
+      return;
+    }
+
+    delta.push({
+      op: "create", target_id: null, activity: coexistDerivedTargetName(goal),
+      goal_ids: [goal.id], from: null, to: want,
+      // A derived target sets `stackable` EXPLICITLY: schedRenderTargets
+      // materialises schedStackableDefault() on first edit, which would silently
+      // change it under the athlete otherwise (Session C A6).
+      stackable: !!schedStackableDefaultServer(goal),
+      reason: why,
+    });
+  });
+  return delta;
+}
+
+function coexistDerivedTargetName(goal) {
+  var t = String(goal.title || "Training").trim();
+  return t.length > 42 ? (t.slice(0, 39) + "…") : t;
+}
+// Server mirror of the client's schedStackableDefault keyword rule.
+function schedStackableDefaultServer(goal) {
+  return /(yoga|pilates|stretch|meditat|mobility|rehab|\bpt\b)/i.test(
+    String(goal.title || "") + " " + String(goal.goal_type || ""));
+}
+
+var CLASSIFY_GATES_SYS =
+  "You are a strength coach deciding whether any of an athlete's goals must WAIT for another to progress first. " +
+  "Return ONLY valid JSON: {\"gates\":[{\"goal_id\":\"…\",\"gated_by\":\"…\",\"reason\":\"…\"}]}.\n" +
+  "Propose a gate ONLY when training the gated goal would be UNSAFE or WASTED until the other progresses — an unresolved injury blocking loaded work is the clearest case. " +
+  "Do NOT gate a goal because it is lower priority, because the week is busy, or because it would be easier later — that is a scheduling question and it is handled elsewhere.\n" +
+  "Most athletes have ZERO gates. An empty array is the correct answer far more often than not.\n" +
+  "goal_id and gated_by MUST be ids copied exactly from the GOALS list you are given. reason is ONE plain sentence the athlete will read.";
+
+var SEQUENCE_LEAD_SYS =
+  "An athlete's goals do not all fit in the training week they actually have. Pick which ONE leads. " +
+  "Return ONLY valid JSON: {\"lead_goal_id\":\"…\",\"conflict_note\":\"…\"}.\n" +
+  "lead_goal_id MUST be an id copied exactly from the GOALS list. Weigh, in order: the athlete's own priority order (the list is given in priority order), whether a goal is time-sensitive or injury-related, and how a goal is currently tracking if that is stated. " +
+  "conflict_note is 1-2 plain sentences naming what does not fit and which goal leads. Never restate the arithmetic incorrectly — it is given to you and it is correct.";
+
+// THE CLASSIFIER. Ordering is fixed: GATE → capacity (code) → COEXIST | SEQUENCE.
+// The model proposes gates and the lead; CODE owns the arithmetic and enforces
+// every id. opts.recordOnly stores the verdict WITHOUT a proposal (used right
+// after goal creation, where the Session A negotiation was already the decision).
+async function classifyCoexistence(profileId, opts) {
+  opts = opts || {};
+  var loaded = await loadProfileWithGoals(profileId);
+  var pd = loaded.profileData;
+  var prev = pd.coexistence || {};
+  var now = new Date().toISOString();
+
+  // ── 1. GATE (proposed by the model, CONFIRMED by the athlete, enforced in code)
+  var candidates = (Array.isArray(pd.goals) ? pd.goals : []).filter(function(g) {
+    return g && g.id && CAPACITY_EXCLUDED_STATUSES.indexOf(String(g.status || "").toUpperCase()) < 0;
+  });
+  var prevGates = Array.isArray(prev.gated) ? prev.gated : [];
+  var gated = prevGates.filter(function(x) {
+    // Keep decisions the athlete already made; drop gates whose goals are gone.
+    return x && x.goal_id && candidates.some(function(c) { return c.id === x.goal_id; });
+  });
+  if (opts.proposeGates !== false && candidates.length > 1) {
+    try {
+      var gUser = "GOALS (id — title — type — status):\n" + candidates.map(function(g) {
+        return "  " + g.id + " — " + (g.title || "?") + " — " + (g.goal_type || "unspecified") + " — " + (g.status || "?");
+      }).join("\n") + "\n\nWhich, if any, must wait?";
+      var gTxt = await callAISystem(CLASSIFY_GATES_SYS, gUser, 500, modelForCallType("goal_negotiate"));
+      var gParsed = parseAIJson(gTxt) || {};
+      var byId = {};
+      candidates.forEach(function(c) { byId[c.id] = c; });
+      (Array.isArray(gParsed.gates) ? gParsed.gates : []).forEach(function(x) {
+        if (!x || !byId[x.goal_id] || !byId[x.gated_by] || x.goal_id === x.gated_by) return;  // id validation
+        if (gated.some(function(e) { return e.goal_id === x.goal_id; })) return;              // keep prior decision
+        gated.push({ goal_id: x.goal_id, gated_by: x.gated_by, reason: String(x.reason || "").slice(0, 240), confirmed: false });
+      });
+    } catch (e) {
+      console.warn("[Coexist] gate proposal failed (non-fatal): " + e.message);
+    }
+  }
+
+  // ── 2. CAPACITY (code, never the model). Confirmed gates contribute zero.
+  pd.coexistence = Object.assign({}, prev, { gated: gated });   // so the fit sees confirmed gates
+  var fit = computeCapacityFit(pd, {});
+  var active = coexistActiveGoals(pd);
+
+  // ── 3. COEXIST | SEQUENCE
+  var verdict, leadId = null, maintenance = [], conflictNote = "", plan = [];
+  if (!fit.has_capacity) {
+    verdict = "coexist";
+    conflictNote = "No weekly capacity recorded yet, so there is nothing to reconcile against.";
+  } else if (fit.fits) {
+    verdict = gated.some(function(g) { return g.confirmed; }) ? "gated_mixed" : "coexist";
+    conflictNote = "Your week holds " + active.length + " goal" + (active.length === 1 ? "" : "s") + " as planned.";
+    plan = active.map(function(g) {
+      return { goal: g, times_per_week: normalizeDemand(g.demand).sessions_per_week, min_viable: false,
+        reason: "At its planned " + normalizeDemand(g.demand).sessions_per_week + "x/week." };
+    });
+  } else {
+    verdict = "sequence";
+    var lead = null;
+    try {
+      var lUser = "THE ARITHMETIC (already computed — correct, do not recalculate):\n" +
+        "  Weekly minutes: " + fit.minutes_needed + " needed / " + fit.minutes_available + " available" +
+        (fit.minutes_over ? ("  OVER BY " + fit.minutes_over) : "") + "\n" +
+        "  Hard sessions: " + fit.hard_needed + " needed / " + fit.hard_available + " available" +
+        (fit.hard_over ? ("  OVER BY " + fit.hard_over) : "") + "\n\n" +
+        "GOALS, IN THE ATHLETE'S OWN PRIORITY ORDER:\n" + active.map(function(g) {
+          var d = normalizeDemand(g.demand);
+          var arc = g.roadmap && g.roadmap.arc_state;
+          return "  " + g.id + " — " + (g.title || "?") + " — " + (g.goal_type || "unspecified") +
+            " — " + d.sessions_per_week + "x/week, " + d.minutes_per_session + " min" + (d.hard ? " (hard)" : "") +
+            // arc_state is OPTIONAL: legacy roadmaps have none, so the model must
+            // be able to choose a lead without it (Session C A7).
+            (arc ? ("; currently " + arc.status + " at week " + arc.position_week) : "; no progress data yet");
+        }).join("\n") + "\n\nWhich goal leads?";
+      var lTxt = await callAISystem(SEQUENCE_LEAD_SYS, lUser, 400, modelForCallType("goal_negotiate"));
+      var lParsed = parseAIJson(lTxt) || {};
+      lead = active.filter(function(g) { return g.id === lParsed.lead_goal_id; })[0] || null;   // id validation
+      if (lead && lParsed.conflict_note) conflictNote = String(lParsed.conflict_note).slice(0, 400);
+    } catch (e) {
+      console.warn("[Coexist] lead selection failed (non-fatal): " + e.message);
+    }
+    if (!lead) {
+      // CODE-AUTHORED FALLBACK — array order IS the athlete's priority order.
+      lead = active[0] || null;
+      conflictNote = conflictNote || ("Your goals need " + fit.minutes_needed + " min/week against the " +
+        fit.minutes_available + " you have" + (fit.hard_over ? (", and " + fit.hard_needed + " hard sessions against " + fit.hard_available) : "") +
+        ". " + (lead ? ("\"" + lead.title + "\" leads for now; the rest hold at their minimum.") : ""));
+    }
+    leadId = lead ? lead.id : null;
+    active.forEach(function(g) {
+      var d = normalizeDemand(g.demand);
+      if (g.id === leadId) {
+        plan.push({ goal: g, times_per_week: d.sessions_per_week, min_viable: false, reason: "Leads this block at its full " + d.sessions_per_week + "x/week." });
+      } else {
+        maintenance.push(g.id);
+        plan.push({ goal: g, times_per_week: d.min_viable_sessions_per_week, min_viable: true,
+          reason: "Holds at its minimum " + d.min_viable_sessions_per_week + "x/week while \"" + (lead ? lead.title : "the lead") + "\" leads." });
+      }
+    });
+  }
+
+  var delta = buildScheduleDelta(pd, plan);
+  var nextReview = ymdLocal(new Date(Date.now() + 28 * 86400000));
+
+  var coexistence = {
+    verdict: verdict,
+    computed_at: now,
+    trigger: opts.trigger || "manual",
+    capacity_used: {
+      minutes: fit.has_capacity ? (fit.minutes_needed + "/" + fit.minutes_available) : null,
+      hard_sessions: fit.has_capacity ? (fit.hard_needed + "/" + fit.hard_available) : null,
+    },
+    lead_goal_id: leadId,
+    maintenance_goal_ids: maintenance,
+    gated: gated,
+    conflict_note: conflictNote,
+    // RECORD-ONLY right after goal creation: the Session A negotiation was
+    // already the athlete's decision for that moment, so do not re-ask.
+    proposal: (opts.recordOnly || !delta.length) ? null
+      : { schedule_delta: delta, status: "pending", decided_at: null },
+    next_review: nextReview,
+    athlete_decision_required: !!(!opts.recordOnly && delta.length),
+    handoff: prev.handoff || null,
+  };
+
+  await saveProfileDataField(profileId, pd, "coexistence", coexistence);
+  console.log("[Coexist] profile " + profileId + " → " + verdict + " (" + (delta.length) + " delta op(s), trigger " + coexistence.trigger + ")");
+  return coexistence;
 }
 
 function formatMonthRange(startWeek, endWeek) {
@@ -6313,6 +6588,40 @@ async function evaluateArcsForProfile(profileId, opts) {
     } catch (e) {
       console.error("[Arc] evaluation failed for goal " + (g.id || "?") + ": " + e.message);
       report.push({ goal: g.title, error: e.message });
+    }
+  }
+
+  // ── LAYER 3 HANDOFF DETECTION (first cross-layer consumer of arc_state) ──────
+  // When the CURRENT lead is ~3/4 through its arc, flag a re-classification. This
+  // only FLAGS — it costs no AI call, so the workout-save path stays AI-free. The
+  // proposal itself is produced by the next classification run.
+  var cx = pd.coexistence || null;
+  if (cx && cx.lead_goal_id) {
+    var leadGoal = goals.filter(function(g) { return g && g.id === cx.lead_goal_id; })[0];
+    var la = leadGoal && leadGoal.roadmap && leadGoal.roadmap.arc_state;
+    var lest = leadGoal && leadGoal.roadmap && leadGoal.roadmap.estimate;
+    if (la && lest) {
+      var W = Math.max(1, Math.round(((numOrNull(lest.total_weeks_low) || 0) + (numOrNull(lest.total_weeks_high) || 0)) / 2));
+      var ratio = (numOrNull(la.position_week) || 0) / W;
+      var already = cx.handoff && cx.handoff.lead_goal_id === cx.lead_goal_id;
+      if (ratio >= COEXIST_LEAD_HANDOFF_RATIO && !already) {
+        var nextUp = goals.filter(function(g) {
+          return g && g.id !== cx.lead_goal_id && (cx.maintenance_goal_ids || []).indexOf(g.id) >= 0;
+        })[0];
+        pd.coexistence = Object.assign({}, cx, {
+          handoff: {
+            lead_goal_id: cx.lead_goal_id,
+            ratio: Math.round(ratio * 100) / 100,
+            detected_at: new Date().toISOString(),
+            message: "You're about " + Math.round(ratio * 100) + "% through \"" + (leadGoal.title || "your lead goal") +
+              "\" — time to start layering " + (nextUp ? ("\"" + nextUp.title + "\"") : "your other goals") + " back in.",
+            acknowledged: false,
+          },
+          athlete_decision_required: true,
+        });
+        changed = true;
+        console.log("[Coexist] handoff flagged for profile " + profileId + " at ratio " + ratio.toFixed(2));
+      }
     }
   }
 
@@ -7096,6 +7405,88 @@ app.post("/api/profiles/:id/goals/:goalId/negotiate", async function(req, res) {
   } catch (e) {
     console.error("[PTBrain] negotiate error:", e.message);
     res.status(e.status || 500).json({ success: false, error: e.message });
+  }
+});
+
+// ── PT BRAIN · LAYER 3 ROUTES ────────────────────────────────────────────────
+// Classify the week. Two short Sonnet calls at most (gates + lead), kept out of
+// POST /roadmap for the same Render-ceiling reason Session A split its calls.
+app.post("/api/profiles/:id/coexistence", async function(req, res) {
+  try {
+    var body = req.body || {};
+    var out = await classifyCoexistence(req.params.id, {
+      trigger: body.trigger || "manual",
+      recordOnly: body.record_only === true,
+      proposeGates: body.propose_gates !== false,
+    });
+    res.json({ success: true, coexistence: out });
+  } catch (e) {
+    console.error("[Coexist] classify error:", e.message);
+    res.status(e.status || 500).json({ success: false, error: e.message });
+  }
+});
+
+// Record the athlete's decision. This endpoint NEVER writes the schedule — the
+// client applies an approved delta through the ordinary schedule persist path so
+// there is exactly one schedule writer in the app.
+app.post("/api/profiles/:id/coexistence/decision", async function(req, res) {
+  try {
+    var body = req.body || {};
+    var loaded = await loadProfileWithGoals(req.params.id);
+    var pd = loaded.profileData;
+    var cx = pd.coexistence;
+    if (!cx) return res.status(404).json({ success: false, error: "no coexistence verdict to decide on" });
+    var now = new Date().toISOString();
+
+    if (body.decision === "approved" || body.decision === "rejected") {
+      if (!cx.proposal) return res.status(400).json({ success: false, error: "no pending proposal" });
+      cx.proposal.status = body.decision;
+      cx.proposal.decided_at = now;
+      // Approving resolves the ask; rejecting leaves the week unreconciled and
+      // SAYS so rather than pretending the verdict was actioned.
+      cx.athlete_decision_required = (body.decision === "rejected");
+    }
+    if (body.gate && body.gate.goal_id) {
+      var found = (Array.isArray(cx.gated) ? cx.gated : []).filter(function(g) { return g.goal_id === body.gate.goal_id; })[0];
+      if (found) {
+        if (body.gate.confirmed === true) { found.confirmed = true; found.decided_at = now; }
+        else { cx.gated = cx.gated.filter(function(g) { return g.goal_id !== body.gate.goal_id; }); }
+      }
+    }
+    if (body.acknowledge_handoff && cx.handoff) cx.handoff.acknowledged = true;
+
+    await saveProfileDataField(req.params.id, pd, "coexistence", cx);
+    res.json({ success: true, coexistence: cx });
+  } catch (e) {
+    console.error("[Coexist] decision error:", e.message);
+    res.status(e.status || 500).json({ success: false, error: e.message });
+  }
+});
+
+// USER-FACING arc evaluation, fired on app open. Gated on the existing 24h
+// staleness so repeat opens cost nothing. ZERO AI calls either way. Not
+// admin-gated, matching GET /api/v2/today and /api/ai — the app is PIN-gated at
+// the profile selector and this only recomputes that profile's own arcs.
+app.post("/api/profiles/:id/evaluate-arcs", async function(req, res) {
+  try {
+    var pr = await fetch(SUPABASE_URL + "/rest/v1/profiles?id=eq." + req.params.id + "&select=profile_data", { headers: sbHeaders() });
+    var prows = await pr.json();
+    if (!Array.isArray(prows) || !prows.length) return res.status(404).json({ success: false, error: "profile not found" });
+    var goals = (prows[0].profile_data && prows[0].profile_data.goals) || [];
+    var arcs = goals.filter(function(g) { return g && g.roadmap && g.roadmap.arc_state; });
+    var freshest = 0;
+    arcs.forEach(function(g) {
+      var t = Date.parse(g.roadmap.arc_state.last_evaluated || 0);
+      if (!isNaN(t) && t > freshest) freshest = t;
+    });
+    if (arcs.length && freshest && (Date.now() - freshest) < ARC_STALE_MS) {
+      return res.json({ success: true, skipped: true, reason: "fresh", evaluated: 0 });
+    }
+    var out = await evaluateArcsForProfile(req.params.id, {});
+    res.json(Object.assign({ success: true, skipped: false }, out || { evaluated: 0 }));
+  } catch (e) {
+    console.error("[Arc] app-open evaluation error:", e.message);
+    res.status(500).json({ success: false, error: e.message });
   }
 });
 

@@ -561,6 +561,27 @@ input[type=range]{width:100%;accent-color:var(--accent)}
 #capacity-card .cap-readout{margin-top:10px;background:var(--bg-surface-2);border-radius:12px;padding:9px 11px;font-size:12px;color:var(--text-primary);line-height:1.6}
 #capacity-card .cap-readout.over{color:var(--color-caution)}
 #capacity-card .cap-note{font-size:11px;color:var(--text-muted);line-height:1.6;margin-top:6px}
+/* PT Brain Layer 3 (session #38) — coexistence verdict + PROPOSAL. Propose and
+   approve; nothing here writes the schedule until the athlete taps Apply. */
+#capacity-card .cap-cx{margin-top:12px;padding-top:11px;border-top:1px solid var(--border-subtle)}
+#capacity-card .cap-cx-head{display:flex;align-items:center;justify-content:space-between;gap:10px}
+#capacity-card .cap-cx-chip{font-size:9px;letter-spacing:.08em;font-weight:700;background:var(--bg-surface-2);padding:3px 8px;border-radius:9999px}
+#capacity-card .cap-recheck{background:transparent;border:none;color:var(--text-muted);font-size:11px;cursor:pointer;text-decoration:underline;font-family:'Inter',sans-serif;padding:0}
+#capacity-card .cap-cx-note{font-size:12px;color:var(--text-primary);line-height:1.6;margin-top:7px}
+#capacity-card .cap-btn-pri{background:var(--accent-ember);color:#fff;border:none;border-radius:10px;padding:8px 14px;font-size:12px;font-weight:600;cursor:pointer;font-family:'Inter',sans-serif;margin-right:8px}
+#capacity-card .cap-btn-sec{background:var(--bg-surface-2);color:var(--text-muted);border:1px solid var(--border-subtle);border-radius:10px;padding:8px 14px;font-size:12px;cursor:pointer;font-family:'Inter',sans-serif}
+#capacity-card .cap-btn-pri[disabled],#capacity-card .cap-btn-sec[disabled]{opacity:.5;cursor:default}
+#capacity-card .cap-handoff{margin-top:10px;background:var(--bg-surface-2);border-left:3px solid var(--accent-ember);border-radius:10px;padding:10px 12px}
+#capacity-card .cap-handoff-msg{font-size:12px;color:var(--text-primary);line-height:1.6;margin-bottom:9px}
+#capacity-card .cap-gate{margin-top:10px;background:var(--bg-surface-2);border-left:3px solid var(--color-caution);border-radius:10px;padding:10px 12px}
+#capacity-card .cap-gate-msg{font-size:12px;color:var(--text-primary);line-height:1.6;margin-bottom:9px}
+#capacity-card .cap-prop{margin-top:11px;background:var(--bg-surface-2);border:1px solid var(--border-subtle);border-radius:12px;padding:11px 12px}
+#capacity-card .cap-prop-head{font-size:12px;font-weight:700;color:var(--text-primary);margin-bottom:8px}
+#capacity-card .cap-prop-row{padding:6px 0;border-top:1px solid var(--border-subtle)}
+#capacity-card .cap-prop-row:first-of-type{border-top:none}
+#capacity-card .cap-prop-line{font-size:12px;color:var(--text-primary);line-height:1.5}
+#capacity-card .cap-prop-why{font-size:11px;color:var(--text-muted);line-height:1.55;margin-top:2px}
+#capacity-card .cap-prop-actions{margin-top:10px}
 /* Keystone join · goal picker (session #35), scoped to #schedule-card */
 #schedule-card .sched-goals{margin-top:10px;padding-top:9px;border-top:1px solid var(--border-subtle)}
 #schedule-card .sched-goals-label{font-size:11px;color:var(--text-muted);margin-bottom:6px}
@@ -2522,6 +2543,16 @@ function bootApp() {
     localStorage.setItem('ac_cache_date', todayLocal);
   }
 
+  // PT Brain Layer 2/3: app-open arc evaluation. Server-gated on the existing 24h
+  // staleness, ZERO AI calls, fire-and-forget — so decay accrues across a prolonged
+  // break instead of landing all at once on the next workout save, and a repeat
+  // open the same day costs nothing.
+  if (currentProfileId) {
+    fetch('/api/profiles/' + currentProfileId + '/evaluate-arcs', { method: 'POST' })
+      .then(function(r) { return r.json(); })
+      .then(function(d) { if (d && d.success && !d.skipped && typeof loadCapacityFit === 'function') loadCapacityFit(); })
+      .catch(function() { /* non-fatal */ });
+  }
   loadSchedule();
   renderSchedule();
   renderProfileTab();
@@ -6406,7 +6437,10 @@ function renderCapacityCard() {
       }
       var noDemand = (capFit.excluded || []).filter(function(x) { return x.reason === 'no_demand'; }).length;
       if (noDemand) h += '<div class="cap-note">' + noDemand + ' goal' + (noDemand === 1 ? '' : 's') + ' not yet planned — they don’t count toward this until their roadmap is built.</div>';
+      var gatedN = (capFit.excluded || []).filter(function(x) { return x.reason === 'gated'; }).length;
+      if (gatedN) h += '<div class="cap-note">' + gatedN + ' goal' + (gatedN === 1 ? '' : 's') + ' gated — waiting on another goal, so not counted.</div>';
     }
+    h += capCoexistHtml();
   } else {
     h += '<div class="cap-erow"><span>Days per week</span>' + capStepperHtml('capStep(\'days_per_week\',', c.days_per_week) + '</div>';
     h += '<div class="cap-erow"><span>Minutes per day</span><select class="cap-select" onchange="capSet(\'minutes_per_day\',this.value)">';
@@ -6426,6 +6460,156 @@ function renderCapacityCard() {
     h += '</div>';
   }
   card.innerHTML = h;
+}
+
+// ─── PT BRAIN · LAYER 3 — coexistence verdict + PROPOSAL (never auto-applied) ──
+var capBusy = false;
+function capCoexistHtml() {
+  var cx = (currentProfileData && currentProfileData.coexistence) || null;
+  if (!cx) {
+    return '<div class="cap-cx"><button class="cap-recheck" onclick="capClassify(\'manual\')">Re-check my week</button></div>';
+  }
+  var h = '<div class="cap-cx">';
+  var vLabel = cx.verdict === 'sequence' ? 'ONE GOAL LEADS' : cx.verdict === 'gated_mixed' ? 'SOME GOALS WAITING' : 'ALL GOALS FIT';
+  var vColor = cx.verdict === 'sequence' ? 'var(--color-caution)' : 'var(--color-positive)';
+  h += '<div class="cap-cx-head"><span class="cap-cx-chip" style="color:' + vColor + '">' + vLabel + '</span>';
+  h += '<button class="cap-recheck" onclick="capClassify(\'manual\')">Re-check my week</button></div>';
+  if (cx.conflict_note) h += '<div class="cap-cx-note">' + escHtml(cx.conflict_note) + '</div>';
+
+  // Handoff — Layer 2's first cross-layer consumer surfacing as a prompt.
+  if (cx.handoff && !cx.handoff.acknowledged) {
+    h += '<div class="cap-handoff"><div class="cap-handoff-msg">' + escHtml(cx.handoff.message) + '</div>' +
+      '<button class="cap-btn-pri" onclick="capClassify(\'handoff\', true)">Re-plan my week</button>' +
+      '<button class="cap-btn-sec" onclick="capAckHandoff()">Not yet</button></div>';
+  }
+
+  // Gate confirmations — a gate only takes effect once the athlete confirms.
+  (Array.isArray(cx.gated) ? cx.gated : []).filter(function(g) { return !g.confirmed; }).forEach(function(g) {
+    var goal = capGoalById(g.goal_id), by = capGoalById(g.gated_by);
+    if (!goal || !by) return;
+    h += '<div class="cap-gate"><div class="cap-gate-msg"><b>' + escHtml(goal.title) + '</b> may need to wait for <b>' + escHtml(by.title) + '</b>.<br>' + escHtml(g.reason || '') + '</div>' +
+      '<button class="cap-btn-pri" onclick="capGate(\'' + attrEsc(g.goal_id) + '\',true)">Yes, hold it</button>' +
+      '<button class="cap-btn-sec" onclick="capGate(\'' + attrEsc(g.goal_id) + '\',false)">No, run both</button></div>';
+  });
+
+  // The proposal diff. PROPOSE, NEVER WRITE — approving is what applies it.
+  var p = cx.proposal;
+  if (p && p.status === 'pending' && (p.schedule_delta || []).length) {
+    h += '<div class="cap-prop"><div class="cap-prop-head">Suggested changes to your weekly targets</div>';
+    p.schedule_delta.forEach(function(d) {
+      var verb = d.op === 'create' ? 'Add' : d.op === 'link_existing' ? 'Link' : d.op === 'drop_to_min_viable' ? 'Reduce' : 'Change';
+      var amount = d.op === 'create' ? (d.to + '×/week') : ((d.from == null ? '?' : d.from) + '× → ' + d.to + '×/week');
+      h += '<div class="cap-prop-row"><div class="cap-prop-line"><b>' + escHtml(verb) + '</b> ' + escHtml(d.activity) + ' — ' + escHtml(amount) + '</div>' +
+        '<div class="cap-prop-why">' + escHtml(d.reason || '') + '</div></div>';
+    });
+    h += '<div class="cap-prop-actions"><button class="cap-btn-pri" onclick="capDecide(\'approved\')"' + (capBusy ? ' disabled' : '') + '>Apply these</button>' +
+      '<button class="cap-btn-sec" onclick="capDecide(\'rejected\')"' + (capBusy ? ' disabled' : '') + '>Not now</button></div>';
+    h += '<div class="cap-note">Your fixed days are never changed by this.</div>';
+    h += '</div>';
+  } else if (p && p.status === 'rejected') {
+    h += '<div class="cap-note">You left your week as it is. Re-check any time.</div>';
+  }
+  h += '</div>';
+  return h;
+}
+function capGoalById(id) {
+  return ((currentProfileData && currentProfileData.goals) || []).filter(function(g) { return g && g.id === id; })[0] || null;
+}
+function capClassify(trigger, ack) {
+  if (!currentProfileId || capBusy) return;
+  capBusy = true; renderCapacityCard();
+  if (ack) capAckHandoff(true);
+  fetch('/api/profiles/' + currentProfileId + '/coexistence', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ trigger: trigger || 'manual' })
+  })
+    .then(function(r) { return r.json(); })
+    .then(function(d) {
+      capBusy = false;
+      if (d && d.success && currentProfileData) currentProfileData.coexistence = d.coexistence;
+      try { localStorage.setItem('ac_profile_data', JSON.stringify(currentProfileData)); } catch (e) {}
+      renderCapacityCard();
+    })
+    .catch(function() { capBusy = false; renderCapacityCard(); });
+}
+// APPLY goes through the ORDINARY schedule persist path — schedPersist() is the
+// app's single schedule writer, so goal_ids and every other key round-trip the
+// same way an athlete edit does. Anchors are never touched: the delta only ever
+// carries frequency_target ops.
+function capApplyDelta(delta) {
+  if (!Array.isArray(delta) || !delta.length) return 0;
+  var targets = currentSchedule.frequency_targets || (currentSchedule.frequency_targets = []);
+  var applied = 0;
+  delta.forEach(function(d) {
+    if (d.op === 'create') {
+      targets.push({
+        id: schedNextId(targets, 'ft'), activity: d.activity, times_per_week: d.to,
+        suggested_day: null, duration: null,
+        // Explicit, so schedRenderTargets' first-edit materialisation can't
+        // silently change it later (Session C A6).
+        stackable: !!d.stackable,
+        goal_ids: (d.goal_ids || []).slice()
+      });
+      applied++;
+      return;
+    }
+    var t = targets.filter(function(x) { return x.id === d.target_id; })[0];
+    if (!t) return;
+    t.times_per_week = d.to;                                   // number only
+    if (d.op === 'link_existing') {                            // never rewrite the athlete's text
+      var ids = Array.isArray(t.goal_ids) ? t.goal_ids : [];
+      (d.goal_ids || []).forEach(function(gid) { if (ids.indexOf(gid) < 0) ids.push(gid); });
+      t.goal_ids = ids;
+    }
+    applied++;
+  });
+  if (applied) {
+    schedPersist();                                            // the one schedule writer
+    if (typeof renderSchedule === 'function') renderSchedule();
+    if (typeof invalidateSchedulePreview === 'function') invalidateSchedulePreview();
+  }
+  return applied;
+}
+function capDecide(decision) {
+  var cx = (currentProfileData && currentProfileData.coexistence) || null;
+  if (!cx || !cx.proposal || capBusy) return;
+  capBusy = true; renderCapacityCard();
+  if (decision === 'approved') capApplyDelta(cx.proposal.schedule_delta);
+  fetch('/api/profiles/' + currentProfileId + '/coexistence/decision', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ decision: decision })
+  })
+    .then(function(r) { return r.json(); })
+    .then(function(d) {
+      capBusy = false;
+      if (d && d.success && currentProfileData) currentProfileData.coexistence = d.coexistence;
+      renderCapacityCard(); loadCapacityFit();
+      if (typeof showToast === 'function') showToast(decision === 'approved' ? 'Weekly targets updated ✓' : 'Left as is');
+    })
+    .catch(function() { capBusy = false; renderCapacityCard(); });
+}
+function capGate(goalId, confirmed) {
+  if (!currentProfileId || capBusy) return;
+  capBusy = true; renderCapacityCard();
+  fetch('/api/profiles/' + currentProfileId + '/coexistence/decision', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ gate: { goal_id: goalId, confirmed: !!confirmed } })
+  })
+    .then(function(r) { return r.json(); })
+    .then(function(d) {
+      capBusy = false;
+      if (d && d.success && currentProfileData) currentProfileData.coexistence = d.coexistence;
+      renderCapacityCard();
+      capClassify('gate_decision');   // a confirmed gate changes the capacity sum
+    })
+    .catch(function() { capBusy = false; renderCapacityCard(); });
+}
+function capAckHandoff(silent) {
+  if (!currentProfileId) return;
+  fetch('/api/profiles/' + currentProfileId + '/coexistence/decision', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ acknowledge_handoff: true })
+  }).then(function(r) { return r.json(); }).then(function(d) {
+    if (d && d.success && currentProfileData) currentProfileData.coexistence = d.coexistence;
+    if (!silent) renderCapacityCard();
+  }).catch(function() {});
 }
 
 function capStepperHtml(fnPrefix, value) {
@@ -6466,7 +6650,7 @@ function capPersist() {
   if (!currentProfileId) return;
   fetch('/api/profiles/' + currentProfileId, {
     method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body)
-  }).then(function() { loadCapacityFit(); })
+  }).then(function() { loadCapacityFit(); capClassify('capacity_edit'); })
     .catch(function(e) { console.warn('[Capacity] save skipped:', e && e.message); });
 }
 function loadCapacityFit() {
@@ -7534,6 +7718,15 @@ function generatePersonalizedRoadmap(goalId, answers) {
       grvUpdateCachedGoal(data.goal);
       renderGoalRoadmap(data.goal);
       if (typeof renderProfileGoals === 'function') renderProfileGoals(); // refresh cards behind the view
+      // Layer 3 trigger 1 — RECORD-ONLY. The Session A negotiation the athlete
+      // just completed WAS the decision for this moment; producing a proposal
+      // here would ask the same question twice in two different UIs.
+      fetch('/api/profiles/' + currentProfileId + '/coexistence', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ trigger: 'goal_created', record_only: true })
+      }).then(function(r) { return r.json(); })
+        .then(function(c) { if (c && c.success && currentProfileData) currentProfileData.coexistence = c.coexistence; })
+        .catch(function() {});
     })
     .catch(function() {
       if (grvGoalId !== goalId) return;
@@ -7720,6 +7913,9 @@ function grvDialAdjust(delta) {
       grvUpdateCachedGoal(data.goal);
       renderGoalRoadmap(data.goal);
       if (typeof renderProfileGoals === 'function') renderProfileGoals();
+      // Layer 3 trigger 3 — a dial change alters this goal's demand, so the
+      // standing verdict may no longer hold. Proposal mode.
+      if (typeof capClassify === 'function') capClassify('dial_change');
     })
     .catch(function() {
       if (grvGoalId !== goalId) return;
