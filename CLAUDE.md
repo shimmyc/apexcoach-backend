@@ -1120,7 +1120,7 @@ Replaces the legacy free-text `profiles.roadmap` blob with a structured jsonb th
 - **Profile-tab UI (structured card)** — the Profile tab now renders the structured roadmap via `renderRoadmapData()` into `#roadmap-data-card` (scoped CSS `#roadmap-data-card .rd-*`, matching the `grv*` per-goal roadmap visual language). Render helpers: `loadRoadmapData()` (fetch + cache), `renderRoadmapData()` (dispatch), `rdEmptyHtml()` (manual empty state), `rdLoadedHtml()` (full card), `generateRoadmapData(isRegen)` (POST + spinner), `rdAskRegen()` (inline confirm), `rdToggleLog()` (adaptation-log collapse). The legacy `renderRoadmapContent()`/`loadRoadmap()`/`generateRoadmap()` functions and the `#roadmap-card` div were fully removed 2026-07-17 (see "Tech Debt Batch" below) — the Profile render path has called `loadRoadmapData()` (GET → cache in module vars `currentRoadmapData`/`currentRoadmapUpdatedAt`/`roadmapDataLoaded` → render) exclusively since 2026-05-29. **Auto-generation:** when the GET returns `roadmap_data:null`, `loadRoadmapData()` auto-calls `generateRoadmapData(false)` (in-card spinner) rather than showing the empty state; the manual empty state ("MACRO ROADMAP" + Generate button + subtext) only appears if that auto-generation fails. The browser console logs the raw `roadmap_data` after each generation. Loaded state (in order): header (timeline_range in Fraunces + note + muted Regenerate link), `COVERS` goal pills, 3 near-term phase cards (status badge current=ember/upcoming=muted/complete=positive, progress bar capped at 90% unless complete, duration/end-date, weekly_targets `•`, completion_signals `☐`/`☑`, cornerman goal_connections pills), 2 horizon cards (info `HORIZON` badge + milestone + estimated_range), exercise callouts (`GAPS TO ADDRESS` caution-bordered ⚠ / `WHAT'S WORKING` positive-bordered ✓; section skipped if both empty), collapsible adaptation log ("Show history (N updates)"), and a `Generated [date] · v[version]` footer. `generateRoadmapData(isRegen)` POSTs `/roadmap-data` (in-card spinner, non-fatal toast on failure) and on success caches the result so re-renders don't refetch; Regenerate uses an inline Yes/Cancel confirmation (no modal).
 - **Endpoints**: `GET /api/profiles/:id/roadmap-data` (returns `roadmap_data` + `roadmap_data_updated_at`, or `{roadmap_data:null}`; near-term phase **`status` + `progress_pct` recomputed on read**). `POST /api/profiles/:id/roadmap-data` generates via Sonnet (`macro_roadmap_generate`) using `getFullExerciseContext(90)` + per-goal contexts + last 30 workouts + coaching brief (600 chars) + `ai_prompt_context` (1000 chars); no intake gate.
 - **Phase status is derived from dates, not the AI** — `recomputeRoadmapProgress()` (shared by macro + per-goal roadmaps) ignores the AI-supplied status (which tends to be all `upcoming`) and derives near-term status from the `assignNearTermDates`-assigned window: `end_date < today` → `complete`, first phase with `start_date ≤ today ≤ end_date` → `current`, else `upcoming`; then `current` gets the time-elapsed `progress_pct` (capped 90), `complete` = 100. The `macro_roadmap_generate` system prompt (`MACRO_ROADMAP_SYS`) hard-requires a non-empty `goals_summary[]` and a non-empty `milestone` + `estimated_range` string on every horizon phase.
-- **Shape**: `{ timeline_range, timeline_note, goals_summary[], phases[], exercise_gaps[], exercise_highlights[], generated_at, version, adaptation_log[] }`. Phases = 3 `near_term` (4–6 wks, with `weekly_targets[]`, `completion_signals[]`, `goal_connections[]`, `start_date`/`end_date`, `status`, `progress_pct`) + 2 `horizon` (`estimated_range`, `milestone`, `status`). `exercise_gaps` call out what's missing ("No lower body strength in 5 weeks"); `exercise_highlights` celebrate what's working.
+- **Shape**: `{ timeline_range, timeline_note, goals_summary[], phases[], exercise_gaps[], exercise_highlights[], generated_at, version, adaptation_log[] }`. Phases = 3 `near_term` (4–6 wks, with `weekly_targets[]`, `completion_signals[]`, `goal_connections[]`, `start_date`/`end_date`, `status`, `progress_pct`) + 2 `horizon` (`estimated_range`, `milestone`, `status`). **⚠ 3+2 and the 4–6 week clamp are CURRENT AND CORRECT for the MACRO roadmap — it was deliberately left untouched by the whole PT Brain arc (`MACRO_ROADMAP_SYS` and `adaptMacroRoadmap` are unmodified). It is the PER-GOAL roadmap that retired 3+2 in Session A. Do not "fix" this line to match the per-goal shape.** Macro progress is likewise still time-elapsed — `arc_state` never appears on `roadmap_data`. `exercise_gaps` call out what's missing ("No lower body strength in 5 weeks"); `exercise_highlights` celebrate what's working.
 - **Columns**: `profiles.roadmap_data` (jsonb), `profiles.roadmap_data_updated_at` (timestamptz). Migration `2026-05-22_roadmap_data.sql`.
 
 ## Living Goal Roadmaps (Per-Goal)
@@ -1149,9 +1149,23 @@ Each **individual goal** in `profile_data.goals[]` can carry its own phased, ada
 
 **Phase progress** (`computePhaseProgress(phase, exerciseContext)`): current near-term phases get a time-elapsed estimate (`days since start_date / duration_weeks*7`), capped at 90 so it never auto-completes, +10 when the goal's `trend === 'improving'`. Recomputed on read (`recomputeRoadmapProgress`), never stored. `assignNearTermDates()` backfills missing phase `start_date`/`end_date` sequentially from today so progress is always computable.
 
+> **⚠ SUPERSEDED FOR NEW-SHAPE PER-GOAL ROADMAPS (PT Brain Session B, session #37).**
+> `recomputeRoadmapProgress` now **branches**: when `roadmap.arc_state` is present, phase status is
+> derived from **cumulative phase budgets vs the EARNED position** (`position_week`, replayed from
+> the log in code — the calendar does not advance you, doing the work does), not from elapsed time.
+> The time-elapsed path above is **byte-identical and still correct** for (a) **legacy per-goal
+> roadmaps** with no `arc_state` and (b) the **MACRO roadmap**, neither of which the PT Brain arc
+> touched. See "PT Brain — Session B" below and `ROADMAP.md` §7 → "⚠ PER-GOAL vs MACRO".
+>
+> **Also superseded on this section:** the fixed **3 `near_term` + 2 `horizon`** skeleton and the
+> integer **4–6 `duration_weeks`** clamp described in "Goal object fields" above are **retired for
+> per-goal roadmaps** — phase count and each phase's week budget are derived in code by
+> `derivePhasePlan(estimate)` (Session A). Legacy roadmaps keep their existing shape, deliberately
+> unclamped, so a regenerate never silently shrinks them.
+
 **Unified weekly auto-adaptation**: `maybeAdaptAllRoadmaps(profileId)` (fire-and-forget on `POST /api/workouts`) replaces the old `maybeAdaptGoalRoadmaps`. It loads the profile once, fetches `getFullExerciseContext(60)` + last 10 workouts once, then: (1) adapts each per-goal roadmap that is intake-complete + has a roadmap + is >7 days stale (each with its own `getGoalExerciseContext`, Haiku, trigger `weekly`); (2) adapts `roadmap_data` if it exists and is >7 days stale (Haiku `adaptMacroRoadmap` — updates `exercise_gaps`/`exercise_highlights`/phase statuses). A single profile PATCH writes `profile_data` and/or `roadmap_data` at the end.
 
-**Model routing** (`CALL_TYPE_MODEL`): `goal_intake_questions`→Haiku, `goal_roadmap_generate`→Sonnet, `goal_roadmap_adapt`→Haiku, `macro_roadmap_generate`→Sonnet, `macro_roadmap_adapt`→Haiku. Endpoints call Anthropic directly via `callAISystem(system, user, maxTokens, model)`; `parseAIJson()` extracts JSON from fenced/prose responses.
+**Model routing** (`CALL_TYPE_MODEL`): `goal_intake_questions`→Haiku, `goal_roadmap_generate`→Sonnet, **`goal_roadmap_adapt`→Sonnet** (⚠ **corrected 2026-07-27 (session #41)** — this line and `ROADMAP.md` §7 both said Haiku; `server.js:2724` reads `goal_roadmap_adapt: MODEL_SONNET` and has since session #30, when adapt was promoted to Sonnet so it could judge phase **PREMISE VALIDITY**, not just completion signals — see "Roadmap Adaptation — Premise Validity" below), `macro_roadmap_generate`→Sonnet, `macro_roadmap_adapt`→Haiku. PT Brain Session A adds `goal_plan_setup` / `goal_timeline_estimate` / `goal_negotiate`→Sonnet. Endpoints call Anthropic directly via `callAISystem(system, user, maxTokens, model)`; `parseAIJson()` extracts JSON from fenced/prose responses.
 
 ## Previous Days Navigation
 
@@ -2667,7 +2681,11 @@ against real content and **deliberately NOT ported**:
   ("Bench Press 3x8 @ 135lbs"), so a port requires a string→structure parser feeding an estimator
   that computes what `estimateExerciseMinutes` already computes — **the parser IS the existing
   function's entire job.**
-- **Its two genuine additions fire ZERO times on real content.** Measured on profile 1's live rec
+- **Its two genuine additions fire ZERO times on real content.** ⚠ **INCOMPLETE BASIS — corrected
+  after the build; see "Correction to the Phase 1 audit" in the Session D section below. This was
+  measured on the MOBILITY DAY ONLY; on the strength day the all-bare rule fires on 1 of 11
+  sections. The rejection still stands on the two structural findings above, not on this one.**
+  Measured on profile 1's live rec
   (**32 exercise lines, 11 sections**): whole-segment-bare → declared minutes never applies (only
   **3/32 lines bare = 9%**, no section all-bare); the segment-type mobility rate is redundant
   because `recIsMobilityish()` already catches every yoga/mobility name present.
@@ -2929,69 +2947,153 @@ constraints are fully verified; the model's response to it is not. **Run this fi
 
 ---
 
-## NEXT SESSION STARTS HERE — PT BRAIN ARC COMPLETE (updated 2026-07-25, session #40)
+## PT Brain — Arc Close-Out (2026-07-27, session #41): key learnings
 
-> **⚠ STATUS: ALL FOUR PT BRAIN LAYERS ARE SHIPPED.** A, B and C (sessions #36–38) are shipped
-> **and verified live**. D / Layer 4 (session #40) is **shipped and verified structurally against
-> real profile-1 data (77 checks), but has ONE unverified-live item.**
+**Documentation-only session.** No code, no migrations, no data changes; the only files written were
+`ROADMAP.md` and `CLAUDE.md`. Sessions A–D each closed out individually, but the **arc-level** state
+had never been consolidated and two live findings from after Session D's close-out were in no
+document at all. The consolidated **verification ledger** (30 rows, shipped vs verified tracked
+separately) lives in `ROADMAP.md` §7 → "PT Brain — consolidated verification ledger"; the two new
+open bugs live in §6 → "PT Brain arc close-out — open bugs" and §9.
+
+The five learnings below **change how future sessions estimate and verify**. They are recorded here,
+not in a session banner, because they generalise beyond the arc.
+
+**1. Prompt char-budget projections in this codebase run SYSTEMATICALLY LOW.** Session D projected
+depth `+300` / arc `+500`; actual **+641 / +935** — the mandated-verbatim ARC REALITY text alone is
+~430 chars and was never budgeted for. Session #31's audit was also **~30% under** (~12,000
+estimated vs ~17,400 real protected content), because it assumed no active Focus Override and could
+not measure `buildLog` / `buildExerciseHistory` / `dataBlock`, which are closures **inside**
+`fetchAI` and unmeasurable from outside it. **Treat any char estimate in this codebase as
+optimistic and measure before shipping.** The tool already exists:
+`fetchAI({auditOnly:true, onAudit})` assembles and reports the real prompt through the real builders
+**without calling the model** — it is the permanent way to measure this prompt.
+
+**2. A GREEN TEST HARNESS CAN BE BROKEN — record this failure class.** Session D's function
+extractor over-captured **thousands of lines** because its brace scanner did not skip comments: an
+apostrophe in `// the model's own` opened a phantom string and swallowed the closing braces.
+**The functional tests passed anyway, at 48/49.** That is the danger — a harness that reports
+**near-green while silently mis-extracting is more dangerous than one that fails outright**, because
+it certifies code it never actually ran. Fixed with proper comment / string / template /
+regex-literal handling **plus an over-capture guard that throws** (no other column-0 `function` may
+appear inside a slice, and every slice must re-parse). Re-run: 49/49. **This applies to every
+source-slicing harness in the repo** — the `v2FoldedCards.test.js` family and the Session D pair all
+use the same "run the actual shipped code, never a hand-copied duplicate" discipline, and any new
+one must carry the same guard.
+
+**3. The estimator was NOT ported, deliberately — and the stated basis needed a correction.**
+`estimateSegmentWorkMinutes` (`server/coachingRules.js`) reads **structured objects**; v1 recs carry
+**freeform strings**. Porting means writing a string→structure parser to feed a calculation
+`estimateExerciseMinutes` already performs — **the parser IS the existing function's entire job**.
+Its constants were derived FROM v1 and are identical by construction. Measured, its two genuine
+additions fire **0/32 on the mobility day**. **⚠ Correction:** on the **strength** day the all-bare
+rule fires on **1 of 11 sections**, so Phase 1's "fires ZERO times" was **measured on an incomplete
+basis**. The decision is unchanged — the rejection rests on the two structural findings, not on the
+rule being inert — but the claim was wrong as stated and is corrected wherever it appears. **Only
+the 3-line all-bare rule was taken.** `estimateExerciseMinutes` remains **ONE implementation with
+TWO consumers** (`buildTimeBudgetContext`, `verifyRecTimeBudget`).
+
+**4. Empirical confirmation of the §6 0.70 rejection — cite this so the gate is never re-proposed.**
+Profile 1's live, **athlete-ACCEPTED** rec estimates at **36/60, 23/45, 18/30 = 60% / 51% / 60%** of
+stated time. **Every option would have failed a 0.70 work-floor** — on output the athlete actually
+wanted. This is measured evidence, not reasoning, that the rejection was correct: the floor would
+have condemned good content. Cited at `ROADMAP.md` §6 → "Rejected Approaches & Lessons", item 1.
+**Standing constraint: a depth rule is a count of distinct movements per section, and must never be
+expressed as, derived from, or tuned against a minutes-filled ratio.**
+
+**5. Depth thresholds were held AT THE LINE on purpose.** 5 of 6 Main sections across both measured
+days sit at **zero margin**. The threshold has **two consumers with opposite failure modes**: as a
+**prompt target**, a low number licenses the model to give less — a depth regression, the exact
+thing this layer exists to prevent; as a **verifier tripwire**, it should fire the moment content
+drops below anything ever accepted. **The prompt role wins**, because the costs are asymmetric — a
+false warn is one console line, a stated-too-low minimum is lost depth on every rec every day.
+Mitigated by reporting `margin` per section so an at-the-line pass stays legible. **If spurious
+warns appear in real use, the fix is dropping `≥25` to 3 — never raising a tier.**
+
+---
+
+## NEXT SESSION STARTS HERE — ARC SHIPPED, TWO OPEN BUGS (updated 2026-07-27, session #41)
+
+> **⚠ STATUS: ALL FOUR PT BRAIN LAYERS ARE SHIPPED AND THE ARC IS CLOSED OUT.** What remains is
+> **verification and two bugs**, not construction.
+>
+> **THE IMMEDIATE WORK, IN THIS ORDER:**
+>
+> | # | Work | Why this order |
+> |---|---|---|
+> | **1** | **Diagnose BUG 2** — no workout rec renders on Today for **profile 4** | **It blocks #3.** Profile 4 is where item (c) has to be verified and it currently renders no rec at all. **NOT a general Layer 4 regression** — profile 1 was checked immediately and is healthy. Rule out in order: (a) benign empty state (profile 4's `daily_recommendations*` were never populated — v2 never wrote them and it was flipped to v1 in Session A); (b) a generation failure specific to that profile's data shape (it is the only profile with new-shape goals, `arc_state`, `capacity` and `coexistence` all present); (c) fallout from the goal regeneration that immediately preceded it. **First step: the browser console on profile 4, then a forced category-pill generation** to separate a cache/render issue from a generation failure |
+> | **2** | **BUG 1** — HTTP 413 on `/api/profiles/1/goal-progress` | Real user-facing breakage on the athlete's own profile: goal progress numbers don't load. **The `SyntaxError: Unexpected token '<'` is a SECONDARY symptom** — the 413 comes back as an HTML page. **FIRST STEP IS AN AUDIT of what that endpoint actually sends, not a limit bump** — raising the limit is a band-aid, and two competing causes are on record (client-side `workoutLog` + all exercise sessions vs accumulated `profile_data`). See §9 |
+> | **3** | **Close Session D item (c)** with a constructed re-ramping goal on profile 4 | **The last unproven link in the Layer 2 → Layer 4 chain** |
+>
+> **⚠ NO NEW FEATURE WORK SHOULD START UNTIL ITEM (c) IS CLOSED.** It is the entire athlete-facing
+> payoff of the arc: Layer 2 computes an earned position and Layer 4 injects it, but nobody has yet
+> confirmed the model *acts* on it. A re-ramp the athlete cannot see in their session is a re-ramp
+> the arc did not deliver.
 >
 > | Layer | State |
 > |---|---|
 > | A — honest timelines + capacity + negotiation | shipped, **verified live** on profile 4 |
-> | B — arc_state, decay, re-ramp, timeline flex | shipped, **verified live** (2 items unit-tested only: rehab-vs-skill decay contrast, the shorten direction of flex) |
+> | B — arc_state, decay, re-ramp, timeline flex | shipped, **verified live** (2 items unit-tested only: rehab-vs-skill decay contrast, the SHORTEN direction of flex) |
 > | C — coexistence engine | shipped, **verified live** (3 items open: handoff firing at ≥75%, derived-target-through-week-preview, stale branch of app-open evaluation) |
-> | D — session depth | shipped; depth non-regression + budget + capacity card **verified**; **item (c) NOT verified live** |
+> | D — session depth | shipped; depth non-regression + budget + capacity card **verified**; **item (c) NOT verified live, and now BLOCKED by BUG 2** |
 >
-> **THE ONE CHECK TO RUN FIRST NEXT SESSION — Layer 4 item (c):** on **profile 4**, drive a goal
+> **Newly VERIFIED LIVE by the athlete after Session D's close-out** (see the ledger, rows 14 and
+> 24): the loud `needs_regeneration` banner renders on a real drifted goal (profile 4, "Bench press
+> 175 lbs for a single") and the inline regenerate action works — **this closes the Session B/C item
+> that had never been human-confirmed**; and **profile 1 renders normally post-Layer-4** (rec cards
+> generate, capacity card and profile cards load on boot and tab switch, no depth regression
+> observed).
+>
+> **THE CHECK FOR ITEM (c) — Layer 4:** on **profile 4**, drive a goal
 > into `re_ramping` (Session B machinery), generate a rec, and confirm it visibly reads as a
 > re-ramp — lighter, rebuild-the-base prescription plus honest framing — **and that no arc number
 > appears that was not in the injected `ARC STATE` block.** Everything about the block's
 > construction is already verified; what is unverified is the model's response to it.
 >
-> **Carried forward, do NOT chase with synthetic data:** Session C's handoff firing,
-> derived-target-through-week-preview, and the stale branch of app-open arc evaluation.
+> **Carried forward, do NOT chase with synthetic data** (each is waiting on real data or a real
+> model call — see the ledger for the exact closing check on each): Session C's **handoff firing at
+> ≥75%**, **derived-target-through-week-preview**, the **stale branch of app-open arc evaluation**,
+> and Session B's **rehab-vs-skill decay contrast** + the **flex SHORTEN direction** (both
+> unit-tested against the real shipped functions, never exercised end-to-end on real data).
 >
-> **Next build candidates** are the four items logged in ROADMAP §7 under "Logged session #40":
-> **L1** session pacing / circuit-style estimation (time calibration, NOT depth, and NOT a reason to
-> revisit the rejected 0.70 floor), **L2** section-label misplacement (assignment, not depth),
-> **L3** coexistence-awareness absent from the daily rec (closes the Layer 2/3/4 loop), **L4**
-> category + intensity in one action (**audit first — intensity may not reach the category-override
-> path at all, which would be a live bug**). None are built.
+> **Next build candidates, only AFTER item (c) is closed** — the four items logged in ROADMAP §7
+> under "Logged session #40", none built: **L1** session pacing / circuit-style estimation (**a
+> TIME-calibration issue, explicitly NOT depth, and NOT a reason to revisit the rejected 0.70
+> floor**; the likely fix is a training-style preference consumed by BOTH `estimateExerciseMinutes`
+> and the TIME BUDGET block, which **must preserve the one-implementation / two-consumer
+> invariant**), **L2** section-label misplacement (section **ASSIGNMENT**, not depth — the depth
+> floor does not fix it; prompt-side, and **must not reintroduce the mandated-section padding
+> trap**), **L3** coexistence-awareness absent from the daily rec (closes the Layer 2/3/4 loop — the
+> same move Layer 4 made for `arc_state`: a small, self-capped, code-supplied protected-tier block
+> the model narrates but never authors), **L4** category + intensity in one action — **⚠ FIRST STEP
+> IS AN AUDIT, NOT A BUILD:** confirm whether `recIntensityChoice` reaches the category-override
+> path at all, since that path prepends a block taking "priority over everything else in this
+> message" and swaps out `buildScheduleInstruction`. **If intensity doesn't carry, that is a live
+> bug, not a UX request.**
 >
-> **⚠ SUPERSEDED — LAYER 4 SHIPPED 2026-07-25 (session #40). See "PT Brain — Session D" above for
-> the implementation record. The paragraph below is the pre-build framing, kept for the record.**
+> **Read before starting:** `ROADMAP.md` §6 → "PT Brain arc close-out — open bugs" (BUG 1 and BUG 2
+> in full), the §7 consolidated verification ledger, §7 → "⚠ PER-GOAL vs MACRO" (**the easiest thing
+> to get wrong — per-goal retired 3+2, the MACRO roadmap did not**), and §7 → "Profile 1 migration —
+> a flagged athlete decision".
 >
-> ~~THE NEXT BUILD SESSION IS LAYER 4~~ — session depth. It is the LAST layer and it is
-> independent of A/B/C. **Its Phase 1 audit is recorded in "PT Brain — Session D, PHASE 1 AUDIT
-> RESULT" above.** The audit **rejected** the
-> `estimateSegmentWorkMinutes` port on measured evidence (keep `estimateExerciseMinutes`; take only
-> the all-bare-section rule as a 3-line addition) and **proposed** the depth-floor table
-> (`<8` exempt · `8–14`→2 · `15–24`→3 · `≥25`→4), which is **derived from one mobility day and
-> still needs a strength-day re-derivation before anything is built against it.** The floor is a
-> minimum number of **distinct movements per section**, **explicitly NOT a time-fill ratio** — that
-> is the rejected 0.70 gate (§6), and profile 1's accepted rec measures 60%/51%/60%, i.e. it would
-> have failed that gate. **Prompt-side first;** `verifyRecTimeBudget` stays **warn-only**, and a
-> regenerate loop is added only if a week of live use shows the prompt alone doesn't hold.
->
-> **⚠ Layer 4 is the FIRST session that crosses the boundary A/B/C deliberately respected.**
-> Sessions A–C never touched a `fetchAI` builder or the daily-rec prompt. Layer 4 does. Expect
-> the audit to be about `fetchAI`'s assembly order, the 28000-char budget, and the trim ladder —
-> none of which has been read in this arc.
->
-> **Layer 4's one cross-layer input:** `arc_state` should drive prescribed volume/intensity so a
-> re-ramp visibly **is** a re-ramp. `goal.roadmap.arc_state` is live and populated on new-shape
-> goals; legacy goals have none, so the builder must tolerate its absence.
->
-> **Read before starting:** ROADMAP §6 → "PT Brain Session C — Known Limitations" (item 1, the
-> capacity card — **⚠ its "render-ordering" diagnosis was WRONG; session #39 found the real cause:
-> the render call landed inside `foPersist`, the Focus-Override save handler, so the card only ever
-> renders on a Focus-Override save. One-liner: call it from `showTab()`'s profile branch**) and
-> "Session B — Known Limitations" (item 1, arc evaluation still has no time-based trigger —
-> app-open narrowed it, did not close it).
+> **⚠ PROFILE 1 MIGRATION IS AN ATHLETE DECISION, NOT A TASK — do not action it inside another
+> session's scope.** Migrating profile 1's three legacy 3+2 roadmaps is the point of Layers 1–3, but
+> it (a) **overwrites roadmaps carrying real adaptation history** and (b) **pushes the prompt over
+> budget** — profile 1 sits at **27,223 / 28,000 with the arc block contributing ZERO** precisely
+> because it has no arc goals; migration activates that block on every top-3 goal and costs one
+> extra trim-ladder rung (`coachingBrief 2343→400`) on the heaviest days. Neither is a blocker; both
+> must be weighed deliberately. **It also likely worsens BUG 1** — weigh it after that audit.
 >
 > **Still logged as DESIGN-FIRST, not built:** goal completion behavior (stop / hold at
-> maintenance / roll into a higher goal); auto-apply of coexistence proposals as an opt-in
-> setting; the intake-question overlap audit.
+> maintenance / roll into a higher goal — the **ACHIEVED MILESTONES never-auto-escalate precedent**
+> should govern it: ask the athlete, don't invent the next tier); ask-AI-to-optimize-goal-order
+> (**explicit** action, show the proposed order before applying, one-tap revert); `goal_ids` in the
+> Build-with-AI schedule skeleton; auto-apply of coexistence proposals as an opt-in setting; the
+> intake-question overlap audit.
+>
+> **Standing clarification, do NOT build:** a goal that genuinely needs only ~10 min/day is a
+> **low-demand GOAL with its own tracked `frequency_target`**, not an addon. Addons stay excluded
+> from coexistence deltas because presence-level matching cannot verify them.
 >
 > **Engine v2 remains PAUSED and its strategy REJECTED going forward.** Everything documented below
 > about v2 stays accurate as history and is deliberately preserved — but the queued v2 work (B
