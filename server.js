@@ -6002,6 +6002,25 @@ function buildLeverFacts(fit, target, outcomes, goal, profileData) {
 // Deliberately conservative: a false rejection costs nothing but prose quality,
 // while a fabricated number ("needs 400 committed minutes" — observed live at
 // model_levers_valid:true) is exactly what the standing invariant forbids.
+// The other half of fix 3: the model must not CONTRADICT a code-supplied
+// outcome. Caught live on 2026-07-28 — code computed `sequence` as resolving
+// (3x -> 2x genuinely clears the cap) and the model wrote "UNAVAILABLE. …
+// there's no separate path here", so the athlete would have been shown a
+// tappable option whose own text told them not to tap it. Availability is a
+// code decision; prose that overrides it is rejected like a fabricated number.
+var LEVER_UNAVAILABILITY_CLAIM = /\b(unavailable|not available|isn'?t an option|is not an option|no separate path|won'?t help|will not help|doesn'?t help)\b/i;
+function leverTextClaimsValid(options) {
+  for (var i = 0; i < options.length; i++) {
+    var o = options[i];
+    if (o.available !== true) continue;
+    if (LEVER_UNAVAILABILITY_CLAIM.test(String(o.detail || ""))) {
+      console.warn("[PTBrain] negotiate: lever '" + o.lever + "' is code-marked AVAILABLE but its text claims otherwise — falling back to code-authored levers");
+      return false;
+    }
+  }
+  return true;
+}
+
 function leverTextNumbersValid(options, allowed) {
   for (var i = 0; i < options.length; i++) {
     var txt = String(options[i].label || "") + " " + String(options[i].detail || "");
@@ -7601,6 +7620,7 @@ var NEGOTIATE_SYS =
   "Each detail is 1-2 plain sentences restating that lever's PRE-COMPUTED OUTCOME in warm, direct language.\n" +
   "  - An outcome marked RESOLVES: say what changes and that it fits. If the goal whose frequency moves is NOT the goal being set up, say plainly that this other goal is what has to move, and name it.\n" +
   "  - An outcome marked DOES NOT RESOLVE: write it as UNAVAILABLE. State the given reason honestly. Never present it as a choice, never apologise for it, never suggest trying it anyway.\n" +
+  "  - NEVER write that an option is unavailable, pointless, redundant or not worth taking unless you were explicitly told it DOES NOT RESOLVE. If two options happen to reach the same frequency, describe each on its own terms — do not editorialise that one of them is not a real path.\n" +
   "Never contradict a supplied outcome, and never claim a lever helps when you were told it does not.";
 
 // Clamp an AI plan-setup proposal into the stored shape. A goal_type the model
@@ -7911,7 +7931,8 @@ app.post("/api/profiles/:id/goals/:goalId/negotiate", async function(req, res) {
                    detail: String(byLever[cl.lever].detail).slice(0, 400) };
         });
         var noteCandidate = parsed.conflict_note ? String(parsed.conflict_note).slice(0, 400) : "";
-        if (leverTextNumbersValid(candidate.concat([{ lever: "conflict_note", label: "", detail: noteCandidate }]), pack.allowed)) {
+        if (leverTextClaimsValid(candidate) &&
+            leverTextNumbersValid(candidate.concat([{ lever: "conflict_note", label: "", detail: noteCandidate }]), pack.allowed)) {
           options = candidate;
           conflictNote = noteCandidate;
           valid = true;

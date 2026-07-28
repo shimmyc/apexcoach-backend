@@ -113,7 +113,7 @@ function buildSandbox(src, label, isPost) {
   if (isPost) {
     parts.push(slice(src, label, "var NEGOTIATION_LEVERS = [", "// ── PT BRAIN · LAYER 3 — coexistence engine"));
     expected.push("isDemandLever", "dialLockAllows", "goalBaselineDemand", "goalPendingDemand", "resolveLeverTarget",
-      "projectLeverOutcome", "buildLeverFacts", "leverTextNumbersValid", "buildCodeAuthoredLevers");
+      "projectLeverOutcome", "buildLeverFacts", "leverTextClaimsValid", "leverTextNumbersValid", "buildCodeAuthoredLevers");
   }
   // The two routes under test.
   parts.push(slice(src, label, 'app.post("/api/profiles/:id/goals/:goalId/estimate"', "// STEP 4 — only reached"));
@@ -394,6 +394,26 @@ test("FIX 3: numbers inside goal titles are allowed (185lb, 25m, 5k)", () => {
   const pack = POST.buildLeverFacts(fit, target, outcomes, p.goals[1], p);
   assert.strictEqual(POST.leverTextNumbersValid(
     [{ lever: "slower", label: "x", detail: "Bench Press 185lb has to move." }], pack.allowed), true);
+});
+
+test("FIX 3: the model cannot claim an AVAILABLE lever is unavailable (caught live)", () => {
+  // Verbatim from the live 2026-07-28 run: code computed `sequence` as resolving
+  // (3x -> 2x genuinely clears the cap) and the model wrote it off anyway, so the
+  // athlete would have seen a tappable option telling them not to tap it.
+  const live = [
+    { lever: "slower", available: true, detail: "Drop Bench Press 185lb from 3x/week to 2x/week." },
+    { lever: "capacity", available: true, detail: "Raise your hard sessions per week from 2 to 3." },
+    { lever: "sequence", available: true,
+      detail: "UNAVAILABLE. Sequencing would also require dropping Bench Press 185lb to 2x/week, which is the same outcome as the first option — there's no separate path here." },
+  ];
+  assert.strictEqual(POST.leverTextClaimsValid(live), false, "availability is a CODE decision");
+});
+
+test("FIX 3: an UNAVAILABLE lever is of course allowed to say so", () => {
+  assert.strictEqual(POST.leverTextClaimsValid([
+    { lever: "slower", available: false, detail: "Not available — still over by 1 hard session/week." },
+    { lever: "capacity", available: true, detail: "Raise hard sessions from 2 to 3." },
+  ]), true);
 });
 
 test("FIX 3: a fabricated number in the negotiate route falls back to code levers, not an error", async () => {
