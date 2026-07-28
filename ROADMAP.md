@@ -4,6 +4,33 @@
 > Pairs with `CLAUDE.md` (deep implementation notes) and `FORMULAS.md` (readiness/sleep math).
 > Last updated: 2026-07-28.
 >
+> **2026-07-28 session #45 — ✅ CAPACITY NEGOTIATION REBUILT. The athlete could not get a second
+> goal from intake to roadmap; all three levers failed. The audit found FIVE independent defects,
+> none of which was the one hypothesised.** Audit-then-build, gated: Phase 1 audit → all eight
+> fixes approved → build → live verification on the SANDBOX profile (9). Four commits: `91a1bd0`
+> (the eight fixes), `7962878` + `fa57d89` (two further defects found *during* live verification),
+> and the doc close-out. **No migrations** — `plan_draft` / `negotiation_round` are additive jsonb
+> keys on the goal. **Profiles 1 and 4 byte-identical at session start and session end** (goals AND
+> full `profile_data`, sha-compared both ends); profile 4's bench goal untouched, `arc_origin
+> 2026-07-26` / `last_adapted_at 2026-07-26T02:47:22Z` preserved for the 2026-08-02 weekly-path
+> check. Suites **249 → 305**, all green.
+>
+> **HEADLINE — the dial lock nullified two of the three levers.** A `rehab` goal is dial-LOCKED,
+> and `/estimate` discarded ANY incoming `sessions_per_week` for a locked type. `slower` and
+> `sequence` do nothing *except* lower frequency, so on every rehab goal both were **silent
+> no-ops**. Reproduced live: posted 3, stored 4, `dial_override_applied:true`, and the client never
+> read the flag. **HIGHEST SEVERITY — the roadmap-view "Sessions per week" stepper.** On a fit
+> failure it wrote the new demand + estimate anyway, re-rendered the roadmap from a **stale client
+> cache** (so it looked identical), and rendered the negotiation into `#grv-personalize`, which
+> does not exist in that view — silent corruption, no error, no explanation. **That is what un-did
+> the athlete's resolved 2×/week bench goal** and made the next goal's negotiation correctly report
+> that bench still claimed 3 hard slots.
+>
+> **⚠ LEDGER ROW 7 IS RE-OPENED.** It was marked VERIFIED LIVE on profile 4's marathon goal — an
+> `endurance` (dial-UNLOCKED) goal that itself owned the overage, with a minutes-axis conflict.
+> **That configuration hides all five defects**: the lock never fires, the target is always the
+> current goal, and both demand levers work. See §7 ledger rows 36–40.
+>
 > **2026-07-28 session #44 — ✅ BUG 4 FIXED (the one-way `needs_regeneration` flag), regenerate
 > in-flight guard, honest banner copy, and a SANDBOX SEEDER. Plus #42's regenerate path is now
 > VERIFIED LIVE.** Audit-then-build, gated: Phase 1 audit → D1/D2/D3 approved → build. Two commits:
@@ -3390,7 +3417,59 @@ the "BUG 2 — RESOLVED" entry above; original text kept below as the record of 
    by this session, and the goal endpoints do recompute — noted because it is visible when
    reading profile JSON directly.
 
+### Capacity negotiation — the five defects (2026-07-28, session #45) ✅ ALL FIXED
+
+> **Found by a live athlete run on the SANDBOX profile (9), not by inspection.** The reported
+> symptom was "all three levers fail; I cannot get a second goal from intake to roadmap". The
+> hypothesis on entry was that resolution writes were landing somewhere the capacity math did not
+> read. **That was not the cause.** Five independent defects were found; they stacked.
+
+| # | Defect | Why it happened | Fix |
+|---|---|---|---|
+| **1** | **The dial lock nullified `slower` and `sequence` on every `rehab` goal** | `DIAL_LOCKED_TYPES` exists so EFFORT cannot shorten a healing timeline. `/estimate` implemented that by discarding **any** incoming `sessions_per_week`. Both demand levers do nothing else, so both became silent no-ops. `dial_override_applied:true` was returned and the client never read it. **Reproduced live: posted 3, stored 4.** | Lock is now **lever-aware** (`dialLockAllows`): a negotiation lever may LOWER frequency; increases and the manual dial stay absolutely locked |
+| **2** | **Levers could only move the goal being created, but a DIFFERENT goal owned the binding axis** | The bounded-three-lever design assumed the new goal causes the overage. Live, `minutes_over` was **0** and all 3 hard sessions belonged to bench, while the goal being negotiated was `hard:false` and contributed **zero**. No frequency on that goal could resolve it, by arithmetic | `resolveLeverTarget` picks the goal that owns the binding axis; the athlete is told plainly whose frequency moves. **Still exactly three levers** |
+| **3** | **`model_levers_valid` validated NOTHING numeric** | It checked only that the three lever KEYS were present. Live at `model_levers_valid:true`: *"adding 4x25 min of rehab needs **400 committed minutes**"* against a supplied 235; and *"expanding from 5 days to 6"*, which provably cannot fix a hard-session gap | Code composes every number and passes pre-formatted slots; the model no longer authors labels. `leverTextNumbersValid` rejects any unsupplied number, **and `leverTextClaimsValid` rejects prose contradicting a code-computed availability** (found live, see below) |
+| **4** | **Levers that provably could not resolve were offered as choices** | Nothing computed a lever's outcome before offering it. Live, the model correctly perceived this and wrote *"this lever does not fix the cap conflict… expect the same wall in round 5"* — a defect in what was OFFERED, not in what it wrote | `projectLeverOutcome` computes each lever's post-application fit in code (zero AI) **before** offering; a lever that cannot resolve renders UNAVAILABLE with an honest reason and is not tappable |
+| **5** | **`/estimate` wrote on EVERY attempt** | Write-before-commit (§6 Session A items 2/3, which claimed it "self-corrects"). It does not: a change the dial lock had just DISCARDED still had its `basis_note` appended, leaving *"Starting at the minimum that still makes progress (3x/week)"* permanently on a goal stored at 4× | **Draft/commit**: `goal_type`/`demand`/`estimate` are held in `goal.plan_draft` and committed only when the week fits. `basis_note` lands only on commit. `plan-setup` no longer stamps live goal state |
+
+**Two more defects were found DURING live verification, not by inspection — both in the new code:**
+
+6. **`/negotiate` judged the COMMITTED demand, not the pending draft** (`7962878`). `goalBaselineDemand`
+   prefers the committed value, which is correct for the dial lock (enforce against what is on
+   record) and **wrong** for the fit check (must reflect what the athlete just asked for). On the
+   roadmap stepper — the exact scenario fix 6 exists for — bench committed at 2× (which fits) with
+   a pending 3× draft would have computed its fit from the 2, decided the week fits, and **never
+   opened the negotiation card**. Split into two accessors with deliberately opposite precedence
+   (`goalBaselineDemand` / `goalPendingDemand`); both directions asserted so they cannot be
+   collapsed back together.
+7. **The model contradicted a code-computed availability** (`fa57d89`). Code marked `sequence` as
+   RESOLVING (3×→2× genuinely clears the cap); the model's prose opened *"UNAVAILABLE. …there's no
+   separate path here"*. The athlete would have seen a **tappable option whose own text told them
+   not to tap it**. Availability is a code decision, so prose overriding it is now rejected exactly
+   like a fabricated number. **Verified live after the fix: `model_levers_valid:false`, code-authored
+   levers served, contradiction gone.**
+
+**NEW FINDING, NOT FIXED — a failed negotiation DESTROYS the athlete's intake answers.**
+`generatePersonalizedRoadmap` POSTs `/intake` only *after* the negotiation resolves, so the answers
+live in the client-side `grvPendingAnswers` until then. Measured on the sandbox: the shoulder goal
+has **6 generated questions and ZERO stored answers** — the athlete answered all six in the UI and
+they are gone. This is why session #45 could not complete Phase 3 steps 2 and 3 without inventing
+athlete answers (§0.2 rule 5 forbids it). **Fix would be persisting answers as they are given, or
+as part of the Step-3 draft.** Logged in §9, deliberately not built (scope lock).
+
+**NEW FINDING, NOT FIXED — `slower` and `sequence` converge.** When `sessions_per_week - 1 ==
+min_viable_sessions_per_week`, both levers project the SAME frequency and are the same action. This
+is the §6 Session A item 1 idempotency showing up as redundancy rather than as a loop. The model
+noticed it live and editorialised, which is what surfaced defect 7. **Product decision needed: show
+both, merge them, or mark one redundant.** Logged in §9.
+
+---
+
 ### PT Brain Session A — Known Limitations (2026-07-25, session #36)
+
+> **⚠ ITEMS 1, 2 and 3 UPDATED 2026-07-28 (session #45).** Item 1's diagnosis was incomplete and
+> items 2/3's central claim — that write-before-commit "self-corrects" — is **false and was proven
+> false by a live artifact**. See "Capacity negotiation — the five defects" directly above.
 
 1. **The negotiation can loop when a goal is genuinely too big for the week.** Applying the
    `slower` or `sequence` lever re-posts to `/estimate`; if the result still doesn't fit, the
@@ -3403,15 +3482,30 @@ the "BUG 2 — RESOLVED" entry above; original text kept below as the record of 
    widening the resolution set is exactly what the bounded-three-lever design forbids. The
    likely fix is a `round` counter passed to `/negotiate` so the copy escalates ("time or hard
    capacity is the only remaining lever"), not a fourth lever.
-2. **`/estimate` persists `goal_type`/`demand`/`capacity` before the fit check runs.** A goal
-   whose negotiation the athlete abandons mid-flow keeps the demand it was last posted with, so
-   it counts toward the capacity sum despite having no roadmap. Self-corrects the moment the
+   - **⚠ INCOMPLETE DIAGNOSIS (session #45).** The idempotency described here is real and was
+     reproduced, but it is **not** why the athlete was stuck. This item assumes a goal too big for
+     the week; live, the goal was small and a **different** goal owned the binding axis, and on a
+     `rehab` goal both levers were no-ops regardless. The round counter shipped in #37 also counted
+     UI attempts, not adjustments — a failed options load and every roadmap-dial re-entry
+     incremented it, and it reset on reload, which is where the incoherent "three rounds / round 5 /
+     four rounds / adjusted this once" narration came from. **Now `goal.negotiation_round`, stored,
+     counting levers actually applied.** Convergence of `slower`/`sequence` remains open (§9).
+2. **✅ CLOSED 2026-07-28 (session #45) — and the "self-corrects" claim was WRONG.** ~~`/estimate`
+   persists `goal_type`/`demand`/`capacity` before the fit check runs… Self-corrects the moment the
    athlete finishes or edits the goal. Accepted: the alternative is a draft/commit split that
-   Session A doesn't need.
-3. **`plan-setup` writes its proposal to the goal immediately.** This is what makes the dial lock
-   server-authoritative (`/estimate` compares against a stored value), but it means merely
-   *opening* the plan-setup step stamps a `goal_type` and `demand` on the goal even if the
-   athlete backs out. Same self-correcting property as (2).
+   Session A doesn't need.~~ **It does not self-correct.** A change the dial lock DISCARDED still
+   had its `basis_note` appended, so the shoulder goal was left stored at 4×/week with a
+   code-authored sentence claiming 3×/week — a false statement that no later edit would have
+   removed, found live on the sandbox. **The draft/commit split Session A "didn't need" is now
+   built** (fix 8): goal state is held in `goal.plan_draft` and committed only on resolution, and
+   `basis_note` is appended only on commit. Capacity is still committed immediately — it is a
+   global setting the athlete explicitly typed, and losing it on an unresolved negotiation would be
+   worse.
+3. **✅ CLOSED 2026-07-28 (session #45).** ~~`plan-setup` writes its proposal to the goal
+   immediately… Same self-correcting property as (2).~~ It now writes `goal.plan_draft` instead,
+   which `computeCapacityFit` does not read — so an abandoned goal contributes **ZERO** to the
+   capacity sum. The dial lock stays server-authoritative because `/estimate` enforces against
+   `goal.demand || goal.plan_draft.demand` (ledger row 5 re-asserted by test).
 4. **A model that returns fewer near-term phases than the plan asked for is accepted, not
    padded.** `applyPhasePlanToPhases` redistributes the planned span across the phases it did
    return so the total stays honest, rather than fabricating an empty phase. Extra phases ARE
@@ -3652,7 +3746,7 @@ either the MACRO roadmap or a LEGACY per-goal roadmap — never current per-goal
 | 4 | L1 | Variable phase derivation (rehab `[4,3]`; bench `[6,5,5]`+1 horizon) | **VERIFIED LIVE** | Profile 4; budgets sum to the derived total in every case |
 | 5 | L1 | Dial lock is **server**-authoritative | **VERIFIED LIVE** | Client sent `sessions_per_week:7` on a rehab goal → stored **5**, `dial_override_applied:true` |
 | 6 | L1 | `derivePhasePlan` correctness | **VERIFIED BY TEST HARNESS** | 1..200 integer sweep + worked targets, asserted against the real shipped function |
-| 7 | L1 | Capacity fit + negotiation (3 levers, order `slower,capacity,sequence`) | **VERIFIED LIVE** | Profile 4 marathon goal: 420/300 min, 7/3 hard → negotiation fired, `model_levers_valid:true` |
+| 7 | L1 | Capacity fit + negotiation (3 levers, order `slower,capacity,sequence`) | **⛔ RE-OPENED 2026-07-28 (session #45) — SUPERSEDED BY A LIVE FAILURE** | The original check (profile 4 marathon: 420/300 min, 7/3 hard → negotiation fired, `model_levers_valid:true`) confirmed only that the card *rendered with three levers*. It never applied one. **Its bed hides all five defects**: the marathon goal was `endurance` (dial-**UNLOCKED**, so the lock never fired), it **itself owned** the overage (so target resolution was never exercised), and the conflict was on the **minutes** axis (so both demand levers could resolve it). `model_levers_valid:true` was meaningless — it validated only that three lever KEYS existed. Superseded by rows 36–40 |
 | 8 | L1 | `ensureGoalDefaults` never fabricates a `demand` | **VERIFIED LIVE** | 8 bare goals stayed bare; out-of-enum `goal_type` → `null`; string demand coerced |
 | 9 | L2 | Earned position on clean linked weeks | **VERIFIED LIVE** | Profile 4 bench goal: `position 3`, `precise`, tier 1, via `target:Upper Body Strength` |
 | 10 | L2 | Gap decay on a real 22-day-plus gap | **VERIFIED LIVE** | Hand-checked: peak 4.5 → Z=4 → `(4−1)×0.5` → position 3.0, `re_ramping`, `re_ramp.since 2026-07-06` |
@@ -3681,6 +3775,13 @@ either the MACRO roadmap or a LEGACY per-goal roadmap — never current per-goal
 | 33 | **L2 — #42 WEEKLY path** | **`arc_origin` + `arc_state` survive `maybeAdaptAllRoadmaps`** | **⚠ SHIPPED-UNVERIFIED — the last unverified link in BUG 3's fix** | 9/9 harness-verified with a frozen clock and real fixtures, but **never observed surviving a live weekly auto-adapt**. **EXACT CHECK:** use the **BENCH** goal (`1c54d82c-9c24-48d4-8920-fa8d49a701c6`), whose `last_adapted_at` is `2026-07-26T02:47:22Z` ⇒ weekly-eligible **2026-08-02T02:47Z**. On or after that, save a workout on profile 4 (`maybeAdaptAllRoadmaps` is fire-and-forget on `POST /api/workouts` and only fires for goals >7d stale), then confirm the goal's **`roadmap.arc_origin` is still `2026-07-26`** (the BUG 3 residual pin) and `roadmap.arc_state` is still present, while `roadmap.version` HAS incremented and `adaptation_log` gained a `weekly` entry — i.e. an adapt genuinely ran and the arc fields survived it. **The wrist goal is NOT the vehicle:** its regenerate reset `last_adapted_at` to 2026-07-28T13:33Z, pushing it out to 2026-08-04 (§6 → "a regenerate RESETS the weekly-adapt clock"). |
 | 34 | **L2 — BUG 4** | **`needs_regeneration` was one-way (set, never cleared)** | **✅ FIXED + VERIFIED LIVE (2026-07-28, session #44), `88a737c`** | 4 write sites, 5 reads, **0 clears** repo-wide: `computeArcState` carried the previous value and nothing ever wrote `false`, so the athlete looped banner → regenerate → banner. #42 exposed it, did not cause it. **Fix (D1):** recompute every evaluation AND decouple the absorbability assessment from the `flex_streak` gate — a naive recompute was **measured** to flicker `false` for exactly one evaluation after a partial-flex-that-clamped, which is the wrist goal's very next evaluation. **Verified live, both directions in one admin sweep:** wrist `true` (flex clamped — honest, drift −5 unabsorbable), bench **`false`** (clean unclamped flex `[5,5]→[6,6]`); both `arc_origin`s intact, `roadmap.version` unchanged on both so no AI ran. Profile 1 byte-identical pre vs post (0 arc-eligible goals ⇒ structurally unreachable). Suites 213→249. §6 → "BUG 4" |
 | 35 | Tooling | **Sandbox seeder for simulated-history exploration** | **✅ SHIPPED (2026-07-28, session #44), `7ed053b` — ⚠ CLOSES NO LEDGER ROW** | `POST /api/debug/seed-sandbox-workouts/:profileId` + purge, admin-gated, dry-run by default. **Rows 11, 13, 19, 20 and 28 are REAL-DATA-ONLY by definition** — they wait on genuine athlete history or a genuine model response, and seeded history is never evidence that a shipped behaviour works. Profiles **1 and 4 denylisted unconditionally (confirmed live 403 on both)**. Writes go direct to Supabase, never through `POST /api/workouts` (zero AI cost, no spurious adapts); every row carries a `[SEED]` marker and the purge deletes only marked rows. Verified by running the **real `makeTargetMatcher`** against seeded fixtures — every seeded strength session qualifies, a single-exercise session correctly does not, grip-only names never carry a session, and gap windows produce a real ≥21-day hole. **No profile was seeded this session.** Workflow: `SANDBOX.md`. |
+
+| 36 | **L1 — negotiation** | **The 10-step observed sequence replays to RESOLVED through EACH lever independently** | **VERIFIED BY TEST HARNESS** | `server/negotiation.test.js`, real shipped routes+functions extracted from BOTH file versions (pre-fix pinned to `80d83ed`, never HEAD), over-capture guard + mandatory re-parse. Three separate replays from the same observed start state resolve via `slower`, via `sequence`, and via `capacity`; a fourth resolves on a **dial-locked `rehab`** goal, asserting `dial_override_applied:false` on the lever-driven decrease. Every live failure has a paired test asserting the OLD behaviour pre-fix and the new one post-fix |
+| 37 | **L1 — fix 1** | **Dial lock is lever-aware in both directions** | **VERIFIED LIVE + BY HARNESS** | Live pre-fix reproduction on sandbox goal `556db4a5`: posted `sessions_per_week:3`, server stored **4**, `dial_override_applied:true`. Harness asserts: lever-down honoured; lever-up discarded; manual dial discarded in BOTH directions; unlocked types unaffected; and **ledger row 5 re-asserted** (a new rehab goal still pins the client's 7 to the stored draft's 5) |
+| 38 | **L1 — fix 6/8** | **The roadmap-view stepper no longer corrupts the goal, and the negotiation renders** | **✅ VERIFIED LIVE (2026-07-28)** | Sandbox bench goal, committed at 2×/week with a roadmap built at 2×. Posted the stepper's exact 2→3 body: `committed:false`, `fit.fits:false`, hard 3/2; **stored demand still 2×, stored estimate still 20-52@2×, roadmap untouched at v1** — the 3× intent held as `plan_draft`. `POST /negotiate` then opened correctly, judging the **pending** draft: `fits:false`, `target:"Bench Press 185lb"`, `is_current_goal:true`, three outcomes all `resolves:true`. Pre-fix this wrote demand=3 + estimate=12-22@3, orphaning the roadmap, and rendered the card nowhere |
+| 39 | **L1 — fix 3** | **Fabricated / contradicting lever text is rejected, and the athlete still gets three levers** | **✅ VERIFIED LIVE (2026-07-28)** | Live pre-fix capture at `model_levers_valid:true`: *"adding 4x25 min of rehab needs **400 committed minutes**"* (supplied: 235) and *"this lever has already been used… it has not resolved the hard-session conflict"*. Post-fix live: the model wrote *"UNAVAILABLE… no separate path here"* on a lever code had marked AVAILABLE → `leverTextClaimsValid` rejected the set → **`model_levers_valid:false`, code-authored levers served, all three reading honestly**. Harness covers the 400 case verbatim |
+| 40 | **L1 — fix 7** | **The code-authored levers are the guaranteed floor; no failure path dead-ends** | **VERIFIED BY HARNESS** | AI timeout, unparseable output, wrong-shape set and fabricated numbers all return **HTTP 200 with three honest levers**; the call is bounded at 18s, under Render's ~25s ceiling. Pre-fix, an AI failure **500'd** — the code-authored fallback existed ten lines below but was unreachable, which is the "Could not load your options" card the athlete hit. That client path is deleted |
+| 41 | **L1 — Phase 3** | **Shoulder goal intake→roadmap, and the 5K goal's full flow** | **⛔ BLOCKED — NEEDS THE ATHLETE, NOT CODE** | The pre-fix flow **destroyed the athlete's intake answers** (they live in the client-side `grvPendingAnswers` until the negotiation resolves). Measured: the shoulder goal has **6 questions, 0 stored answers**; the 5K goal has neither. Completing these would require inventing athlete answers, which §0.2 rule 5 forbids — and both failures were **UI flows**, so an API replay would not verify what actually broke. **Check:** Shimmy re-runs both goals in the app (visual checklist handed over). The week currently **fits** (190/300 min, 2/2 hard), so the shoulder goal should now go intake → roadmap with no negotiation at all |
 
 **Profile 1 was byte-identical across Sessions A, B and C** — goals sha256 `0901b047d1c95f50…`
 before and after each — and Session D was the first to change code it runs daily, which is why
@@ -3806,6 +3907,14 @@ proportionally with an honest note.
 
 **Replaces time-elapsed `progress_pct`** with `position_week / total_weeks` (earned progress). Same
 progress-bar UI, different number, plus a small `re_ramping` status chip.
+
+> **✅ ARC RESET — DECIDED 2026-07-28 (session #45), OPTION A: there is no reset, and none will be
+> built.** The athlete's decision. **The arc stays honest** — a long absence reads as exactly that,
+> and earned position is a record of work done, not a score to be forgiven. **INJURY UPDATES are
+> the sanctioned mechanism** for changing what the plan expects; they change the *plan*, never the
+> *record*. A goal that has drifted far enough returns to `on_track` only by training its way back.
+> **This closes the §9 open question from session #44 — do not re-open it as a bug or design a
+> reset mechanism against it.**
 
 ---
 
@@ -4539,6 +4648,59 @@ Macro roadmap shape (stored on `profiles.roadmap_data`):
 
 ## 9. Technical Debt & Cleanup
 
+- [ ] **A failed or abandoned negotiation DESTROYS the athlete's intake answers (added 2026-07-28,
+  session #45). Real, measured, user-facing — the highest-value item in this list.**
+  `generatePersonalizedRoadmap` (`public/index.html`) POSTs `/intake` only **after** the
+  negotiation resolves, so every answer lives in the client-side `grvPendingAnswers` until then.
+  Measured on the sandbox: the shoulder goal has **6 AI-generated questions and ZERO stored
+  answers** — the athlete typed all six and they are gone; the 5K goal never got that far. This is
+  what blocked session #45's own Phase 3 steps 2 and 3 (ledger row 41), because reconstructing them
+  would mean inventing athlete answers (§0.2 rule 5). **Fix: persist answers as they are given, or
+  fold them into the Step-3 `plan_draft`** — the draft mechanism from fix 8 already exists and is
+  the natural home. Note this is INDEPENDENT of the negotiation fixes: it bites on any abandonment,
+  including a reload or a back-out, and it always did.
+- [ ] **`slower` and `sequence` converge when `sessions_per_week - 1 == min_viable` (added
+  2026-07-28, session #45) — needs a PRODUCT decision, not a patch.** Both levers then project the
+  same frequency and are literally the same action, so the athlete is offered two doors into one
+  room. This is the §6 Session A item 1 idempotency surfacing as redundancy rather than as a loop.
+  The model noticed it live and editorialised (*"there's no separate path here"*), which is how
+  defect 7 was found. **Options: show both as-is; merge them into one lever when they converge; or
+  keep three and mark the redundant one.** Do NOT let a fix here quietly become a fourth lever —
+  the bounded-three-lever rule is load-bearing (§7).
+- [ ] **A lever may now commit a change to a goal the athlete is not looking at, leaving that
+  goal's roadmap stale (added 2026-07-28, session #45).** Fix 2 is deliberate and correct — the
+  binding axis often belongs to another goal — but committing a new `demand`/`estimate` there does
+  not regenerate that goal's roadmap. It degrades **honestly**: the two-field estimate divergence
+  fires the existing *"Your settings changed — this roadmap was built from …"* banner on the other
+  goal. Worth deciding whether to offer an inline regenerate at that moment.
+- [ ] **The negotiation's own AI estimate re-runs on every `/estimate` call (pre-existing, noted
+  2026-07-28).** Each lever application and each stepper nudge costs a Sonnet call even when the
+  demand is unchanged, and the returned range moves slightly each time (temperature is not pinned
+  for this call type, correctly). Cheap and correct, but it means a rejected draft still burned a
+  model call. Consider skipping the estimate when the normalised demand is byte-identical to the
+  one the current estimate was built from.
+
+- [ ] **GOAL-CREATION INTAKE OVERHAUL — logged 2026-07-28 (session #45), athlete-raised, NOTHING
+  BUILT.** Design input for a future session; treat as a single coherent brief, not four chores.
+  1. **An intake DIALOGUE before roadmap generation**, so raw schedule details cannot be entered as
+     the goal itself. (The sandbox's "Run a sub 25m - 5k" is an example of a goal title carrying
+     data that belongs in intake.)
+  2. **No abbreviations in intake questions.** *"what is your one rep max or estimated max"*, never
+     *"1RM"*. The live sandbox questions currently open with *"What is your current bench press 1RM
+     or estimated max"* — exactly the phrasing to retire.
+  3. **One question at a time, with a framing intro** — *"I have six questions for you…"* — rather
+     than the current all-at-once form.
+  4. **An optional "quick build" shortcut** (one question, e.g. current bench, then go).
+     **UNDECIDED — logged as an open question, not a requirement.**
+- [ ] **Goal creation has too much end-to-end friction — athlete complaint, logged 2026-07-28
+  (session #45).** Intake *and* negotiation both sit between "I have a goal" and "I have a
+  roadmap", and nothing is visible until the end. Feeds directly into the overhaul above; the
+  answer may be that the negotiation only appears when it genuinely must (which fix 8's
+  commit-on-resolution now makes cheap to reason about).
+- [ ] **UX: the goal-card CTA reads "View Roadmap →" before any roadmap exists — logged 2026-07-28
+  (session #45).** It should read **"Create Roadmap"** until `goal.roadmap` is present, then switch.
+  Small, self-contained, and currently misrepresents what the tap does.
+
 - [ ] **Engine v2 is now flag-gated dormant code — a decommission decision is OUTSTANDING (added
   2026-07-24, session #34).** The arc is paused and its strategy rejected going forward (§6, §7),
   but **nothing was deleted or reverted, deliberately**: `server/coachingRules.js`,
@@ -4792,12 +4954,17 @@ Macro roadmap shape (stored on `profiles.roadmap_data`):
   (`arc_transition_at > last_adapted_at` becomes false). So **every banner click delays the very
   path that could correct the goal**. Measured: the wrist goal went from weekly-eligible to
   2026-08-04. Changing it is a product decision, not a bug fix — logged so it is not rediscovered.
-- [ ] **ARC RESET — a PRODUCT QUESTION, logged NOT built (session #44).** For a goal whose drift is
-  genuinely unabsorbable, only two things move it: real training, or a deliberate reset of the arc
-  origin / earned position. There is currently **no reset mechanism at all**, so a goal that has
-  drifted far enough can never return to `on_track` without training its way back. That may be
-  correct (the arc is meant to be honest) or may be too harsh after a genuine life interruption —
-  **it needs a product decision before any mechanism is designed.** Explicitly out of scope for #44.
+- [x] **✅ ARC RESET — DECIDED 2026-07-28 (session #45): OPTION A. NO RESET MECHANISM WILL BE BUILT.
+  This is the athlete's own decision and it CLOSES the question — do not re-open it as a bug.**
+  For a goal whose drift is genuinely unabsorbable, only two things could move it: real training,
+  or a deliberate reset of the arc origin / earned position. **Shimmy's call: the arc stays
+  honest.** A long absence is exactly what a long absence looks like, and the earned position
+  should say so rather than being administratively forgiven. **INJURY UPDATES are the sanctioned
+  mechanism** for changing what the plan expects of the athlete — that is where a genuine life
+  interruption gets recognised, and it changes the *plan*, not the *record* of what was trained.
+  Consequence, accepted knowingly: a goal that has drifted far enough can only return to
+  `on_track` by training its way back. **Nothing to build. Original question logged #44, closed
+  #45.** (Cross-referenced in §6 and in the §7 Layer 2 arc section.)
 - [ ] **Misleading `adaptation_log` summary string (logged session #44, not fixed).** The banner
   regenerate path reuses `"Roadmap regenerated via Coach Chat after a goal update."` — the standard
   `mode:"regenerate"` summary from `generateGoalRoadmapForGoal`. Coach Chat is not involved when the

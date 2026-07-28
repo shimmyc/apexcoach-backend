@@ -3322,7 +3322,169 @@ qualifies, and a declared gap produces a real ≥21-day hole in the date series.
 
 **No profile was seeded in session #44.**
 
-## NEXT SESSION STARTS HERE — weekly-path verification (bench goal, on/after Aug 2) + sandbox exploration (updated 2026-07-28, session #44)
+## Capacity negotiation — rebuilt (2026-07-28, session #45)
+
+The athlete could not get a **second** goal from intake to roadmap: all three levers failed. The
+audit found **five independent defects**, none of which was the hypothesised one (resolution writes
+landing where the capacity math doesn't read). `server.js` + `public/index.html`; **no migration** —
+`plan_draft` and `negotiation_round` are additive jsonb keys on the goal. Commits `91a1bd0`,
+`7962878`, `fa57d89`.
+
+### What was actually broken
+
+1. **The dial lock nullified two of the three levers.** `DIAL_LOCKED_TYPES = ["rehab"]` exists so
+   *effort* cannot shorten a healing timeline, and `/estimate` implemented that by discarding **any**
+   incoming `sessions_per_week`. `slower` and `sequence` do nothing else, so on every rehab goal both
+   were **silent no-ops**. Reproduced live: posted 3, stored 4, `dial_override_applied:true` returned
+   and never read by the client.
+2. **Levers could only move the goal being created**, but the binding axis was owned by a different
+   goal. Live: `minutes_over` was **0**, all 3 hard sessions were bench's, and the goal being
+   negotiated was `hard:false` — contributing **zero**. No frequency on it could resolve anything.
+3. **`model_levers_valid` validated only that the three lever KEYS existed.** Not one number in the
+   prose was checked. Live at `true`: *"needs 400 committed minutes"* against a supplied 235.
+4. **Levers that provably could not resolve were offered as choices** — the model correctly said so
+   in prose, which is a defect in what was offered, not in what it wrote.
+5. **`/estimate` wrote on every attempt**, so a discarded change still had its `basis_note` appended,
+   leaving a code-authored FALSE sentence permanently on the goal.
+
+**Two more were found DURING live verification, in the new code:** `/negotiate` read the *committed*
+demand rather than the pending draft (so the roadmap stepper would decide the week fits and never
+open the card), and the model wrote "UNAVAILABLE" on a lever code had marked available.
+
+### The machinery (all in `server.js`, above the Layer 1 routes)
+
+- **`dialLockAllows(goalType, storedFreq, nextFreq, lever)`** — the lock is **lever-aware**. A
+  negotiation lever may LOWER frequency on a locked type; increases and the **manual dial** stay
+  absolutely locked (ledger row 5 is re-asserted by test).
+- **`goalBaselineDemand` vs `goalPendingDemand`** — deliberately **opposite precedence**, and this is
+  load-bearing. The lock enforces against what is already on record (committed first); the fit check
+  must reflect what the athlete just asked for (draft first). Collapsing them re-breaks fix 6.
+- **`resolveLeverTarget(fit, currentGoalId)`** — adjusts the CURRENT goal whenever it contributes to
+  the binding axis (least surprising); only when it contributes **nothing** does it reach for the
+  largest contributor, and the athlete is told plainly whose frequency moves. **Still exactly three
+  levers — never a fourth.**
+- **`projectLeverOutcome(...)`** — computes each lever's post-application fit **in code, zero AI**,
+  before anything is offered. `capacity` always resolves and code owns *how much*
+  (`required_capacity`, e.g. hard 2→3 — not "add a day", which cannot fix a hard-session gap).
+- **`buildLeverFacts` / `buildCodeAuthoredLevers`** — the code-authored set is not a degraded
+  fallback, it is **the floor the athlete is guaranteed**. `label` is ALWAYS code-authored; only
+  `detail` is ever taken from the model.
+- **`leverTextNumbersValid` / `leverTextClaimsValid`** — reject any number code did not supply, and
+  any prose contradicting a code-computed availability. Rejection falls through to the code-authored
+  levers, **never to an error**. Deliberately conservative: a false rejection costs prose quality, a
+  fabricated number breaks the standing invariant.
+
+### Draft/commit (fix 8) — closes §6 Session A items 2 and 3
+
+`plan-setup` writes **`goal.plan_draft`**, not live goal state, and `computeCapacityFit` does not
+read it — so an abandoned goal contributes **ZERO** to the capacity sum. `/estimate` commits
+`goal_type`/`demand`/`estimate` **only when `fit.fits` is true**; otherwise it updates the draft and
+returns. `basis_note` is appended **only on commit**, so a change the dial lock discarded can never
+leave a false sentence behind. **Capacity is still committed immediately** — it is a global setting
+the athlete explicitly typed, and losing it on an unresolved negotiation would be worse than keeping
+it. `computeCapacityFit` gained an `opts.overrides` map (`{goalId: demand}`) so one fit check can
+model several uncommitted demands at once; the old single-goal `overrideGoalId`/`overrideDemand`
+shorthand still works.
+
+### Round state (fix 5)
+
+`goal.negotiation_round`, **stored**, counting **levers actually applied**, reset on resolution. The
+old client `grvNegRound` incremented on every `grvStartNegotiation` call — including a failed options
+load and every roadmap-dial re-entry — and reset on reload, which is where the incoherent "three
+rounds / round 5 / four rounds / adjusted this once" narration came from. `/negotiate` now ignores
+any client-supplied round. The hardcoded *"you've already adjusted this once"* footer (which said
+"once" at every round) is gone; copy is driven by the stored count.
+
+### Client (`public/index.html`)
+
+- **`#grv-negotiate-host`** is emitted by `renderGoalRoadmap`, and `grvNegHostEl()` resolves
+  `#grv-personalize` **or** it. Previously the negotiation only ever looked for `#grv-personalize`,
+  which does not exist in the roadmap view, so from the stepper it rendered **nowhere**.
+- **`grvApplyLever`** posts to the TARGET goal's `/estimate` (which may not be the goal on screen),
+  carrying `negotiating_goal_id` and `pending_drafts` so the fit check still sees the uncommitted
+  goal. `grvPostEstimate` / `grvAfterFitResolved` / `grvRegenerateAfterChange` / `grvRefreshGoalCache`
+  are the shared continuation.
+- **Unavailable levers render non-tappable** with an `UNAVAILABLE` chip and the code-authored reason
+  (`.grv-lever-off`, dashed, no ember — ember is reserved for choices that actually resolve).
+- **The "Could not load your options" dead-end is deleted.** A transport failure falls back to
+  `grvOfflineNegotiation(fit)`, which does **no arithmetic of its own** — every number comes from the
+  server-computed `fit` the client already holds — and promises only `capacity`, because without the
+  server's projected fits it cannot honestly claim the others resolve.
+- `PB_PROTECTED_GOAL_FIELDS` gained `plan_draft` and `negotiation_round` so running the Profile
+  Builder mid-negotiation cannot drop them.
+
+### Verification
+
+`server/negotiation.test.js` — **52 tests**, real shipped routes and functions extracted from **BOTH**
+file versions (pre-fix pinned to **`80d83ed`**, never `HEAD` — session #44's learning), over-capture
+guard + mandatory re-parse on every slice. The **10-step observed sequence replays to RESOLVED through
+EACH lever independently**, including on a dial-locked `rehab` goal. Every live failure has a paired
+test asserting the OLD behaviour pre-fix and the new one post-fix. Legacy/no-capacity goals are
+**byte-identical pre vs post**. Suites **249 → 305**.
+
+**⚠ Two harness traps re-confirmed:** `assert.deepStrictEqual` **fails across vm realms** (compare a
+serialised form), and the extracted routes need the prompt constants (`PLAN_SETUP_SYS` …) in the
+slice or every route returns a 500 that looks like a logic failure.
+
+## NEXT SESSION STARTS HERE — sandbox re-runs + weekly-path verification (updated 2026-07-28, session #45)
+
+> **⚠ STATUS: all four PT Brain layers shipped. BUGS 1–4 closed. Capacity negotiation REBUILT
+> (session #45) — five defects fixed, plus two more found during live verification.** Ledger row 7
+> is **RE-OPENED** (its verification bed hid every defect); rows 36–40 replace it. There is no open
+> bug in the negotiation. **One item is blocked on the athlete, not on code.**
+>
+> **THE IMMEDIATE WORK:**
+>
+> | # | Work | Why |
+> |---|---|---|
+> | **1** | **Shimmy re-runs the SHOULDER goal and the 5K goal in the app** (ledger row 41) | **The only thing blocking closure of the original complaint.** The pre-fix flow **destroyed the athlete's intake answers** — they live in the client-side `grvPendingAnswers` until the negotiation resolves, and the shoulder goal now has **6 questions and 0 stored answers**. They must NOT be invented (§0.2 rule 5), and both failures were **UI flows**, so an API replay would not verify what broke. The week currently **FITS** (190/300 min, 2/2 hard), so the shoulder goal should go intake → roadmap with **no negotiation at all**. **⚠ Expect this:** the shoulder goal still has a COMMITTED `demand` of 4×25 from the pre-fix flow, and it is `rehab` (dial-LOCKED), so a fresh plan-setup proposing a different frequency will be pinned back to 4. If that gets in the way, converting its committed `goal_type`/`demand`/`estimate` into a `plan_draft` is the faithful repair — that is the state fix 8 would have produced — but it is **a decision, not a task**, so ask first |
+> | **2** | **Weekly-path verification — the BENCH goal on profile 4, on/after `2026-08-02T02:47Z`** (ledger row 33) | Unchanged and still the **last unverified link in BUG 3's fix**. Save a workout on profile 4 on/after that timestamp, then confirm the bench goal's **`roadmap.arc_origin` is still `2026-07-26`** and `arc_state` is still present, **while** `roadmap.version` incremented and `adaptation_log` gained a `weekly` entry. **⚠ Do NOT use the wrist goal** — its regenerate reset `last_adapted_at` to 2026-08-04 |
+> | **3** | **Row 28 / item (c) — WAIT, do not build.** | Route (1) by decision: profile 4 accumulates real qualifying sessions on the bench goal until a genuine peak-then-gap forms. No date will be asserted for the lost origin. **Do not synthesise a re-ramp, and the sandbox does not count as data for this** |
+> | **4** | **Profile-1 migration — ZERO technical blockers. Awaiting Shimmy's decision.** | Unchanged from #44. Remaining cost is one extra trim-ladder rung (`coachingBrief 2343 → 400`) on the heaviest days, plus roadmap regeneration churn over three roadmaps carrying real `adaptation_log` history. **A product call, not a task** |
+>
+> **What changed this session (2026-07-28, #45):**
+> - **Capacity negotiation rebuilt** — all eight approved fixes. See "Capacity negotiation —
+>   rebuilt" above for the full implementation, and `ROADMAP.md` §6 → "the five defects" for the
+>   evidence.
+> - **Two defects found DURING live verification, in the new code** (`7962878`, `fa57d89`): the fit
+>   check read the committed demand instead of the pending draft (which would have re-broken fix 6
+>   in its own scenario), and the model contradicted a code-computed availability.
+> - **The SANDBOX (profile 9) was repaired and is the verification bed**: bench reconciled to
+>   2×/week matching its generated roadmap, the false `basis` sentence stripped from the shoulder
+>   goal, round state and stale drafts cleared. It now **fits** and every stored number reconciles
+>   with what the cards claim.
+> - **Ledger row 7 RE-OPENED** with the reason stated plainly: an `endurance`, dial-unlocked,
+>   self-owned, minutes-axis conflict is the one configuration in which all five defects are
+>   invisible.
+> - **NEW, not fixed:** a failed negotiation **destroys the athlete's intake answers** (§9 — the
+>   highest-value item in that list); and `slower`/`sequence` **converge** when
+>   `sessions_per_week - 1 == min_viable`, which needs a product decision (§9).
+> - **ARC RESET DECIDED — OPTION A, no reset mechanism will ever be built.** The arc stays honest;
+>   INJURY UPDATES are the sanctioned mechanism for changing what the plan expects. Recorded in §6,
+>   §9 and the §7 Layer 2 arc section. **Closed — do not re-open it as a bug.**
+> - **Logged, NOT built:** the goal-creation intake overhaul (dialogue-first, no abbreviations,
+>   one question at a time, optional "quick build" **undecided**), the end-to-end friction
+>   complaint, and the **"Create Roadmap"** CTA fix. All in §9.
+>
+> **Standing invariants this session added — do not undo them:**
+> - **Availability is a CODE decision.** A lever resolves or it does not; the model narrates that
+>   verdict and may never override it in prose.
+> - **A lever must provably resolve, or render unavailable.** Never offer a choice that cannot work.
+> - **Propose-and-approve now covers Layer 1 too:** goal state is committed only on resolution.
+> - **`goalBaselineDemand` and `goalPendingDemand` have opposite precedence on purpose.**
+>
+> **Read before starting:** `ROADMAP.md` §6 → "Capacity negotiation — the five defects", §6 →
+> Session A items 1/2/3 (**items 2 and 3 were WRONG — "self-corrects" was disproven by a live
+> artifact**), §7 ledger rows 7 and 36–41, and §7 → "⚠ PER-GOAL vs MACRO" (the easiest thing to get
+> wrong). `SANDBOX.md` for the seeder workflow.
+>
+> **Carried forward, do NOT chase with synthetic data:** rows 11, 13, 19, 20, 28. **L1–L4 backlog
+> stays parked. Engine v2 remains PAUSED and its strategy REJECTED going forward.**
+
+## Superseded next-session block (session #44) — kept for the record
+
+> **⟶ DISCHARGED in session #45: the capacity negotiation was rebuilt and the sandbox repaired. The
+> weekly-path check (row 33) is unchanged and carried forward. Original text follows.**
 
 > **⚠ STATUS: all four PT Brain layers shipped. BUGS 1–4 all closed.** BUG 1 fixed #43, BUG 2 was
 > never a bug (#42), BUG 3 fixed #42, BUG 4 fixed #44. Ledger rows 22 and 32 closed. **There is no
