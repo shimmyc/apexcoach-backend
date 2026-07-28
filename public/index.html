@@ -405,6 +405,13 @@ input[type=range]{width:100%;accent-color:var(--accent)}
 #goal-roadmap-view .grv-lever:hover{border-color:var(--accent-ember)}
 #goal-roadmap-view .grv-lever-label{font-size:14px;font-weight:700;color:var(--accent-ember);margin-bottom:4px}
 #goal-roadmap-view .grv-lever-detail{font-size:12px;color:var(--text-muted);line-height:1.6}
+/* A lever that provably cannot close the gap (fix 4, session #45): shown so the
+   athlete can see it was considered and why it fails, but never tappable and
+   never ember — ember is reserved for choices that actually resolve. */
+#goal-roadmap-view .grv-lever-off{cursor:default;opacity:.6;border-style:dashed}
+#goal-roadmap-view .grv-lever-off:hover{border-color:var(--border-subtle)}
+#goal-roadmap-view .grv-lever-off .grv-lever-label{color:var(--text-muted)}
+#goal-roadmap-view .grv-lever-na{font-size:9px;letter-spacing:.08em;font-weight:600;color:var(--color-caution);background:var(--bg-surface-2);padding:2px 6px;border-radius:9999px;margin-left:6px;vertical-align:middle}
 #goal-roadmap-view .grv-est{background:var(--bg-surface-1);border:1px solid var(--border-subtle);border-radius:16px;padding:14px 16px;margin-bottom:14px}
 #goal-roadmap-view .grv-est-legacy{font-size:12px;color:var(--text-muted);font-style:italic;line-height:1.6}
 #goal-roadmap-view .grv-est-top{display:flex;align-items:baseline;gap:8px;flex-wrap:wrap}
@@ -6893,9 +6900,14 @@ var grvPendingAnswers = null;  // intake answers held while Step 3/4 run
 var grvPlan = null;            // { goal_type, demand, assumed_frequency, rationale, dial_locked }
 var grvCapacity = null;        // profile_data.capacity, or the draft being captured
 var grvCapacityNeeded = false; // true when the profile has no capacity yet
-var grvNegotiation = null;     // { conflict_note, options[], fit }
-var grvNegRound = 0;           // negotiation round for grvNegRoundGoalId (session #37)
-var grvNegRoundGoalId = null;
+var grvNegotiation = null;     // { conflict_note, options[], fit, target, outcomes }
+var grvNegGoalId = null;       // the goal currently under negotiation
+// The round counter is NO LONGER a client variable (session #45). It lived here,
+// was reset only on a goal change, and incremented on every grvStartNegotiation
+// call — including a failed options load and every re-entry from the roadmap
+// dial — so the narration counted UI attempts rather than adjustments and reset
+// on reload. It is now `goal.negotiation_round`, stored, counting levers actually
+// applied, and the server is the only thing that touches it.
 var GRV_GOAL_TYPES = ['rehab', 'strength_load', 'endurance', 'skill', 'habit', 'body_comp'];
 var GRV_GOAL_TYPE_LABELS = {
   rehab: 'Rehab', strength_load: 'Strength / Muscle', endurance: 'Endurance',
@@ -7636,7 +7648,7 @@ function grvSubmitPlan(extra) {
       grvCapacity = d.capacity || grvCapacity;
       if (d.demand) grvPlan.demand = d.demand;
       if (d.fit && d.fit.fits === false) { grvStartNegotiation(goalId, d); return; }
-      generatePersonalizedRoadmap(goalId, grvPendingAnswers || []);
+      grvAfterFitResolved(goalId);
     })
     .catch(function() {
       if (grvGoalId !== goalId) return;
@@ -7644,21 +7656,84 @@ function grvSubmitPlan(extra) {
     });
 }
 
+// Once the week fits, the goal's shape is COMMITTED (fix 8) and we continue: a
+// goal with no roadmap gets one built from its intake answers; a goal that
+// already has one is regenerated so the plan matches the settings that just
+// changed — the roadmap-view dial's original success path, now shared.
+function grvAfterFitResolved(goalId) {
+  var goal = grvFindGoal(goalId);
+  if (goal && goal.roadmap && Array.isArray(goal.roadmap.phases) && goal.roadmap.phases.length) {
+    grvRegenerateAfterChange(goalId);
+    return;
+  }
+  generatePersonalizedRoadmap(goalId, grvPendingAnswers || []);
+}
+
+function grvRegenerateAfterChange(goalId) {
+  var c = grvContentEl();
+  if (c) c.innerHTML = '<div style="display:flex;flex-direction:column;align-items:center;padding:70px 20px;text-align:center">' +
+    '<div style="width:14px;height:14px;border-radius:50%;background:var(--accent-ember);animation:pulse 1.2s ease-in-out infinite;margin-bottom:16px"></div>' +
+    '<p style="font-size:13px;color:var(--text-muted)">Rebuilding your roadmap…</p></div>';
+  fetch('/api/profiles/' + currentProfileId + '/goals/' + encodeURIComponent(goalId) + '/roadmap?mode=regenerate', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({})
+  })
+    .then(function(r) { return r.json(); })
+    .then(function(data) {
+      if (grvGoalId !== goalId) return;
+      if (!data || !data.success || !data.goal) throw new Error((data && data.error) || 'regenerate failed');
+      grvUpdateCachedGoal(data.goal);
+      renderGoalRoadmap(data.goal);
+      if (typeof renderProfileGoals === 'function') renderProfileGoals();
+    })
+    .catch(function() {
+      if (grvGoalId !== goalId) return;
+      grvShowFullError('Could not rebuild your roadmap — try again', function() { grvRegenerateAfterChange(goalId); });
+    });
+}
+
+// A lever may have committed a change to a DIFFERENT goal than the one on screen
+// (fix 2), so the client's cached copy of that goal is now stale. Re-read the
+// profile rather than patching a guess into the cache.
+function grvRefreshGoalCache() {
+  return fetch('/api/profiles/' + currentProfileId)
+    .then(function(r) { return r.json(); })
+    .then(function(j) {
+      var pd = j && (j.profile ? j.profile.profile_data : j.profile_data);
+      if (!pd || !Array.isArray(pd.goals) || !currentProfileData) return;
+      currentProfileData.goals = pd.goals;
+      try { localStorage.setItem('ac_profile_data', JSON.stringify(currentProfileData)); } catch (e) {}
+      if (typeof renderProfileGoals === 'function') renderProfileGoals();
+    })
+    .catch(function() {});
+}
+
+// The capacity lever from the roadmap view: there is no Step 3 to return to, so
+// close the drill-down and open the Profile-tab capacity card, which edits the
+// same profile_data.capacity numbers.
+function grvCloseRoadmapToCapacity() {
+  if (typeof closeGoalRoadmap === 'function') closeGoalRoadmap();
+  if (typeof showTab === 'function') showTab('profile');
+  var card = document.getElementById('capacity-card');
+  if (card && card.scrollIntoView) card.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  if (typeof showToast === 'function') showToast('Adjust the week you can recover from here');
+}
+
 // ─── PT BRAIN · STEP 4 — negotiation (only when the fit check fails) ─────────
 // EXACTLY three levers, in a fixed order. The server validates the set; this
 // only renders what it returns.
+// The negotiation renders into whichever host exists: the pre-roadmap personalize
+// screen, or the roadmap view's own host (fix 6). Previously it only ever looked
+// for #grv-personalize, so from the roadmap view it silently rendered nowhere.
+function grvNegHostEl() {
+  return document.getElementById('grv-personalize') || document.getElementById('grv-negotiate-host');
+}
+
 function grvStartNegotiation(goalId, estimateResp) {
-  var p = grvPersonalizeEl();
-  // ROUND COUNTER (session #37). `slower` and `sequence` both floor at min_viable,
-  // so on a goal that genuinely doesn't fit they become idempotent and the athlete
-  // can bounce between them. From round 2 the server escalates the FRAMING toward
-  // capacity — the levers and their order never change.
-  if (grvNegRoundGoalId !== goalId) { grvNegRoundGoalId = goalId; grvNegRound = 0; }
-  grvNegRound += 1;
-  if (p) p.innerHTML = '<div style="text-align:center;padding:30px 20px"><p style="font-size:13px;color:var(--text-muted);animation:pulse 1.4s ease-in-out infinite">' +
-    (grvNegRound >= 2 ? 'Still doesn’t fit — looking again…' : 'This doesn’t fit your week — working out your options…') + '</p></div>';
+  grvNegGoalId = goalId;
+  var p = grvNegHostEl();
+  if (p) p.innerHTML = '<div style="text-align:center;padding:30px 20px"><p style="font-size:13px;color:var(--text-muted);animation:pulse 1.4s ease-in-out infinite">This doesn’t fit your week — working out your options…</p></div>';
   fetch('/api/profiles/' + currentProfileId + '/goals/' + encodeURIComponent(goalId) + '/negotiate', {
-    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ round: grvNegRound })
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({})
   })
     .then(function(r) { return r.json(); })
     .then(function(d) {
@@ -7670,13 +7745,46 @@ function grvStartNegotiation(goalId, estimateResp) {
     })
     .catch(function() {
       if (grvGoalId !== goalId) return;
-      grvShowPersonalizeError('Could not load your options — try again', function() { grvStartNegotiation(goalId, estimateResp); });
+      // FIX 7 — there is no "could not load your options" state any more. The
+      // server always returns code-authored levers, so reaching here means the
+      // request itself never completed. The three levers and their numbers are
+      // still knowable from the fit the /estimate call already returned, so we
+      // render from that rather than dead-ending the athlete.
+      var fit = estimateResp && estimateResp.fit;
+      if (!fit || !fit.has_capacity) { grvNegotiation = null; if (p) p.innerHTML = ''; return; }
+      grvNegotiation = grvOfflineNegotiation(fit);
+      grvRenderStep4();
     });
 }
 
+// Offline floor. Deliberately does NO arithmetic of its own — every number comes
+// from the server-computed `fit` object the client already holds. Levers are
+// shown as unavailable-unknown rather than promised, because without the server's
+// projected fit we cannot honestly claim any of them resolves.
+function grvOfflineNegotiation(fit) {
+  return {
+    fit: fit, offline: true, round: null, levers_applied: null,
+    conflict_note: 'This doesn’t fit your week — ' +
+      (fit.hard_over > 0
+        ? ('you are over by ' + fit.hard_over + ' hard session' + (fit.hard_over === 1 ? '' : 's') + ' a week')
+        : ('you are over by ' + fit.minutes_over + ' min a week')) +
+      '. We couldn’t reach the server for the full breakdown.',
+    options: [
+      { lever: 'capacity', available: true, label: 'Make more room',
+        detail: 'Adjust the week you can actually recover from. This is the one lever that always applies.' },
+      { lever: 'slower', available: false, label: 'Go slower',
+        detail: 'Unavailable offline — we can’t confirm a lower frequency would resolve this.' },
+      { lever: 'sequence', available: false, label: 'Sequence them',
+        detail: 'Unavailable offline — we can’t confirm holding a goal at its minimum would resolve this.' }
+    ],
+    suggested: {}
+  };
+}
+
 function grvRenderStep4() {
-  var p = grvPersonalizeEl(); if (!p || !grvNegotiation) return;
+  var p = grvNegHostEl(); if (!p || !grvNegotiation) return;
   var n = grvNegotiation, f = n.fit || {};
+  var t = n.target || null;
   var h = '<div class="grv-step3" style="margin-top:20px">';
   h += '<div style="font-size:15px;font-weight:700;color:var(--color-caution);margin-bottom:6px">This doesn’t fit your week</div>';
   h += '<div style="font-size:13px;color:var(--text-primary);line-height:1.6;margin-bottom:10px">' + grvEsc(n.conflict_note || '') + '</div>';
@@ -7684,50 +7792,130 @@ function grvRenderStep4() {
   h += '<div><span>Time</span><b>' + f.minutes_needed + ' / ' + f.minutes_available + ' min per week</b></div>';
   h += '<div><span>Hard sessions</span><b>' + f.hard_needed + ' / ' + f.hard_available + ' per week</b></div>';
   h += '</div>';
+  // FIX 2 — when the binding constraint belongs to a DIFFERENT goal, say so
+  // before showing levers that will move that other goal's frequency.
+  if (t && !t.is_current_goal) {
+    h += '<div class="grv-note" style="margin-bottom:8px">The ' + (t.axis === 'hard' ? 'hard-session' : 'time') +
+      ' gap belongs to <b>' + grvEsc(t.title) + '</b>, not to this goal — so that is what these options move.</div>';
+  }
   var opts = Array.isArray(n.options) ? n.options : [];
+  var anyAvailable = false;
   for (var i = 0; i < opts.length; i++) {
     var o = opts[i];
-    h += '<div class="grv-lever" onclick="grvApplyLever(\'' + grvEsc(o.lever) + '\')">';
-    h += '<div class="grv-lever-label">' + grvEsc(o.label) + '</div>';
-    h += '<div class="grv-lever-detail">' + grvEsc(o.detail) + '</div>';
-    h += '</div>';
+    // FIX 4 — a lever that provably cannot close the gap is rendered as
+    // unavailable with its code-authored reason. It is never a tappable offer,
+    // so the model can no longer be put in the position of apologising for one.
+    if (o.available === false) {
+      h += '<div class="grv-lever grv-lever-off" aria-disabled="true">';
+      h += '<div class="grv-lever-label">' + grvEsc(o.label) + ' <span class="grv-lever-na">UNAVAILABLE</span></div>';
+      h += '<div class="grv-lever-detail">' + grvEsc(o.detail) + '</div>';
+      h += '</div>';
+    } else {
+      anyAvailable = true;
+      h += '<div class="grv-lever" onclick="grvApplyLever(\'' + grvEsc(o.lever) + '\')">';
+      h += '<div class="grv-lever-label">' + grvEsc(o.label) + '</div>';
+      h += '<div class="grv-lever-detail">' + grvEsc(o.detail) + '</div>';
+      h += '</div>';
+    }
   }
-  h += '<div class="grv-note" style="margin-top:10px">' +
-    (n.round >= 2
-      ? 'You’ve already adjusted this once. Making room in the week is the lever that actually resolves it.'
-      : 'Pick one — these are the only three ways this resolves honestly.') + '</div>';
+  // FIX 5 — copy driven by the STORED count of levers actually applied. The old
+  // hardcoded "you've already adjusted this once" said "once" at every round.
+  var applied = n.levers_applied;
+  var note;
+  if (!anyAvailable) note = 'Making room in your week is the only thing that resolves this honestly.';
+  else if (applied === 1) note = 'You’ve applied one adjustment already and it hasn’t closed the gap.';
+  else if (applied > 1) note = 'You’ve applied ' + applied + ' adjustments already and the gap is still open.';
+  else note = 'Pick one — these are the only three ways this resolves honestly.';
+  h += '<div class="grv-note" style="margin-top:10px">' + note + '</div>';
   h += '</div>';
   p.innerHTML = h;
 }
 
-// BOUNDED WRITES. Every lever re-posts to /estimate with modified inputs; there
-// is no separate write path and no coexistence verdict is stored (that's Layer 3).
+// BOUNDED WRITES. Every lever re-posts to /estimate with modified inputs; there is
+// no separate write path. Two things changed in session #45: the lever now moves
+// the goal that OWNS the binding axis (which may not be the goal on screen), and
+// nothing is committed until the week actually fits.
 function grvApplyLever(lever) {
-  if (!grvNegotiation || !grvPlan) return;
-  var s = grvNegotiation.suggested || {};
-  var p = grvPersonalizeEl();
-  if (p) p.innerHTML = '<div style="text-align:center;padding:30px 20px"><p style="font-size:13px;color:var(--text-muted);animation:pulse 1.4s ease-in-out infinite">Applying that…</p></div>';
+  if (!grvNegotiation) return;
+  var n = grvNegotiation;
+  var s = n.suggested || {};
+  var t = n.target || null;
+  var negotiatingId = grvNegGoalId || grvGoalId;
+  var p = grvNegHostEl();
 
-  if (lever === 'slower') {
-    var nf = s.slower_frequency || Math.max(1, (grvPlan.demand.sessions_per_week || 2) - 1);
-    grvPlan.demand.sessions_per_week = nf;
-    if (grvPlan.demand.min_viable_sessions_per_week > nf) grvPlan.demand.min_viable_sessions_per_week = nf;
-    grvNegotiation = null;
-    grvSubmitPlan({ lever: 'slower', basis_note: 'Frequency lowered to ' + nf + '×/week so this fits alongside your other goals — the timeline reflects that.' });
-    return;
-  }
-  if (lever === 'sequence') {
-    var mv = s.min_viable || grvPlan.demand.min_viable_sessions_per_week || 1;
-    grvPlan.demand.sessions_per_week = mv;
-    grvNegotiation = null;
-    grvSubmitPlan({ lever: 'sequence', basis_note: 'Starting at the minimum that still makes progress (' + mv + '×/week) while another goal leads; this one takes the lead later.' });
-    return;
-  }
   // capacity — the athlete edits the real numbers themselves, never the model's
   // prose. Back to Step 3 with the capacity block forced open.
+  if (lever === 'capacity') {
+    grvNegotiation = null;
+    grvCapacityNeeded = true;
+    if (grvPlan) { grvRenderStep3(); return; }
+    // From the roadmap view there is no Step 3 to return to, so send the athlete
+    // to the capacity card on the Profile tab, which edits the same numbers.
+    grvCloseRoadmapToCapacity();
+    return;
+  }
+
+  var outcome = null;
+  (n.outcomes || []).forEach(function(o) { if (o.lever === lever) outcome = o; });
+  if (outcome && outcome.resolves === false) return;   // unavailable — not tappable
+  if (!outcome || !outcome.projected_frequency) return;
+
+  if (p) p.innerHTML = '<div style="text-align:center;padding:30px 20px"><p style="font-size:13px;color:var(--text-muted);animation:pulse 1.4s ease-in-out infinite">Applying that…</p></div>';
+
+  var targetId = (t && t.goal_id) || negotiatingId;
+  var nf = outcome.projected_frequency;
+  var targetGoal = grvFindGoal(targetId);
+  var baseDemand = (targetGoal && (targetGoal.demand || (targetGoal.plan_draft && targetGoal.plan_draft.demand))) ||
+    (grvPlan && grvPlan.demand) || {};
+  var demand = {
+    sessions_per_week: nf,
+    minutes_per_session: baseDemand.minutes_per_session,
+    hard: !!baseDemand.hard,
+    min_viable_sessions_per_week: Math.min(baseDemand.min_viable_sessions_per_week || nf, nf)
+  };
+  var movedTitle = (t && t.title) || (targetGoal && targetGoal.title) || 'this goal';
+  var note = lever === 'slower'
+    ? ('Frequency lowered to ' + nf + '×/week' + ((t && !t.is_current_goal) ? (' on “' + movedTitle + '”') : '') + ' so these goals fit together — the timeline reflects that.')
+    : ('Held at the minimum that still makes progress (' + nf + '×/week)' + ((t && !t.is_current_goal) ? (' on “' + movedTitle + '”') : '') + ' while the other goal leads.');
+
+  // The goal under negotiation is still uncommitted, so its demand travels as a
+  // pending draft — otherwise the fit check on the target goal would not see it.
+  var pending = {};
+  if (negotiatingId !== targetId && grvPlan && grvPlan.demand) pending[negotiatingId] = grvPlan.demand;
+
   grvNegotiation = null;
-  grvCapacityNeeded = true;
-  grvRenderStep3();
+  grvPostEstimate(targetId, {
+    goal_type: (targetGoal && (targetGoal.goal_type || (targetGoal.plan_draft && targetGoal.plan_draft.goal_type))) ||
+      (grvPlan && grvPlan.goal_type),
+    demand: demand,
+    lever: lever,
+    basis_note: note,
+    negotiating_goal_id: negotiatingId,
+    pending_drafts: pending
+  }, negotiatingId);
+}
+
+// Shared /estimate poster used by every lever. On resolution the flow continues
+// exactly as before; if it still doesn't fit, we re-open the negotiation for the
+// goal actually being created — never for the goal a lever happened to move.
+function grvPostEstimate(postToGoalId, body, negotiatingGoalId) {
+  fetch('/api/profiles/' + currentProfileId + '/goals/' + encodeURIComponent(postToGoalId) + '/estimate', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body)
+  })
+    .then(function(r) { return r.json(); })
+    .then(function(d) {
+      if (!d || !d.success) throw new Error((d && d.error) || 'estimate failed');
+      if (grvGoalId !== negotiatingGoalId) return;
+      if (d.capacity) grvCapacity = d.capacity;
+      if (d.committed && postToGoalId !== negotiatingGoalId) grvRefreshGoalCache();
+      if (d.fit && d.fit.fits === false) { grvStartNegotiation(negotiatingGoalId, d); return; }
+      if (grvPlan && d.demand && postToGoalId === negotiatingGoalId) grvPlan.demand = d.demand;
+      grvAfterFitResolved(negotiatingGoalId);
+    })
+    .catch(function() {
+      if (grvGoalId !== negotiatingGoalId) return;
+      grvShowPersonalizeError('Couldn’t apply that — try again', function() { grvStartNegotiation(negotiatingGoalId, { fit: null }); });
+    });
 }
 
 function generatePersonalizedRoadmap(goalId, answers) {
@@ -7962,11 +8150,19 @@ function grvDialAdjust(delta) {
       if (!d || !d.success) throw new Error((d && d.error) || 'estimate failed');
       if (grvGoalId !== goalId) return null;
       if (d.fit && d.fit.fits === false) {
-        // Same bounded negotiation as goal creation.
+        // FIX 6 — this branch used to corrupt the goal and then render nothing.
+        // /estimate had already written the new demand and estimate, the roadmap
+        // was re-rendered from a STALE client cache so it looked identical, and
+        // the negotiation was written into #grv-personalize, which does not exist
+        // in this view. Now: nothing was committed (fix 8), so the cached goal is
+        // still correct and the roadmap genuinely is unchanged; the negotiation
+        // renders into #grv-negotiate-host, which this view emits.
         grvPlan = { goal_type: goal.goal_type, demand: d.demand, assumed_frequency: v, rationale: '' };
         grvPendingAnswers = Array.isArray(goal.intake_answers) ? goal.intake_answers : [];
         renderGoalRoadmap(grvFindGoal(goalId) || goal);
         grvStartNegotiation(goalId, d);
+        var host = document.getElementById('grv-negotiate-host');
+        if (host && host.scrollIntoView) host.scrollIntoView({ behavior: 'smooth', block: 'center' });
         return null;
       }
       if (c) c.innerHTML = '<div style="display:flex;flex-direction:column;align-items:center;padding:70px 20px;text-align:center">' +
@@ -8018,6 +8214,13 @@ function renderGoalRoadmap(goal) {
   if (rm.timeline_note) h += '<p style="font-size:13px;color:var(--text-muted);font-style:italic;line-height:1.6">' + grvEsc(rm.timeline_note) + '</p>';
   h += '</div>';
   h += grvEstimateHeaderHtml(goal);
+  // FIX 6 (session #45) — the negotiation needs somewhere to render IN THIS VIEW.
+  // The dial below re-runs the fit check, and when it fails the negotiation card
+  // used to be written into #grv-personalize, which only exists on the pre-roadmap
+  // screen. From here it resolved to null, so the card rendered NOWHERE: the
+  // athlete saw an unchanged roadmap, no error, and no explanation. This host sits
+  // directly under the dial, where the conflict it reports actually originates.
+  h += '<div id="grv-negotiate-host"></div>';
   // Near-term phases.
   for (var i = 0; i < phases.length; i++) {
     var p = phases[i];
@@ -17532,7 +17735,11 @@ function pbReviewSelectPill(sectionId, questionKey, value) {
 var PB_PROTECTED_GOAL_FIELDS = [
   'id', 'roadmap', 'estimate', 'goal_type', 'demand',
   'intake_questions', 'intake_answers', 'intake_completed',
-  'last_adapted_at', 'target_date', 'tier', 'priority', 'arc_state'
+  'last_adapted_at', 'target_date', 'tier', 'priority', 'arc_state',
+  // Session #45 (fix 8): the uncommitted Step-3/negotiation draft and the stored
+  // count of levers applied. Transient, but running the Profile Builder mid-
+  // negotiation would otherwise drop them and silently restart the round count.
+  'plan_draft', 'negotiation_round'
 ];
 
 function pbGoalKey(g) { return String((g && g.title) || '').trim().toLowerCase().replace(/\s+/g, ' '); }

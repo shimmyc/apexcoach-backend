@@ -5732,8 +5732,17 @@ function computeCapacityFit(profileData, opts) {
       excluded.push({ goal_id: g.id, title: g.title || "", reason: "gated" });
       return;
     }
-    var d = (opts.overrideGoalId && g.id === opts.overrideGoalId && opts.overrideDemand)
-      ? opts.overrideDemand : g.demand;
+    // opts.overrides is a { goalId: demand|null } map (session #45) — the
+    // single-goal overrideGoalId/overrideDemand pair is the original shorthand
+    // and still works. A map entry lets one fit check model SEVERAL not-yet-saved
+    // demands at once, which is what the draft/commit split needs: the goal being
+    // negotiated is uncommitted, and a lever may target a DIFFERENT goal.
+    var d = g.demand;
+    if (opts.overrideGoalId && g.id === opts.overrideGoalId && opts.overrideDemand) {
+      d = opts.overrideDemand;
+    } else if (opts.overrides && g.id && Object.prototype.hasOwnProperty.call(opts.overrides, g.id)) {
+      d = opts.overrides[g.id];
+    }
     d = normalizeDemand(d);
     if (!d) {
       excluded.push({ goal_id: g.id || null, title: g.title || "", reason: "no_demand" });
@@ -5771,6 +5780,281 @@ function computeCapacityFit(profileData, opts) {
     minutes_over: minutesOver, hard_over: hardOver,
     counted: counted, excluded: excluded, capacity: cap,
   };
+}
+
+// ── PT BRAIN · LAYER 1 — NEGOTIATION MACHINERY (rebuilt session #45) ─────────
+// The session #45 audit found FIVE independent defects behind "all three levers
+// fail". This block is the shared machinery for fixes 1-5, 7 and 8; the routes
+// below only orchestrate it.
+//
+// The governing rule is unchanged and now actually enforced: CODE OWNS EVERY
+// NUMBER THE MODEL WOULD BE JUDGED ON. The model receives pre-computed facts and
+// writes connective prose; any number it emits that code did not supply is
+// rejected and the whole set falls back to code-authored levers.
+
+var NEGOTIATION_LEVERS = ["slower", "capacity", "sequence"];
+// The two levers whose entire effect is "lower a goal's weekly frequency".
+var NEGOTIATION_DEMAND_LEVERS = ["slower", "sequence"];
+
+function isDemandLever(lever) { return NEGOTIATION_DEMAND_LEVERS.indexOf(String(lever)) >= 0; }
+
+// FIX 1 — THE DIAL LOCK IS LEVER-AWARE.
+//
+// The lock exists so EFFORT cannot shorten a healing timeline: a rehab goal's
+// duration may only move on real healing evidence (Layer 2). Lowering frequency
+// never violates that intent — it makes the goal slower, not faster. But the
+// original lock discarded ANY incoming sessions_per_week, which silently turned
+// `slower` and `sequence` into no-ops on every rehab goal (session #45 audit,
+// reproduced live: posted 3, stored 4, dial_override_applied:true, client never
+// read the flag). Increases and the manual dial stay absolutely locked.
+function dialLockAllows(goalType, storedFreq, nextFreq, lever) {
+  if (DIAL_LOCKED_TYPES.indexOf(String(goalType)) < 0) return true;   // not a locked type
+  if (!isDemandLever(lever)) return false;                            // manual dial: absolute
+  if (storedFreq == null || nextFreq == null) return false;
+  return nextFreq < storedFreq;                                       // levers may only LOWER
+}
+
+// The demand a goal should be judged by right now: its committed demand, else the
+// uncommitted plan_draft from Step 3 (fix 8 — a draft is never counted against
+// capacity, but it IS the baseline the dial lock and the levers work from).
+function goalBaselineDemand(goal) {
+  if (!goal) return null;
+  return normalizeDemand(goal.demand) ||
+    normalizeDemand(goal.plan_draft && goal.plan_draft.demand);
+}
+
+// FIX 2 — WHICH GOAL DOES A LEVER ACTUALLY HAVE TO MOVE?
+//
+// The bounded-three-lever design assumed the goal being created is the cause of
+// the overage. It often is not. In the session #45 repro the new goal was
+// `hard:false` and contributed ZERO hard sessions, while the entire conflict was
+// one hard session owned by a DIFFERENT, already-committed goal — so `slower` and
+// `sequence` could not resolve it at any frequency, by arithmetic.
+//
+// Rule: adjust the CURRENT goal whenever it contributes to the binding axis (the
+// least surprising outcome for the athlete). Only when it contributes nothing to
+// that axis do we reach for the largest contributor, and the athlete is told
+// plainly whose frequency moves. Still exactly three levers — never a fourth.
+function resolveLeverTarget(fit, currentGoalId) {
+  if (!fit || !fit.has_capacity || fit.fits) return null;
+  var axis = fit.hard_over > 0 ? "hard" : "minutes";
+  var contribs = (fit.counted || []).filter(function(c) {
+    return axis === "hard" ? (c.hard && c.sessions_per_week > 0) : (c.minutes > 0);
+  });
+  if (!contribs.length) return null;
+  var amount = function(c) { return axis === "hard" ? c.sessions_per_week : c.minutes; };
+  var cur = null;
+  for (var i = 0; i < contribs.length; i++) {
+    if (contribs[i].goal_id && contribs[i].goal_id === currentGoalId) { cur = contribs[i]; break; }
+  }
+  var chosen = cur;
+  if (!chosen) {
+    chosen = contribs.slice().sort(function(a, b) { return amount(b) - amount(a); })[0];
+  }
+  return {
+    goal_id: chosen.goal_id,
+    title: chosen.title || "",
+    axis: axis,
+    is_current_goal: !!(cur && chosen === cur),
+    sessions_per_week: chosen.sessions_per_week,
+    minutes_per_session: chosen.minutes_per_session,
+    hard: chosen.hard,
+  };
+}
+
+// FIX 4 — WOULD THIS LEVER ACTUALLY RESOLVE THE CONFLICT?
+//
+// Every lever's outcome is computed in code, at zero AI cost, BEFORE anything is
+// offered. A lever that provably does not close the gap is rendered unavailable
+// with an honest reason rather than dangled as a choice — the session #45 audit
+// caught the model itself admitting "this lever does not fix the cap conflict",
+// which is a defect in what we offered, not in what it wrote.
+function projectLeverOutcome(profileData, fit, target, lever, pendingOverrides) {
+  var base = { lever: lever, resolves: false, reason: "", projected: null };
+  if (!fit || !fit.has_capacity) return base;
+  var overrides = {};
+  Object.keys(pendingOverrides || {}).forEach(function(k) { overrides[k] = pendingOverrides[k]; });
+
+  if (lever === "capacity") {
+    // Adding capacity can always close the gap; what code owns is HOW MUCH.
+    var cap = fit.capacity;
+    var needPerDay = Math.ceil(fit.minutes_needed / Math.max(1, cap.days_per_week));
+    base.resolves = true;
+    base.required_capacity = {
+      days_per_week: cap.days_per_week,
+      minutes_per_day: Math.max(cap.minutes_per_day, needPerDay),
+      hard_sessions_per_week: Math.max(cap.hard_sessions_per_week, fit.hard_needed),
+    };
+    base.delta = {
+      minutes_per_day_from: cap.minutes_per_day,
+      minutes_per_day_to: base.required_capacity.minutes_per_day,
+      hard_from: cap.hard_sessions_per_week,
+      hard_to: base.required_capacity.hard_sessions_per_week,
+    };
+    return base;
+  }
+
+  if (!target || !target.goal_id) { base.reason = "no adjustable goal owns this conflict"; return base; }
+  var cur = normalizeDemand({
+    sessions_per_week: target.sessions_per_week,
+    minutes_per_session: target.minutes_per_session,
+    hard: target.hard,
+    min_viable_sessions_per_week: target.min_viable_sessions_per_week,
+  });
+  if (!cur) { base.reason = "that goal has no usable demand"; return base; }
+  // min_viable lives on the stored goal, not on the fit row.
+  var tGoal = null;
+  (profileData.goals || []).forEach(function(g) { if (g && g.id === target.goal_id) tGoal = g; });
+  var tBase = goalBaselineDemand(tGoal) || cur;
+  var mv = Math.max(1, tBase.min_viable_sessions_per_week || 1);
+
+  var next = lever === "sequence" ? mv : Math.max(mv, cur.sessions_per_week - 1);
+  if (next >= cur.sessions_per_week) {
+    base.reason = lever === "sequence"
+      ? "already at its minimum of " + mv + "x/week"
+      : "already at its minimum of " + mv + "x/week — there is no lower frequency left";
+    base.projected_frequency = cur.sessions_per_week;
+    return base;
+  }
+  var projDemand = {
+    sessions_per_week: next,
+    minutes_per_session: cur.minutes_per_session,
+    hard: cur.hard,
+    min_viable_sessions_per_week: Math.min(mv, next),
+  };
+  overrides[target.goal_id] = projDemand;
+  var projFit = computeCapacityFit(profileData, { overrides: overrides });
+  base.projected = projFit;
+  base.projected_frequency = next;
+  base.resolves = !!projFit.fits;
+  if (!base.resolves) {
+    base.reason = projFit.hard_over > 0
+      ? ("still over by " + projFit.hard_over + " hard session" + (projFit.hard_over === 1 ? "" : "s") + "/week")
+      : ("still over by " + projFit.minutes_over + " min/week");
+  }
+  return base;
+}
+
+// FIX 3 — CODE COMPOSES EVERY NUMBER; the model gets slots and writes prose.
+// Returns { facts, allowed } — `facts` is the text handed to the model, `allowed`
+// is the set of numbers it is permitted to use.
+function buildLeverFacts(fit, target, outcomes, goal, profileData) {
+  var allowed = {};
+  var add = function(n) {
+    var v = numOrNull(n);
+    if (v != null) allowed[String(Math.round(v * 100) / 100)] = true;
+  };
+  [fit.minutes_needed, fit.minutes_available, fit.hard_needed, fit.hard_available,
+    fit.minutes_over, fit.hard_over, fit.capacity.days_per_week, fit.capacity.minutes_per_day,
+    fit.capacity.hard_sessions_per_week].forEach(add);
+  (fit.counted || []).forEach(function(c) {
+    add(c.sessions_per_week); add(c.minutes_per_session); add(c.minutes);
+    // Goal titles routinely carry numbers ("Bench Press 185lb", "sub 25m - 5k").
+    String(c.title || "").replace(/\d+(?:\.\d+)?/g, function(m) { add(m); return m; });
+  });
+  String((goal && goal.title) || "").replace(/\d+(?:\.\d+)?/g, function(m) { add(m); return m; });
+  if (goal && goal.estimate) { add(goal.estimate.total_weeks_low); add(goal.estimate.total_weeks_high); add(goal.estimate.assumed_frequency); }
+
+  var lines = [];
+  outcomes.forEach(function(o) {
+    if (o.lever === "capacity") {
+      add(o.delta.minutes_per_day_from); add(o.delta.minutes_per_day_to);
+      add(o.delta.hard_from); add(o.delta.hard_to);
+      var parts = [];
+      if (o.delta.hard_to !== o.delta.hard_from) parts.push("hard sessions/week from " + o.delta.hard_from + " to " + o.delta.hard_to);
+      if (o.delta.minutes_per_day_to !== o.delta.minutes_per_day_from) parts.push("minutes/day from " + o.delta.minutes_per_day_from + " to " + o.delta.minutes_per_day_to);
+      lines.push("capacity: RESOLVES. The athlete must raise " + (parts.join(" and ") || "nothing further") + ". Say exactly this and nothing else numeric.");
+      return;
+    }
+    add(o.projected_frequency);
+    var who = target ? (target.is_current_goal ? "this goal" : ("\"" + target.title + "\" (a DIFFERENT, already-committed goal)")) : "the goal";
+    if (o.resolves) {
+      lines.push(o.lever + ": RESOLVES. Lower " + who + " to " + o.projected_frequency + "x/week. Say whose frequency moves.");
+    } else {
+      lines.push(o.lever + ": DOES NOT RESOLVE (" + o.reason + "). This option is being shown as UNAVAILABLE. " +
+        "Write one honest sentence explaining why it cannot work; do NOT present it as a choice and do NOT invent a number.");
+    }
+  });
+
+  var facts = "PRE-COMPUTED LEVER OUTCOMES (code-computed; these are the ONLY numbers you may use):\n" +
+    lines.map(function(l) { return "  - " + l; }).join("\n") +
+    (target ? ("\nBINDING AXIS: " + target.axis + ". The goal that owns it: \"" + target.title + "\"" +
+      (target.is_current_goal ? " (the goal being set up)." : " — NOT the goal being set up. Be explicit that this other goal is what has to move.")) : "");
+  return { facts: facts, allowed: allowed };
+}
+
+// FIX 3 (enforcement) — reject any lever text containing a number code did not
+// supply. Rejection falls through to the code-authored levers, never to an error.
+// Deliberately conservative: a false rejection costs nothing but prose quality,
+// while a fabricated number ("needs 400 committed minutes" — observed live at
+// model_levers_valid:true) is exactly what the standing invariant forbids.
+function leverTextNumbersValid(options, allowed) {
+  for (var i = 0; i < options.length; i++) {
+    var txt = String(options[i].label || "") + " " + String(options[i].detail || "");
+    var nums = txt.match(/\d+(?:\.\d+)?/g) || [];
+    for (var j = 0; j < nums.length; j++) {
+      var key = String(Math.round(parseFloat(nums[j]) * 100) / 100);
+      if (!allowed[key]) {
+        console.warn("[PTBrain] negotiate: lever '" + options[i].lever + "' used an unsupplied number '" + nums[j] + "' — falling back to code-authored levers");
+        return false;
+      }
+    }
+  }
+  return true;
+}
+
+// The CODE-AUTHORED lever set. This is not a degraded fallback — it is the floor
+// the athlete is guaranteed, and every number in it is code-owned. The model's
+// only job is to replace `detail` with warmer prose saying the same thing; if it
+// fails, times out, returns the wrong shape, or writes an unsupplied number, this
+// is what ships. `label` is ALWAYS code-authored and never model-supplied.
+function buildCodeAuthoredLevers(fit, target, outcomes, round) {
+  var byLever = {};
+  outcomes.forEach(function(o) { byLever[o.lever] = o; });
+  var who = target ? (target.is_current_goal ? "this goal" : ("“" + target.title + "”")) : "this goal";
+  var otherOwns = !!(target && !target.is_current_goal);
+
+  return NEGOTIATION_LEVERS.map(function(lever) {
+    var o = byLever[lever] || { resolves: false, reason: "no adjustable goal owns this conflict" };
+    if (lever === "capacity") {
+      var parts = [];
+      if (o.delta && o.delta.hard_to !== o.delta.hard_from) {
+        parts.push("hard sessions from " + o.delta.hard_from + " to " + o.delta.hard_to + " per week");
+      }
+      if (o.delta && o.delta.minutes_per_day_to !== o.delta.minutes_per_day_from) {
+        parts.push("minutes per day from " + o.delta.minutes_per_day_from + " to " + o.delta.minutes_per_day_to);
+      }
+      return {
+        lever: "capacity", available: true,
+        label: "Make more room",
+        detail: parts.length
+          ? ("Raise " + parts.join(", and ") + ". That is what actually closes this gap.")
+          : "Adjust the week you can recover from on the next screen.",
+      };
+    }
+    if (!o.resolves) {
+      return {
+        lever: lever, available: false,
+        label: lever === "slower" ? "Go slower" : "Sequence them",
+        detail: "Not available — " + (o.reason || "this cannot close the gap") + ".",
+      };
+    }
+    if (lever === "slower") {
+      return {
+        lever: "slower", available: true,
+        label: otherOwns ? "Slow the goal that's crowding it" : "Go slower",
+        detail: "Drop " + who + " to " + o.projected_frequency + " sessions a week. " +
+          (otherOwns ? "That is the goal actually using up your week. " : "") +
+          "It fits, and the timeline stretches honestly to match.",
+      };
+    }
+    return {
+      lever: "sequence", available: true,
+      label: otherOwns ? "Let the other goal lead" : "Start at the minimum",
+      detail: "Hold " + who + " at " + o.projected_frequency + " sessions a week — the least that still makes " +
+        "progress — while the other goal leads, then swap the lead over.",
+    };
+  });
 }
 
 // ── PT BRAIN · LAYER 3 — coexistence engine ──────────────────────────────────
@@ -7288,16 +7572,22 @@ var ESTIMATE_SYS =
   "basis is the plain-language 'why this long' the athlete reads — 2 sentences maximum, naming the actual limiter (tissue healing time, rate of strength adaptation, aerobic base building, skill reps required) and the assumed frequency. No hedging, no motivational filler.\n" +
   "If the assumed frequency is low for the goal, say so in basis and let the range reflect it.";
 
+// Rewritten session #45. The model NO LONGER authors labels and NO LONGER does
+// arithmetic of any kind: every outcome is pre-computed and handed to it, and a
+// number it emits that code did not supply causes the whole set to be discarded
+// in favour of the code-authored levers. This is the standing invariant — code
+// owns every number the model would be judged on — actually enforced.
 var NEGOTIATE_SYS =
-  "You are an honest strength coach telling an athlete their new goal does not fit the training week they actually have. " +
-  "You are given the ARITHMETIC — it is already computed and correct. Never recalculate it, never soften it, never suggest the numbers might work out anyway.\n" +
-  "Return ONLY valid JSON: { \"conflict_note\": string, \"options\": [ { \"lever\": string, \"label\": string, \"detail\": string } ] }.\n" +
-  "conflict_note: 1-2 sentences naming the specific shortfall in the athlete's own terms.\n" +
-  "You MUST return EXACTLY THREE options, with lever values exactly \"slower\", \"capacity\", \"sequence\", IN THAT ORDER. No other option is permitted. Do NOT invent a fourth path, do NOT suggest dropping a goal, do NOT suggest they 'just try it and see'.\n" +
-  "  slower  — same goal, lower weekly frequency, honestly longer timeline. State the new frequency and roughly how much longer it takes.\n" +
-  "  capacity — what would have to change, using the concrete math you were given (e.g. 'at 30 min/day you fit one of these; at 50 you fit both').\n" +
-  "  sequence — this goal starts at its minimum viable frequency while another goal leads. Name which goal leads and roughly when this one takes over.\n" +
-  "label is a short button-sized phrase (max 6 words). detail is 1-2 plain sentences. Never write numbers that contradict the arithmetic you were given.";
+  "You are an honest strength coach explaining to an athlete why their training week does not fit.\n" +
+  "EVERY NUMBER YOU COULD NEED HAS ALREADY BEEN COMPUTED FOR YOU AND IS GIVEN BELOW. You must never compute, estimate, infer, adjust or invent a number. " +
+  "If a number does not appear in the material you were given, you may not write it. Writing an unsupplied number causes your entire response to be discarded.\n" +
+  "Return ONLY valid JSON: { \"conflict_note\": string, \"options\": [ { \"lever\": string, \"detail\": string } ] }.\n" +
+  "conflict_note: 1-2 sentences naming the specific shortfall in the athlete's own terms, using ONLY the supplied numbers.\n" +
+  "You MUST return EXACTLY THREE options, with lever values exactly \"slower\", \"capacity\", \"sequence\", IN THAT ORDER. Never invent a fourth path, never suggest dropping a goal, never suggest they 'just try it and see'. Do NOT write a label — labels are set by the app.\n" +
+  "Each detail is 1-2 plain sentences restating that lever's PRE-COMPUTED OUTCOME in warm, direct language.\n" +
+  "  - An outcome marked RESOLVES: say what changes and that it fits. If the goal whose frequency moves is NOT the goal being set up, say plainly that this other goal is what has to move, and name it.\n" +
+  "  - An outcome marked DOES NOT RESOLVE: write it as UNAVAILABLE. State the given reason honestly. Never present it as a choice, never apologise for it, never suggest trying it anyway.\n" +
+  "Never contradict a supplied outcome, and never claim a lever helps when you were told it does not.";
 
 // Clamp an AI plan-setup proposal into the stored shape. A goal_type the model
 // got wrong becomes null rather than a guess — the UI then requires a pick.
@@ -7345,11 +7635,18 @@ app.post("/api/profiles/:id/goals/:goalId/plan-setup", async function(req, res) 
     var text = await callAISystem(PLAN_SETUP_SYS, userMsg, 500, modelForCallType("goal_plan_setup"));
     var proposal = normalizePlanSetup(parseAIJson(text), goal);
 
-    // Persist the proposal so /estimate has a server-side value to enforce the
-    // dial lock against. The athlete can still change either on the Step 3
-    // screen — except the frequency of a dial-locked goal_type.
-    if (proposal.goal_type) goal.goal_type = proposal.goal_type;
-    if (proposal.demand) goal.demand = proposal.demand;
+    // FIX 8 — DRAFT, NOT COMMIT (session #45; closes §6 Session A items 2 and 3).
+    // This used to stamp goal.goal_type / goal.demand directly, so merely OPENING
+    // Step 3 gave an abandoned goal a demand that counted against capacity, and a
+    // negotiation the athlete walked away from left the goal permanently altered.
+    // The proposal now lands in goal.plan_draft, which computeCapacityFit does not
+    // read — so an uncommitted goal contributes ZERO — while still giving
+    // /estimate a server-side baseline to enforce the dial lock against.
+    goal.plan_draft = {
+      goal_type: proposal.goal_type || null,
+      demand: proposal.demand || null,
+      proposed_at: new Date().toISOString(),
+    };
     await saveGoalToProfile(req.params.id, loaded.profileData, found.index, goal);
 
     res.json({
@@ -7376,36 +7673,44 @@ app.post("/api/profiles/:id/goals/:goalId/estimate", async function(req, res) {
     var found = findGoalById(loaded.profileData, req.params.goalId);
     var goal = found.goal;
 
-    // 1. goal_type (client may change it on the Step 3 screen).
+    // 1. goal_type — client value, else the committed value, else the
+    //    uncommitted Step-3 draft (fix 8 means plan-setup no longer commits).
+    var draft0 = goal.plan_draft || null;
     var gt = GOAL_TYPES.indexOf(String(body.goal_type)) >= 0 ? String(body.goal_type)
-      : (GOAL_TYPES.indexOf(String(goal.goal_type)) >= 0 ? String(goal.goal_type) : null);
+      : (GOAL_TYPES.indexOf(String(goal.goal_type)) >= 0 ? String(goal.goal_type)
+        : (draft0 && GOAL_TYPES.indexOf(String(draft0.goal_type)) >= 0 ? String(draft0.goal_type) : null));
     if (!gt) return res.status(400).json({ success: false, error: "goal_type required (one of " + GOAL_TYPES.join(", ") + ")" });
 
-    // 2. demand — normalised, then the SERVER-AUTHORITATIVE dial lock. For a
-    //    locked goal_type the athlete cannot move the frequency at all: any
-    //    incoming sessions_per_week is discarded in favour of the stored one.
-    //    The client mirrors this in the UI, but this is the enforcement.
-    var demand = normalizeDemand(body.demand) || normalizeDemand(goal.demand);
+    // 2. demand + the SERVER-AUTHORITATIVE, now LEVER-AWARE dial lock (fix 1).
+    //    A locked goal_type still cannot be sped up, and the manual dial is still
+    //    absolute — but a negotiation lever moving frequency DOWN is permitted,
+    //    because slowing a rehab goal never violates the reason for the lock.
+    //    Before this, the lock silently ate `slower` and `sequence` on every
+    //    rehab goal (session #45: posted 3, stored 4, athlete told nothing).
+    var baselineDemand = goalBaselineDemand(goal);
+    var lever = body.lever && NEGOTIATION_LEVERS.indexOf(String(body.lever)) >= 0 ? String(body.lever) : null;
+    var demand = normalizeDemand(body.demand) || baselineDemand;
     if (!demand) return res.status(400).json({ success: false, error: "demand required" });
     var dialLocked = DIAL_LOCKED_TYPES.indexOf(gt) >= 0;
     var dialOverridden = false;
     if (dialLocked) {
-      var storedFreq = (goal.demand && numOrNull(goal.demand.sessions_per_week)) || null;
-      if (storedFreq != null && storedFreq !== demand.sessions_per_week) {
+      var storedFreq = baselineDemand ? baselineDemand.sessions_per_week : null;
+      if (storedFreq != null && storedFreq !== demand.sessions_per_week &&
+          !dialLockAllows(gt, storedFreq, demand.sessions_per_week, lever)) {
         demand.sessions_per_week = storedFreq;
         if (demand.min_viable_sessions_per_week > storedFreq) demand.min_viable_sessions_per_week = storedFreq;
         dialOverridden = true;
       }
     }
 
-    // 3. capacity — only ever written from athlete-confirmed control values.
+    // 3. capacity — only ever written from athlete-confirmed control values, and
+    //    committed immediately even when the goal itself stays a draft: it is a
+    //    GLOBAL athlete setting they explicitly typed, not goal state, and losing
+    //    it on an unresolved negotiation would be worse than keeping it.
     if (body.capacity) {
       var cap = normalizeCapacity(body.capacity);
       if (cap) loaded.profileData.capacity = cap;
     }
-
-    goal.goal_type = gt;
-    goal.demand = demand;
 
     // 4. The honest estimate (Sonnet, short).
     var ctx2 = (loaded.profileData.ai_prompt_context || "").substring(0, 500);
@@ -7429,27 +7734,84 @@ app.post("/api/profiles/:id/goals/:goalId/estimate", async function(req, res) {
     if (hi < lo) { var sw = lo; lo = hi; hi = sw; }
 
     var basis = eParsed.basis ? String(eParsed.basis).slice(0, 600) : "";
-    // A negotiation lever can attach an honest note explaining the resolution.
-    if (body.basis_note) basis = (basis ? basis + " " : "") + String(body.basis_note).slice(0, 300);
 
-    goal.estimate = {
+    var estimateObj = {
       total_weeks_low: lo, total_weeks_high: hi,
       assumed_frequency: demand.sessions_per_week,
       basis: basis,
     };
 
+    // 5. CODE fit check. The proposed demand is applied as an OVERRIDE, never by
+    //    mutating the goal — `pending_drafts` lets the caller also carry the
+    //    still-uncommitted demand of the goal actually being negotiated, which is
+    //    required when a lever targets a different goal than the one on screen.
+    var pending = {};
+    if (body.pending_drafts && typeof body.pending_drafts === "object") {
+      Object.keys(body.pending_drafts).forEach(function(k) {
+        var nd = normalizeDemand(body.pending_drafts[k]);
+        if (nd) pending[k] = nd;
+      });
+    }
+    pending[goal.id] = demand;
+    var fit = computeCapacityFit(loaded.profileData, { overrides: pending });
+    var plan = derivePhasePlan(estimateObj);
+
+    // 6. COMMIT ONLY ON RESOLUTION (fix 8). Until the week actually fits, nothing
+    //    about the goal changes on disk — an abandoned or failed negotiation
+    //    leaves stored goal state byte-identical. This closes §6 Session A items
+    //    2 and 3, which assumed the write "self-corrects"; session #45 proved it
+    //    does not (a discarded change still had its basis_note appended, leaving
+    //    a code-authored false sentence permanently on the goal).
+    var negotiatingId = (body.negotiating_goal_id && String(body.negotiating_goal_id)) || goal.id;
+    var willCommit = fit.fits === true;
+
+    if (willCommit) {
+      // basis_note describes what the lever DID. It is appended only here, and
+      // only when the change actually survived the dial lock — never after a
+      // discarded change.
+      if (body.basis_note && lever && !dialOverridden) {
+        estimateObj.basis = (estimateObj.basis ? estimateObj.basis + " " : "") + String(body.basis_note).slice(0, 300);
+      }
+      goal.goal_type = gt;
+      goal.demand = demand;
+      goal.estimate = estimateObj;
+      delete goal.plan_draft;
+      delete goal.negotiation_round;                       // fix 5 — reset on resolution
+      if (negotiatingId !== goal.id) {
+        try {
+          var negG = findGoalById(loaded.profileData, negotiatingId).goal;
+          delete negG.negotiation_round;
+        } catch (e2) { /* goal gone — nothing to reset */ }
+      }
+    } else {
+      goal.plan_draft = {
+        goal_type: gt, demand: demand, estimate: estimateObj,
+        proposed_at: new Date().toISOString(),
+      };
+      // fix 5 — the round counter counts LEVERS ACTUALLY APPLIED to the goal under
+      // negotiation. It lives on the goal, so it survives a reload and cannot be
+      // inflated by a failed options load or a re-entry from the roadmap dial.
+      if (lever) {
+        var holder = goal;
+        if (negotiatingId !== goal.id) {
+          try { holder = findGoalById(loaded.profileData, negotiatingId).goal; } catch (e3) { holder = goal; }
+        }
+        holder.negotiation_round = (numOrNull(holder.negotiation_round) || 0) + 1;
+      }
+    }
     await saveGoalToProfile(req.params.id, loaded.profileData, found.index, goal);
 
-    // 5. CODE fit check + the derived plan (returned so the UI can show the shape
-    //    before generation, and so tests can assert budgets sum to the estimate).
-    var fit = computeCapacityFit(loaded.profileData, {});
-    var plan = derivePhasePlan(goal.estimate);
-
-    if (body.lever) console.log("[PTBrain] negotiation lever '" + body.lever + "' applied to goal " + goal.id);
+    if (lever) {
+      console.log("[PTBrain] lever '" + lever + "' -> goal " + goal.id +
+        " (negotiating " + negotiatingId + ") " + (willCommit ? "RESOLVED, committed" : "unresolved, held as draft") +
+        (dialOverridden ? " [dial lock discarded the frequency change]" : ""));
+    }
 
     res.json({
-      success: true, estimate: goal.estimate, phase_plan: plan, fit: fit,
+      success: true, estimate: estimateObj, phase_plan: plan, fit: fit,
       goal_type: gt, demand: demand, dial_locked: dialLocked, dial_override_applied: dialOverridden,
+      committed: willCommit,
+      negotiation_round: numOrNull(goal.negotiation_round) || 0,
       capacity: normalizeCapacity(loaded.profileData.capacity),
     });
   } catch (e) {
@@ -7465,83 +7827,111 @@ app.post("/api/profiles/:id/goals/:goalId/negotiate", async function(req, res) {
     var loaded = await loadProfileWithGoals(req.params.id);
     var found = findGoalById(loaded.profileData, req.params.goalId);
     var goal = found.goal;
-    var fit = computeCapacityFit(loaded.profileData, {});
+
+    // The goal under negotiation is normally UNCOMMITTED (fix 8), so its demand
+    // has to be injected as an override or the very conflict being negotiated
+    // would vanish from the fit check.
+    var draftDemand = goalBaselineDemand(goal);
+    var overrides = {};
+    if (draftDemand) overrides[goal.id] = draftDemand;
+    var fit = computeCapacityFit(loaded.profileData, { overrides: overrides });
     if (fit.fits) return res.json({ success: true, fits: true, fit: fit });
 
-    var others = fit.counted.filter(function(c) { return c.goal_id !== goal.id; });
-    var mv = (goal.demand && goal.demand.min_viable_sessions_per_week) || 1;
-    // ROUND COUNTER (session #37, closes the §6 negotiation-loop item). Advisory
-    // ONLY — it changes the FRAMING, never the resolution set. `slower` and
-    // `sequence` both floor at min_viable, so on a goal that genuinely does not
-    // fit they become idempotent and the athlete can bounce between them; from
-    // round 2 the copy says so and points at the real exit.
-    var round = Math.max(1, Math.min(9, Math.round(numOrNull(req.body && req.body.round) || 1)));
-    var escalation = round >= 2
-      ? "ESCALATION — this is negotiation round " + round + " for this goal. The athlete has ALREADY applied a lever and the week still does not fit. Say that plainly in conflict_note. Frame ADDING CAPACITY as the realistic exit; do NOT present \"go slower\" or \"sequence\" as if they will resolve it this time.\n\n"
-      : "";
-    var userMsg = escalation + "THE ARITHMETIC (already computed — do not recalculate):\n" +
-      "  Weekly time available: " + fit.minutes_available + " min (" + fit.capacity.days_per_week + " days x " + fit.capacity.minutes_per_day + " min)\n" +
-      "  Weekly time committed: " + fit.minutes_needed + " min" + (fit.minutes_over > 0 ? ("  → OVER BY " + fit.minutes_over + " min") : "  → fits") + "\n" +
-      "  Hard sessions available: " + fit.hard_available + "/week\n" +
-      "  Hard sessions committed: " + fit.hard_needed + "/week" + (fit.hard_over > 0 ? ("  → OVER BY " + fit.hard_over) : "  → fits") + "\n\n" +
-      "THE NEW GOAL: " + (goal.title || "Untitled") + " (" + (goal.goal_type || "?") + ") — " +
-        (goal.demand ? (goal.demand.sessions_per_week + "x/week, " + goal.demand.minutes_per_session + " min, min viable " + mv + "x/week") : "no demand") + "\n" +
-      (goal.estimate ? ("CURRENT ESTIMATE: " + goal.estimate.total_weeks_low + "-" + goal.estimate.total_weeks_high + " weeks at " + goal.estimate.assumed_frequency + "x/week\n") : "") + "\n" +
-      "ALREADY COMMITTED GOALS:\n" +
-      (others.length ? others.map(function(c) {
-        return "  - " + c.title + ": " + c.sessions_per_week + "x/week, " + c.minutes_per_session + " min" + (c.hard ? " (hard)" : "");
-      }).join("\n") : "  (none)") + "\n\n" +
-      "Explain the conflict and give exactly the three permitted options.";
-
-    var text = await callAISystem(NEGOTIATE_SYS, userMsg, 700, modelForCallType("goal_negotiate"));
-    var parsed = parseAIJson(text) || {};
-
-    // BOUNDED RESOLUTION SET — validated in code. The model can never emit a
-    // fourth outcome; a malformed response falls back to code-authored levers
-    // rather than showing the athlete whatever it happened to return.
-    var REQUIRED = ["slower", "capacity", "sequence"];
-    var opts = Array.isArray(parsed.options) ? parsed.options : [];
-    var byLever = {};
-    opts.forEach(function(o) { if (o && REQUIRED.indexOf(String(o.lever)) >= 0) byLever[String(o.lever)] = o; });
-    var valid = REQUIRED.every(function(k) { return byLever[k]; });
-
-    var lowerFreq = Math.max(mv, Math.max(1, ((goal.demand && goal.demand.sessions_per_week) || 2) - 1));
-    var fallbackDetail = round >= 2 ? {
-      slower: "You already went slower and it still does not fit — " + lowerFreq + "x/week is not the lever here.",
-      capacity: "This is the one that actually resolves it. You need about " +
-        Math.ceil((fit.minutes_needed) / fit.capacity.days_per_week) + " min/day across " +
-        fit.capacity.days_per_week + " days (you have " + fit.capacity.minutes_per_day + " min/day)" +
-        (fit.hard_over > 0 ? (", and " + fit.hard_needed + " hard sessions/week rather than " + fit.hard_available + ".") : "."),
-      sequence: "Holding this at " + mv + "x/week has not freed enough of the week — the constraint is the week itself.",
-    } : {
-      slower: "Train this " + lowerFreq + "x/week instead. It fits your week, and the timeline stretches honestly to match.",
-      capacity: "You would need about " + Math.ceil((fit.minutes_needed) / fit.capacity.days_per_week) +
-        " min/day across " + fit.capacity.days_per_week + " days (you have " + fit.capacity.minutes_per_day + " min/day)" +
-        (fit.hard_over > 0 ? (", and " + fit.hard_needed + " hard sessions/week rather than " + fit.hard_available + ".") : "."),
-      sequence: "Start this goal at its minimum (" + mv + "x/week) while " +
-        (others.length ? others[0].title : "your current goal") + " leads, then swap the lead over.",
-    };
-    var options = REQUIRED.map(function(k) {
-      var o = valid ? byLever[k] : null;
-      return {
-        lever: k,
-        label: (o && o.label) ? String(o.label).slice(0, 60)
-          : (k === "slower" ? "Go slower" : k === "capacity" ? "Make more room" : "Sequence them"),
-        detail: (o && o.detail) ? String(o.detail).slice(0, 400) : fallbackDetail[k],
-      };
+    // FIX 2 — which goal actually owns the binding axis. Often NOT this one.
+    var target = resolveLeverTarget(fit, goal.id);
+    // FIX 4 — every lever's real outcome, computed in code, before anything is
+    // offered. Zero AI cost. A lever that cannot close the gap is never an offer.
+    var outcomes = NEGOTIATION_LEVERS.map(function(l) {
+      return projectLeverOutcome(loaded.profileData, fit, target, l, overrides);
     });
-    if (!valid) console.warn("[PTBrain] negotiate: model returned an invalid lever set — using code-authored fallback");
+    // FIX 5 — the round is how many levers have ACTUALLY been applied to this
+    // goal, read from storage. A failed options load or a re-entry from the
+    // roadmap dial can no longer inflate it, and it survives a page reload.
+    var leversApplied = numOrNull(goal.negotiation_round) || 0;
+    var round = leversApplied + 1;
+
+    // FIX 3 — code composes every number; the model gets slots and writes prose.
+    var pack = buildLeverFacts(fit, target, outcomes, goal, loaded.profileData);
+    var codeLevers = buildCodeAuthoredLevers(fit, target, outcomes, round);
+
+    var mvNow = draftDemand ? draftDemand.min_viable_sessions_per_week : 1;
+    var slowerOutcome = outcomes.filter(function(o) { return o.lever === "slower"; })[0] || {};
+
+    var userMsg =
+      (leversApplied >= 1
+        ? ("ESCALATION — the athlete has already applied " + leversApplied + " lever" + (leversApplied === 1 ? "" : "s") +
+           " to this goal and the week still does not fit. Say that plainly in conflict_note.\n\n")
+        : "") +
+      "THE ARITHMETIC (already computed — never recalculate it):\n" +
+      "  Weekly time available: " + fit.minutes_available + " min (" + fit.capacity.days_per_week + " days x " + fit.capacity.minutes_per_day + " min)\n" +
+      "  Weekly time committed: " + fit.minutes_needed + " min" + (fit.minutes_over > 0 ? ("  -> OVER BY " + fit.minutes_over + " min") : "  -> fits") + "\n" +
+      "  Hard sessions available: " + fit.hard_available + "/week\n" +
+      "  Hard sessions committed: " + fit.hard_needed + "/week" + (fit.hard_over > 0 ? ("  -> OVER BY " + fit.hard_over) : "  -> fits") + "\n\n" +
+      "THE GOAL BEING SET UP: " + (goal.title || "Untitled") + " (" + (goal.goal_type || (goal.plan_draft && goal.plan_draft.goal_type) || "?") + ")" +
+        (draftDemand ? (" — " + draftDemand.sessions_per_week + "x/week, " + draftDemand.minutes_per_session + " min" + (draftDemand.hard ? " (hard)" : " (not hard)")) : "") + "\n" +
+      "EVERY GOAL COMMITTED TO THE WEEK:\n" +
+      (fit.counted.length ? fit.counted.map(function(c) {
+        return "  - " + c.title + ": " + c.sessions_per_week + "x/week, " + c.minutes_per_session + " min" + (c.hard ? " (hard)" : " (not hard)");
+      }).join("\n") : "  (none)") + "\n\n" +
+      pack.facts + "\n\n" +
+      "Write conflict_note and the three details. Use no number that is not above.";
+
+    // FIX 7 — THE CODE-AUTHORED LEVERS ARE THE FLOOR. Timeout, network failure,
+    // unparseable JSON, wrong shape, or a fabricated number all land here and the
+    // athlete still gets three honest, code-computed options. There is no longer
+    // any path where this endpoint fails to return a usable resolution set.
+    // Timeout is deliberately under Render's ~25s response ceiling.
+    var options = codeLevers, valid = false, conflictNote = null;
+    try {
+      var text = await callAISystem(NEGOTIATE_SYS, userMsg, 700, modelForCallType("goal_negotiate"), 18000);
+      var parsed = parseAIJson(text) || {};
+      var byLever = {};
+      (Array.isArray(parsed.options) ? parsed.options : []).forEach(function(o) {
+        if (o && NEGOTIATION_LEVERS.indexOf(String(o.lever)) >= 0) byLever[String(o.lever)] = o;
+      });
+      var shapeOk = NEGOTIATION_LEVERS.every(function(k) { return byLever[k] && byLever[k].detail; });
+      if (shapeOk) {
+        // label stays code-authored; only `detail` is ever taken from the model.
+        var candidate = codeLevers.map(function(cl) {
+          return { lever: cl.lever, available: cl.available, label: cl.label,
+                   detail: String(byLever[cl.lever].detail).slice(0, 400) };
+        });
+        var noteCandidate = parsed.conflict_note ? String(parsed.conflict_note).slice(0, 400) : "";
+        if (leverTextNumbersValid(candidate.concat([{ lever: "conflict_note", label: "", detail: noteCandidate }]), pack.allowed)) {
+          options = candidate;
+          conflictNote = noteCandidate;
+          valid = true;
+        }
+      } else {
+        console.warn("[PTBrain] negotiate: model returned an invalid lever set — using code-authored levers");
+      }
+    } catch (aiErr) {
+      console.warn("[PTBrain] negotiate: model call failed (" + aiErr.message + ") — using code-authored levers");
+    }
+
+    if (!conflictNote) {
+      var axisTxt = fit.hard_over > 0
+        ? ("you are over by " + fit.hard_over + " hard session" + (fit.hard_over === 1 ? "" : "s") + " a week")
+        : ("you are over by " + fit.minutes_over + " min a week");
+      conflictNote = (leversApplied >= 1 ? "You've already adjusted this and it still doesn't fit — " : "This doesn't fit your week — ") +
+        axisTxt + "." + (target && !target.is_current_goal ? (" That gap belongs to “" + target.title + "”, not to this goal.") : "");
+    }
 
     res.json({
-      success: true, fits: false, fit: fit, round: round,
-      conflict_note: (parsed.conflict_note ? String(parsed.conflict_note).slice(0, 400)
-        : (round >= 2
-          ? ("You've already adjusted this goal and the week still doesn't fit — it needs " +
-             fit.minutes_needed + " min against the " + fit.minutes_available + " you have.")
-          : ("This goal needs " + fit.minutes_needed + " min/week but you have " + fit.minutes_available + "."))),
+      success: true, fits: false, fit: fit, round: round, levers_applied: leversApplied,
+      conflict_note: conflictNote,
       options: options,
       model_levers_valid: valid,
-      suggested: { slower_frequency: lowerFreq, min_viable: mv },
+      target: target,
+      outcomes: outcomes.map(function(o) {
+        return { lever: o.lever, resolves: o.resolves, reason: o.reason,
+                 projected_frequency: o.projected_frequency, required_capacity: o.required_capacity || null };
+      }),
+      suggested: {
+        slower_frequency: slowerOutcome.projected_frequency || null,
+        min_viable: mvNow,
+        target_goal_id: target ? target.goal_id : null,
+      },
     });
   } catch (e) {
     console.error("[PTBrain] negotiate error:", e.message);
