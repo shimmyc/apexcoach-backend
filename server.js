@@ -6945,6 +6945,35 @@ function renderArcStateForPrompt(goal) {
   return L.join("\n") + "\n\n";
 }
 
+// CARRY THE ARC FORWARD — same bug class as the roadmap.estimate drop fixed in
+// session #35, and the SAME two rebuild sites keep re-introducing it: both
+// adaptGoalRoadmap() and generateGoalRoadmapForGoal() build goal.roadmap from
+// scratch, so any Layer 2 field not named explicitly is silently destroyed.
+// arc_origin + arc_state shipped in session #37 and were never added to either
+// carry-forward list. Found live 2026-07-27 (session #42): the profile-4 bench
+// goal was regenerated 2026-07-26T02:47:22Z and lost both, having previously
+// recorded position 3.0 / re_ramping / since 2026-07-06 (§7 ledger row 10).
+//
+// Why this matters more than it looks: arc_state is a pure replay and would
+// come back on the next evaluation, but arc_origin is NOT self-healing — it is
+// re-pinned from near[0].start_date, and both writers call
+// assignNearTermDates(parsed.phases, today) on freshly model-authored phases
+// that carry no dates, so the calendar is rebuilt FROM TODAY. Dropping
+// arc_origin therefore walks the origin forward on every adapt/regenerate and
+// discards every earned week — exactly the session #37 bug #1 that pinning
+// arc_origin was introduced to prevent.
+//
+// CARRY-IF-PRESENT ONLY. A legacy roadmap has neither field and must not gain
+// them: same principle as ensureGoalDefaults() never fabricating a demand.
+// Absent in => absent out, byte-identical to the pre-fix output.
+// ONE implementation, TWO consumers, so the two writers can never disagree.
+function carryArcForward(prev, next) {
+  if (!prev || !next) return next;
+  if (prev.arc_origin) next.arc_origin = prev.arc_origin;
+  if (prev.arc_state) next.arc_state = prev.arc_state;
+  return next;
+}
+
 async function adaptGoalRoadmap(goal, notes, workouts, trigger, goalExCtx) {
   var today = new Date().toISOString().slice(0, 10);
   var workoutsStr = (workouts || []).map(function(w) { return w.date + ": " + (w.type || "Workout"); }).join("\n");
@@ -7016,7 +7045,7 @@ async function adaptGoalRoadmap(goal, notes, workouts, trigger, goalExCtx) {
   var now = new Date().toISOString();
   var log = Array.isArray(prev.adaptation_log) ? prev.adaptation_log.slice() : [];
   log.push({ date: now, summary: parsed.timeline_note || "Roadmap adapted", trigger: trigger });
-  return {
+  var next = {
     timeline_range: parsed.timeline_range || prev.timeline_range || null,
     timeline_note: parsed.timeline_note || prev.timeline_note || null,
     date_confidence: parsed.date_confidence || prev.date_confidence || null,
@@ -7032,6 +7061,8 @@ async function adaptGoalRoadmap(goal, notes, workouts, trigger, goalExCtx) {
     version: (typeof prev.version === "number" ? prev.version : 1) + 1,
     adaptation_log: log,
   };
+  carryArcForward(prev, next);
+  return next;
 }
 
 // Fire-and-forget weekly maintenance, called after a workout save. Adapts BOTH
@@ -7719,6 +7750,11 @@ async function generateGoalRoadmapForGoal(profileId, goalId, mode) {
       adaptation_log: [],
     };
   }
+  // See carryArcForward(): the arc is the athlete's EARNED position replayed
+  // from their log, not part of this roadmap document's authorship — so it
+  // survives a regenerate and a reset alike. Carry-if-present, so a legacy
+  // goal (profile 1's three) is byte-identical to before.
+  carryArcForward(prevRoadmap, goal.roadmap);
   goal.last_adapted_at = now;
   await saveGoalToProfile(profileId, loaded.profileData, found.index, goal);
   recomputeRoadmapProgress(goal.roadmap, goalExCtx);
