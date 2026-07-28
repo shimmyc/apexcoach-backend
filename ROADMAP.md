@@ -4,6 +4,97 @@
 > Pairs with `CLAUDE.md` (deep implementation notes) and `FORMULAS.md` (readiness/sleep math).
 > Last updated: 2026-07-28.
 >
+> **2026-07-28 session #44 — ✅ BUG 4 FIXED (the one-way `needs_regeneration` flag), regenerate
+> in-flight guard, honest banner copy, and a SANDBOX SEEDER. Plus #42's regenerate path is now
+> VERIFIED LIVE.** Audit-then-build, gated: Phase 1 audit → D1/D2/D3 approved → build. Two commits:
+> `88a737c` (BUG 4 + guard + copy) and `7ed053b` (seeder). **No migrations.** Profile 1
+> `profile_data` sha `e28c8c9462aceb81` **identical at session start and session end**, zero arc
+> fields, all endpoints 200.
+>
+> **BUG 4 — `needs_regeneration` could be set but NEVER cleared.** `computeArcState` carried the
+> previous value forward and **nothing anywhere wrote `false`** (4 write sites, 5 reads, 0 clears —
+> counted across the whole repo). Once set it survived every evaluation, adapt and regenerate
+> forever, so the athlete sat in a **banner → regenerate → banner loop with no exit**. Session #42's
+> `carryArcForward` did **not** cause this — it *exposed* it (pre-fix, destroying `arc_state` on a
+> regenerate accidentally dropped the flag until the next evaluation).
+>
+> **D1 (approved) — recompute every evaluation, AND decouple the assessment from the streak gate.**
+> Two edits: `computeArcState` seeds `false` instead of carrying; `applyTimelineFlex` hoists the
+> absorbability math **above** the `flex_streak` gate so every call writes the flag, and the streak
+> now gates only the phase-duration **mutation**.
+> - **A naive recompute would have been WRONG, and this was measured, not theorised.** Chaining five
+>   real evaluations offline against profile 4's wrist goal (real shipped `computeArcState` +
+>   `applyTimelineFlex`, mock Supabase, each PATCH written back so evaluations chain as production
+>   would) exposed a **one-evaluation flicker window**: a partial flex that clamps sets the flag AND
+>   resets `flex_streak` to 0, so the next evaluation trips `flex_streak (1) < 2` and returns
+>   **before any absorbability math runs** — reading `false` while drift was still −5 and genuinely
+>   unabsorbable. **Fire 2 was the flicker, and it is the wrist goal's very next evaluation**, so a
+>   naive fix would have broken on the first goal tested.
+> - **Root cause of the trap:** the streak gate exists to stop flexes **compounding** (session #37).
+>   It was never meant to gate the **assessment**. Conflating the two opened the window.
+> - **Approved widening:** `!upcoming.length` now fires below the streak gate too — zero upcoming
+>   phases is unabsorbable regardless of how long the drift has been sustained.
+>
+> **D2 (approved) — no special handling on regenerate.** Carrying `true` across a regenerate is the
+> conservative direction (the phases just changed, so absorbability is genuinely unknown until
+> reassessed); clearing optimistically would make the banner lie in the **opposite** direction, and
+> for the wrist goal the post-regenerate answer is still `true`. Stale-true window is **≤24 h** (the
+> app-open gate) or until the next workout save. **Considered and DECLINED:** calling
+> `evaluateArcsForProfile` from the regenerate handler — it would close the window but adds latency
+> to an already-long Sonnet call for a window that self-heals.
+>
+> **D3 (approved) — honest copy on BOTH readers.** The old CTA promised *"Regenerate it to match
+> reality"*, which that button **cannot deliver**: the drift is **earned position vs calendar**, and
+> rebuilding the phases resets the calendar while leaving earned position untouched. New copy states
+> the real numbers — *"You've earned 0 of 5 weeks on this goal … Rebuilding the phases won't move
+> your earned position — only logged sessions do that."* — with CTA **"Rebuild the phases anyway"**.
+> Same framing on the goal-card ⚠ flag.
+>
+> **Verification — real shipped functions, BOTH file versions, over-capture guard + mandatory
+> re-parse.** (a) the 5-fire chain replayed post-fix: **fire 2 now reads TRUE**, `arc_origin`
+> `2026-06-29` on every fire, flex mutation shapes identical to pre-fix; (b) the CLEAR proven both
+> at unit level and **end-to-end through the real route** (seeded `true` → recomputed `false` via a
+> clean unclamped flex — then correctly re-set on the next fire once the room ran out, which is the
+> two-way behaviour working); (c) all three true-branches still set; (d) the wrist goal's real
+> post-regenerate shape still yields TRUE; (e) `!upcoming.length` fires at `flex_streak` 0 and 1;
+> (f) **profile 1 legacy: route response AND `profile_data` byte-identical pre vs post**, zero
+> writes, zero AI, no arc key created on any goal — it has **0 arc-eligible goals**, so
+> `evaluateArcsForProfile` returns at the `!arcGoals.length` guard before `computeArcState` is ever
+> reached; (g) suites **213 → 249**, all green.
+>
+> **VERIFIED LIVE post-deploy (profile 4, admin sweep) — both directions in a single call:**
+> - **wrist goal** → `needs_regeneration: true`, flex `lengthened [5]→[6] CLAMPED`. Honest: drift −5
+>   genuinely cannot be absorbed. `arc_origin 2026-06-29` intact.
+> - **bench goal** → `needs_regeneration: FALSE`, flex `lengthened [5,5]→[6,6]`, **clamped false**.
+>   The flag is being recomputed per goal from its real state. `arc_origin 2026-07-26` (the BUG 3
+>   residual pin) intact.
+> - Immediate re-fire of the user-facing route → `{skipped:true, reason:"fresh"}`. `roadmap.version`
+>   unchanged on both goals (**no AI ran**). New copy confirmed in the served `index.html`; the old
+>   misleading strings are gone.
+>
+> **⚠ HONEST CORRECTION to session #43's double-click claim.** I reported the regenerate race as a
+> live risk. Re-reading the handler: `c.innerHTML = <spinner>` runs **synchronously** and removes the
+> button from the DOM on the first click, so a plain double-click was largely self-protecting. The
+> residual windows are a missing `#grv-content` (the `if (c)` skips, leaving the button live), the
+> Retry path, and any future refactor that renders the banner where the spinner does not overwrite.
+> The guard still shipped — it makes "one at a time" an explicit invariant rather than an emergent
+> side effect of an innerHTML swap — but the exposure was narrower than stated.
+>
+> **SANDBOX SEEDER shipped** — `POST /api/debug/seed-sandbox-workouts/:profileId` + purge, admin-gated,
+> **dry-run by default**. **⚠ IT CLOSES NO LEDGER ROW** (see §7). Profiles **1 and 4 denylisted
+> unconditionally, confirmed live 403 on both**. Writes go **direct to Supabase, never through
+> `POST /api/workouts`** (which would fire extract-exercises per save plus fire-and-forget adapts —
+> real AI cost and hundreds of spurious adapts). Every row carries a `[SEED]` marker and the purge
+> deletes only marked rows. **No profile was seeded this session**, per scope. Workflow doc:
+> `SANDBOX.md` (PowerShell).
+>
+> **A REAL TEST-HARNESS FLAW WAS FOUND AND FIXED MID-SESSION, and it is the same class as arc
+> close-out learning #2.** `arcFlag.test.js` took its pre-fix reference from `git show HEAD:server.js`
+> — which **silently became post-fix the moment the fix was committed**, inverting 3 tests. Now
+> pinned to `d2b0871` with a guard asserting that commit lacks the fix marker, and the pre-fix tests
+> skip loudly if the commit is unreachable. **Standing rule: a "before" reference in a test must be a
+> pinned commit, never `HEAD`.**
+>
 > **2026-07-28 session #43 — ✅ BUG 1 FIXED AND VERIFIED LIVE (both steps), and ✅ LEDGER ROW 22
 > CLOSED.** Build session against the completed session-#42 audit — the audit was NOT re-run. One
 > commit, `898fd02`, `server.js` + `public/index.html` only. **No migration, no schema change, no
@@ -2822,6 +2913,86 @@ All verified present in `server.js`. `:id`/`:userId` = profile id.
   `SELECT` instead). Also worth knowing: the PATCH writes `cleanProfileData(pd)`, so it
   simultaneously re-sanitizes every string in the column.
 
+### ⚠ BUG 4 — `needs_regeneration` was a ONE-WAY flag. ✅ FIXED (2026-07-28, session #44), `88a737c`
+
+- **Symptom.** The athlete clicked Regenerate from the banner; the regenerate landed; the banner came
+  straight back. Clicking again did nothing. A **banner → regenerate → banner loop with no exit.**
+- **Root cause, counted across the whole repo:** **4 write sites, 5 reads, ZERO clears.**
+  `computeArcState:6483` carried the previous value (`!!(prevArc && prevArc.needs_regeneration)`);
+  `applyTimelineFlex:6499/:6509/:6538` wrote `true`. **No `= false` existed anywhere.** Once set, the
+  flag survived every evaluation, every adapt and every regenerate, permanently.
+- **Session #42 did NOT cause this — it exposed it.** Pre-#42, a regenerate destroyed `arc_state`
+  wholesale, which accidentally dropped the flag until the next evaluation. `carryArcForward` (which
+  is correct and load-bearing) made the stuck flag permanent and therefore visible.
+- **A NAIVE RECOMPUTE WOULD HAVE BEEN WRONG — measured, not theorised.** Chaining five real
+  evaluations offline against profile 4's wrist goal exposed a **one-evaluation flicker window**:
+
+  | fire | drift | flex_streak | flex outcome | naive recompute would read |
+  |---|---|---|---|---|
+  | 1 | −5 | 0 | flexed `[5]→[6]` CLAMPED | true ✓ |
+  | **2** | −5 | **1** | **null — early return, NO flag write** | **false ✗ (the lie)** |
+  | 3+ | −5 | 2+ | `clamped_no_room` | true ✓ |
+
+  A partial flex that clamps sets the flag **and** resets `flex_streak` to 0, so the next evaluation
+  trips `flex_streak (1) < ARC_FLEX_STREAK_REQUIRED (2)` and returns **before any absorbability math
+  runs**. **Fire 2 is the wrist goal's very next evaluation**, so a naive fix would have broken on
+  the first goal tested.
+- **Root cause of the trap:** the streak gate exists to stop flexes **compounding** (session #37). It
+  was never meant to gate the **assessment** of whether the drift is absorbable. Conflating the two
+  opened the window.
+- **THE FIX (D1).** `computeArcState` seeds `needs_regeneration: false`; `applyTimelineFlex` hoists
+  the absorbability math **above** the streak gate so **every call writes the flag**, and the streak
+  gates only the phase-duration mutation. Flex thresholds, mutation path and return shapes are
+  otherwise unchanged (asserted byte-identical against the pre-fix version).
+- **Approved widening:** `!upcoming.length` now fires below the streak gate. Zero upcoming phases is
+  unabsorbable regardless of streak; gating it was hiding a true state for up to two evaluations.
+- **D2 — no regenerate handling, deliberately.** Carrying `true` across a regenerate is the
+  conservative direction (phases just changed ⇒ absorbability unknown until reassessed); clearing
+  optimistically would lie in the opposite direction, and for the wrist goal the post-regenerate
+  answer is still `true`. Stale-true window ≤24 h (app-open gate) or until the next workout save.
+  **Considered and DECLINED:** calling `evaluateArcsForProfile` from the regenerate handler —
+  latency on an already-long Sonnet call, for a self-healing window.
+- **D3 — the copy was lying, and that is why the athlete looped.** The old CTA promised *"Regenerate
+  it to match reality"*. It cannot: the drift is **earned position vs calendar**, and rebuilding the
+  phases resets the calendar while leaving earned position untouched. New copy on **both** readers
+  (drill-down banner + goal-card ⚠ flag) states the real numbers and that only logged sessions move
+  them; CTA is **"Rebuild the phases anyway"**.
+- **Bonus:** `server.js:7022` injects *"this roadmap can no longer absorb the athlete's drift"* into
+  the **adapt prompt** off this flag. A stale-true had been feeding that claim to Sonnet on every
+  adapt. It is now accurate.
+- **Verified live** (profile 4, admin sweep, both directions in one call): wrist `true` (flex
+  clamped — honest), bench **`false`** (clean unclamped flex `[5,5]→[6,6]`). Both `arc_origin`s
+  intact; `roadmap.version` unchanged on both (no AI ran).
+
+### ⚠ The regenerate double-click race — ✅ GUARDED (2026-07-28, session #44), and the session-#43 claim CORRECTED
+
+- **Corrected:** session #43 reported this as a live risk. Re-reading the handler,
+  `c.innerHTML = <spinner>` runs **synchronously** and removes the button from the DOM on the first
+  click, so a plain double-click was largely self-protecting. The exposure was **narrower than
+  stated**.
+- **Residual windows that were real:** a missing `#grv-content` (the `if (c)` skips, leaving the
+  button live), the Retry path, and any future refactor that renders the banner somewhere the
+  spinner does not overwrite.
+- **Guard shipped anyway** — `grvRegenInFlight`, set after the missing-goal early return (so it can
+  never strand), released on a trailing `.then()` that runs on **both** the success and the
+  `grvShowFullError` paths. It makes "one regenerate at a time" an explicit invariant rather than an
+  emergent side effect of an innerHTML swap. 10 tests, including the missing-`#grv-content` case.
+
+### ⚠ A regenerate RESETS the weekly-adapt clock — documented behaviour, NOT fixed (session #44)
+
+`generateGoalRoadmapForGoal` stamps `last_adapted_at`, which has two consequences nobody had written
+down:
+1. `maybeAdaptAllRoadmaps`' 7-day `isStale(last_adapted_at)` gate restarts.
+2. `transitionPending` (`arc_transition_at > last_adapted_at`) becomes **false**, so the arc-status
+   early-adapt shortcut is neutralised.
+
+Measured on the wrist goal: `arc_transition_at 2026-07-25T22:42` vs `last_adapted_at
+2026-07-28T13:33` ⇒ weekly-eligible **2026-08-04T13:33Z at the earliest**, and only on a workout
+save. **Every banner click therefore delays the very path that could correct the goal.** Left as
+designed — changing it is a product decision, not a bug fix. Practical consequence for testing: the
+**bench** goal (`last_adapted_at 2026-07-26T02:47`, weekly-eligible **2026-08-02T02:47Z**) is the
+faster vehicle for verifying the weekly half of the #42 fix.
+
 ### ⚠ BUG 3 — roadmap adapt AND regenerate destroyed `arc_origin` + `arc_state`. ✅ FIXED (2026-07-27, session #42)
 
 > **Found while ruling out BUG 2's candidate (c). It was in no document before session #42.**
@@ -3506,6 +3677,10 @@ either the MACRO roadmap or a LEGACY per-goal roadmap — never current per-goal
 | 29 | Arc | **BUG 1 — 413 on `/goal-progress` (profile 1)** | **✅ RESOLVED + VERIFIED LIVE (2026-07-28, session #43), commit `898fd02`** | **BOTH steps shipped in one session; body 207,353 B → 86 B (99.96%). No migration, no schema change, no new endpoint, NO LIMIT BUMP.** Step 1: client stops sending `exercises`+`workoutLog`, handler fetches its own rows (windows replicated exactly — workouts `select=*`/`ts.desc`/60, exercises `select=*`/`date.desc`/5000 all-time; the client's `.slice(0,90)` never bound because `loadWorkouts()` caps at 60). Step 2: client stops sending `goals`, handler reads `profile_data.goals` via `loadProfileWithGoals()`. **The per-goal aggregation loop is untouched.** **Verified before deploy** by booting the REAL pre-fix (`git show HEAD:server.js`) and post-fix servers with `node-fetch` stubbed and exercising the actual express route against the same real read-only profile-1 fixture — no source slicing: **pre-fix reproduced the 413 + `<!DOCTYPE` SyntaxError verbatim**; **response JSON byte-identical for all 8 goals** (sha `f5077b6076893503`); **all 5 AI prompts byte-identical** (sha `287284ee51079508`, the branch that proves the aggregates match since the AI pcts are non-deterministic); **zero Supabase writes both paths**; a stale client still posting 202.5 KB gets identical output; a Supabase outage degrades to `200`+`[]`. Suites 213/213. **Verified live post-deploy:** 86-byte body → HTTP 200, 8 goals, the 3 deterministic goals byte-identical to the baseline (`skill 54%`, `habit 0%`, `consistency 56% "9 sessions this month / 16 target"`), `profile_data` sha `e28c8c9462aceb81` unchanged across the POST — **still stateless**. **Bonus:** removes a real cold-boot race — `bootApp()` never calls `loadLibrary()` and `loadWorkouts()` is still in flight when `renderProfileGoals()` fires, so the pre-fix endpoint was frequently sent EMPTY arrays (§9). **Standing rule recorded: never bump the body limit for this endpoint, in any form.** Original audit summary retained inline below as the basis: **Audited with measured numbers, read-only.** POST-only (**no GET route exists**; a GET 404s with an HTML page — same `<!DOCTYPE` symptom, different status). Limit is the `express.json()` default **100 KB** (`server.js:92`, no options), bracketed live at 101,357 B → 200 / 103,405 B → 413 `text/html`. Real body **207,357 B = 202.5 KB = 2.02×**, split **exercises 104,059 (50.2%) / workoutLog 65,689 (31.7%) / goals 37,483 (18.1%)**. **The §9 reconciliation is settled: the client blob is 81.9% and is 1.66× the limit on its own (the CAUSE); accumulated `profile_data` is 18.1% and under the limit on its own (an AGGRAVATOR).** Migration adds ~4% (+8,653 B → 2.11×) — not the cause, and not migrating would not fix it. **Fix designed:** the handler is stateless and `profileId` is assigned but never used — stop sending `exercises`+`workoutLog` and let the server fetch its own (**202.5 KB → 37.6 KB**, drop-in), then stop sending `goals` too (**<1 KB**, migration-proof). **This is the next session.** §6 → "BUG 1 — AUDIT RESULT"; §9 |
 | 30 | Arc | **BUG 2 — no rec on Today for profile 4** | **✅ RESOLVED 2026-07-27 (session #42) — NOT A BUG** | Designed behaviour: profile 4 has `fitbit:false` and no wearable, so `syncFitbit()` → `showManualCheckin('no_fitbit')`, and only the branch finding a same-day `localStorage.ac_cache.manualCheckin` shows `#ai-card` and calls `resolveAIRecs()`. No check-in ⇒ no rec rendered and none requested. Candidate (b) ruled out by measurement (all 11 builders OK, assembly 27,193/28,000); candidate (c) disproven in code (`grvRegenerateFromBanner` has no rec trigger). **No longer blocks row 28.** §6 → "BUG 2 — RESOLVED" |
 | 31 | **L2 — BUG 3** | **`arc_origin` + `arc_state` destroyed by roadmap adapt AND regenerate** | **✅ FIXED + VERIFIED (2026-07-27, session #42), `ae46a96`** | Found while ruling out BUG 2's candidate (c); in no document before. Both rebuild sites (`adaptGoalRoadmap:7019`, `generateGoalRoadmapForGoal:7696`/`:7711`) rebuilt `goal.roadmap` from scratch and dropped both fields — **the same bug class as the session-#35 `roadmap.estimate` drop, at the same two sites.** `arc_state` self-heals (pure replay) but **`arc_origin` does not** — it re-pins from `near[0].start_date` while both writers rebuild the calendar from today, so the origin walked forward on every adapt and discarded every earned week (session #37 bug #1 through a different door). **Live evidence:** the bench goal, regenerated 2026-07-26T02:47:22.417Z, lost both where row 10 recorded `position 3.0 / re_ramping / since 2026-07-06`. **Verified:** real shipped functions extracted from BOTH `git HEAD` and the working tree, frozen clock, real profile-1 + profile-4 fixtures, **9/9** — arc goal keeps both byte-identical through adapt/regenerate/reset; **legacy goal (profile 1 "Fix Posture") byte-identical pre vs post on all three paths**; only the two arc keys ever added. Suites 213/213. Profile 1 `profile_data` byte-identical pre vs post deploy. **Residual: the already-destroyed bench origin is NOT recoverable — see row 28 and §9.** |
+| 32 | **L2 — #42 REGENERATE path** | **`arc_origin` + `arc_state` survive a real production REGENERATE** | **✅ VERIFIED LIVE (2026-07-28)** | First production exercise of session #42's `carryArcForward` on `generateGoalRoadmapForGoal`. The athlete regenerated profile 4's wrist goal from the banner: exactly ONE regenerate landed (`version 2→3`, `generated_at 2026-07-28T13:33:25.959Z`, one `manual` `adaptation_log` entry; a second click produced zero writes). **`arc_origin` still `2026-06-29`** and `arc_state` byte-identical (position 0, stalled, calendar 5, drift −5, flex_streak 15, tier 1/category). **Decisive evidence it was CARRIED, not recomputed:** `arc_state.last_evaluated` (`12:18:32Z`) is **74.9 min OLDER** than `generated_at` (`13:33:25Z`) — the regenerate does not re-evaluate the arc, so the object on the new roadmap is provably the old one. Gathered read-only; two consecutive GETs sha-identical (`e769f1e2b419662b`). |
+| 33 | **L2 — #42 WEEKLY path** | **`arc_origin` + `arc_state` survive `maybeAdaptAllRoadmaps`** | **⚠ SHIPPED-UNVERIFIED — the last unverified link in BUG 3's fix** | 9/9 harness-verified with a frozen clock and real fixtures, but **never observed surviving a live weekly auto-adapt**. **EXACT CHECK:** use the **BENCH** goal (`1c54d82c-9c24-48d4-8920-fa8d49a701c6`), whose `last_adapted_at` is `2026-07-26T02:47:22Z` ⇒ weekly-eligible **2026-08-02T02:47Z**. On or after that, save a workout on profile 4 (`maybeAdaptAllRoadmaps` is fire-and-forget on `POST /api/workouts` and only fires for goals >7d stale), then confirm the goal's **`roadmap.arc_origin` is still `2026-07-26`** (the BUG 3 residual pin) and `roadmap.arc_state` is still present, while `roadmap.version` HAS incremented and `adaptation_log` gained a `weekly` entry — i.e. an adapt genuinely ran and the arc fields survived it. **The wrist goal is NOT the vehicle:** its regenerate reset `last_adapted_at` to 2026-07-28T13:33Z, pushing it out to 2026-08-04 (§6 → "a regenerate RESETS the weekly-adapt clock"). |
+| 34 | **L2 — BUG 4** | **`needs_regeneration` was one-way (set, never cleared)** | **✅ FIXED + VERIFIED LIVE (2026-07-28, session #44), `88a737c`** | 4 write sites, 5 reads, **0 clears** repo-wide: `computeArcState` carried the previous value and nothing ever wrote `false`, so the athlete looped banner → regenerate → banner. #42 exposed it, did not cause it. **Fix (D1):** recompute every evaluation AND decouple the absorbability assessment from the `flex_streak` gate — a naive recompute was **measured** to flicker `false` for exactly one evaluation after a partial-flex-that-clamped, which is the wrist goal's very next evaluation. **Verified live, both directions in one admin sweep:** wrist `true` (flex clamped — honest, drift −5 unabsorbable), bench **`false`** (clean unclamped flex `[5,5]→[6,6]`); both `arc_origin`s intact, `roadmap.version` unchanged on both so no AI ran. Profile 1 byte-identical pre vs post (0 arc-eligible goals ⇒ structurally unreachable). Suites 213→249. §6 → "BUG 4" |
+| 35 | Tooling | **Sandbox seeder for simulated-history exploration** | **✅ SHIPPED (2026-07-28, session #44), `7ed053b` — ⚠ CLOSES NO LEDGER ROW** | `POST /api/debug/seed-sandbox-workouts/:profileId` + purge, admin-gated, dry-run by default. **Rows 11, 13, 19, 20 and 28 are REAL-DATA-ONLY by definition** — they wait on genuine athlete history or a genuine model response, and seeded history is never evidence that a shipped behaviour works. Profiles **1 and 4 denylisted unconditionally (confirmed live 403 on both)**. Writes go direct to Supabase, never through `POST /api/workouts` (zero AI cost, no spurious adapts); every row carries a `[SEED]` marker and the purge deletes only marked rows. Verified by running the **real `makeTargetMatcher`** against seeded fixtures — every seeded strength session qualifies, a single-exercise session correctly does not, grip-only names never carry a session, and gap windows produce a real ≥21-day hole. **No profile was seeded this session.** Workflow: `SANDBOX.md`. |
 
 **Profile 1 was byte-identical across Sessions A, B and C** — goals sha256 `0901b047d1c95f50…`
 before and after each — and Session D was the first to change code it runs daily, which is why
@@ -4601,6 +4776,44 @@ Macro roadmap shape (stored on `profiles.roadmap_data`):
   output byte-identical pre vs post on adapt/regenerate/reset. **Standing note: if a third
   Layer-2/3 field is ever added to `goal.roadmap`, add it to `carryArcForward` at the same time —
   this is now the second occurrence of this exact class.**
+- [x] **✅ BUG 4 — `needs_regeneration` was one-way. FIXED 2026-07-28 (session #44), `88a737c`.**
+  4 write sites, 5 reads, **0 clears** repo-wide. Recompute every evaluation + decouple the
+  absorbability assessment from the `flex_streak` gate (a naive recompute was measured to flicker
+  false for one evaluation). Full detail: §6 → "BUG 4"; ledger row 34. **Standing rule: the streak
+  gate guards the flex MUTATION only — never the assessment. If a future change adds another early
+  return to `applyTimelineFlex`, make sure the flag is written before it.**
+- [x] **✅ The regenerate double-click race — GUARDED 2026-07-28 (session #44).** Also **corrects**
+  session #43's overstatement: the synchronous `c.innerHTML` spinner swap already removed the button
+  on the first click, so the exposure was narrower than reported. §6 → "the regenerate double-click
+  race".
+- [ ] **⚠ A regenerate RESETS the weekly-adapt clock — DOCUMENTED BEHAVIOUR, deliberately not
+  fixed (session #44).** `generateGoalRoadmapForGoal` stamps `last_adapted_at`, which restarts
+  `maybeAdaptAllRoadmaps`' 7-day gate **and** neutralises `transitionPending`
+  (`arc_transition_at > last_adapted_at` becomes false). So **every banner click delays the very
+  path that could correct the goal**. Measured: the wrist goal went from weekly-eligible to
+  2026-08-04. Changing it is a product decision, not a bug fix — logged so it is not rediscovered.
+- [ ] **ARC RESET — a PRODUCT QUESTION, logged NOT built (session #44).** For a goal whose drift is
+  genuinely unabsorbable, only two things move it: real training, or a deliberate reset of the arc
+  origin / earned position. There is currently **no reset mechanism at all**, so a goal that has
+  drifted far enough can never return to `on_track` without training its way back. That may be
+  correct (the arc is meant to be honest) or may be too harsh after a genuine life interruption —
+  **it needs a product decision before any mechanism is designed.** Explicitly out of scope for #44.
+- [ ] **Misleading `adaptation_log` summary string (logged session #44, not fixed).** The banner
+  regenerate path reuses `"Roadmap regenerated via Coach Chat after a goal update."` — the standard
+  `mode:"regenerate"` summary from `generateGoalRoadmapForGoal`. Coach Chat is not involved when the
+  athlete clicks the banner, so the log misattributes the trigger. Cosmetic, but it will mislead
+  anyone reading `adaptation_log` to reconstruct what happened. Fix is a per-caller summary string.
+- [ ] **⚠ NEW, session #44 — a "before" reference in a test must be a PINNED COMMIT, never `HEAD`.**
+  `arcFlag.test.js` took its pre-fix source from `git show HEAD:server.js`, which **silently became
+  post-fix the moment the fix was committed**, inverting 3 tests. Now pinned to `d2b0871` with a
+  guard asserting that commit lacks the fix marker, plus a loud skip if the commit is unreachable
+  (shallow clone). **Same class as arc close-out learning #2** — a harness that quietly compares the
+  wrong thing is worse than one that fails. Audit any future pre/post harness for this.
+- [ ] **⚠ NEW, session #44 — `assert.deepStrictEqual` fails ACROSS vm realms.** Objects created
+  inside a `vm` sandbox have that context's own `Object.prototype`, so a structural compare against
+  a test-realm object fails on prototype identity even when every value matches. Hit twice (the flex
+  report's `date_changes`, and `SEED_DENYLIST`). **Compare serialized form when either side was
+  built inside a sandbox.** Related to but distinct from the #43 jsonb key-order trap.
 - [ ] **⚠ NEW, session #43 — a jsonb round-trip REORDERS object keys, so a `JSON.stringify` diff
   against stored `profile_data` reports false mismatches.** Hit while comparing an offline arc
   replay to what production had just written: every value was identical and the naive diff still
