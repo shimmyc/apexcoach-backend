@@ -11280,13 +11280,17 @@ function fetchGoalProgress() {
   medLog.forEach(function(d) { if (d >= cutoff30) medCount++; });
 
   var pbBody = currentProfileBody || {};
+  // BUG 1 fix (session #43): goals, workoutLog and exercises are NO LONGER
+  // sent. This body was 202.5 KB on profile 1 against express.json()'s 100 KB
+  // default, so the request 413'd and progress silently stopped loading. The
+  // handler is stateless and now fetches its own rows over the exact same
+  // windows (workouts limit 60 ts.desc; exercises all-time date.desc) and
+  // reads goals from profile_data. See ROADMAP §6 → "BUG 1 — AUDIT RESULT".
+  // Only small scalars remain here — the body is now well under 1 KB.
   return fetch('/api/profiles/' + currentProfileId + '/goal-progress', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
-      goals: pGoals,
-      workoutLog: workoutLog.slice(0, 90),
-      exercises: (libExercises || []).reduce(function(a, e) { return a.concat(e.sessions || []); }, []),
       fitbitSteps: fitData && fitData.steps ? fitData.steps : 0,
       current_belt: pd.current_belt || null,
       medDays: medCount,

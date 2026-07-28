@@ -2949,13 +2949,91 @@ app.post("/api/profiles/:id/search-history", async function(req, res) {
 });
 
 // ── GOAL PROGRESS ─────────────────────────────────────────────────────────
+// BUG 1 fix (session #43). The client used to POST its own `goals`,
+// `workoutLog` and `exercises` arrays into this endpoint. On profile 1 that
+// body measured 202.5 KB against express.json()'s 100 KB default (server.js:92,
+// no options), so every request 413'd and goal progress silently stopped
+// loading — the 413 comes back as an HTML page, which is the `<!DOCTYPE`
+// SyntaxError seen client-side. Full audit: ROADMAP §6 → "BUG 1 — AUDIT
+// RESULT" (exercises 104,059 B / workoutLog 65,689 B / goals 37,483 B).
+//
+// This handler is STATELESS — zero writes — and consumes those arrays only to
+// compute scalar aggregates, so it now fetches its own rows. That is the same
+// pattern getGoalExerciseContext() / getFullExerciseContext() /
+// loadProfileWithGoals() already use, and it drops the body to <1 KB,
+// permanently immune to history growth and to any future goal-shape growth.
+//
+// The windows below deliberately REPLICATE what the client used to send, so
+// the per-goal aggregation loop sees exactly the same rows it always did:
+//   workouts  — mirrors `GET /api/workouts?limit=60`  (select=*, ts.desc, 60).
+//                The client sent workoutLog.slice(0, 90), but workoutLog is
+//                itself loaded at limit=60, so 60 is the real effective bound.
+//   exercises — mirrors `GET /api/profiles/:id/exercises` (select=*, date.desc,
+//                limit 5000 = all-time). The client flattened that endpoint's
+//                grouped `sessions[]`, which are the raw rows pushed verbatim,
+//                so the row shape here is identical.
+// Both reads are non-fatal: a failure degrades to [] — the same state the
+// client could already deliver — rather than 500ing the endpoint.
+async function fetchGoalProgressWorkouts(profileId) {
+  try {
+    var r = await fetch(SUPABASE_URL + "/rest/v1/workouts?profile_id=eq." + profileId +
+      "&select=*&order=ts.desc&limit=60", { headers: sbHeaders() });
+    var d = await r.json();
+    return Array.isArray(d) ? d : [];
+  } catch (e) {
+    console.error("[GoalProgress] workouts fetch failed (non-fatal):", e.message);
+    return [];
+  }
+}
+
+async function fetchGoalProgressExercises(profileId) {
+  try {
+    var r = await fetch(SUPABASE_URL + "/rest/v1/exercises?profile_id=eq." + profileId +
+      "&select=*&order=date.desc&limit=5000", { headers: sbHeaders() });
+    var d = await r.json();
+    return Array.isArray(d) ? d : [];
+  } catch (e) {
+    console.error("[GoalProgress] exercises fetch failed (non-fatal):", e.message);
+    return [];
+  }
+}
+
+// Step 2 of the same fix — the goals array is read from profile_data instead of
+// being posted. loadProfileWithGoals() only ever mutates the profile_data copy
+// it returns (ensureGoalIds fills missing ids IN MEMORY and returns a flag; it
+// does not PATCH), so this stays a pure read and the handler stays stateless.
+// Array ORDER is preserved, which matters: results are keyed by index and the
+// client renders them against currentProfileData.goals, the same array.
+async function loadGoalProgressGoals(profileId, body) {
+  try {
+    var loaded = await loadProfileWithGoals(profileId);
+    if (loaded && loaded.profileData && Array.isArray(loaded.profileData.goals)) {
+      return loaded.profileData.goals;
+    }
+  } catch (e) {
+    console.error("[GoalProgress] profile goals fetch failed (non-fatal):", e.message);
+  }
+  // Back-compat only: a browser holding a pre-fix index.html still posts goals.
+  return Array.isArray(body && body.goals) ? body.goals : [];
+}
+
 app.post("/api/profiles/:id/goal-progress", async function(req, res) {
   try {
     var profileId = req.params.id;
     var body = req.body;
-    var goals = body.goals || [];
-    var workouts = body.workoutLog || [];
-    var exercises = body.exercises || [];
+    // Server-fetched inputs (BUG 1). Anything still posted under `workoutLog`
+    // or `exercises` by a stale cached client is deliberately IGNORED — the
+    // server copy is authoritative, deterministic, and no longer racing the
+    // client's own load order (renderProfileGoals() can fire before
+    // loadWorkouts()/loadLibrary() have populated those globals).
+    var sourced = await Promise.all([
+      loadGoalProgressGoals(profileId, body),
+      fetchGoalProgressWorkouts(profileId),
+      fetchGoalProgressExercises(profileId),
+    ]);
+    var goals = sourced[0];
+    var workouts = sourced[1];
+    var exercises = sourced[2];
     var steps = body.fitbitSteps || 0;
     var currentBelt = body.current_belt || null;
     var medDays = body.medDays || 0;
