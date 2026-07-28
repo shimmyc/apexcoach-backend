@@ -3097,7 +3097,148 @@ was lost. See ROADMAP §7 ledger rows 28 and 31.
 
 ---
 
-## NEXT SESSION STARTS HERE — BUG 1 IS THE WORK (updated 2026-07-27, session #42)
+## Goal Progress — server-sourced inputs (BUG 1 fix, 2026-07-28, session #43)
+
+`POST /api/profiles/:id/goal-progress` used to receive the client's own `goals`, `workoutLog` and
+`exercises` arrays. On profile 1 that body measured **207,353 B = 202.5 KB** against
+`express.json()`'s **default 100 KB** (`server.js:92`, no options), so every request returned
+**413** — delivered as an HTML error page, which is the secondary
+`SyntaxError: Unexpected token '<', "<!DOCTYPE "` the client logged. Goal progress numbers simply
+stopped loading. Full audit numbers: `ROADMAP.md` §6 → "BUG 1 — RESOLVED" / "BUG 1 — AUDIT RESULT".
+
+**The handler is stateless — zero writes — and consumed those arrays only to compute scalar
+aggregates** (max matching `weight_lbs`, total `distance_miles`, longest cardio, a weekly-cardio
+count, a category tally). `var profileId = req.params.id` was assigned and never used. So the fix
+is the pattern already used by `getGoalExerciseContext()` / `getFullExerciseContext()` /
+`loadProfileWithGoals()`: **the server fetches its own rows.**
+
+- **Step 1** — client stops sending `exercises` + `workoutLog`; `fetchGoalProgressWorkouts()` and
+  `fetchGoalProgressExercises()` populate the same two variables.
+- **Step 2** — client stops sending `goals`; `loadGoalProgressGoals()` reads `profile_data.goals`
+  via `loadProfileWithGoals(profileId)`.
+- **Body: 207,353 B → 86 B (99.96%).** Only scalars remain (`fitbitSteps`, `current_belt`,
+  `medDays`, `gym_access`, `gym_type`). Permanently immune to history growth **and** to goal-shape
+  growth — the measured `+8,653 B` profile-1 migration delta now adds exactly 0 bytes here.
+- **The per-goal aggregation loop is UNTOUCHED.** Both steps only repopulate variables it already
+  read; the three `body.*` reads became one `Promise.all`.
+
+**Windows are REPLICATED, not widened or narrowed** — this is the load-bearing detail:
+
+| input | server query | why it matches what the client sent |
+|---|---|---|
+| workouts | `select=*&order=ts.desc&limit=60` | mirrors `GET /api/workouts?limit=60`. The client sent `workoutLog.slice(0, 90)`, but `loadWorkouts()` fetches at `limit=60`, so **90 never bound** — 60 was always the real ceiling |
+| exercises | `select=*&order=date.desc&limit=5000` | mirrors `GET /api/profiles/:id/exercises` (all-time). The client flattened that endpoint's grouped `sessions[]`, and `sessions` holds the raw rows pushed verbatim (`server.js:3933`), so the row shape is identical |
+| goals | `loadProfileWithGoals()` | same array, same ORDER — results are keyed by index and the client renders them against `currentProfileData.goals` |
+
+**Non-fatal, and stale-client safe.** Each read degrades to `[]` on failure (the same state the
+client could already deliver), so a Supabase blip returns `200` with `progress: []`, never a 500.
+`loadGoalProgressGoals` falls back to `body.goals` only if the profile read fails. Arrays still
+posted by a browser holding a pre-fix `index.html` are **deliberately ignored** — the server copy
+is authoritative and deterministic.
+
+**⚠ The fix is strictly MORE correct than "identical", because of a race it removes.**
+`fetchGoalProgress()` is reached from `renderProfileGoals()`, which `bootApp()` calls through
+`renderProfileTab()` — but **`bootApp()` never calls `loadLibrary()`** (only a Library tab switch
+does), and `loadWorkouts()` is still in flight at that point. So on a cold boot the pre-fix
+endpoint was frequently sent **empty `exercises` and empty `workoutLog`**, computing
+strength/distance/consistency goals against no data. Pre-fix behaviour was **non-deterministic,
+contingent on whether the athlete had visited the Library tab**. See `ROADMAP.md` §9 — the same
+race shape may exist at other `libExercises`/`workoutLog` read sites and has never been audited.
+
+**Verified before deploy against the REAL shipped code, both ways.** The real pre-fix server
+(`git show HEAD:server.js`) and the real post-fix server were each booted in-process with
+`node-fetch` stubbed via `require.cache`, and the actual express route exercised over HTTP against
+the same real read-only profile-1 fixture (8 goals, 60 workouts, 310 exercise rows). **No source
+slicing**, so the arc close-out learning #2 extraction bug class does not apply. Anthropic was
+stubbed with a fixed reply because the handler's two AI branches are non-deterministic at real
+temperature — identity was therefore proven on the **assembled prompts**, which is exactly where
+every aggregate the arrays feed lands.
+
+- Pre-fix server **reproduced the bug verbatim**: `PayloadTooLargeError` → 413 → the `<!DOCTYPE`
+  SyntaxError. The body limit was then raised **identically in both harness copies** purely to
+  obtain a baseline, so the diff between the copies is exactly the fix.
+- **Response JSON byte-identical for all 8 goals** (sha `f5077b6076893503`; only
+  `last_computed_at` normalised — it is `new Date().toISOString()` by design).
+- **All 5 AI prompts byte-identical** (sha `287284ee51079508`).
+- **Zero Supabase writes on both paths.** Stale-client and Supabase-outage paths both verified.
+- Existing suites **213/213**.
+
+**Verified live post-deploy** (production, profile 1, 86-byte body): HTTP 200, 8 goals; the three
+deterministic goals byte-identical to the baseline (`skill` `54% "blue1 → Black Belt (7/13)"`,
+`habit` `0% "0/30 days this month"`, `consistency` `56% "9 sessions this month / 16 target"`); the
+five AI goals hit the same branch/`source` with live Haiku percentages. `profile_data` sha
+`e28c8c9462aceb81` unchanged across the POST — **the handler still writes nothing.**
+
+**⚠ STANDING RULE: never raise the body limit for this endpoint, in any form.** A bump is a stopgap
+against a payload that grew with every logged exercise row forever. The body is now 86 bytes and
+migration-proof, so no scenario makes it the right answer.
+
+## NEXT SESSION STARTS HERE — the bug queue is EMPTY; next is verifying the #42 arc fix on a real production adapt (updated 2026-07-28, session #43)
+
+> **⚠ STATUS: all four PT Brain layers shipped. All three post-arc bugs are closed — BUG 2 was not
+> a bug (#42), BUG 3 fixed (#42, `ae46a96`), BUG 1 fixed and verified live (#43, `898fd02`).
+> Ledger row 22 is closed (#43). There is no open bug and no queued build.**
+>
+> **THE IMMEDIATE WORK:**
+>
+> | # | Work | Why |
+> |---|---|---|
+> | **1** | **Verify the session-#42 arc carry-forward fix on a REAL production adapt.** | The fix was verified 9/9 against the real shipped functions with a frozen clock and real fixtures, but it has **never been observed surviving a live weekly auto-adapt**. `maybeAdaptAllRoadmaps` is fire-and-forget on a workout save once a goal is >7d stale, so the check is cheap: pick a profile-4 goal that HAS `arc_origin` + `arc_state` (the wrist rehab goal, `arc_origin 2026-06-29`), let it go stale or force it, save a workout, then confirm **both fields survive** and `arc_origin` did **not** move. This is the last unverified link in BUG 3's fix. |
+> | **2** | **Ledger row 28 / item (c) — WAIT, do not build.** | **Route (1) is chosen by decision:** profile 4 accumulates real qualifying sessions on the bench goal until a genuine peak-then-gap forms. **No date will be asserted for the lost origin — it is unrecoverable and will not be guessed.** The bench goal now has a protected origin from **2026-07-26** forward (session #42's fix), so earned weeks can finally accumulate. The exact closing check in the ledger is **unchanged**. **Do not synthesise a re-ramp.** |
+>
+> **What changed this session (2026-07-28, #43):**
+> - **BUG 1 FIXED, both steps, verified live** (`898fd02`). Body **207,353 B → 86 B**. Response
+>   byte-identical for all 8 profile-1 goals and all 5 AI prompts byte-identical, proven by booting
+>   the real pre-fix and post-fix servers against the same real fixture. **No limit bump — and that
+>   is now a standing rule.** See "Goal Progress — server-sourced inputs" directly above.
+> - **Ledger row 22 CLOSED, verified live.** The approved back-dating nudge **was not needed** —
+>   profile 4 was already 61.35 h stale, so the stale branch ran with **zero setup writes**.
+>   `{skipped:false, evaluated:2}` in 1.17 s; immediate re-fire `{skipped:true, reason:"fresh"}`.
+>   **Zero AI calls MEASURED** (real server, stubbed network: 4 Supabase GETs + 1 PATCH, zero to
+>   `api.anthropic.com`), and the offline replay reproduced production's `arc_state` exactly.
+>   **This closed row 22 ONLY — it did not touch row 28.**
+> - **Row 28 re-labeled** "waiting on real accumulated data"; closing check unchanged.
+> - **New finding:** the pre-fix `/goal-progress` was racing the client's own loaders and often
+>   received EMPTY arrays on a cold boot (`bootApp()` never calls `loadLibrary()`). Fixed here as a
+>   side effect; **the same race shape at other `libExercises`/`workoutLog` read sites has never
+>   been audited** (§9).
+> - **New finding:** a jsonb round-trip reorders object keys, so any replay-vs-live or before/after
+>   diff against `profile_data` must canonicalise key order or it reports a phantom mismatch (§9).
+> - **Profile-1 migration:** payload size is **no longer a consideration at all** — with goals no
+>   longer posted, the measured `+8,653 B` delta adds 0 bytes to that request. **One cost remains**
+>   (the extra trim-ladder rung); both former blockers are closed.
+>
+> | Layer | State |
+> |---|---|
+> | A — honest timelines + capacity + negotiation | shipped, **verified live** on profile 4 |
+> | B — arc_state, decay, re-ramp, timeline flex | shipped, **verified live**; arc persistence fixed #42 (**not yet seen surviving a live adapt — item 1 above**); 2 items unit-tested only (rehab-vs-skill decay contrast, flex SHORTEN) |
+> | C — coexistence engine | shipped, **verified live**; **row 22 CLOSED #43**; 2 items open (handoff at ≥75%, derived-target-through-week-preview) |
+> | D — session depth | shipped; depth non-regression + budget + capacity card **verified**; **item (c) — (iii) passes, (i)+(ii) waiting on real data (row 28)** |
+>
+> **Read before starting:** `ROADMAP.md` §6 → "BUG 1 — RESOLVED" (what shipped and how it was
+> proven), §6 → "BUG 3" (the class that recurs — **if a third Layer-2/3 field is ever added to
+> `goal.roadmap`, add it to `carryArcForward` in the same change**), the §7 consolidated
+> verification ledger (rows 22, 28, 29, 31), §7 → "⚠ PER-GOAL vs MACRO" (**the easiest thing to get
+> wrong — per-goal retired 3+2, the MACRO roadmap did not**), and §7 → "Profile 1 migration".
+>
+> **Carried forward, do NOT chase with synthetic data:** Session C's handoff firing at ≥75% (row
+> 19) and derived-target-through-week-preview (row 20); Session B's rehab-vs-skill decay contrast
+> (row 11) and the flex SHORTEN direction (row 13) — both unit-tested against the real shipped
+> functions, never exercised end-to-end on real data. **The four "Logged session #40" backlog items
+> (L1–L4) stay parked.**
+>
+> **⚠ PROFILE 1 MIGRATION IS STILL AN ATHLETE DECISION, NOT A TASK.** One cost remains: it
+> overwrites roadmaps carrying real adaptation history, and it costs one extra trim-ladder rung
+> (`coachingBrief 2343 → 400`) on the heaviest days. Payload size and the arc-wipe blocker are both
+> closed. See §7.
+>
+> **Engine v2 remains PAUSED and its strategy REJECTED going forward.** Everything below about v2
+> stays accurate as history.
+
+## Superseded next-session block (session #42) — kept for the record
+
+> **⟶ DISCHARGED: BUG 1 SHIPPED AND VERIFIED LIVE in session #43 (`898fd02`), and ledger row 22 is
+> closed. See the current block above. Original text follows.**
 
 > **⚠ STATUS: all four PT Brain layers shipped. BUG 2 was NOT a bug. A third bug was found and
 > FIXED. BUG 1 is fully audited and is the next session's scope.**
