@@ -7654,6 +7654,299 @@ app.post("/api/debug/evaluate-arcs/:profileId", async function(req, res) {
   }
 });
 
+// ── SANDBOX SEEDER (session #44) ─────────────────────────────────────────────
+// Lets a fresh SANDBOX profile be driven through months of simulated history so
+// the whole PT Brain arc — goal creation, roadmap generation, coexistence, arc
+// decay / re-ramp, session depth — can be exercised end-to-end without waiting
+// real weeks for data to accumulate.
+//
+// ⚠ THIS CLOSES NO LEDGER ROW. Rows 11, 13, 19, 20 and 28 are REAL-DATA-ONLY by
+// definition — they are waiting on genuine athlete history or a genuine model
+// response. Seeded history is a development aid for exploring behaviour, never
+// evidence that a shipped behaviour works in production. Do not mark anything
+// verified off the back of it.
+//
+// Design rails:
+//  - Profiles 1 and 4 are DENYLISTED unconditionally (403). 1 is the athlete's
+//    real profile; 4 is the PT Brain test bed whose arc state is load-bearing
+//    for open ledger rows.
+//  - Writes go DIRECT to Supabase, never through POST /api/workouts — that route
+//    fires extract-exercises (Haiku per save), evaluateArcsForProfile and
+//    maybeAdaptAllRoadmaps (Sonnet). Seeding a year of history through it would
+//    cost real money and bury the arc under hundreds of adapts.
+//  - Every seeded row carries the SEED_MARKER notes prefix; the purge deletes
+//    ONLY marked rows for that profile, so a sandbox is fully resettable.
+//  - DRY RUN by default (`?apply=1` to write), matching every other destructive
+//    admin endpoint in this file.
+var SEED_MARKER = "[SEED]";
+var SEED_DENYLIST = [1, 4];          // hard-coded on purpose — not configurable
+var SEED_MAX_SESSIONS = 2000;        // runaway guard
+var SEED_CHUNK = 200;                // rows per PostgREST insert
+
+// Deterministic weekday spread, so a plan is reproducible and reviewable.
+var SEED_DAY_SPREAD = {
+  1: ["mon"],
+  2: ["mon", "thu"],
+  3: ["mon", "wed", "fri"],
+  4: ["mon", "tue", "thu", "fri"],
+  5: ["mon", "tue", "wed", "thu", "fri"],
+  6: ["mon", "tue", "wed", "thu", "fri", "sat"],
+  7: ["mon", "tue", "wed", "thu", "fri", "sat", "sun"],
+};
+
+function seedYmd(ms) { return new Date(ms).toISOString().slice(0, 10); }
+function seedParse(ymd) { return Date.parse(String(ymd) + "T12:00:00Z"); }
+
+// PURE. Builds the full plan from a generator spec — no I/O, so the dry run and
+// the real run are guaranteed to describe the same thing.
+function buildSandboxSeedPlan(spec, todayYmd) {
+  spec = spec || {};
+  var startMs = seedParse(spec.start_date);
+  if (isNaN(startMs)) throw Object.assign(new Error("start_date must be YYYY-MM-DD"), { status: 400 });
+  var weeks = Math.max(1, Math.min(260, parseInt(spec.weeks, 10) || 1));
+  var patterns = Array.isArray(spec.pattern) ? spec.pattern : [];
+  if (!patterns.length) throw Object.assign(new Error("pattern[] is required"), { status: 400 });
+  var gaps = (Array.isArray(spec.gap_windows) ? spec.gap_windows : []).map(function(g) {
+    return { start: String(g.start || ""), end: String(g.end || "") };
+  });
+  var doneDefault = spec.done !== false;
+
+  // Monday on/before start_date — the week grid the spread table indexes into.
+  var startDow = (new Date(startMs).getUTCDay() + 6) % 7;   // 0 = Monday
+  var mondayMs = startMs - startDow * 86400000;
+
+  var inGap = function(ymd) {
+    return gaps.some(function(g) { return g.start && g.end && ymd >= g.start && ymd <= g.end; });
+  };
+
+  var sessions = [], skippedGap = 0, skippedFuture = 0, skippedBeforeStart = 0;
+  for (var w = 0; w < weeks; w++) {
+    for (var pi = 0; pi < patterns.length; pi++) {
+      var p = patterns[pi];
+      var days = Array.isArray(p.days) && p.days.length
+        ? p.days.filter(function(d) { return PREVIEW_DAYS.indexOf(d) >= 0; })
+        : (SEED_DAY_SPREAD[Math.max(1, Math.min(7, parseInt(p.sessions_per_week, 10) || 1))] || ["mon"]);
+      for (var di = 0; di < days.length; di++) {
+        var dayIdx = PREVIEW_DAYS.indexOf(days[di]);
+        var ms = mondayMs + (w * 7 + dayIdx) * 86400000;
+        var ymd = seedYmd(ms);
+        if (ms < startMs) { skippedBeforeStart++; continue; }
+        if (todayYmd && ymd > todayYmd) { skippedFuture++; continue; }   // never seed the future
+        if (inGap(ymd)) { skippedGap++; continue; }
+        var exs = (Array.isArray(p.exercises) ? p.exercises : []).map(function(e) {
+          return {
+            name: String(e.name || "").trim(),
+            category: p.category || "other",
+            main_category: p.main_category || p.category || "other",
+            subcategory: p.subcategory || "general",
+            sets: e.sets == null ? null : Number(e.sets),
+            reps: e.reps == null ? null : Number(e.reps),
+            weight_lbs: e.weight_lbs == null ? null : Number(e.weight_lbs),
+            distance_miles: e.distance_miles == null ? null : Number(e.distance_miles),
+            duration_minutes: e.duration_minutes == null ? null : Number(e.duration_minutes),
+          };
+        }).filter(function(e) { return e.name; });
+        sessions.push({
+          date: ymd, day: days[di], week: w + 1,
+          type: p.session_type || p.category || "Workout",
+          done: p.done === undefined ? doneDefault : p.done !== false,
+          exercises: exs,
+        });
+      }
+    }
+  }
+  sessions.sort(function(a, b) { return a.date < b.date ? -1 : a.date > b.date ? 1 : 0; });
+  if (sessions.length > SEED_MAX_SESSIONS) {
+    throw Object.assign(new Error("plan would create " + sessions.length + " sessions (cap " + SEED_MAX_SESSIONS + ")"), { status: 400 });
+  }
+
+  var byWeek = {}, byDate = {};
+  sessions.forEach(function(s) { byWeek[s.week] = (byWeek[s.week] || 0) + 1; byDate[s.date] = true; });
+  return {
+    sessions: sessions,
+    summary: {
+      total_sessions: sessions.length,
+      total_exercise_rows: sessions.reduce(function(a, s) { return a + s.exercises.length; }, 0),
+      distinct_dates: Object.keys(byDate).length,
+      weeks: weeks,
+      first_date: sessions.length ? sessions[0].date : null,
+      last_date: sessions.length ? sessions[sessions.length - 1].date : null,
+      sessions_per_week: byWeek,
+      gap_windows: gaps,
+      skipped_in_gap: skippedGap,
+      skipped_future: skippedFuture,
+      skipped_before_start: skippedBeforeStart,
+    },
+  };
+}
+
+function seedGuard(req, res) {
+  if (process.env.ADMIN_SECRET) {
+    var got = req.query.secret || req.headers["x-admin-secret"];
+    if (got !== process.env.ADMIN_SECRET) { res.status(403).json({ success: false, error: "forbidden" }); return null; }
+  }
+  var pid = parseInt(req.params.profileId, 10);
+  if (!pid || SEED_DENYLIST.indexOf(pid) >= 0) {
+    res.status(403).json({
+      success: false,
+      error: "profile " + req.params.profileId + " is denylisted for seeding",
+      denylist: SEED_DENYLIST,
+      why: "1 is the athlete's real profile; 4 is the PT Brain test bed whose arc state backs open ledger rows",
+    });
+    return null;
+  }
+  return pid;
+}
+
+async function seedInsertChunked(table, rows, prefer) {
+  var out = [];
+  for (var i = 0; i < rows.length; i += SEED_CHUNK) {
+    var chunk = rows.slice(i, i + SEED_CHUNK);
+    var r = await fetch(SUPABASE_URL + "/rest/v1/" + table, {
+      method: "POST", headers: sbHeaders(prefer || "return=representation"), body: JSON.stringify(chunk),
+    });
+    if (!r.ok) throw new Error(table + " insert " + r.status + ": " + (await r.text()));
+    var body = prefer === "return=minimal" ? [] : await r.json();
+    if (Array.isArray(body)) out = out.concat(body);
+  }
+  return out;
+}
+
+// POST /api/debug/seed-sandbox-workouts/:profileId?apply=1&evaluate=1
+app.post("/api/debug/seed-sandbox-workouts/:profileId", async function(req, res) {
+  var pid = seedGuard(req, res);
+  if (pid === null) return;
+  try {
+    var apply = req.query.apply === "1" || req.query.apply === "true";
+    var tzRow = await getProfileTimezone(pid).catch(function() { return {}; });
+    var todayYmd = localToday(tzRow || {});
+    var plan = buildSandboxSeedPlan(req.body || {}, todayYmd);
+
+    if (!apply) {
+      return res.json({
+        success: true, dry_run: true, profile_id: pid, today: todayYmd,
+        summary: plan.summary,
+        preview_first_10: plan.sessions.slice(0, 10),
+        preview_last_10: plan.sessions.slice(-10),
+        note: "DRY RUN — nothing was written. Re-send with ?apply=1 to seed.",
+      });
+    }
+
+    // WORKOUTS. `ts` is derived from the date (not Date.now()) because
+    // GET /api/workouts orders by ts.desc — a seeded history with wall-clock ts
+    // values would come back in insertion order rather than chronological order.
+    var wRows = plan.sessions.map(function(s, i) {
+      return {
+        profile_id: pid,
+        date: s.date,
+        type: s.type,
+        notes: SEED_MARKER + " " + s.type + " — " + s.exercises.map(function(e) { return e.name; }).join(", "),
+        done: s.done,
+        mobility: false,
+        med: false,
+        ts: seedParse(s.date) + i,     // unique + chronologically ordered
+      };
+    });
+    var inserted = await seedInsertChunked("workouts", wRows);
+    // Correlate by `ts` rather than trusting PostgREST to echo insertion order.
+    var idByTs = {};
+    inserted.forEach(function(row) { if (row && row.ts != null) idByTs[String(row.ts)] = row.id; });
+
+    var exRows = [];
+    plan.sessions.forEach(function(s, i) {
+      var wid = idByTs[String(seedParse(s.date) + i)];
+      s.exercises.forEach(function(e) {
+        exRows.push({
+          profile_id: pid,
+          workout_id: wid == null ? null : wid,
+          date: s.date,
+          name: e.name,
+          category: e.category,
+          main_category: e.main_category,
+          subcategory: e.subcategory,
+          sets: e.sets, reps: e.reps, weight_lbs: e.weight_lbs,
+          distance_miles: e.distance_miles, duration_minutes: e.duration_minutes,
+          notes: SEED_MARKER,
+          raw_text: null,
+        });
+      });
+    });
+    var exInserted = exRows.length ? await seedInsertChunked("exercises", exRows, "return=minimal") : [];
+
+    var evaluated = null;
+    if (req.query.evaluate === "1" || req.query.evaluate === "true") {
+      // ZERO AI — evaluateArcsForProfile is pure code (see its own header).
+      evaluated = await evaluateArcsForProfile(pid, {}).catch(function(e) { return { error: e.message }; });
+    }
+
+    res.json({
+      success: true, dry_run: false, profile_id: pid, today: todayYmd,
+      summary: plan.summary,
+      workouts_inserted: inserted.length,
+      exercises_inserted: exRows.length,
+      workouts_missing_id: wRows.length - Object.keys(idByTs).length,
+      evaluated: evaluated,
+      note: "Seeded rows are marked \"" + SEED_MARKER + "\". Purge with POST /api/debug/purge-sandbox-workouts/" + pid + "?apply=1",
+    });
+  } catch (e) {
+    console.error("[Seed] error:", e.message);
+    res.status(e.status || 500).json({ success: false, error: e.message });
+  }
+});
+
+// POST /api/debug/purge-sandbox-workouts/:profileId?apply=1
+// Deletes ONLY rows this seeder created — matched by the SEED_MARKER notes
+// prefix, scoped to the profile. Never touches anything the athlete logged.
+app.post("/api/debug/purge-sandbox-workouts/:profileId", async function(req, res) {
+  var pid = seedGuard(req, res);
+  if (pid === null) return;
+  try {
+    var apply = req.query.apply === "1" || req.query.apply === "true";
+    var wr = await fetch(SUPABASE_URL + "/rest/v1/workouts?profile_id=eq." + pid + "&select=id,date,notes&limit=5000", { headers: sbHeaders() });
+    var all = await wr.json();
+    if (!Array.isArray(all)) throw new Error("workouts fetch failed");
+    var seeded = all.filter(function(w) { return String(w.notes || "").indexOf(SEED_MARKER) === 0; });
+    var ids = seeded.map(function(w) { return w.id; });
+
+    var er = await fetch(SUPABASE_URL + "/rest/v1/exercises?profile_id=eq." + pid + "&select=id,notes,workout_id&limit=20000", { headers: sbHeaders() });
+    var allEx = await er.json();
+    if (!Array.isArray(allEx)) allEx = [];
+    var seededEx = allEx.filter(function(e) {
+      return String(e.notes || "").indexOf(SEED_MARKER) === 0 || (e.workout_id != null && ids.indexOf(e.workout_id) >= 0);
+    });
+
+    if (!apply) {
+      return res.json({
+        success: true, dry_run: true, profile_id: pid,
+        would_delete_workouts: ids.length, would_delete_exercises: seededEx.length,
+        kept_workouts: all.length - ids.length,
+        sample: seeded.slice(0, 5).map(function(w) { return { id: w.id, date: w.date, notes: String(w.notes).slice(0, 60) }; }),
+        note: "DRY RUN — nothing deleted. Re-send with ?apply=1.",
+      });
+    }
+
+    // Exercises first, so a mid-run failure can never orphan them.
+    for (var i = 0; i < seededEx.length; i += SEED_CHUNK) {
+      var exIds = seededEx.slice(i, i + SEED_CHUNK).map(function(e) { return e.id; });
+      if (!exIds.length) continue;
+      var d1 = await fetch(SUPABASE_URL + "/rest/v1/exercises?profile_id=eq." + pid + "&id=in.(" + exIds.join(",") + ")",
+        { method: "DELETE", headers: sbHeaders("return=minimal") });
+      if (!d1.ok) throw new Error("exercises delete " + d1.status + ": " + (await d1.text()));
+    }
+    for (var j = 0; j < ids.length; j += SEED_CHUNK) {
+      var wIds = ids.slice(j, j + SEED_CHUNK);
+      if (!wIds.length) continue;
+      var d2 = await fetch(SUPABASE_URL + "/rest/v1/workouts?profile_id=eq." + pid + "&id=in.(" + wIds.join(",") + ")",
+        { method: "DELETE", headers: sbHeaders("return=minimal") });
+      if (!d2.ok) throw new Error("workouts delete " + d2.status + ": " + (await d2.text()));
+    }
+    res.json({ success: true, dry_run: false, profile_id: pid, deleted_workouts: ids.length, deleted_exercises: seededEx.length, kept_workouts: all.length - ids.length });
+  } catch (e) {
+    console.error("[Seed] purge error:", e.message);
+    res.status(e.status || 500).json({ success: false, error: e.message });
+  }
+});
+
 // Read-only capacity + fit snapshot for the Profile-tab card.
 app.get("/api/profiles/:id/capacity", async function(req, res) {
   try {

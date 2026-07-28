@@ -11,8 +11,8 @@
  * "run the actual code, never a hand-copied duplicate" discipline used by
  * v2FoldedCards.test.js. They run against BOTH file versions:
  *   - the working tree (post-fix), asserting the new semantics
- *   - `git show HEAD:server.js` (pre-fix), asserting the OLD behaviour, so the
- *     tests prove a real change rather than passing vacuously
+ *   - the commit pinned in PRE_FIX_COMMIT (pre-fix), asserting the OLD
+ *     behaviour, so the tests prove a real change rather than passing vacuously
  *
  * Hardening per arc close-out learning #2 (a near-green harness that silently
  * mis-extracts is worse than one that fails): every slice is re-parsed, and an
@@ -29,7 +29,26 @@ const { execFileSync } = require("child_process");
 
 const ROOT = path.join(__dirname, "..");
 const TREE = fs.readFileSync(path.join(ROOT, "server.js"), "utf8");
-const HEAD = execFileSync("git", ["show", "HEAD:server.js"], { cwd: ROOT, encoding: "utf8", maxBuffer: 1 << 28 });
+
+// PRE-FIX REFERENCE — pinned to the LAST COMMIT BEFORE the BUG 4 fix, not to
+// HEAD. Using HEAD works only while the fix is uncommitted; the moment it lands,
+// "pre-fix" silently becomes "post-fix" and these tests start asserting the
+// opposite of what they claim. (Caught exactly that way, immediately after the
+// fix commit.) A pin can only ever be wrong loudly.
+const PRE_FIX_COMMIT = "d2b0871";
+const POST_FIX_MARKER = "arc.needs_regeneration = false;";
+let HEAD = null;
+try {
+  HEAD = execFileSync("git", ["show", PRE_FIX_COMMIT + ":server.js"], { cwd: ROOT, encoding: "utf8", maxBuffer: 1 << 28 });
+  // Guard the pin itself: if that commit somehow already had the fix, the
+  // comparison is meaningless and must fail rather than pass vacuously.
+  assert.ok(HEAD.indexOf(POST_FIX_MARKER) < 0,
+    "pin " + PRE_FIX_COMMIT + " already contains the fix — update PRE_FIX_COMMIT");
+} catch (e) {
+  if (/already contains the fix/.test(e.message)) throw e;
+  HEAD = null;   // shallow clone / commit unreachable -> pre-fix tests skip loudly
+}
+assert.ok(TREE.indexOf(POST_FIX_MARKER) >= 0, "working tree is missing the BUG 4 fix");
 
 /** Slice [startMarker, endMarker) out of a source, asserting both exist. */
 function slice(src, label, startMarker, endMarker) {
@@ -73,7 +92,8 @@ function buildSandbox(src, label) {
 }
 
 const POST = buildSandbox(TREE, "working tree");
-const PRE = buildSandbox(HEAD, "git HEAD");
+const PRE = HEAD ? buildSandbox(HEAD, "pre-fix " + PRE_FIX_COMMIT) : null;
+const preOpts = { skip: PRE ? false : "pre-fix commit " + PRE_FIX_COMMIT + " unreachable (shallow clone?)" };
 
 const TODAY = "2026-07-28";
 
@@ -121,7 +141,7 @@ test("(b) CLEARS when there is no meaningful drift at all", () => {
   assert.strictEqual(arc.needs_regeneration, false, "no drift to absorb -> flag false");
 });
 
-test("(b) PRE-FIX could not clear: the same absorbable case left the flag true", () => {
+test("(b) PRE-FIX could not clear: the same absorbable case left the flag true", preOpts, () => {
   const g = mkGoal([{ dw: 5, status: "current" }, { dw: 4, status: "upcoming" }, { dw: 4, status: "upcoming" }, { dw: 4, status: "upcoming" }]);
   const arc = mkArc(-5, 2, true);
   PRE.applyTimelineFlex(g, arc, TODAY);
@@ -172,7 +192,7 @@ test("FLICKER CLOSED — streak below the gate still yields TRUE when unabsorbab
   assert.strictEqual(g.roadmap.phases[1].duration_weeks, 6, "no mutation happened");
 });
 
-test("FLICKER — pre-fix this same call wrote NOTHING (why naive recompute breaks)", () => {
+test("FLICKER — pre-fix this same call wrote NOTHING (why naive recompute breaks)", preOpts, () => {
   const g = mkGoal([{ dw: 5, status: "current" }, { dw: 6, status: "upcoming" }]);
   const arc = mkArc(-5, 1, false);
   const rep = PRE.applyTimelineFlex(g, arc, TODAY);
@@ -198,7 +218,7 @@ test("(e) no_upcoming_phases fires at flex_streak 1 (approved widening)", () => 
   assert.strictEqual(rep.reason, "no_upcoming_phases");
 });
 
-test("(e) PRE-FIX suppressed no_upcoming_phases below the streak gate", () => {
+test("(e) PRE-FIX suppressed no_upcoming_phases below the streak gate", preOpts, () => {
   [0, 1].forEach((streak) => {
     const g = mkGoal([{ dw: 5, status: "current" }]);
     const arc = mkArc(-5, streak, false);
@@ -218,7 +238,7 @@ test("(d) profile 4 wrist goal's real post-regenerate shape still yields TRUE", 
 });
 
 // ── mutation-path non-regression ────────────────────────────────────────────
-test("flex MUTATION path is unchanged pre vs post (durations, dates, streak, estimate)", () => {
+test("flex MUTATION path is unchanged pre vs post (durations, dates, streak, estimate)", preOpts, () => {
   const cases = [
     [[{ dw: 5, status: "current" }, { dw: 5, status: "upcoming" }], -5, 4],
     [[{ dw: 5, status: "current" }, { dw: 4, status: "upcoming" }, { dw: 4, status: "upcoming" }, { dw: 4, status: "upcoming" }], -5, 2],
@@ -244,7 +264,7 @@ test("flex MUTATION path is unchanged pre vs post (durations, dates, streak, est
 });
 
 // ── (f) legacy / no-arc goals ───────────────────────────────────────────────
-test("(f) a null arc is a no-op in BOTH versions (legacy goals never reach the flag)", () => {
+test("(f) a null arc is a no-op in BOTH versions (legacy goals never reach the flag)", preOpts, () => {
   const g = mkGoal([{ dw: 5, status: "current" }, { dw: 5, status: "upcoming" }]);
   assert.strictEqual(POST.applyTimelineFlex(g, null, TODAY), null);
   assert.strictEqual(PRE.applyTimelineFlex(g, null, TODAY), null);
