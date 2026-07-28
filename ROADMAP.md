@@ -4,6 +4,145 @@
 > Pairs with `CLAUDE.md` (deep implementation notes) and `FORMULAS.md` (readiness/sleep math).
 > Last updated: 2026-07-27.
 >
+> **2026-07-27 session #42 — POST-ARC BUG WORK: BUG 2 diagnosed (NOT a bug), BUG 1 audited
+> (deferred), and a THIRD bug found and FIXED that neither was.** Audit-then-build, gated. One
+> code change shipped (`server.js`, 37 insertions / 1 deletion). **No migration. Profile 1
+> byte-identical pre vs post deploy** (`profile_data` compared in full, sha256 of `goals`
+> `5c57ba78aa6357d2` both sides). Zero writes to profile 1 all session — the one profile-1 read
+> used (`GET /api/profiles/1`) PATCHes only `if (idsAdded || shapeFixed)`, and running the real
+> shipped `ensureGoalIds` / `ensureGoalDefaults` against the returned `profile_data` returns
+> **false for both**, so no PATCH fired.
+>
+> **BUG 2 IS NOT A BUG — it is designed behaviour, and §6/§9/ledger row 30 are updated to say so.**
+> Profile 4 has `profile_data.fitbit === false` and zero connected wearables, so `syncFitbit()`
+> routes to `showManualCheckin('no_fitbit')` (`public/index.html:3845`). That function has two
+> branches, and **only the branch that finds a same-day `localStorage.ac_cache.manualCheckin`
+> shows `#ai-card` and calls `resolveAIRecs()`** (`:3228`–`:3231`). The reset branch does neither,
+> so `#ai-card` stays at its HTML default `display:none` (`:947`) and **no rec is rendered and none
+> is even requested** until the athlete submits the daily manual check-in (`:3314`–`:3320`, which
+> then fires `regenerateAIForContextChange('manual_checkin_submit')`). Consistent with the data:
+> `GET /api/profiles/4/daily-recs` → `{recommendations:null, date:null, readiness:null}`.
+>
+> **The goal regeneration that preceded the observation was a COINCIDENCE, proven in code:**
+> `grvRegenerateFromBanner()` (`:7800`) re-renders the roadmap view and the goal cards and calls
+> **none** of `fetchAI` / `regenerateAIForContextChange` / `invalidateDailyRecsAndRefresh`. Only
+> *macro* roadmap regeneration has a rec trigger (`:6220`). A per-goal regenerate cannot remove a
+> rendered rec.
+>
+> **CANDIDATE (b) — a data-shape generation failure — WAS RULED OUT BY MEASUREMENT, not reasoning.**
+> The real shipped `fetchAI({auditOnly:true})` was run headless against profile 4's real
+> `profile_data`: **all 11 top-level builders returned OK with zero throws** (incl.
+> `buildArcStateContext` 628 chars, `buildTimeBudgetContext` 2,180, `buildSectionDepthContext` 641),
+> and the full assembly completed at **untrimmed 28,947 → total 27,193 / 28,000, one rung
+> (`historicalBrief->400`), headroom 807**. So the arc'd profile pays the SAME single ladder rung
+> profile 1 pays and did **not** need the projected extra `coachingBrief→400` rung. (Caveat:
+> profile 4 carries **1** arc goal, not 3 — a three-arc profile is still heavier.)
+>
+> **⚠ THE REAL BUG, found while ruling out candidate (c), and in no document before now: BOTH
+> roadmap rebuild sites DESTROY `arc_origin` AND `arc_state`. FIXED AND DEPLOYED this session
+> (`ae46a96`).** `adaptGoalRoadmap` (`server.js:7019`) and `generateGoalRoadmapForGoal`
+> (`:7696`/`:7711`, both branches) rebuild `goal.roadmap` from scratch, so any Layer 2 field not
+> named explicitly is silently dropped. **This is the same bug class as the `roadmap.estimate` drop
+> fixed in session #35, at the same two sites** — `estimate` was added to the carry-forward list
+> then, and the arc fields shipped in session #37 and were never added.
+> **Live evidence:** profile 4's "Bench press 175 lbs for a single" was regenerated
+> **2026-07-26T02:47:22.417Z** (`adaptation_log` trigger `manual` — the athlete's inline regenerate,
+> ledger row 14) and now carries **neither field**, where ledger row 10 recorded
+> `position 3.0 / re_ramping / since 2026-07-06`.
+> **Why it does not self-heal:** `arc_state` is a pure replay and returns on the next evaluation,
+> but **`arc_origin` is re-pinned from `near[0].start_date`**, and both writers call
+> `assignNearTermDates(parsed.phases, today)` on freshly model-authored phases that carry no dates
+> — so the calendar is rebuilt **from today**. Dropping `arc_origin` therefore walks the origin
+> forward on every adapt/regenerate and discards every earned week. **That is session #37 bug #1
+> arriving through a different door**, which is exactly what pinning `arc_origin` was introduced to
+> prevent. Because the weekly auto-adapt is fire-and-forget on every workout save, no goal could
+> accumulate earned arc across an adapt.
+> **Fix:** one shared `carryArcForward(prev, next)` — ONE implementation, TWO consumers, so the
+> writers cannot disagree — **carry-if-present only**, so a legacy roadmap gains nothing (the same
+> principle as `ensureGoalDefaults` never fabricating a `demand`).
+> **Verified pre/post against the REAL shipped functions extracted from BOTH `git HEAD` and the
+> working tree, frozen clock, real profile-1 and profile-4 fixtures — 9/9 pass:** an arc goal keeps
+> both fields byte-identical through adapt, regenerate AND reset; **a legacy goal (profile 1's real
+> "Fix Posture") produces output byte-identical pre-fix vs post-fix on all three paths with no
+> fabricated keys** — the profile-1 non-regression check, since its 3 legacy roadmaps run this exact
+> adapt path on every stale workout save; and only the two arc keys are ever added. Existing suites
+> **213/213**.
+>
+> **BUG 1 AUDITED IN FULL, FIX DESIGNED, DEFERRED to its own session by decision. No limit bump.**
+> The §9 reconciliation is settled with numbers:
+> - **The verb anomaly is resolved: there is NO GET route.** Only `app.post` at `server.js:2952`.
+>   Measured live: `GET /api/profiles/1/goal-progress` → **404 `text/html` `<!DOCTYPE html>…Cannot
+>   GET`**; a small `POST` → **200 JSON**. The reported "GET/POST" pair is one endpoint written two
+>   ways, not two observations. **Only the POST can 413** — and both a stray GET and an oversized
+>   POST produce the identical client-side `SyntaxError: Unexpected token '<'`, which is why they
+>   were conflated.
+> - **The limit is the default 100 KB.** `server.js:92` is `app.use(express.json());` with **no
+>   options**; no other body parser exists. Bracketed live: **101,357 B → 200**, **103,405 B → 413
+>   `text/html` "Payload Too Large"**. That HTML body IS the `<!DOCTYPE` the client chokes on.
+> - **Real profile-1 body: 207,357 B = 202.5 KB = 2.02× the limit.** Reconstructed field-for-field
+>   from `fetchGoalProgress` (`index.html:11286`) against real read-only data: **exercises (310
+>   rows, all-time) 104,059 B / 50.2%**, **workoutLog (60 rows) 65,689 B / 31.7%**, **goals
+>   (profile_data) 37,483 B / 18.1%**, scalars 90 B.
+> - **Apportionment — both causes are real, they are NOT equal.** The client blob (exercises +
+>   workoutLog) is **169,748 B, 81.9%, and is 1.66× the limit ON ITS OWN** — sufficient to 413 with
+>   zero goals; `exercises` alone already exceeds 100 KB. Accumulated `profile_data.goals` is
+>   **18.1% and comfortably under the limit on its own**. **(a) is the cause; (b) is an aggravator.**
+>   Removing all accumulated profile_data still leaves the endpoint broken.
+> - **Migration projection: +8,653 B → 216,010 B = 210.9 KB (2.11×), i.e. ~4% worse.** Measured
+>   per-goal on profile 4: `arc_state`+`arc_origin` ≈ 311 B/goal, `goal_type`+`demand`+`estimate`
+>   ≈ 771 B/goal. **Migration is not what breaks this and not migrating would not fix it.**
+> - **The real fix.** The handler (`:2952`–`:3090`) is **stateless — zero writes** — and consumes
+>   the three big arrays only to compute scalar aggregates. **`var profileId = req.params.id` is
+>   assigned at `:2954` and never used again.** The server already knows whose profile it is and
+>   already has the pattern (`getGoalExerciseContext` / `getFullExerciseContext` /
+>   `loadProfileWithGoals`). Stop sending `exercises` + `workoutLog` and let the server fetch its
+>   own → **202.5 KB → 37.6 KB**, a drop-in because the handler reads raw row fields. Then stop
+>   sending `goals` too → **<1 KB**, permanently immune to the migration.
+>   **A limit bump is a stopgap only and must never ship as the fix.**
+>
+> **ITEM (c) / ledger row 28 REMAINS OPEN — and this session establishes exactly why, plus new
+> evidence.** Post-deploy inventory: profile 4 has **12 goals, 5 with roadmaps, exactly ONE with an
+> `arc_state`** — "Rehab right wrist tendonitis" (`arc_origin 2026-06-29`, status **`stalled`**,
+> position 0, calendar 4, drift −4, **`re_ramp: null`**, tier 2 / keyword evidence, 1 qualifying
+> session in 28d vs 20 expected, longest gap 22 days). **No goal is in `re_ramping`.**
+> - **The bench goal's original `arc_origin` is NOT recoverable** — checked every field that could
+>   carry it (`roadmap` keys, `goal` keys, all 7 `adaptation_log` entries, phases): nothing stores a
+>   prior phase snapshot or the origin, and ledger row 10's recorded facts (peak 4.5, `since
+>   2026-07-06`) **bound** the origin to a multi-week range rather than determining it. Per §0.2
+>   rule 5 it was **not guessed**.
+> - **The sanctioned back-dated-`last_evaluated` nudge cannot produce a re-ramp either, and this is
+>   a code fact, not an opinion:** `computeArcState` sets `re_ramp` only when `preGapPeak > decayed`,
+>   i.e. the goal must have **earned a non-zero position before the gap**. The wrist goal's
+>   `preGapPeak` is 0, so it can only ever be `stalled`. The replay is pure and deterministic from
+>   `arc_origin` + the real log, so forcing re-evaluation cannot change the outcome. **The nudge
+>   would still be a valid way to close ledger row 22 (the stale branch) — that is a different row.**
+> - **A REAL model call was made anyway, and it moved row 28 partway.** Two real generations on
+>   profile 4 through the **category path**, which `fetchAI` short-circuits into `altRec` and
+>   returns from **before** any `localStorage` write and before `cacheAIRecOnServer` — so this is
+>   **provably write-free** (verified in source, confirmed at runtime: zero non-GET calls other than
+>   `/api/ai`). **A** = arc block present (628 chars, 27,120 total); **B** = identical state with
+>   `arc_state`/`arc_origin` stripped in memory only (0 chars, 26,492 total); 628-char delta, the
+>   arc block the only intended difference.
+>   **Criterion (iii) PASSES — but VACUOUSLY, and that is stated rather than glossed:** the rec
+>   contains **no position / drift / week number at all**, so it cannot state one that was not
+>   injected. It does not prove the model would resist inventing a number if it were narrating
+>   progress.
+>   **Criteria (i) and (ii) CANNOT be judged from this pair** — the arc goal is `stalled`, not
+>   `re_ramping`, so the block's re-ramp instruction never applied. Structurally the arc run came
+>   back marginally **denser**, not lighter (opt1 16 movements / ~33 sets vs 14 / ~28; opt2 12 / ~26
+>   vs 10 / ~23), and the three "rebuilding" hits in run A are about **pubic osteitis**, not the arc
+>   goal. **Also notable: the arc goal never appears in `goal_tags` in EITHER run**, though wrist
+>   work appears as exercises in both — the block named a goal the model did not tag.
+> - **Remaining check for row 28 is unchanged in substance and now needs a decision** (see the
+>   ledger and the next-session block): the only honest routes are to let profile 4 accumulate real
+>   qualifying sessions on the bench goal until a genuine peak-then-gap forms (slow, but the fix now
+>   protects the origin), or for the athlete to state the bench roadmap's intended phase-1 start
+>   date as a product decision, after which the replay derives everything else from the real log.
+>
+> **Backlog line logged (decision, not a bug):** the **manual** check-in is `localStorage`-only —
+> per-device, per-day — and does **not** sync via `daily_checkins` the way the *feeling* check-in
+> does, so a new day, another device, or cleared storage re-shows the gate. Left as designed.
+>
 > **2026-07-27 session #41 — PT BRAIN ARC CLOSE-OUT. DOCUMENTATION ONLY — no code, no
 > migrations, no data changes. The only files written are `ROADMAP.md` and `CLAUDE.md`.**
 > Sessions A, B, C and D each closed out individually; the **arc-level** state had never been
@@ -2596,13 +2735,90 @@ All verified present in `server.js`. `:id`/`:userId` = profile id.
   `SELECT` instead). Also worth knowing: the PATCH writes `cleanProfileData(pd)`, so it
   simultaneously re-sanitizes every string in the column.
 
+### ⚠ BUG 3 — roadmap adapt AND regenerate destroyed `arc_origin` + `arc_state`. ✅ FIXED (2026-07-27, session #42)
+
+> **Found while ruling out BUG 2's candidate (c). It was in no document before session #42.**
+> Shipped fix: `ae46a96`. No migration (jsonb, code-only).
+
+- **Root cause.** `adaptGoalRoadmap` (`server.js:7019`) and `generateGoalRoadmapForGoal`
+  (`:7696` regenerate branch and `:7711` reset branch) both rebuild `goal.roadmap` **from scratch**,
+  so any Layer 2 field not named explicitly is silently destroyed. `arc_origin` and `arc_state`
+  shipped in session #37 (Layer 2) and were never added to either carry-forward list.
+- **Same bug class, same two sites, second occurrence.** Session #35 fixed exactly this for
+  `roadmap.estimate` and left an explicit comment about it at the adapt site. The arc fields
+  arrived two sessions later and repeated the pattern. **If a third Layer-2/3 field is ever added
+  to `goal.roadmap`, add it to `carryArcForward`'s block at the same time.**
+- **Live evidence.** Profile 4's "Bench press 175 lbs for a single" was regenerated
+  **2026-07-26T02:47:22.417Z** (`adaptation_log` trigger `manual` — the athlete's inline regenerate,
+  §7 ledger row 14) and now carries **neither field**, where ledger row 10 recorded
+  `position 3.0 / re_ramping / re_ramp.since 2026-07-06`.
+- **Why it is worse than it looks — it does NOT self-heal.** `arc_state` is a pure replay and
+  returns on the next evaluation. **`arc_origin` does not**: it is re-pinned from
+  `near[0].start_date`, and both writers call `assignNearTermDates(parsed.phases, today)` on freshly
+  model-authored phases that carry **no** dates, so the phase calendar is rebuilt **from today**
+  (measured: the bench goal's `near[0].start_date` is now `2026-07-26`, the regeneration day).
+  Dropping `arc_origin` therefore walks the origin forward on every adapt/regenerate and discards
+  every earned week — **session #37 bug #1 arriving through a different door**, which is precisely
+  what pinning `arc_origin` was introduced to prevent. Because the weekly auto-adapt is
+  fire-and-forget on every workout save once >7d stale, **no goal could accumulate earned arc
+  across an adapt.**
+- **Fix.** One shared `carryArcForward(prev, next)` — ONE implementation, TWO consumers, so the two
+  writers cannot disagree. **Carry-if-present only**: a legacy roadmap has neither field and must
+  not gain them, the same principle as `ensureGoalDefaults()` never fabricating a `demand`.
+  Absent in ⇒ absent out.
+- **Verified pre/post against the REAL shipped functions extracted from BOTH `git HEAD` and the
+  working tree** (comment/string/template/regex-aware scanner + over-capture guard + mandatory
+  re-parse per the arc close-out learning #2), frozen clock so wall-clock stamps cannot mask a
+  diff, real profile-1 and profile-4 fixtures — **9/9 pass**: an arc goal keeps both fields
+  byte-identical through adapt, regenerate AND reset; **a legacy goal (profile 1's real "Fix
+  Posture") is byte-identical pre-fix vs post-fix on all three paths** with no fabricated keys;
+  only the two arc keys are ever added and every other field is unchanged. Existing suites 213/213.
+- **Blast radius on profile 1: none today, but it was a live blocker for the migration.** Profile 1
+  has 3 legacy roadmaps with zero arc fields, so there was nothing to drop — but those roadmaps run
+  this exact adapt path on every stale workout save, so **profile 1 would have inherited the bug the
+  moment it was migrated.** That blocker is now closed (§7 → profile-1 migration decision).
+- **Residual, NOT fixed:** the destroyed origin on the bench goal is **not recoverable** — see §7
+  ledger row 28 and §9. The fix prevents recurrence; it does not restore what was already lost.
+
+### ✅ BUG 2 — RESOLVED: NOT A BUG. Profile 4's Today page is behind the manual check-in gate (2026-07-27, session #42)
+
+> **Diagnosed session #42. Candidate (a) — benign empty state — confirmed; (b) ruled out by
+> measurement; (c) disproven in code.** Left as designed by decision; a backlog line is logged in §9.
+
+- **Root cause, by design.** Profile 4 has `profile_data.fitbit === false` and **zero connected
+  wearables** (all five providers `connected:false`), so `syncFitbit()` takes
+  `if (pd.fitbit === false) { showManualCheckin('no_fitbit'); return; }`
+  (`public/index.html:3845`). `showManualCheckin` has two branches, and **only the branch that
+  finds a same-day `localStorage.ac_cache.manualCheckin`** sets `#ai-card` to `block` and calls
+  `resolveAIRecs()` (`:3228`–`:3231`). The reset branch does neither, so `#ai-card` stays at its
+  HTML default `display:none` (`:947`) and **no rec renders and none is requested.** Submitting the
+  check-in (`:3314`–`:3320`) shows the card and fires
+  `regenerateAIForContextChange('manual_checkin_submit')`.
+- **Data agrees:** `GET /api/profiles/4/daily-recs` → `{recommendations:null, date:null,
+  readiness:null}` — never populated, exactly as candidate (a) predicted (v2 never wrote them and
+  the profile was flipped to v1 in Session A).
+- **Candidate (b) RULED OUT BY MEASUREMENT.** The real shipped `fetchAI({auditOnly:true})` was run
+  headless against profile 4's real `profile_data`: **all 11 top-level builders returned OK, zero
+  throws**, and the full assembly completed at **untrimmed 28,947 → 27,193 / 28,000**, one rung
+  (`historicalBrief->400`), **headroom 807**. The fully-arc'd profile pays the same single rung
+  profile 1 pays. (Profile 4 carries 1 arc goal, not 3 — a three-arc profile is still heavier.)
+- **Candidate (c) DISPROVEN IN CODE.** `grvRegenerateFromBanner()` (`:7800`) re-renders the roadmap
+  view and the goal cards and calls **none** of `fetchAI` / `regenerateAIForContextChange` /
+  `invalidateDailyRecsAndRefresh`; only *macro* roadmap regeneration has a rec trigger (`:6220`).
+  A per-goal regenerate cannot remove a rendered rec. The timing was coincidence — **but the same
+  regenerate did real damage of a different kind, which is BUG 3 above.**
+- **Not shared with profile 1:** it has `fitbit: true` and takes `syncFitbit()`'s Fitbit path, so it
+  never reaches `showManualCheckin('no_fitbit')`.
+
 ### PT Brain arc close-out — OPEN BUGS found after Session D (2026-07-27, session #41)
 
-> **Both were found in live use AFTER Session D's close-out, so they appear in no earlier session
-> record. Neither is fixed. Neither was chased in session #41 (documentation-only).** Written to be
-> picked up cold.
+> **⚠ UPDATED 2026-07-27 (session #42): BUG 2 is RESOLVED as designed behaviour (see above) and
+> BUG 1 has been fully audited with measured numbers (below) — the fix is designed and DEFERRED to
+> its own session by decision. No limit bump was applied.** The original text is kept because the
+> reasoning that framed the investigation is the useful record.
 
-**BUG 1 — HTTP 413 on `GET`/`POST /api/profiles/1/goal-progress` (profile 1, live).**
+**BUG 1 — HTTP 413 on `GET`/`POST /api/profiles/1/goal-progress` (profile 1, live). ⚠ AUDITED
+2026-07-27 (session #42) — see the AUDIT RESULT block immediately after this entry.**
 
 - **Console, exactly as observed:** `Failed to load resource: the server responded with a status of
   413`, followed by `[Goals] Progress fetch error: SyntaxError: Unexpected token '<', "<!DOCTYPE "...
@@ -2632,7 +2848,71 @@ All verified present in `server.js`. `:id`/`:userId` = profile id.
 - **FIRST STEP WHEN PICKED UP: an AUDIT of what that endpoint actually sends** (request body size,
   measured, per verb), not a limit bump.
 
-**BUG 2 — no workout rec renders on the Today page for profile 4 (Test #3).**
+#### BUG 1 — AUDIT RESULT (2026-07-27, session #42). Measured, read-only, zero writes. FIX DESIGNED, DEFERRED.
+
+**1. The verb anomaly is RESOLVED: there is no GET route.** Only `app.post` at `server.js:2952`.
+Measured live against production:
+
+| request | result |
+|---|---|
+| `GET /api/profiles/1/goal-progress` | **404**, `text/html`, `<!DOCTYPE html>…Cannot GET` |
+| `POST`, small body | **200**, `application/json` |
+
+The reported "GET/POST" pair is **one endpoint written two ways, not two observations. Only the
+POST can 413.** Both a stray GET and an oversized POST produce the identical client-side
+`SyntaxError: Unexpected token '<'`, which is why they were conflated.
+
+**2. The limit is the framework default, 100 KB.** `server.js:92` is `app.use(express.json());`
+with **no options**, and no other body parser exists. Bracketed live: **101,357 B → 200**;
+**103,405 B → 413 `text/html` "Payload Too Large"**. That HTML error body **is** the `<!DOCTYPE`
+the client's `JSON.parse` chokes on — one cause, both symptoms.
+
+**3. Real body size for profile 1: 207,357 B = 202.5 KB = 2.02× the limit.** Reconstructed
+field-for-field from `fetchGoalProgress` (`public/index.html:11286`) using real read-only data
+(60 workouts, 310 exercise rows across 69 distinct exercises, 8 goals):
+
+| part | bytes | share |
+|---|---|---|
+| `exercises` (all rows, all-time) | 104,059 | 50.2% |
+| `workoutLog` (60 rows) | 65,689 | 31.7% |
+| `goals` (accumulated `profile_data`) | 37,483 | 18.1% |
+| scalars | 90 | 0.0% |
+| **TOTAL** | **207,357** | **2.02×** |
+
+**4. The two competing causes are RECONCILED, and they are not equal.** The client blob
+(`exercises` + `workoutLog`) is **169,748 B / 81.9%**, which is **1.66× the limit on its own** —
+sufficient to 413 with zero goals; `exercises` alone already exceeds 100 KB. Accumulated
+`profile_data.goals` is **18.1% and comfortably under the limit on its own**.
+**⇒ the session-#36 client-side hypothesis (a) is the CAUSE; the session-#41 profile_data
+hypothesis (b) is an AGGRAVATOR.** Removing all accumulated profile_data still leaves the endpoint
+broken.
+
+**5. Migration projection: ~4% worse, not the cause.** Measured per-goal on profile 4:
+`arc_state`+`arc_origin` ≈ **311 B/goal**; `goal_type`+`demand`+`estimate` ≈ **771 B/goal**.
+Profile 1's 8 goals → **+8,653 B → 216,010 B = 210.9 KB (2.11×)**. **Migration is not what breaks
+this, and not migrating would not fix it.** (Not modelled: migration regenerates all 3 legacy
+roadmaps, so `phases[]` churn is additional.)
+
+**6. The real fix.** The handler (`:2952`–`:3090`) is **stateless — zero writes** — and consumes
+the three big arrays only to compute scalar aggregates (max matching `weight_lbs`, total
+`distance_miles`, longest cardio, a weekly-cardio count, a category tally).
+**`var profileId = req.params.id` is assigned at `:2954` and never used again** — the server
+already knows whose profile it is, and already has this exact pattern in
+`getGoalExerciseContext()` / `getFullExerciseContext()` / `loadProfileWithGoals()`.
+- **Step 1 (small, drop-in): stop sending `exercises` + `workoutLog`; the server fetches its own.**
+  **202.5 KB → 37.6 KB.** The handler reads raw `exercises`/`workouts` row fields, so populating the
+  same two variables server-side leaves the per-goal loop untouched (~20 lines + deleting two client
+  fields).
+- **Step 2: stop sending `goals` too**, reading `profile_data.goals` via
+  `loadProfileWithGoals(profileId)` → **<1 KB**, permanently immune to the migration and to any
+  future goal-field growth.
+- **⚠ A limit bump is a STOPGAP ONLY and must never ship as the fix.** `express.json({limit:'1mb'})`
+  would unblock today at 202 KB, but the payload grows with every logged exercise row forever — it
+  is already 2× and the trend is monotonic. **None was applied this session, by decision.**
+
+**BUG 2 — no workout rec renders on the Today page for profile 4 (Test #3). ✅ RESOLVED
+2026-07-27 (session #42) — NOT A BUG; it is the designed manual check-in gate. Full diagnosis in
+the "BUG 2 — RESOLVED" entry above; original text kept below as the record of the investigation.**
 
 - **Observed** after the athlete regenerated a goal's roadmap on that profile. **Undiagnosed.**
 - **NOT a general Layer 4 regression.** Profile 1 was checked immediately and is healthy — rec cards
@@ -3059,9 +3339,10 @@ either the MACRO roadmap or a LEGACY per-goal roadmap — never current per-goal
 | 25 | L4 | Depth table ratified against both a mobility and a strength day | **VERIFIED** | 12 gated sections, **zero flagged**; 5 sit at exactly zero margin (deliberate — §6 Session D item 1) |
 | 26 | L4 | Prompt budget: profile 1 fits with no extra trim | **VERIFIED** | 27,223 / 28,000, headroom 777, arc block **0 chars** (profile 1 has 8 goals, ZERO arc goals) |
 | 27 | L4 | Capacity card renders on boot + tab switch | **VERIFIED LIVE** | See row 24 (athlete-confirmed). Idempotent across 5 repeated calls against the real shipped function |
-| 28 | **L4 — item (c)** | **A re-ramping goal produces a visibly lighter, rebuild-the-base rec** | **⚠ SHIPPED-UNVERIFIED — HIGHEST-VALUE OPEN CHECK, and BLOCKED by BUG 2** | The block's **construction** is fully verified (verbatim ARC REALITY wording, legacy goals contribute nothing, zero arc goals → empty string with no header, self-caps at 3, within its char cap). The **model's response to it** is not. **Check:** on **profile 4**, construct a genuinely re-ramping goal via the Session B machinery, generate a rec, and confirm (i) the prescription is visibly lighter / rebuild-the-base, (ii) the framing is honest about the re-ramp, and (iii) **no arc number appears that was not in the injected `ARC STATE` block.** Requires a deploy plus a real model call. **BUG 2 must be diagnosed first** — profile 4 currently renders no rec at all |
-| 29 | Arc | **BUG 1 — 413 on `/goal-progress` (profile 1)** | **🐞 OPEN BUG** | Not a verification item. §6 → "PT Brain arc close-out — open bugs"; §9. **First step is an AUDIT of the payload, not a limit bump** |
-| 30 | Arc | **BUG 2 — no rec on Today for profile 4** | **🐞 OPEN BUG, BLOCKS ROW 28** | §6 → "PT Brain arc close-out — open bugs". **First step: browser console on profile 4, then a forced category-pill generation** |
+| 28 | **L4 — item (c)** | **A re-ramping goal produces a visibly lighter, rebuild-the-base rec** | **⚠ PARTIALLY CLOSED (2026-07-27, session #42) — criterion (iii) PASSES; (i) and (ii) STILL OPEN, and now blocked on DATA, not on BUG 2** | **No longer blocked by BUG 2** (resolved — designed check-in gate) and the generation path is proven: two REAL model calls were made on profile 4 through the **category path**, which `fetchAI` short-circuits into `altRec` and returns from **before** any `localStorage` write and before `cacheAIRecOnServer` — **provably write-free**, confirmed at runtime (zero non-GET calls besides `/api/ai`). **A** = arc block present (628 chars, prompt 27,120); **B** = identical state with the arc fields stripped in memory only (0 chars, 26,492); 628-char delta. **(iii) PASSES — but vacuously, and that is stated, not glossed:** the rec contains **no position / drift / week number at all**, so it cannot state one that was not injected; it does not prove the model would resist inventing a number while narrating progress. **(i)+(ii) cannot be judged from this pair** — the only arc goal on profile 4 is `stalled`, **not** `re_ramping`, so the block's re-ramp instruction never applied. Structurally the arc run came back marginally **denser**, not lighter (opt1 16 movements/~33 sets vs 14/~28), the three "rebuilding" hits are about **pubic osteitis** not the arc goal, and **the arc goal never appears in `goal_tags` in EITHER run**. **REMAINING CHECK, and it needs real data:** a goal must actually reach `re_ramping`, which `computeArcState` grants only when `preGapPeak > decayed` — i.e. a real earned peak followed by a gap. The wrist goal's peak is 0, so the back-dated-`last_evaluated` nudge **cannot** produce one (the replay is pure and deterministic; see row 22, which that nudge WOULD close). The bench goal could, but BUG 3 destroyed its `arc_origin` and it is **not recoverable** (see row 31). **Two honest routes: (1) let profile 4 accumulate real qualifying sessions on the bench goal until a genuine peak-then-gap forms — the BUG 3 fix now protects the origin; (2) the athlete states the bench roadmap's intended phase-1 start date as a product decision, after which the replay derives everything else from the real log.** |
+| 29 | Arc | **BUG 1 — 413 on `/goal-progress` (profile 1)** | **🐞 OPEN BUG — FULLY AUDITED 2026-07-27 (session #42), FIX DESIGNED, DEFERRED by decision. No limit bump applied** | **Audited with measured numbers, read-only.** POST-only (**no GET route exists**; a GET 404s with an HTML page — same `<!DOCTYPE` symptom, different status). Limit is the `express.json()` default **100 KB** (`server.js:92`, no options), bracketed live at 101,357 B → 200 / 103,405 B → 413 `text/html`. Real body **207,357 B = 202.5 KB = 2.02×**, split **exercises 104,059 (50.2%) / workoutLog 65,689 (31.7%) / goals 37,483 (18.1%)**. **The §9 reconciliation is settled: the client blob is 81.9% and is 1.66× the limit on its own (the CAUSE); accumulated `profile_data` is 18.1% and under the limit on its own (an AGGRAVATOR).** Migration adds ~4% (+8,653 B → 2.11×) — not the cause, and not migrating would not fix it. **Fix designed:** the handler is stateless and `profileId` is assigned but never used — stop sending `exercises`+`workoutLog` and let the server fetch its own (**202.5 KB → 37.6 KB**, drop-in), then stop sending `goals` too (**<1 KB**, migration-proof). **This is the next session.** §6 → "BUG 1 — AUDIT RESULT"; §9 |
+| 30 | Arc | **BUG 2 — no rec on Today for profile 4** | **✅ RESOLVED 2026-07-27 (session #42) — NOT A BUG** | Designed behaviour: profile 4 has `fitbit:false` and no wearable, so `syncFitbit()` → `showManualCheckin('no_fitbit')`, and only the branch finding a same-day `localStorage.ac_cache.manualCheckin` shows `#ai-card` and calls `resolveAIRecs()`. No check-in ⇒ no rec rendered and none requested. Candidate (b) ruled out by measurement (all 11 builders OK, assembly 27,193/28,000); candidate (c) disproven in code (`grvRegenerateFromBanner` has no rec trigger). **No longer blocks row 28.** §6 → "BUG 2 — RESOLVED" |
+| 31 | **L2 — BUG 3** | **`arc_origin` + `arc_state` destroyed by roadmap adapt AND regenerate** | **✅ FIXED + VERIFIED (2026-07-27, session #42), `ae46a96`** | Found while ruling out BUG 2's candidate (c); in no document before. Both rebuild sites (`adaptGoalRoadmap:7019`, `generateGoalRoadmapForGoal:7696`/`:7711`) rebuilt `goal.roadmap` from scratch and dropped both fields — **the same bug class as the session-#35 `roadmap.estimate` drop, at the same two sites.** `arc_state` self-heals (pure replay) but **`arc_origin` does not** — it re-pins from `near[0].start_date` while both writers rebuild the calendar from today, so the origin walked forward on every adapt and discarded every earned week (session #37 bug #1 through a different door). **Live evidence:** the bench goal, regenerated 2026-07-26T02:47:22.417Z, lost both where row 10 recorded `position 3.0 / re_ramping / since 2026-07-06`. **Verified:** real shipped functions extracted from BOTH `git HEAD` and the working tree, frozen clock, real profile-1 + profile-4 fixtures, **9/9** — arc goal keeps both byte-identical through adapt/regenerate/reset; **legacy goal (profile 1 "Fix Posture") byte-identical pre vs post on all three paths**; only the two arc keys ever added. Suites 213/213. Profile 1 `profile_data` byte-identical pre vs post deploy. **Residual: the already-destroyed bench origin is NOT recoverable — see row 28 and §9.** |
 
 **Profile 1 was byte-identical across Sessions A, B and C** — goals sha256 `0901b047d1c95f50…`
 before and after each — and Session D was the first to change code it runs daily, which is why
@@ -3306,9 +3587,33 @@ It has **two known costs**, both real, neither a blocker:
    days. That is the ladder working as designed and it is bounded to a single rung — but it means
    trading some coaching-brief context for arc context.
 
-**⚠ It also likely worsens BUG 1.** `arc_state` would land on every goal in `profile_data.goals[]`,
-growing exactly the payload the 413 is suspected to be about. **Weigh the migration AFTER BUG 1's
-audit, not before** — the audit may change what "migrating" costs.
+~~**⚠ It also likely worsens BUG 1.**~~ **⚠ SUPERSEDED BY MEASUREMENT — 2026-07-27, session #42.
+The BUG 1 audit is done and it changes this input.** Original concern: `arc_state` would land on
+every goal and grow exactly the payload the 413 is about.
+
+**TWO NEW INPUTS, both measured, both making migration EASIER to justify than it was:**
+
+1. **BUG 1 is NOT migration-caused, and migration does not meaningfully worsen it.** The real
+   profile-1 POST body is **207,357 B = 202.5 KB = 2.02×** the 100 KB limit **today**, and the
+   accumulated `profile_data.goals` is only **18.1% of it (37,483 B) — under the limit on its own**.
+   The cause is the client blob (`exercises` + `workoutLog` = **81.9%**, already **1.66×** on its
+   own). Migration adds a measured **+8,653 B → 210.9 KB (2.11×), i.e. ~4%**.
+   **⇒ Not migrating does not fix BUG 1, and migrating does not cause it.** The two decisions are
+   now independent. (Full numbers: §6 → "BUG 1 — AUDIT RESULT"; §7 ledger row 29.)
+2. **A real blocker existed that nobody had identified, and it is NOW CLOSED.** Until session #42,
+   **every weekly auto-adapt and every regenerate silently destroyed `arc_origin` + `arc_state`**
+   (§6 → BUG 3; ledger row 31). Profile 1 was unaffected only because it has **zero** arc goals —
+   it would have **inherited the bug on the first workout save after migrating**, and because
+   `arc_origin` does not self-heal, its earned arc position would have been reset on essentially
+   every save. **Migrating before the fix would have produced a Layer 2 that silently never
+   worked.** Fixed and verified in session #42 (`ae46a96`), including a byte-identical
+   non-regression check on profile 1's own three legacy roadmaps.
+
+**Cost 2 above (the extra trim rung) still stands and is unchanged** — and session #42 added a
+data point in its favour: profile 4, carrying **1** arc goal, assembled at **27,193 / 28,000 with
+headroom 807 and only the usual `historicalBrief->400` rung** — it did **not** need the projected
+`coachingBrief→400`. A three-arc profile is still heavier, so the single extra rung remains the
+honest planning assumption for profile 1, not a certainty.
 
 ---
 
@@ -4035,9 +4340,23 @@ Macro roadmap shape (stored on `profiles.roadmap_data`):
   and the failure mode is a silent `console.error` inside a fire-and-forget weekly trigger. A
   cheap guard: log output token usage per adapt and warn above ~80% of the cap. Same class as
   the §9 "5 silent-failure sites" item.
-- [ ] **🐞 BUG 1 — goal-progress 413s. NOW REPRODUCED ON PROFILE 1, THE REAL PROFILE (found live
-  after session #40's close-out; logged session #41). Merged with the pre-existing session-#36
-  entry, which saw the same failure on profile 4.** AUDIT FIRST — do not bump the body limit.
+- [ ] **🐞 BUG 1 — goal-progress 413s. ⚠ AUDIT COMPLETE 2026-07-27 (session #42); FIX DESIGNED;
+  DEFERRED to its own session by decision. No limit bump was applied. THIS IS THE NEXT SESSION.**
+  Full audit in §6 → "BUG 1 — AUDIT RESULT"; ledger row 29. Settled findings, all measured:
+  **POST-only** — there is **no GET route** (`app.post` at `server.js:2952` is the only one; a GET
+  404s with an HTML page, which is the same `<!DOCTYPE` symptom at a different status, and is why
+  the "GET/POST" pair in the original report was a notation, not two observations). The limit is
+  the `express.json()` **default 100 KB** (`server.js:92`, no options), bracketed live at
+  **101,357 B → 200 / 103,405 B → 413 `text/html`**. Real profile-1 body **207,357 B = 202.5 KB =
+  2.02×**, split **exercises 104,059 B (50.2%) / workoutLog 65,689 B (31.7%) / goals 37,483 B
+  (18.1%) / scalars 90 B**. **The two competing causes below are now RECONCILED: (a) is the cause
+  (81.9%, and 1.66× the limit on its own), (b) is an aggravator (18.1%, under the limit on its
+  own).** Migration adds ~4% (+8,653 B → 2.11×). **Fix:** the handler is stateless and
+  `var profileId = req.params.id` is assigned at `:2954` and never used — stop sending
+  `exercises`+`workoutLog` and let the server fetch its own (**202.5 KB → 37.6 KB**, a drop-in
+  because the handler reads raw row fields), then stop sending `goals` too (**<1 KB**,
+  migration-proof). A limit bump is a stopgap and must never ship as the fix.
+  Original entry retained below for the record:
   - **Observed on profile 1, live:** `Failed to load resource: the server responded with a status
     of 413` on `GET`/`POST /api/profiles/1/goal-progress`, then
     `[Goals] Progress fetch error: SyntaxError: Unexpected token '<', "<!DOCTYPE "... is not valid
@@ -4062,6 +4381,48 @@ Macro roadmap shape (stored on `profiles.roadmap_data`):
     let the server fetch its own data as the roadmap endpoints already do.
   - **FIRST STEP: an AUDIT of what that endpoint actually sends** (measured body size, per verb).
     Full detail in §6 → "PT Brain arc close-out — open bugs".
+- [x] **✅ BUG 3 — roadmap adapt AND regenerate destroyed `arc_origin` + `arc_state`. FIXED
+  2026-07-27 (session #42), `ae46a96`.** Found while ruling out BUG 2's candidate (c); in no
+  document before. Both rebuild sites (`adaptGoalRoadmap:7019`, `generateGoalRoadmapForGoal:7696`
+  and `:7711`) built `goal.roadmap` from scratch and dropped both Layer 2 fields — **the same bug
+  class as the session-#35 `roadmap.estimate` drop, at the same two sites.** `arc_state` self-heals
+  (pure replay); **`arc_origin` does not** — it re-pins from `near[0].start_date` while both writers
+  call `assignNearTermDates(parsed.phases, today)` on dateless model-authored phases, rebuilding the
+  calendar from today, so the origin walked forward on every adapt and discarded every earned week
+  (session #37 bug #1 through a different door). Live evidence: profile 4's bench goal, regenerated
+  2026-07-26T02:47:22.417Z, lost both. Fixed with one shared `carryArcForward(prev,next)` —
+  carry-if-present only, so a legacy roadmap gains nothing. Verified 9/9 against the real shipped
+  functions from BOTH `git HEAD` and the working tree with a frozen clock; profile 1's legacy
+  output byte-identical pre vs post on adapt/regenerate/reset. **Standing note: if a third
+  Layer-2/3 field is ever added to `goal.roadmap`, add it to `carryArcForward` at the same time —
+  this is now the second occurrence of this exact class.**
+- [ ] **The bench goal's destroyed `arc_origin` is NOT recoverable (residual of BUG 3, session
+  #42).** Checked every field that could carry it — `roadmap` keys, `goal` keys, all 7
+  `adaptation_log` entries, the phases — and nothing stores a prior phase snapshot or the origin.
+  Ledger row 10's recorded facts (peak 4.5, `re_ramp.since 2026-07-06`) **bound** the origin to a
+  multi-week range rather than determining it, so per §0.2 rule 5 it was **not guessed**. This is
+  what currently blocks §7 ledger row 28 / item (c). **Two honest routes, both requiring a
+  decision: (1) let profile 4 accumulate real qualifying sessions on the bench goal until a genuine
+  peak-then-gap forms — the BUG 3 fix now protects the origin; (2) the athlete states the intended
+  phase-1 start date as a product decision, after which the replay derives everything else from the
+  real log.** Do not synthesise one.
+- [ ] **UX: the MANUAL check-in is `localStorage`-only — per-device, per-day — and does not sync
+  via `daily_checkins` (logged session #42; decision: leave as designed).** Unlike the *feeling*
+  check-in, which persists to `daily_checkins` and syncs across devices, the manual check-in lives
+  only in `localStorage.ac_cache.manualCheckin`. Consequence, and the whole of BUG 2: on a
+  no-wearable profile a new day, a different device, or cleared storage re-shows the check-in gate,
+  and **`#ai-card` stays hidden with no rec generated until it is submitted** (`showManualCheckin`,
+  `public/index.html:3206`). Correct as designed for a single-device athlete; worth revisiting if
+  no-wearable profiles ever become a real user segment. **Not a bug — do not "fix" it without a
+  product decision.**
+- [x] **✅ BUG 2 — RESOLVED 2026-07-27 (session #42): NOT A BUG.** No workout rec renders on the
+  Today page for profile 4 because that profile has `fitbit:false` and no wearable, so
+  `syncFitbit()` routes to `showManualCheckin('no_fitbit')` and only the branch that finds a
+  same-day manual check-in shows `#ai-card` and calls `resolveAIRecs()` — the designed gate above.
+  Candidate (b) was ruled out by measurement (all 11 `fetchAI` builders OK, assembly
+  27,193/28,000, headroom 807) and candidate (c) disproven in code (`grvRegenerateFromBanner` calls
+  no rec path; only *macro* regeneration does). It no longer blocks ledger row 28. Original entry
+  retained below for the record:
 - [ ] **🐞 BUG 2 — no workout rec renders on the Today page for profile 4 (Test #3). Found live
   after session #40's close-out; undiagnosed; logged session #41.** Observed right after the athlete
   regenerated a goal's roadmap on that profile. **NOT a general Layer 4 regression** — profile 1 was

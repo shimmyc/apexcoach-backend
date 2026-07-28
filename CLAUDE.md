@@ -3012,7 +3012,147 @@ warns appear in real use, the fix is dropping `≥25` to 3 — never raising a t
 
 ---
 
-## NEXT SESSION STARTS HERE — ARC SHIPPED, TWO OPEN BUGS (updated 2026-07-27, session #41)
+## PT Brain — Arc carry-forward fix (2026-07-27, session #42): `arc_origin` + `arc_state` survive adapt AND regenerate
+
+**One code change, `server.js` only, 37 insertions / 1 deletion. No migration (jsonb, code-only),
+no npm dep, no client change, no v2 file. Shipped `ae46a96`.** Found while ruling out BUG 2's
+candidate (c); it was in no document before this session.
+
+### The defect
+`adaptGoalRoadmap()` (`server.js:7019`) and `generateGoalRoadmapForGoal()` (`:7696` regenerate
+branch, `:7711` reset branch) each rebuild `goal.roadmap` **from scratch as an object literal**, so
+**any Layer 2 field not named explicitly is silently destroyed.** `arc_origin` and `arc_state`
+shipped in Session B (#37) and were never added to either carry-forward list.
+
+**This is the second occurrence of one bug class at these same two sites.** Session A (#35) fixed
+exactly this for `roadmap.estimate` and left an explicit comment about it at the adapt site — the
+arc fields arrived two sessions later and repeated the pattern. **Standing rule: any new
+`goal.roadmap` field owned by Layer 2/3 must be added to `carryArcForward` in the same change.**
+
+### Why it does NOT self-heal — the part that matters
+`arc_state` is a **pure replay** (`computeArcState`), so it comes back on the next evaluation.
+**`arc_origin` does not.** Its whole purpose is immutability: `computeArcState` reads its replay
+start as `rm.arc_origin || near[0].start_date || generated_at`. Both writers call
+`assignNearTermDates(parsed.phases, today)` on **freshly model-authored phases that carry no
+dates**, so `!p.start_date` is true for every phase and the calendar is rebuilt **from today**.
+Dropping `arc_origin` therefore lets the next evaluation re-pin it to ~today, collapsing
+`calendar_week` and discarding every earned week.
+
+**That is Session B bug #1 arriving through a different door** — the exact failure pinning
+`arc_origin` was introduced to prevent. And because `maybeAdaptAllRoadmaps` is fire-and-forget on
+every workout save once a goal is >7d stale, **no goal could accumulate earned arc across an
+adapt.**
+
+**Live evidence:** profile 4's "Bench press 175 lbs for a single" was regenerated
+**2026-07-26T02:47:22.417Z** (`adaptation_log` trigger `manual` — the athlete's inline regenerate,
+ROADMAP §7 ledger row 14) and now carries neither field, where ledger row 10 recorded
+`position 3.0 / re_ramping / re_ramp.since 2026-07-06`. Its `near[0].start_date` is now
+`2026-07-26` — the regeneration day — which is the re-pin the next evaluation would take.
+
+### The fix
+`carryArcForward(prev, next)`, defined immediately above `adaptGoalRoadmap`. **ONE implementation,
+TWO consumers**, so the two writers can never disagree — the same discipline `estimateExerciseMinutes`
+holds on the client side.
+
+- **Carry-if-present ONLY.** `if (prev.arc_origin) …; if (prev.arc_state) …`. A legacy roadmap has
+  neither and **must not gain them** — the same principle as `ensureGoalDefaults()` never
+  fabricating a `demand`. Absent in ⇒ absent out, and an explicit `null` is not carried as a key.
+- **By reference, not a copy**, matching how every other carried field behaves.
+- Called at the tail of `adaptGoalRoadmap` (on the new `next` object before `return`) and once
+  after the if/else in `generateGoalRoadmapForGoal`, covering **both** branches.
+- **The reset branch carries it too, deliberately.** A `mode:"reset"` regenerate legitimately
+  resets `version` to 1 and clears `adaptation_log` — those describe the roadmap *document*. The
+  arc describes the **athlete's earned position replayed from their log**, which a document reset
+  does not invalidate.
+
+### Verification — 9/9, both directions, both file versions
+Ran the **real shipped** `adaptGoalRoadmap` and `generateGoalRoadmapForGoal` extracted from **BOTH**
+`git show HEAD:server.js` (pre-fix) and the working tree (post-fix), against the **same real
+fixtures** — profile 4's wrist-rehab goal (real `arc_state`) and profile 1's real "Fix Posture"
+(legacy). Only the **model call and Supabase I/O** were stubbed; `resolvePhasePlanForGoal`,
+`derivePhasePlan`, `assignNearTermDates`, `enforcePhaseShape`, `enforceSingleCurrentPhase` and the
+module constants are the **real** ones (constants read out of `server.js` rather than retyped, so a
+value change cannot silently diverge).
+
+- **Extraction discipline** (arc close-out learning #2): comment / string / template /
+  regex-literal-aware brace scanner, **plus an over-capture guard that throws** if another
+  top-level declaration appears inside a slice, **plus a mandatory re-parse** of every slice.
+- **Frozen clock.** `generated_at` and `adaptation_log` entries are wall-clock stamped, so a
+  pre-vs-post byte comparison would otherwise fail on a 1 ms delta and mask a real difference —
+  this actually happened on the first run and was fixed rather than worked around.
+- **(a) arc goal:** pre-fix **drops both fields** (the bug, reproduced), post-fix keeps both
+  **byte-identical** through **adapt, regenerate AND reset**; `version` still increments; reset
+  still resets `version` to 1 and clears the log.
+- **(b) legacy goal — the profile-1 non-regression check:** output **byte-identical pre-fix vs
+  post-fix on all three paths**, no fabricated keys. This matters because profile 1's three legacy
+  roadmaps run this exact adapt path on every stale workout save.
+- **Only the two arc keys are ever added** — every other field asserted unchanged.
+- Existing suites **213/213**. Post-deploy, profile 1's `profile_data` is **byte-identical pre vs
+  post** (compared in full; `goals` sha256 `5c57ba78aa6357d2` both sides).
+
+**Residual, not fixed:** the bench goal's already-destroyed `arc_origin` is **not recoverable** —
+nothing stores a prior phase snapshot, and ledger row 10's facts bound it to a range rather than
+determining it (§0.2 rule 5: not guessed). The fix prevents recurrence; it does not restore what
+was lost. See ROADMAP §7 ledger rows 28 and 31.
+
+---
+
+## NEXT SESSION STARTS HERE — BUG 1 IS THE WORK (updated 2026-07-27, session #42)
+
+> **⚠ STATUS: all four PT Brain layers shipped. BUG 2 was NOT a bug. A third bug was found and
+> FIXED. BUG 1 is fully audited and is the next session's scope.**
+>
+> **THE IMMEDIATE WORK:**
+>
+> | # | Work | Why |
+> |---|---|---|
+> | **1** | **BUG 1 — stop `/goal-progress` sending the blob.** The audit is DONE; go straight to the fix | Real user-facing breakage on the athlete's own profile: goal progress numbers don't load. **Step 1 (small, drop-in): stop sending `exercises` + `workoutLog`; the server fetches its own → 202.5 KB → 37.6 KB.** The handler already reads raw `exercises`/`workouts` row fields, so the per-goal loop is untouched (~20 lines server-side + deleting two client fields). **Step 2: stop sending `goals` too**, via `loadProfileWithGoals(profileId)` → **<1 KB**, migration-proof. **NO LIMIT BUMP** — it is a stopgap and must never ship as the fix. Full numbers: ROADMAP §6 → "BUG 1 — AUDIT RESULT", ledger row 29 |
+> | **2** | **Item (c) / ledger row 28 — needs a DATA decision, not code** | Criterion (iii) passes (vacuously — the rec states no arc number at all). (i)+(ii) need a goal genuinely in `re_ramping`, and **profile 4 has none**. `computeArcState` grants `re_ramping` only when `preGapPeak > decayed`, so the back-dated-`last_evaluated` nudge **cannot** manufacture one. **Two honest routes: (1) let profile 4 accumulate real qualifying sessions on the bench goal until a genuine peak-then-gap forms — the session-#42 fix now protects the origin; (2) the athlete states the bench roadmap's intended phase-1 start date, after which the replay derives everything else from the real log.** Do not synthesise one |
+> | **3** | **Ledger row 22 — the stale branch of app-open arc evaluation** | Cheap and now unblocked: back-date `last_evaluated` on profile 4, open the app, confirm the boot call re-evaluates with **zero AI calls**. This is the doc-sanctioned nudge, and it closes row 22 — **it does NOT close row 28** |
+>
+> **What changed this session (2026-07-27, #42):**
+> - **BUG 2 is resolved — NOT a bug.** Profile 4 has no wearable, so Today sits behind the
+>   **manual check-in gate**: `#ai-card` stays `display:none` and no rec is even requested until the
+>   day's manual check-in is submitted on that device. Left as designed; a UX backlog line is logged
+>   in ROADMAP §9 (the manual check-in is `localStorage`-only, per-device/per-day, unlike the
+>   *feeling* check-in which syncs via `daily_checkins`).
+> - **BUG 3 found and FIXED** (`ae46a96`) — both roadmap rebuild sites destroyed `arc_origin` +
+>   `arc_state`. See "PT Brain — Arc carry-forward fix" directly above. **This had been silently
+>   defeating Layer 2 on every weekly auto-adapt.**
+> - **BUG 1 fully audited, fix designed, deferred by decision.** POST-only (no GET route exists),
+>   100 KB default limit, real body **202.5 KB (2.02×)**, **81.9% client blob / 18.1% accumulated
+>   `profile_data`** — so the long-standing §9 reconciliation is settled: the client blob is the
+>   cause, `profile_data` is an aggravator. Migration adds only ~4%.
+> - **The profile-1 migration decision gained two inputs**, both making it easier: BUG 1 is neither
+>   caused nor fixed by migrating, and the arc-wipe-on-adapt blocker (which would have made a
+>   migrated Layer 2 silently never work) **is now closed**.
+>
+> | Layer | State |
+> |---|---|
+> | A — honest timelines + capacity + negotiation | shipped, **verified live** on profile 4 |
+> | B — arc_state, decay, re-ramp, timeline flex | shipped, **verified live**; **arc persistence fixed #42**; 2 items unit-tested only (rehab-vs-skill decay contrast, flex SHORTEN) |
+> | C — coexistence engine | shipped, **verified live**; 3 items open (handoff at ≥75%, derived-target-through-week-preview, **stale branch of app-open evaluation — now the cheapest open row**) |
+> | D — session depth | shipped; depth non-regression + budget + capacity card **verified**; **item (c) partially closed — (iii) passes, (i)+(ii) need a real re-ramp** |
+>
+> **Read before starting:** ROADMAP §6 → "BUG 1 — AUDIT RESULT" (the numbers), §6 → "BUG 3" (what
+> was just fixed and why the class recurs), the §7 consolidated verification ledger (rows 28–31),
+> §7 → "⚠ PER-GOAL vs MACRO" (**the easiest thing to get wrong — per-goal retired 3+2, the MACRO
+> roadmap did not**), and §7 → "Profile 1 migration — a flagged athlete decision" (now with the
+> two new measured inputs).
+>
+> **Carried forward, do NOT chase with synthetic data:** Session C's handoff firing at ≥75%,
+> derived-target-through-week-preview, and Session B's rehab-vs-skill decay contrast + the flex
+> SHORTEN direction (both unit-tested against the real shipped functions, never exercised
+> end-to-end on real data). **The four "Logged session #40" backlog items (L1–L4) stay parked.**
+>
+> **⚠ PROFILE 1 MIGRATION IS STILL AN ATHLETE DECISION, NOT A TASK.** Both remaining costs are
+> unchanged (it overwrites roadmaps carrying real adaptation history; it costs one extra trim-ladder
+> rung). What changed is that the two *blockers* people were worried about are gone — see §7.
+>
+> **Engine v2 remains PAUSED and its strategy REJECTED going forward.** Everything below about v2
+> stays accurate as history.
+
+## Superseded next-session block (session #41) — kept for the record
 
 > **⚠ STATUS: ALL FOUR PT BRAIN LAYERS ARE SHIPPED AND THE ARC IS CLOSED OUT.** What remains is
 > **verification and two bugs**, not construction.
