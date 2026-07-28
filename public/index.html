@@ -6393,7 +6393,10 @@ function renderProfileGoals() {
     // gets a VISIBLE indicator on the card itself, not just inside the drill-down.
     var gArc = g.roadmap && g.roadmap.arc_state;
     if (gArc && gArc.needs_regeneration) {
-      html += '<div class="goal-regen-flag"><span>&#9888;</span><span>Roadmap needs regenerating — your training has drifted past what it can absorb</span></div>';
+      // D3 COPY (session #44) — same honest framing as the drill-down banner.
+      html += '<div class="goal-regen-flag"><span>&#9888;</span><span>This plan is behind where you actually are &mdash; ' +
+        grvArcWeeks(gArc.position_week) + ' of ' + grvArcWeeks(gArc.calendar_week) +
+        ' weeks earned. Only logged sessions move it.</span></div>';
     }
     // Living Goal Roadmap drill-down entry point.
     if (g.id) {
@@ -7786,6 +7789,13 @@ var GRV_ARC_CHIP = {
   re_ramping: { label: 'RE-RAMPING',  color: 'var(--accent-ember)' },
   paused:     { label: 'PAUSED',      color: 'var(--text-muted)' }
 };
+// Earned position can be fractional (a half-credit week scores 0.5), so trim a
+// trailing ".0" rather than printing "0.0 of 5 weeks" in the athlete-facing copy.
+function grvArcWeeks(n) {
+  var v = Number(n);
+  if (!isFinite(v)) return '0';
+  return String(Math.round(v * 10) / 10).replace(/\.0$/, '');
+}
 function grvArcChipHtml(arc) {
   var c = GRV_ARC_CHIP[arc.status] || { label: String(arc.status || '').toUpperCase(), color: 'var(--text-muted)' };
   return '<span class="grv-arc-chip" style="color:' + c.color + '">' + c.label + '</span>';
@@ -7797,10 +7807,26 @@ function grvArcStale(arc) {
   var t = Date.parse(arc.last_evaluated);
   return isNaN(t) || (Date.now() - t) > 24 * 3600 * 1000;
 }
+// IN-FLIGHT GUARD (session #44). A roadmap regenerate is a multi-second Sonnet
+// call that PATCHes the whole profile_data, so two concurrent runs would race
+// last-write-wins across every goal in the column.
+//
+// Honest note on the exposure this closes: the spinner assignment below replaces
+// #grv-content synchronously, which already removes the button from the DOM on
+// the first click, so a plain double-click was mostly self-protecting. The
+// residual windows are a missing #grv-content (the `if (c)` skips, leaving the
+// button live), the Retry path, and any future refactor that renders the banner
+// somewhere the spinner does not overwrite. The flag makes "one at a time" an
+// explicit invariant instead of an emergent side effect of an innerHTML swap.
+var grvRegenInFlight = false;
 function grvRegenerateFromBanner() {
+  if (grvRegenInFlight) return;              // hard guard — one regenerate at a time
   var g = grvFindGoal(grvGoalId);
-  if (!g) return;
+  if (!g) return;                            // before the flag is set, so it can never strand
+  grvRegenInFlight = true;
   var goalId = grvGoalId;
+  var btn = document.getElementById('grv-regen-btn');
+  if (btn) { btn.disabled = true; btn.textContent = 'Rebuilding…'; }
   var c = grvContentEl();
   if (c) c.innerHTML = '<div style="display:flex;flex-direction:column;align-items:center;padding:70px 20px;text-align:center">' +
     '<div style="width:14px;height:14px;border-radius:50%;background:var(--accent-ember);animation:pulse 1.2s ease-in-out infinite;margin-bottom:16px"></div>' +
@@ -7819,6 +7845,14 @@ function grvRegenerateFromBanner() {
     .catch(function() {
       if (grvGoalId !== goalId) return;
       grvShowFullError('Could not regenerate — try again', function() { grvRegenerateFromBanner(); });
+    })
+    // SETTLE — runs on BOTH the success and the grvShowFullError paths, so the
+    // Retry button can never be stranded behind a permanently-set flag. A
+    // trailing .then() rather than .finally() to match this file's ES5 style.
+    .then(function() {
+      grvRegenInFlight = false;
+      var b2 = document.getElementById('grv-regen-btn');
+      if (b2) { b2.disabled = false; b2.textContent = 'Rebuild the phases anyway'; }
     });
 }
 
@@ -7846,10 +7880,17 @@ function grvEstimateHeaderHtml(goal) {
   // miss it. Reuses the GAPS TO ADDRESS caution treatment.
   var h = '';
   if (arc && arc.needs_regeneration) {
+    // D3 COPY (session #44). The old copy promised "Regenerate it to match
+    // reality" — which this button cannot deliver. The drift is EARNED POSITION
+    // vs calendar, not phase shape: rebuilding the phases resets the calendar and
+    // leaves position untouched, so the banner came straight back and the athlete
+    // looped. The copy now states the real numbers and what actually moves them.
     h += '<div class="grv-regen-banner">';
-    h += '<div class="grv-regen-head"><span>&#9888;</span><span>This roadmap can\'t stretch further</span></div>';
-    h += '<div class="grv-regen-body">Your training has drifted further than the remaining phases can absorb. Regenerate it to match reality.</div>';
-    h += '<button class="grv-regen-btn" onclick="grvRegenerateFromBanner()">Regenerate this roadmap</button>';
+    h += '<div class="grv-regen-head"><span>&#9888;</span><span>This plan is behind where you actually are</span></div>';
+    h += '<div class="grv-regen-body">You&rsquo;ve earned ' + grvArcWeeks(arc.position_week) + ' of ' +
+      grvArcWeeks(arc.calendar_week) + ' weeks on this goal, so the remaining phases can&rsquo;t stretch far enough to match. ' +
+      'Rebuilding the phases won&rsquo;t move your earned position &mdash; only logged sessions do that.</div>';
+    h += '<button class="grv-regen-btn" id="grv-regen-btn" onclick="grvRegenerateFromBanner()">Rebuild the phases anyway</button>';
     h += '</div>';
   }
 

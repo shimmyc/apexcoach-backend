@@ -6480,7 +6480,15 @@ function computeArcState(goal, ctx) {
       tier: qualifying.tier,
     },
     flex_streak: sustained ? ((prevArc && numOrNull(prevArc.flex_streak) || 0) + 1) : (Math.abs(drift) >= 2 ? 1 : 0),
-    needs_regeneration: !!(prevArc && prevArc.needs_regeneration),
+    // BUG 4 (session #44): this was `!!(prevArc && prevArc.needs_regeneration)`,
+    // i.e. carried forward — and since NOTHING anywhere ever wrote false, the
+    // flag was ONE-WAY. Once set it survived every evaluation, every adapt and
+    // every regenerate forever, so the athlete sat in a
+    // banner -> regenerate -> banner loop with no exit. It is now RECOMPUTED
+    // from scratch on every evaluation: seeded false here, and
+    // applyTimelineFlex (called immediately after, on every evaluation) writes
+    // the authoritative value. See ROADMAP §6 "BUG 4".
+    needs_regeneration: false,
     last_evaluated: new Date().toISOString(),
   };
 }
@@ -6488,14 +6496,33 @@ function computeArcState(goal, ctx) {
 // TIMELINE FLEX — code-owned, DURATIONS ONLY. The phase COUNT never changes
 // (enforcePhaseShape stays authoritative) and a phase the athlete is currently
 // INSIDE is never retro-resized. Returns a change report, or null for a no-op.
+// BUG 4 RESTRUCTURE (session #44). The ASSESSMENT ("can the remaining phases
+// absorb the current drift?") is now computed on EVERY call and always writes
+// `needs_regeneration`; the flex_streak gate now guards ONLY the mutation.
+//
+// Why they had to be separated — measured, not theorised. The streak gate exists
+// to stop flexes COMPOUNDING (session #37); it was never meant to gate the
+// assessment. Conflating them opened a one-evaluation window: a partial flex that
+// clamps sets the flag AND resets flex_streak to 0, so the very next evaluation
+// hits `flex_streak (1) < 2` and returns before any absorbability math runs. A
+// naive recompute would therefore read FALSE there while the drift was still
+// genuinely unabsorbable. Reproduced on profile 4's wrist goal by chaining five
+// real evaluations offline — fire 2 was the flicker. See ROADMAP §6 "BUG 4".
 function applyTimelineFlex(goal, arc, todayYmd) {
-  if (!arc || Math.abs(arc.drift) < 2) return null;
-  if ((arc.flex_streak || 0) < ARC_FLEX_STREAK_REQUIRED) return null;   // sustained only
+  if (!arc) return null;
+  // Recomputed every evaluation. Anything below that finds the drift genuinely
+  // unabsorbable sets it back to true.
+  arc.needs_regeneration = false;
+  if (Math.abs(arc.drift) < 2) return null;   // nothing to absorb -> correctly false
   var rm = goal.roadmap;
   var near = rm.phases.filter(function(p) { return p && p.type === "near_term"; });
   var upcoming = near.filter(function(p) { return p.status === "upcoming"; });
   if (!upcoming.length) {
     // Nothing left to absorb the change. Do NOT add phases — say so loudly.
+    // APPROVED WIDENING (session #44): this branch now fires below the streak
+    // gate too. Zero upcoming phases is unabsorbable regardless of how long the
+    // drift has been sustained, so gating it on the streak was hiding a true
+    // state for up to two evaluations.
     arc.needs_regeneration = true;
     return { flexed: false, needs_regeneration: true, reason: "no_upcoming_phases" };
   }
@@ -6506,7 +6533,11 @@ function applyTimelineFlex(goal, arc, todayYmd) {
   var lo = upcoming.length * PHASE_MIN_WEEKS, hi = upcoming.length * PHASE_MAX_WEEKS;
   var bounded = Math.max(lo, Math.min(hi, target));
   var clamped = bounded !== target;
-  if (bounded === upcomingWeeks) return clamped ? (arc.needs_regeneration = true, { flexed: false, needs_regeneration: true, reason: "clamped_no_room" }) : null;
+  if (clamped) arc.needs_regeneration = true;
+  // Streak gate — MUTATION ONLY from here down. The flag above is already final
+  // for this evaluation, so a short streak can no longer suppress a true state.
+  if ((arc.flex_streak || 0) < ARC_FLEX_STREAK_REQUIRED) return null;   // sustained only
+  if (bounded === upcomingWeeks) return clamped ? { flexed: false, needs_regeneration: true, reason: "clamped_no_room" } : null;
 
   var base = Math.floor(bounded / upcoming.length);
   var rem = bounded - base * upcoming.length;
@@ -6535,7 +6566,8 @@ function applyTimelineFlex(goal, arc, todayYmd) {
     goal.estimate.basis = String(goal.estimate.basis || "") + note;
   }
   if (rm.estimate) { rm.estimate = JSON.parse(JSON.stringify(goal.estimate)); }
-  if (clamped) arc.needs_regeneration = true;
+  // (the `if (clamped)` write that used to sit here is now above the streak
+  // gate, so it applies on every evaluation rather than only on flexing ones)
 
   return {
     flexed: true, direction: delta < 0 ? "shortened" : "lengthened",
