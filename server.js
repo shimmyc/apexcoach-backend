@@ -5823,6 +5823,20 @@ function goalBaselineDemand(goal) {
     normalizeDemand(goal.plan_draft && goal.plan_draft.demand);
 }
 
+// The demand a NEGOTIATION must judge — the PENDING intent, draft first.
+//
+// Deliberately the opposite precedence to goalBaselineDemand, and the difference
+// is load-bearing. The dial lock must enforce against the value already on
+// record; the fit check must reflect what the athlete just asked for. Getting
+// this the wrong way round makes the roadmap-view stepper compute its fit from
+// the OLD committed frequency, decide the week fits, and never open the
+// negotiation at all — fix 6 failing in exactly the case it exists for.
+function goalPendingDemand(goal) {
+  if (!goal) return null;
+  return normalizeDemand(goal.plan_draft && goal.plan_draft.demand) ||
+    normalizeDemand(goal.demand);
+}
+
 // FIX 2 — WHICH GOAL DOES A LEVER ACTUALLY HAVE TO MOVE?
 //
 // The bounded-three-lever design assumed the goal being created is the cause of
@@ -7831,7 +7845,7 @@ app.post("/api/profiles/:id/goals/:goalId/negotiate", async function(req, res) {
     // The goal under negotiation is normally UNCOMMITTED (fix 8), so its demand
     // has to be injected as an override or the very conflict being negotiated
     // would vanish from the fit check.
-    var draftDemand = goalBaselineDemand(goal);
+    var draftDemand = goalPendingDemand(goal);
     var overrides = {};
     if (draftDemand) overrides[goal.id] = draftDemand;
     var fit = computeCapacityFit(loaded.profileData, { overrides: overrides });

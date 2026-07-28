@@ -112,7 +112,7 @@ function buildSandbox(src, label, isPost) {
     "normalizeDemand", "numOrNull", "parseAIJson"];
   if (isPost) {
     parts.push(slice(src, label, "var NEGOTIATION_LEVERS = [", "// ── PT BRAIN · LAYER 3 — coexistence engine"));
-    expected.push("isDemandLever", "dialLockAllows", "goalBaselineDemand", "resolveLeverTarget",
+    expected.push("isDemandLever", "dialLockAllows", "goalBaselineDemand", "goalPendingDemand", "resolveLeverTarget",
       "projectLeverOutcome", "buildLeverFacts", "leverTextNumbersValid", "buildCodeAuthoredLevers");
   }
   // The two routes under test.
@@ -575,6 +575,33 @@ test("FIX 8: the negotiate route still SEES the uncommitted goal, or the conflic
   const r = await callNegotiate(POST, SHOULDER, {});
   assert.strictEqual(r.body.fits, false);
   assert.strictEqual(r.body.fit.minutes_needed, 235, "the draft demand is injected as an override");
+});
+
+test("FIX 6/8: the negotiation judges the PENDING draft, not the old committed demand", async () => {
+  // The roadmap-view stepper case: bench is COMMITTED at 2x (fits), and the
+  // athlete has just asked for 3x, which is held as a draft. If /negotiate read
+  // the committed value it would decide the week fits and never open the card —
+  // fix 6 failing in exactly the scenario it exists for.
+  const p = fixture();
+  p.goals[0].demand.sessions_per_week = 2;                       // committed, fits
+  p.goals[0].plan_draft = { goal_type: "strength_load",
+    demand: { sessions_per_week: 3, minutes_per_session: 45, hard: true, min_viable_sessions_per_week: 2 } };
+  reset(POST, p);
+  assert.strictEqual(POST.computeCapacityFit(p, {}).fits, true, "the committed state fits — that is the trap");
+  POST.__ai = () => { throw new Error("no ai"); };
+  const r = await callNegotiate(POST, BENCH, {});
+  assert.strictEqual(r.body.fits, false, "the pending 3x must be what is judged");
+  assert.strictEqual(r.body.fit.hard_needed, 3);
+  assert.strictEqual(r.body.target.goal_id, BENCH);
+  assert.strictEqual(r.body.target.is_current_goal, true);
+});
+
+test("FIX 1: the dial lock still enforces against the COMMITTED value, not the draft", () => {
+  // The mirror of the test above — the two accessors must not be collapsed.
+  const g = { demand: { sessions_per_week: 4, minutes_per_session: 25, hard: false, min_viable_sessions_per_week: 3 },
+    plan_draft: { demand: { sessions_per_week: 2, minutes_per_session: 25, hard: false, min_viable_sessions_per_week: 2 } } };
+  assert.strictEqual(POST.goalBaselineDemand(g).sessions_per_week, 4, "lock baseline = committed");
+  assert.strictEqual(POST.goalPendingDemand(g).sessions_per_week, 2, "fit check = pending draft");
 });
 
 // ═════════════════════════════════════════════════════════════════════════════
