@@ -2,7 +2,111 @@
 
 > Single reference for anyone joining the project or picking it back up after a break.
 > Pairs with `CLAUDE.md` (deep implementation notes) and `FORMULAS.md` (readiness/sleep math).
-> Last updated: 2026-07-28.
+> Last updated: 2026-08-02.
+>
+> **2026-08-02 session #46 — 🔎 PROFILE-1 DIAGNOSTIC. REPORT-ONLY, ZERO WRITES, NO CODE.** Three
+> athlete complaints diagnosed against real production data; two of the three had a cause nobody had
+> named, and **one of the athlete's own hypotheses was measured and disproved.** The only files
+> written this session are `ROADMAP.md` and `CLAUDE.md`. **Profile 1 `profile_data` sha256
+> `93971d26be9c89db997120f12299ed0ad8c197211a5484aeb9860550429721ff` at session start AND session
+> end**; workouts 92→92, exercise rows 326→326, `daily_recommendations.generated_at` unchanged
+> (`2026-08-02T19:57:47.423Z`). Profile 4 untouched. The one browser run used a **network-layer block
+> on every non-GET** — 5 POSTs (`evaluate-arcs`, `week-preview`, `goal-progress` ×2, `roadmap-data`)
+> were intercepted and never sent — plus stubs for the two read-endpoints that write as a side
+> effect (`/daily`, `/micro-goals`).
+>
+> **D1 — THE APRIL DATA IS NOT GONE. It is a 60-row read cap, and the cap predates every recent
+> change.** Counted direct: **92 workouts all-time, 326 exercise rows**, earliest **2026-04-07**.
+> Per month: **Apr 24 · May 32 · Jun 13 · Jul 12 · Aug 3** (+8 malformed, below). April carries
+> **145 exercise rows across all 24 of its workouts, 42 distinct exercise names, zero null
+> `workout_id`** — fully intact. `loadWorkouts()` fetches `/api/workouts?limit=60` ordered `ts.desc`;
+> the top 60 reaches back to exactly **2026-05-09**, so **all 24 April workouts plus the 8 oldest May
+> workouts — 32 rows — are outside the window on every surface that reads `workoutLog`** (History
+> list, calendar, streak, weekly-volume and variety blocks in the rec prompt). The **only** surface
+> that can page past it is the Today-tab "Log past workout" panel (`?offset=`, session #21).
+> **Nothing in the codebase can delete or overwrite historical workout rows unattended** — every
+> delete/overwrite path is user-triggered (see §6).
+>
+> **⚠ NEW BUG — the malformed-`workouts.date` defect is STILL ACTIVE, not 6 historical rows.**
+> §6/§2 record 6 rows holding a TIME STRING in `date` (session #33). There are now **8**, and two
+> are recent: ids **100143 (`'10:14'`) and 100144 (`'10:52'`), both `ts` 2026-07-29T19:38Z**, three
+> seconds apart. Those rows are invisible to every date-keyed view, are dropped by the arc replay's
+> own `Date.parse` filter, and never count toward a streak, a weekly target or a category tally.
+>
+> **D2 — THE WEEKLY ADAPT IS FIRING. It is the ROADMAP CARD that cannot show it.** All three legacy
+> roadmaps carry recent `weekly` entries: **Fix Posture `last_adapted_at 2026-07-30T03:24:00.945Z`,
+> v8, 7 log entries**; **Fix Pubic Osteitis `2026-07-27T16:33:35.523Z`, v9, 8 entries**; **Build
+> Muscle `2026-07-27T16:34:11.466Z`, v9, 8 entries**. The >7-day gate is working exactly as designed
+> (on 2026-07-30 only Fix Posture was stale). **No PT Brain change made the legacy path unreachable**
+> — the 2026-07-30 entry postdates sessions #40–#45, and `carryArcForward` is carry-if-present-only.
+> **Why it looks frozen, in four parts:** (1) legacy roadmaps use **time-elapsed** progress, so the
+> bar moves ~1.8 %/day; (2) phase status is **date-derived** — "Strength & Integration" is pinned
+> `current` from 2026-07-09 to 2026-09-02 no matter what is logged; (3) everything the adapt actually
+> writes lands in `adaptation_log`, which the card **collapses** behind "Show history (N updates)";
+> (4) the adapt is deliberately conservative and has correctly concluded "phase remains current and
+> valid" every time. **Also found:** the adapt sees only **`limit=10`** workouts (`date,type`) — its
+> whole "weekly review" is computed from ~10 rows. And Build Muscle's 2026-07-27 `weekly` summary is
+> **the timeline-estimate basis text, not a weekly review** (§6).
+>
+> **D3 — THE ATHLETE'S HYPOTHESIS IS WRONG, AND THE REAL CAUSE IS BIGGER. Category is chosen
+> UPSTREAM IN CODE, and the strength context is missing for a completely different reason.**
+> - **Option 1's activity is not model-chosen.** `buildScheduleInstruction()` picks it: today's
+>   anchor, else **the frequency target with the largest raw deficit**, ties broken by array order.
+>   Profile 1's targets are **Upper Body Strength 1× · "Lower Body Stength" 1× (typo) · Cardio 2× ·
+>   Yoga 2×**, anchors MMA Tue/Thu. A 2×/week target therefore **always outranks a 1×/week target**
+>   until it is half-satisfied — and **both strength targets infer to the same category `strength`**,
+>   so ONE strength session clears BOTH. **Simulated over the last 14 days against the real log:
+>   Yoga was ordered into Option 1 on 7 days, MMA (anchor) on 4, Cardio on 1, and Strength on only
+>   the last 2 (2026-08-01 and 2026-08-02).**
+> - **It self-corrected today, and the proof is in production.** Today's real cached rec
+>   (`2026-08-02T19:57:47Z`) is **all three options strength** — "Push, Pull & Rebuild",
+>   "Pull-Dominant Rebuild", "Quick Strength Reset" — because Cardio hit 3/2 ✓ and Yoga 2/2 ✓. The
+>   assembled prompt reads verbatim: *"SUGGESTED FOCUS: Upper Body Strength … 0 of 1 done."*
+> - **THE TRIM LADDER DOES NOT FIRE AT ALL — measured, both states.** Real `fetchAI({auditOnly:true})`
+>   against profile 1: **cold boot 22,779 / 28,000, `_trims: none`, headroom 5,221**;
+>   library-warm **27,053 / 28,000, `_trims: none`, headroom 947**. **Nothing is being trimmed away.**
+> - **⚠ THE REAL DEFECT: `bootApp()` never calls `loadLibrary()`, so the daily rec is generated with
+>   an EMPTY exercise history.** Measured after a full cold boot on Today: **`libExercises = 0`**,
+>   `workoutLog = 60`. Consequence in the assembled prompt: **`exerciseHistory` 3,548 → 0 chars**
+>   (the entire `RECENT EXERCISE HISTORY` block with every PERSONAL BEST — Dead Hang 2:00, Push-Up
+>   3×15, hold PRs — simply absent) and **`recentLog` 765 → 39 chars**, replaced by the literal,
+>   **false** line *"No exercises logged in the last 7 days."* — directly contradicting the
+>   `THIS WEEK SO FAR` block six lines above it, which says *"Sessions completed: 7."* **4,274 chars
+>   of strength and progression signal are silently absent from every cold-boot rec.** This is the
+>   same race class §9 flagged as unaudited after session #43's `/goal-progress` fix.
+> - **What survives the race, and why today's rec still read well:** the two **briefs** are
+>   server-generated from ALL history and are present in both states. "22.5 lbs" comes from
+>   `historical_brief`; "last logged strength session was June 22" comes from `coaching_brief`. The
+>   briefs are carrying the strength signal by accident — coarsely (one global "22.5 lbs" across
+>   rows, curls and presses) and staler (`historical_brief_updated_at 2026-07-15`).
+> - **Real last-30-day category mix (code-extracted `inferWorkoutCategory`, 15 workouts):** cardio 7
+>   (47 %) · martial_arts 3 (20 %) · mind_body 2 (13 %) · rehab 2 (13 %) · **strength 1 (7 %)**. The
+>   recs were reflecting the log — and also causing it.
+> - **The manual category pill is WRITE-FREE** — confirmed in source this session: `fetchAI`'s
+>   `altOpts` branch sets `altRec`, renders, and **returns before** the `ac_cache` write and before
+>   `cacheAIRecOnServer()`. **Not exercised on profile 1** (it still costs a real model call).
+>
+> **A1 — MIGRATION AND REC FORMAT ARE SEPARABLE, AND THE SANDBOX CONCERN DOES NOT SURVIVE CONTACT
+> WITH THE DATA.** The **only** thing a migrated goal injects into the daily-rec prompt is
+> `buildArcStateContext()` — one self-capping block, top-3 goals, `ARC_CONTEXT_CHAR_CAP = 950`.
+> `capacity` and `coexistence` are read **only** by Profile-tab UI, never by any `fetchAI` builder
+> (grep-verified). Rec **format** is governed by `buildResponseShapeSpec` / `buildTimeBudgetContext`
+> / `REC_DEPTH_TIERS` / `resolveOptionDurations` — **none of which read goal shape**. **And the
+> sandbox comparison was never valid: profile 9 has ZERO workouts, ZERO exercise rows, ZERO
+> coaching brief, ZERO historical brief, ZERO micro-goals, and no cached rec at all.** A thin rec
+> there is the correct output of a profile with no athlete data — it says nothing about roadmap
+> shape. **Recommendation: migrate, but fix the `loadLibrary()` race FIRST.**
+>
+> **A2 — THE ARC ALREADY READS FULL HISTORY; THE ADAPT AND THE REC DO NOT.** `evaluateArcsForProfile`
+> fetches from `arc_origin` forward (`limit=2000` workouts / `8000` exercises) — full history by
+> design. **The adapt reads 10 workouts. Goal-progress reads 60 workouts / all-time exercises. The
+> daily rec reads 60 workouts + a 7-day exercise slice.** At profile 1's real rate (92 sessions in
+> 118 days ≈ **5.5/week**), **60 rows ≈ 11 weeks.** The standing invariant is honored where it
+> matters most: the arc position is **computed in code** and the model only narrates it.
+>
+> **A3 — "HISTORY LIVES FOREVER" IS RECORDED AS A PRODUCT PRINCIPLE.** Nothing deletes history
+> unattended; the caps are all **read**-side. Full enumeration, correct-vs-wrong split, and the
+> proposal are in §7 and §9.
 >
 > **2026-07-28 session #45 — ✅ CAPACITY NEGOTIATION REBUILT. The athlete could not get a second
 > goal from intake to roadmap; all three levers failed. The audit found FIVE independent defects,
@@ -2400,6 +2504,138 @@ All verified present in `server.js`. `:id`/`:userId` = profile id.
 
 ## 6. Known Limitations
 
+### Profile-1 diagnostic — findings (2026-08-02, session #46)
+
+> Report-only session. Nothing here was fixed. Every number below was measured against production
+> with zero writes to profile 1 (`profile_data` sha256 identical at both ends of the session).
+
+- **⚠ THE DAILY REC IS GENERATED WITH AN EMPTY EXERCISE HISTORY ON EVERY COLD BOOT — the single
+  highest-impact finding of this session, and it is NOT the trim ladder.** `bootApp()` never calls
+  `loadLibrary()` (call sites are `showTab('library')` and the Library-tab renderers only), and
+  `libExercises` is the sole source for **both** `buildLog()` (the `RECENT N-DAY LOG`) and
+  `buildExerciseHistory()` (the `RECENT EXERCISE HISTORY` block that carries every PERSONAL BEST).
+  **Measured in a real browser after a full cold boot on Today: `libExercises = 0`, `workoutLog = 60`.**
+  Assembled-prompt delta, real `fetchAI({auditOnly:true})` on profile 1:
+
+  | section | cold boot | after `loadLibrary()` |
+  |---|---|---|
+  | `exerciseHistory` | **0** | 3,548 |
+  | `recentLog` | **39** | 765 |
+  | `_total` | 22,779 / 28,000 | 27,053 / 28,000 |
+  | `_trims` | **none** | **none** |
+
+  The 39-char cold value is the literal string **"No exercises logged in the last 7 days."** — which
+  is **false**, and sits six lines below a `THIS WEEK SO FAR` block stating *"Sessions completed: 7."*
+  So the prompt actively contradicts itself. **4,274 chars of strength/progression signal are absent
+  from the rec the athlete actually receives**, including Dead Hang 2:00, Push-Up 3×15, and every
+  hold PR. **This is the same race class §9 flagged as unaudited after session #43** fixed it for
+  `/goal-progress` — that fix moved the reads server-side for that one endpoint and explicitly noted
+  the other `libExercises`/`workoutLog` read sites had never been checked. This is one of them.
+  **Partial mitigation, discovered while measuring:** the `coaching_brief` (2,365 chars) and
+  `historical_brief` (2,157) are **server**-generated from all-time history and survive the race —
+  they are why today's rec could still cite "22.5 lbs" (from `historical_brief`) and "last logged
+  strength session was June 22" (from `coaching_brief`). The briefs are carrying the progression
+  signal by accident, coarsely and staler (`historical_brief_updated_at 2026-07-15`).
+- **✅ MEASURED AND DISPROVED — the daily-rec prompt is NOT being trimmed.** The hypothesis that
+  trimming was dropping strength context was tested with a real `auditOnly` run, not reasoned about:
+  **`_trims: none` in both the cold and the warm state.** Headroom 5,221 cold / 947 warm. **⚠ Two
+  sections were deliberately suppressed in that run to guarantee zero writes** — `/api/profiles/1/daily`
+  (which fire-and-forget upserts `daily_steps`/`daily_sleep` and stamps `last_synced_at`) and
+  `/api/profiles/1/micro-goals` (which PATCHes `current_value` when it changes). So `microGoals`
+  read 0 where session #39 measured **1,347**, and `biometrics` rendered with `?` placeholders at
+  410. **Adding session #39's `microGoals` figure back puts the warm untrimmed total at ~28,400,
+  i.e. ~400 over budget — enough to fire exactly ONE rung, `historicalBrief->400`, which matches
+  what #39 reported.** Even then, `exerciseHistory` is rung 3 and is **never reached**. Conclusion
+  stands: trimming removes nothing that carries strength context.
+- **⚠ THE MALFORMED-`workouts.date` DEFECT IS STILL ACTIVE — there are now 8 rows, not 6, and two
+  are five days old.** §2 and the session-#33 clone notes record 6 profile-1 rows holding a TIME
+  STRING in the `text` `date` column. The real count today is **8**:
+
+  | id | stored `date` | real `ts` (UTC) | type |
+  |---|---|---|---|
+  | 77 | `10:20` | 2026-05-28 16:53 | Martial Arts |
+  | 82 | `10:07` | 2026-06-02 16:17 | Martial Arts |
+  | 88 | `19:37` | 2026-06-10 03:32 | Yoga |
+  | 95 | `13:00` | 2026-06-18 13:00 | Walk |
+  | 97 | `12:52` | 2026-07-15 13:03 | Workout |
+  | 110 | `10:12` | 2026-07-21 19:24 | Martial arts |
+  | **100143** | `10:14` | **2026-07-29 19:38** | Martial arts |
+  | **100144** | `10:52` | **2026-07-29 19:38** | Walk |
+
+  The last two were written **three seconds apart** and are the first evidence the defect is
+  **recurring, not historical**. Consequences, all silent: the rows never render on the calendar or
+  in any date-keyed view; `evaluateArcsForProfile` drops them at its own `Date.parse` filter; they
+  never count toward a streak, a weekly target, or a category tally; and `dedupe-workouts` keys on
+  `date + '|' + ts`, so a future pair sharing both would be deleted as a duplicate. **The write path
+  that produces them was NOT traced this session** — that is the first step when this is picked up.
+  (`POST /api/workouts` forwards `req.body` verbatim and its future-date guard only fires when
+  `body.date` parses, so a time string passes through.)
+- **The weekly roadmap adapt IS running on profile 1; the roadmap CARD structurally cannot show it.**
+  Evidence: `last_adapted_at` **2026-07-30T03:24:00.945Z** (Fix Posture, v8), **2026-07-27T16:33:35.523Z**
+  (Fix Pubic Osteitis, v9), **2026-07-27T16:34:11.466Z** (Build Muscle, v9), each with a `weekly`
+  `adaptation_log` entry containing genuinely new analysis. Four independent reasons the athlete sees
+  nothing: (1) legacy roadmaps take the **time-elapsed** progress branch (`arc_state` absent), capped
+  at 90 % — ~1.8 %/day on an 8-week phase; (2) phase status is **date-derived**, so "Strength &
+  Integration" is `current` from 2026-07-09 to 2026-09-02 regardless of what is logged; (3) the new
+  analysis lands **only** in `adaptation_log`, which `renderGoalRoadmap` collapses behind
+  "Show history (N updates)"; (4) the adapt prompt's conservative bias is working — it has correctly
+  answered "phase remains current and valid" every time. **Not a bug. A visibility gap.**
+- **`maybeAdaptAllRoadmaps` judges a "weekly review" from 10 workout rows.** `server.js:7534` fetches
+  `order=date.desc&limit=10&select=date,type`. At profile 1's real rate (~5.5 sessions/week) that is
+  about **12 days**, and `buildWeeklyReviewContext`'s own `prev14` bucket (days 15–28) is therefore
+  almost always empty by construction — the function guards its `prev14 === 0` resumption signal
+  against exactly this, but the 14-day bucket itself is still built from a window that barely reaches
+  14 days. Per-goal exercise context is separately fetched at 90 days and full context at 60, so the
+  adapt is not blind — but its *session-count* evidence is thinner than the prose it writes implies.
+- **Build Muscle's 2026-07-27 `weekly` adaptation_log summary is not a weekly review.** It reads
+  *"Visible muscle definition and functional size typically require 6-12 months of consistent
+  progressive overload…"* — that is timeline-estimate **basis** prose, not an analysis of the week.
+  The other two goals' `weekly` entries that day are real reviews. Single occurrence, not chased.
+- **Nothing in the codebase can delete or overwrite historical workout/exercise rows unattended —
+  enumerated in full.** Every path is user-triggered or admin-gated:
+
+  | path | effect | trigger | guard |
+  |---|---|---|---|
+  | `DELETE /api/workouts/:id` | deletes 1 workout + its exercises | History card "Delete" | client `confirm()` |
+  | `DELETE /api/profiles/:id` | deletes ALL workouts + exercises | Settings → delete profile | PIN in body |
+  | `POST /api/profiles/:id/dedupe-workouts` | **bulk DELETE**, keyed `date\|ts` | Profile dev button | **⚠ NO confirm, NOT admin-gated** |
+  | `POST /api/profiles/:id/reformat-titles` | **overwrites `workouts.type` on every workout with notes** (limit 10000, one AI call each) | Profile dev button | client `confirm()` |
+  | `PATCH /api/workouts/:id` | edits one row (never re-extracts — §6 above) | History card edit | — |
+  | `DELETE /api/profiles/:id/exercises/:exerciseId` | 1 exercise row | admin/audit tool | profile-ownership check |
+  | `POST /api/debug/delete-orphaned-exercises/:id` | reviewed orphan list | admin | `ADMIN_SECRET` + re-verify |
+  | `POST /api/debug/purge-sandbox-workouts/:id` | `[SEED]`-marked rows only | admin | `ADMIN_SECRET` + **profiles 1 and 4 denylisted** |
+
+  **No scheduler, cron, or fire-and-forget path deletes or rewrites a workout or exercise row.** The
+  v2 nightly job deletes only `planned_sessions`. **Two items worth flagging (both logged in §9):**
+  `dedupe-workouts` performs a bulk delete from a single unconfirmed tap, and `reformat-titles`
+  rewrites the `type` of every historical workout — and `type` is exactly what
+  `inferWorkoutCategory()` reads for every weekly-target count and category tally.
+- **Option 1's CATEGORY is chosen upstream in code, and the scorer has no notion of goal priority.**
+  `buildScheduleInstruction()` picks today's anchor, else the `frequency_target` with the largest
+  raw deficit (`needed - done`), `+0.5` only if today is its `suggested_day`, ties broken by array
+  order via a strict `>`. Profile 1's four targets are **Upper Body Strength 1× · "Lower Body
+  Stength" 1× · Cardio 2× · Yoga 2×**, all with `suggested_day: null`. Three compounding effects:
+  (a) a **2×/week target structurally outranks a 1×/week target** until it is half-met, so Yoga and
+  Cardio monopolise Option 1; (b) **both strength targets resolve to the same inferred category
+  `strength`**, so `schedTargetDoneCount` counts the same workouts for both and ONE strength session
+  clears BOTH; (c) `inferWorkoutCategory` tests `strength` **before** `cardio`, so a combined title
+  like *"Cardio (Stationary Bike, 20min) + Strength (Upper Body) + Mind & Body"* counts as **strength
+  only** and advances neither the cardio nor the yoga target. **Simulated over the real last 14 days:
+  Yoga ordered 7×, MMA anchor 4×, Cardio 1×, Strength 2× (2026-08-01 and 2026-08-02 only).** Not a
+  bug in any single function — an emergent property of `times_per_week` × a raw-deficit scorer. The
+  athlete can change the outcome today by editing the targets; no code change is required for that.
+- **`frequency_targets[1].activity` is spelled `"Lower Body Stength"` in profile 1's stored
+  schedule.** It still resolves to `strength` (the regex matches `lower`), so nothing breaks — but it
+  renders verbatim in the prompt's `WEEKLY TARGET STATUS` block and in the Schedule card. **Athlete
+  data, not code. Not corrected this session (read-only scope).**
+- **The sandbox comparison that motivated the "roadmaps only" migration request was never valid.**
+  Profile 9 has **0 workouts, 0 exercise rows, 0 coaching brief, 0 historical brief, 0 micro-goals,
+  and no `daily_recommendations` row at all** — so no artifact of the rec the athlete judged even
+  exists to re-read. Its one roadmap'd goal (Bench Press 185lb, `strength_load`, `arc_origin
+  2026-07-28`) sits at arc week 0. A generic rec on that profile is the correct output of a profile
+  with no athlete data and carries no information about whether the migrated roadmap shape degrades
+  the rec.
+
 > **⚠ 2026-07-24 (session #34): every Engine v2 item in this section is now HISTORY of a PAUSED
 > arc, not an open work queue.** v2 remains in the repo, flag-gated off; nothing was reverted. Read
 > **"Rejected Approaches & Lessons — Engine v2 arc"** at the end of this section before proposing
@@ -3783,6 +4019,11 @@ either the MACRO roadmap or a LEGACY per-goal roadmap — never current per-goal
 | 40 | **L1 — fix 7** | **The code-authored levers are the guaranteed floor; no failure path dead-ends** | **VERIFIED BY HARNESS** | AI timeout, unparseable output, wrong-shape set and fabricated numbers all return **HTTP 200 with three honest levers**; the call is bounded at 18s, under Render's ~25s ceiling. Pre-fix, an AI failure **500'd** — the code-authored fallback existed ten lines below but was unreachable, which is the "Could not load your options" card the athlete hit. That client path is deleted |
 | 41 | **L1 — Phase 3** | **Shoulder goal intake→roadmap, and the 5K goal's full flow** | **⛔ BLOCKED — NEEDS THE ATHLETE, NOT CODE** | The pre-fix flow **destroyed the athlete's intake answers** (they live in the client-side `grvPendingAnswers` until the negotiation resolves). Measured: the shoulder goal has **6 questions, 0 stored answers**; the 5K goal has neither. Completing these would require inventing athlete answers, which §0.2 rule 5 forbids — and both failures were **UI flows**, so an API replay would not verify what actually broke. **Check:** Shimmy re-runs both goals in the app (visual checklist handed over). The week currently **fits** (190/300 min, 2/2 hard), so the shoulder goal should now go intake → roadmap with no negotiation at all |
 
+| 42 | **Rec prompt** | **The trim ladder is NOT removing strength context — the athlete's hypothesis, measured and DISPROVED** | **✅ VERIFIED (2026-08-02, session #46)** | Real `fetchAI({auditOnly:true})` on production profile 1 from a browser under a network-layer non-GET block: **cold boot 22,779 / 28,000 `_trims: none` (headroom 5,221)**; library-warm **27,053 / 28,000 `_trims: none` (headroom 947)**. `timeBudget` 2,180 cross-checks exactly against #39's 1,539 + Layer 4's +641. **Caveat stated, not glossed:** `/daily` and `/micro-goals` were stubbed because both WRITE as a side effect, so `microGoals` read 0 (vs #39's 1,347) and `biometrics` rendered with `?` placeholders at 410 — adding #39's `microGoals` figure back puts the warm untrimmed total ~400 over budget, enough for exactly ONE rung (`historicalBrief->400`), matching #39. **`exerciseHistory` is rung 3 and is never reached either way** |
+| 43 | **Rec prompt — NEW DEFECT** | **`bootApp()` never calls `loadLibrary()`, so the daily rec is generated with an EMPTY exercise history** | **⚠ OPEN — MEASURED, NOT FIXED (2026-08-02, session #46)** | Real browser, cold boot on Today, 9 s settle: **`libExercises = 0`**, `workoutLog = 60`. Assembled prompt: **`exerciseHistory` 3,548 → 0 chars** (the whole `RECENT EXERCISE HISTORY` block with every PERSONAL BEST) and **`recentLog` 765 → 39 chars**, the 39 being the literal **false** line *"No exercises logged in the last 7 days."* six lines below *"Sessions completed: 7."* **4,274 chars of strength/progression signal absent from every cold-boot rec.** Second instance of the race session #43 fixed for `/goal-progress`; §9 predicted more existed. **Partial backstop found:** the two briefs are server-generated from all-time history and survive, which is why a cold rec can still cite "22.5 lbs" (`historical_brief`) and "June 22" (`coaching_brief`). **CHECK TO CLOSE:** after the fix, a cold-boot `auditOnly` run must report `exerciseHistory > 0` and a `recentLog` that lists real sessions. §9 |
+| 44 | **Data integrity — NEW** | **The malformed-`workouts.date` defect is STILL ACTIVE (8 rows, not the 6 on record)** | **⚠ OPEN — MEASURED, NOT FIXED (2026-08-02, session #46)** | Counted direct on profile 1. Six historical rows (ids 77/82/88/95/97/110) plus **two new ones: 100143 (`'10:14'`) and 100144 (`'10:52'`), both `ts` 2026-07-29T19:38Z, three seconds apart.** `workouts.date` is `text`; `POST /api/workouts` forwards `req.body` verbatim and its future-date guard only engages when `body.date` parses. Rows are invisible to every date-keyed view, dropped by `evaluateArcsForProfile`'s own `Date.parse` filter, and count toward no streak/target/tally. **CHECK TO CLOSE:** trace and close the client write path, then confirm no new malformed row appears after a full week of normal logging. Repairing the 8 existing rows is a **separate** review-then-apply decision. §6, §9 |
+| 45 | **L1 — migration scope** | **Roadmap shape and rec FORMAT are separable; the sandbox comparison was invalid** | **✅ VERIFIED (2026-08-02, session #46)** | Grep-verified: `capacity` and `coexistence` are read **only** by Profile-tab UI, never by any `fetchAI` builder; the **only** migration-derived block in the rec prompt is `buildArcStateContext()` (top-3 goals, `ARC_CONTEXT_CHAR_CAP = 950`, returns `''` with no `arc_state`). Rec format is governed by `buildResponseShapeSpec` / `buildTimeBudgetContext` / `REC_DEPTH_TIERS` / `resolveOptionDurations`, whose signatures take durations/counts/settings and **not goals**. **Sandbox counter-evidence, measured:** profile 9 has **0 workouts, 0 exercise rows, 0 coaching brief, 0 historical brief, 0 micro-goals and no `daily_recommendations` row at all** — the rec the athlete judged is not recoverable and was generated from a profile with no athlete data. §7 → "A1 ANSWERED" |
+
 **Profile 1 was byte-identical across Sessions A, B and C** — goals sha256 `0901b047d1c95f50…`
 before and after each — and Session D was the first to change code it runs daily, which is why
 depth non-regression was that session's primary success criterion (rows 23–24).
@@ -4072,6 +4313,171 @@ data point in its favour: profile 4, carrying **1** arc goal, assembled at **27,
 headroom 807 and only the usual `historicalBrief->400` rung** — it did **not** need the projected
 `coachingBrief→400`. A three-arc profile is still heavier, so the single extra rung remains the
 honest planning assumption for profile 1, not a certainty.
+
+---
+
+##### ✅ A1 ANSWERED — 2026-08-02, session #46: CAN THE MIGRATION BE SCOPED TO ROADMAPS ONLY?
+
+**The athlete's question, verbatim intent: migrate how roadmaps work WITHOUT changing the daily
+workout-suggestion format, because the suggestion format on the sandbox profile read badly.**
+
+**Answer: the two are ALREADY separable, because rec FORMAT does not read goal shape at all.
+Migration changes rec CONTENT, not rec FORMAT — and the sandbox evidence does not support the
+concern in the first place.**
+
+**1. What migrating profile 1's goals actually turns on.** Migration means giving each goal
+`goal_type` + `demand` + `estimate`, which makes `derivePhasePlan()` derive the phase count and each
+phase's week budget, which makes the goal **arc-eligible** (`evaluateArcsForProfile` filters on
+`roadmap.estimate` + a `near_term` phase), which produces `roadmap.arc_origin` + `roadmap.arc_state`,
+which switches `recomputeRoadmapProgress` from the time-elapsed branch to the earned-position branch.
+Layer 3 (`capacity`, `coexistence`) is a **separate** opt-in captured at intake and is not implied.
+
+**2. Which of those inject anything into the DAILY REC prompt — the crux. Exactly ONE.**
+
+| new state | reaches the daily-rec prompt? | via |
+|---|---|---|
+| `goal.goal_type` / `goal.demand` / `goal.estimate` | **no** | nothing in `fetchAI` reads them |
+| derived phase count / `duration_weeks` | **no** | phase *content* already reaches it via `buildRoadmapEmphasisContext()`, which works on legacy roadmaps today (**1,572 chars on profile 1 right now**) |
+| `roadmap.arc_state` / `arc_origin` | **YES — the only one** | `buildArcStateContext()`, one block, top-3 goals, self-capping at `ARC_CONTEXT_CHAR_CAP = 950` |
+| `profile_data.capacity` | **no** | grep-verified: read only by the Profile-tab capacity card and the goal-roadmap view |
+| `profile_data.coexistence` | **no** | grep-verified: read only by the Profile-tab coexistence card |
+
+**3. Rec FORMAT is governed by four things, none of which read goal shape.**
+`buildResponseShapeSpec(aiNumOpts, aiShowMV, durations)` (the JSON skeleton and section rules),
+`buildTimeBudgetContext(durations, intensity)` (the time budget + the Layer-4 depth floor),
+`REC_DEPTH_TIERS` / `recDepthFloorFor()` (movements per section), and
+`resolveOptionDurations()` (the duration ladder, from the schedule and the athlete's pill). **Their
+signatures take durations, counts and settings — not goals.** So a migrated profile 1 gets the
+**identical card shape, identical section structure, identical depth floor and identical duration
+ladder**. What changes is that the model is additionally told where the athlete has actually *earned*
+their way to, and instructed to prescribe for that position rather than the calendar.
+
+**Verdict: SEPARABLE — and the separation needs no flag, no gate and no injection point, because it
+already exists.** `buildArcStateContext()` returns `''` for any goal with no `arc_state`, so it is
+already per-goal opt-in. If the athlete wanted the arc *computed* but not *narrated*, the mechanism
+is a one-line early return in that one function — but that would discard the entire athlete-facing
+payoff of Layer 2, so it is **not recommended**.
+
+**4. WAS the sandbox rec format actually worse? Checked independently — and the comparison is
+invalid.** Profile 9 has **0 workouts, 0 exercise rows, 0 coaching brief, 0 historical brief, 0
+micro-goals, no wearable, and no `daily_recommendations` row at all** (so the rec the athlete judged
+is not even recoverable). Any rec generated there was assembled from the system prompt, three goal
+titles, one roadmap's emphasis, and an arc block reading week 0 — with **no history to be specific
+about**. A thin, generic rec is the correct output of that input. **This is thin/synthetic history,
+not a Layer 4 regression and not the negotiation-corrupted goal state #45 fixed.** The concern does
+not survive #45 and does not transfer to profile 1, which has 92 workouts and 326 exercise rows.
+
+**5. ⚠ ONE REAL PREREQUISITE, and it is new.** Profile 1's cold-boot rec currently ships with
+**`exerciseHistory` = 0 chars** because `bootApp()` never calls `loadLibrary()` (§6, session #46).
+Migrating on top of that would add an arc block that says *"prescribe for the EARNED position"* to a
+prompt that **cannot see what the athlete has actually lifted**. That is the worst of both worlds:
+more instruction, no more evidence.
+
+**RECOMMENDATION (one, as asked): fix the `loadLibrary()` race first, then migrate all three
+roadmaps in one pass — and do NOT scope the migration to "roadmaps only", because there is nothing
+to scope out.** The format concern is answered by the table above; the remaining cost is unchanged
+and is still cost 1 (regeneration overwrites three roadmaps carrying real `adaptation_log` history —
+use the Coach-Chat regen path, which preserves `version`/`adaptation_log`, not the reset path).
+
+---
+
+##### ✅ A2 ANSWERED — 2026-08-02, session #46: DOES THE BRAIN SEE THE WHOLE HISTORY?
+
+**The athlete's stated expectation: the system should analyse the ENTIRE workout history to know
+where he stands against a roadmap.**
+
+**Every relevant consumer's real window, measured from the source:**
+
+| consumer | workouts | exercises | verdict |
+|---|---|---|---|
+| **Arc / earned position** (`evaluateArcsForProfile`, `computeArcState`) | `date >= arc_origin`, **`limit=2000`** | `date >= arc_origin`, **`limit=8000`** | **✅ full history from the origin — by design, and the fetch window is deliberately keyed off `arc_origin` and NOT off phase dates (session #37 bug #2)** |
+| **Weekly adapt** (`maybeAdaptAllRoadmaps`) | **`limit=10`**, `select=date,type` | `getFullExerciseContext(60)` + per-goal `getGoalExerciseContext(90)`, each `limit=5000` | ⚠ **10 workout rows ≈ 12 days at this athlete's rate** |
+| **Goal progress** (`POST /goal-progress`) | **`limit=60`**, `ts.desc` | all-time, `limit=5000` | ⚠ 60 workouts ≈ **11 weeks** |
+| **Daily rec prompt** (`fetchAI`) | `workoutLog` = **`limit=60`** (weekly volume, variety, streak) | **7-day slice** of `libExercises` + top-10 by session count for PRs | ⚠ and today it is **0** on a cold boot (§6) |
+| **Coaching brief / historical brief / history search / analytics** | `limit=10000` (all-time) | `limit=10000` (all-time) | ✅ full history |
+| **Macro roadmap generate** | `limit=30` | `getFullExerciseContext(90)` | — |
+| **Per-goal roadmap generate** | `limit=20` | goal + full context | — |
+
+**FLAGGED HARD, as asked: earned-position computation is NOT capped — but the adapt is, and the
+daily rec is.** The arc replay is the one place that genuinely reads everything, and it is also the
+one place the "code computes, model narrates" invariant is fully honoured. **The 60-row cap is the
+one to quantify:** profile 1 has logged **92 sessions between 2026-04-07 and 2026-08-02 — 118 days,
+≈ 5.5 sessions/week.** At that rate **60 rows covers ~11 weeks**, and it is measurably *already*
+binding: the top 60 by `ts` reaches back to **2026-05-09**, so 32 real sessions (all of April plus
+8 days of May) are outside every `workoutLog`-driven surface. For a heavier logger — 7/week — 60
+rows is **8.5 weeks**.
+
+**The architectural correction, stated explicitly for the docs:** the ANALYSIS should cover full
+history, but **per the standing invariant it is CODE that analyses and the model that narrates a
+code-computed result — the model is never handed raw history to interpret.** Current behaviour
+**honours this where it counts and violates it nowhere**: `computeArcState` replays the entire log in
+code and the AI only reads the resulting one-line `ARC STATE` block; `getFullExerciseContext` /
+`getGoalExerciseContext` aggregate in Node and hand the model rollups, not rows; the coaching and
+historical briefs are the one place the model *does* see a wide window, and they are explicitly a
+**summarisation** step whose output is then treated as text. **The gap is not the invariant — it is
+that some code-side analyses are handed a truncated window to analyse.**
+
+**PROPOSED (do not build), with cost:**
+1. **Aggregate, don't widen.** Add a server-side `getTrainingHistorySummary(profileId)` that reads
+   all-time `workouts` + `exercises` (both already indexed by `profile_id`) and returns
+   **per-month category counts, per-exercise first/last/best, longest gap, and total sessions** —
+   a few hundred chars of rollup regardless of history size. Feed it to the adapt and the daily rec
+   in place of raw rows. *Cost: one new helper (~80 lines), one Supabase read per consumer, ~300–500
+   prompt chars. No schema change.* **This is the right shape — it scales to 10 years.**
+2. **Raise the adapt's workout window 10 → ~40** so `buildWeeklyReviewContext`'s own 14/28-day
+   buckets are actually populated. *Cost: one number. No prompt-size change (it emits counts).*
+3. **Leave the arc alone.** It already reads everything and is the model of how the rest should work.
+4. **Do NOT raise `loadWorkouts()`'s 60 to "all".** That is the display problem, and the answer there
+   is pagination/date-range (A3), not a bigger blob — session #43's standing rule about
+   `/goal-progress` is the precedent.
+
+---
+
+##### ✅ A3 ANSWERED — 2026-08-02, session #46: "WORKOUT HISTORY SHOULD LIVE FOREVER"
+
+> **RECORDED AS A PRODUCT PRINCIPLE. Nothing in the codebase deletes history unattended (§6 has the
+> full enumeration of every delete/overwrite path). Every cap below is a READ cap, not a retention
+> policy — the data is all still there.**
+
+**Every place history is capped, truncated, paginated or dropped:**
+
+| # | where | cap | correct or wrong |
+|---|---|---|---|
+| 1 | `loadWorkouts()` → `workoutLog` | **60 rows** | **⚠ WRONG — this is the one the athlete hit.** It is the sole source for the History list, the calendar, the streak, and the rec prompt's weekly-volume/variety blocks. A user cannot view their own past training. |
+| 2 | Log-past panel `lpFetchNextPage()` | pages at 60 via `?offset=` | ✅ correct — and it is the *only* surface that can reach April today |
+| 3 | `buildLog()` (rec prompt) | last **7 days**, trimmable to 4 | ✅ correct — prompt budget |
+| 4 | `buildExerciseHistory()` (rec prompt) | top **10** by session count, trimmable to 5 (+ hold-PR re-attach) | ✅ correct — prompt budget |
+| 5 | `maybeAdaptAllRoadmaps` | **10** workouts | ⚠ wrong-ish — see A2 item 2 |
+| 6 | `POST /goal-progress` | **60** workouts | ⚠ borderline — replicated deliberately in #43 to preserve byte-identity; should follow #1 |
+| 7 | `getFullExerciseContext` | **60 days** | ✅ correct — a rolling recency window by design |
+| 8 | `getGoalExerciseContext` | **90 days** | ✅ correct |
+| 9 | `GET /api/meditations` | 30 rows | ⚠ wrong for a habit surface, harmless today |
+| 10 | `daily_steps` history endpoint | clamps to **365 days** | ⚠ known (session #33) — the table holds 736 rows |
+| 11 | `daily_sleep` | **no listing endpoint exists at all** | ⚠ known (session #33) |
+| 12 | Coach Chat snapshot | 7-day exercise log + **30-day** sleep block | ✅ correct — hard char guard; the all-history sleep rollup is already a decided-to-build item |
+| 13 | arc replay | `arc_origin` → today | ✅ correct |
+| 14 | `historical_brief` | regenerated on demand only | ⚠ **stale: `2026-07-15`**, and it is currently carrying strength context by accident (§6) |
+
+**PROPOSED (do not build) — what permanent, fully viewable history requires:**
+1. **Date-range + pagination on the History tab**, not a bigger `limit`. The server already accepts
+   `?offset=`; the missing pieces are a month/year picker and a `?start_date=`/`?end_date=` pass-through
+   on `GET /api/workouts`. *Cost: small server change (two query params), medium client change
+   (calendar already knows about months). This is the actual fix for the athlete's complaint.*
+2. **Aggregate strategy so prompts stay in budget** — A2 item 1. Full-history *analysis* must never
+   mean full-history *rows in a prompt*. Today's measured headroom is 947 chars warm; a rollup block
+   fits, a row dump does not.
+3. **Retention/backfill gaps still outstanding:**
+   - **The Fitbit → Google Health historical activity backfill is NOT built** (§7 near-term item 2).
+     `backfill-wearable-history` is **Fitbit-only**, and the **Fitbit Web API shuts down September
+     2026**. Sleep/HRV/steps history was backfilled 2026-07-17 (675/674/653 rows) and RHR was
+     re-runnable after the chunking fix — but **activities** (the workout-matching source) have no
+     GH equivalent. After the shutdown there is no remaining source for any further gap-filling.
+   - **8 malformed-`date` workout rows** are effectively invisible history (§6) and the write path is
+     still open.
+   - **Historical `daily_sleep` / `daily_steps` `source` labels before 2026-07-20 are permanently
+     wrong** and cannot be corrected (§6, session #31).
+   - **`workouts` has no `created_at`/`updated_at`**, so "when was this row really written" is
+     unanswerable — which is what makes repairing the malformed-date rows a review job.
 
 ---
 
@@ -4647,6 +5053,70 @@ Macro roadmap shape (stored on `profiles.roadmap_data`):
 ---
 
 ## 9. Technical Debt & Cleanup
+
+### Added 2026-08-02 (session #46) — profile-1 diagnostic
+
+- [ ] **⚠ `bootApp()` never calls `loadLibrary()`, so every cold-boot daily rec is generated with an
+  EMPTY exercise history — the highest-value item in this list.** Measured: `libExercises = 0` after
+  a full cold boot; `exerciseHistory` 3,548 → **0** chars, `recentLog` 765 → **39** chars (the literal
+  false line *"No exercises logged in the last 7 days."*). §6 has the full table. **This is the second
+  instance of the race session #43 fixed for `/goal-progress`, and §9 explicitly predicted more
+  existed.** **Three candidate fixes, in ascending cost:** (a) add `loadLibrary()` to `bootApp()` —
+  one line, but it adds two GETs to the boot critical path and does not remove the race, it just
+  makes it usually-win; (b) have `resolveAIRecs()`/`fetchAI()` **await** an exercise fetch the way
+  `fetchAI` already awaits `microGoalsReady` — deterministic, and the pattern is already in the
+  function; (c) move both builders server-side, the full session-#43 treatment. **(b) is the shape
+  that matches the existing code.** **Also fix the honesty bug regardless of which is chosen:**
+  `buildLog()` should not emit *"No exercises logged in the last N days"* when `libExercises` is
+  simply unloaded — an unknown must not be reported as a zero, and today it directly contradicts the
+  `THIS WEEK SO FAR` block in the same prompt.
+- [ ] **Audit the remaining `libExercises` / `workoutLog` read sites for the same race.** Session #43
+  logged this as unaudited; session #46 confirmed one live instance in the highest-traffic consumer.
+  Known readers not yet checked: `renderLibExercisesGrouped`, `buildLoggedCountIndex`,
+  `updateLibImportBanner` (`index.html:15029`), `ensureHistoryChipsLoaded`, and every
+  `calculateStreak`/weekly-volume path that assumes `workoutLog` is populated.
+- [ ] **⚠ The malformed-`workouts.date` write path has never been traced, and it is STILL PRODUCING
+  ROWS.** 8 rows now (was 6 as of session #33); ids **100143 / 100144 were written 2026-07-29,
+  three seconds apart**. `workouts.date` is `text`, `POST /api/workouts` forwards `req.body`
+  verbatim, and the future-date guard only engages when `body.date` parses — so a time string passes
+  straight through. **First step is finding the client path that sends a time string as `date`**
+  (suspects: `reLogWorkout` / `useTemplate` prefill, the past-date picker, or a wearable-import
+  path), then a `CHECK (date ~ '^\d{4}-\d{2}-\d{2}$')` constraint or a server-side validation.
+  **Repairing the 8 existing rows is a separate decision** — each row's real date is recoverable from
+  `ts`, but `ts` is a last-write stamp (§6), so this is a review-then-apply job, not an auto-fix.
+- [ ] **`POST /api/profiles/:id/dedupe-workouts` performs a BULK DELETE from a single unconfirmed
+  tap, and is not admin-gated.** `dedupeWorkouts()` (`index.html:15533`) has no `confirm()`, unlike
+  its neighbour `reformatAllTitles()`. The endpoint groups on `date + '|' + ts` and deletes every
+  row after the first in each group. Low real-world risk today (`ts` is `Date.now()`), but it is the
+  only unconfirmed destructive control in the app, and the malformed-date rows above are exactly the
+  class of row most likely to collide. **Add a confirm at minimum; consider a dry-run report first,
+  matching the orphaned-exercises pattern.**
+- [ ] **`POST /api/profiles/:id/reformat-titles` overwrites `workouts.type` on EVERY workout with
+  notes** (limit 10000, one AI call each, `temperature` unpinned on this call path since it uses bare
+  `callAI(prompt, 100)`). `workouts.type` is what `inferWorkoutCategory()` reads for every weekly
+  target count, every category tally, and the variety block — so a re-run silently re-shapes the
+  athlete's whole category history. Confirmed behind a `confirm()`, but there is **no dry run, no
+  before/after report, and no way back**. Same discipline as the exercise-canonicalization backfill
+  (report → review → apply) would apply cleanly here.
+- [ ] **`profile_data.schedule.frequency_targets` has no priority weighting and no
+  category-uniqueness check.** Two targets can resolve to the same inferred category (profile 1:
+  "Upper Body Strength" and "Lower Body Stength" both → `strength`), which makes
+  `schedTargetDoneCount` count the same workouts for both and lets one session clear two targets;
+  and the Option-1 scorer uses raw deficit only, so a 2×/week target always outranks a 1×/week target.
+  §6 has the measured 14-day consequence. **This is a design question, not a patch** — options are:
+  score by `deficit / times_per_week` (proportional), let a target declare a goal link and weight by
+  goal priority (the keystone join already exists), or surface the collision in the Schedule editor.
+- [ ] **The Living Goal Roadmap card cannot show that an adapt ran.** The adapt writes genuinely new
+  analysis every week and it all lands in `adaptation_log`, which the card collapses behind
+  "Show history (N updates)". Meanwhile the visible surface (progress bar, phase status) is
+  **date-derived** on a legacy roadmap and moves ~1.8 %/day. **Cheapest honest fix: surface
+  `last_adapted_at` and the newest `adaptation_log` summary uncollapsed on the card**, so "your coach
+  reviewed this on July 30" is visible without a tap. Migration fixes the progress-bar half of this
+  (earned position replaces time-elapsed); it does not fix the log visibility.
+- [ ] **`maybeAdaptAllRoadmaps` builds its weekly review from `limit=10` workouts.** At ~5.5
+  sessions/week that is ~12 days, so `buildWeeklyReviewContext`'s 14-day and prior-14-day buckets are
+  built from a window that barely covers the first one. Widening to ~40 rows would cost one larger
+  Supabase read and no extra model tokens (the function emits counts, not rows).
 
 - [ ] **A failed or abandoned negotiation DESTROYS the athlete's intake answers (added 2026-07-28,
   session #45). Real, measured, user-facing — the highest-value item in this list.**
