@@ -3,3 +3,7 @@ node_modules/
 .env.*
 !.env.example
 .gstack/
+
+# Session #47: profile snapshots taken before the profile-1 migration.
+# These contain the athlete's full profile_data and must NEVER be committed.
+backups/
