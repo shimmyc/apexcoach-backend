@@ -2,7 +2,178 @@
 
 > Single reference for anyone joining the project or picking it back up after a break.
 > Pairs with `CLAUDE.md` (deep implementation notes) and `FORMULAS.md` (readiness/sleep math).
-> Last updated: 2026-08-02.
+> Last updated: 2026-08-03.
+>
+> **2026-08-03 session #47 — ✅ COLD-BOOT RACE FIXED · MALFORMED-DATE ROOT-CAUSED · HISTORY MADE
+> FULLY VIEWABLE · WEEKLY ARC PATH VERIFIED LIVE · PROFILE 1 MIGRATED.** Five phases, gated. Three
+> commits (`74137f2` phases 1–3, `aa0bf6c` backup/rollback, close-out). Suites **305 → 329**.
+> **Two SQL files written and NOT run** (repair + CHECK constraint). Profile 1 `profile_data` was
+> **byte-identical (`ede3e778946cad6d`) across Phases 1–4 and the 5a audit** — the only pre-gate
+> change was the athlete's own "Skip focus today" tap, proven not ours (see below).
+>
+> **⚠ THREE DOC CORRECTIONS, all found by measurement, all load-bearing:**
+> 1. **The cold-boot exercise-history bug is a RACE, not a deterministic zero.** §6/§9/ledger row 43
+>    state `libExercises = 0` on cold boot as a fact. There is a **third async chain nobody had
+>    traced** — `bootApp() → loadDailySteps() → renderLibDashboard() → loadLibrary()` (the
+>    `if (libView === 'dashboard') renderLibDashboard()` tail of `loadDailySteps`, which hits
+>    `renderLibDashboard`'s own `if (!libStats) { loadLibrary(); return; }`) — and it RACES the rec
+>    chain (`loadWorkouts → syncFitbit → /daily → resolveAIRecs → fetchAI`). #46 observed the losing
+>    side; a fast run observes the winning side (measured: `libExercises = 75` at boot+9s). **This
+>    makes the defect WORSE, not better** — the rec silently had full progression data some days and
+>    none on others with no signal either way — and it proves candidate fix (a) ("add `loadLibrary()`
+>    to `bootApp`") was never sufficient, exactly as §9 predicted.
+> 2. **The malformed-`workouts.date` defect was NEVER a client bug.** `POST /api/workouts` has
+>    rejected a non-`YYYY-MM-DD` date since 2026-07-15. The rows came from `createWearableWorkout()`,
+>    which inserts **straight into PostgREST and bypasses that handler entirely**. §9's suspects
+>    (`reLogWorkout` / `useTemplate` / the past-date picker) were all wrong.
+> 3. **`GET /api/workouts` orders by `ts`, a LAST-WRITE stamp — so the "newest 60" is not the 60 most
+>    recent by date.** Measured on profile 1: only **52 of 60 overlap** with the newest-60-by-date,
+>    and **workout id 68 has `ts = null`** and therefore sorts FIRST under `order=ts.desc`. The
+>    streak, the rec prompt's weekly-volume/variety blocks and `/goal-progress` all read that window.
+>    NEW, logged in §9, not fixed.
+>
+> **PHASE 1 — the cold-boot exercise-history race. FIXED (option (b), the deterministic one).**
+> `fetchAI` now awaits `ensureLibExercises()` exactly the way it already awaited `microGoalsReady`
+> (one `Promise.all`); `bootApp()` warms it in parallel so the await joins an in-flight request and
+> adds no boot latency. Plus the **honesty guard** §9 asked for: `buildLog()` no longer reports an
+> UNLOADED library as *"No exercises logged in the last 7 days."*
+> **Verified in a real browser against production profile 1, zero writes, with the library reads
+> deliberately delayed to force the losing side of the race:**
+>
+> | | pre-fix | post-fix |
+> |---|---|---|
+> | `exerciseHistory` | **0** | **3,548** |
+> | `recentLog` | **39** (the false line) | **765** (real sessions) |
+> | `libExercises` at audit resolve | 0 | **75** |
+> | audit wait | 4 ms | **20,495 ms** (correctly waited) |
+> | `_total` | 23,409 | 27,683 / 28,000, `_trims: none` |
+>
+> The 3,548 and 765 figures **match #46's warm measurements exactly**. The false line sat six lines
+> below a VARIETY block reading *"Categories trained last 7 days: Cardio x2, Martial Arts x2, Mind &
+> Body x2, Rest x1"* — the prompt was contradicting itself in the same message.
+> **WARM BOOT: the FULL assembled prompt is BYTE-IDENTICAL pre vs post** (27,711 chars, string
+> equality, all 24 section fields), for **exactly one extra `GET /exercises`** — proven with a
+> per-URL request tally, not asserted.
+> **⚠ A phantom +2-char diff in `roadmapEmphasis` was chased and turned out to be the PROBE's bug**,
+> not the product's: concatenating HTTP chunks into a string corrupts a multi-byte UTF-8 sequence
+> that straddles a chunk boundary (an em-dash inside a goal phase name). Fixed by collecting Buffers
+> and decoding once. **Recorded because it is a general trap for any proxy-based probe.**
+>
+> **PHASE 2 — malformed `workouts.date`: ROOT-CAUSED, FIXED, repair written (NOT run).**
+> `wearables/fitbit.js normalize()` did `String(activity.startTime).slice(0, 10)`. Fitbit returns
+> **TWO shapes for the same activity**: the LIST endpoint gives `startTime` as a full ISO datetime,
+> the DETAIL endpoint (`/1/user/-/activities/{logId}.json`) gives `startTime: "HH:mm"` with the date
+> in a separate `startDate`. On the detail shape the slice yields the TIME ITSELF.
+> **Proven 8/8 against the real rows, not inferred:** every malformed row carries a
+> `fitbit:` `wearable_activity_id`, an `"Auto-imported from fitbit: N min…"` note, and
+> `wearable_data.raw_response.startDate` holding the true date. **Scanned all six profiles
+> (1/4/5/7/8/9): exactly 8 malformed rows exist in the entire database, all profile 1.**
+> **The repair dates are EVIDENCE, not guesses** — `startDate + startTime + duration` equals
+> Fitbit's own `lastModified` to the second (id 110: 10:12 America/Chicago = 15:12Z, +57 min =
+> 16:09Z, `lastModified` 16:09:25Z). **⚠ `ts` is NOT a valid source and was not used**: it is the
+> IMPORT time and is wrong by up to **3 days** (id 95 imported 2026-06-18 for a 2026-06-15 session).
+> All 8 rows have **zero `exercises` rows**, so no child row can desync, and the repair creates
+> **no new `date|ts` dedupe collision** (verified by replaying the repaired set).
+> **Fixes:** `normalize()` handles both shapes and emits `null` rather than a wrong date on an
+> unrecognised one; a shared **`isValidWorkoutDate()`** is now used by **all three** workout-insert
+> paths (express route, wearable importer, sandbox seeder) so they cannot drift.
+> **Side effect, stated not glossed:** `fetchIntradayHr`'s `Date.parse(normalized.start_time)`
+> returned NaN on the detail path, so **peak-HR-from-intraday has never once run** in this codebase;
+> a parseable `start_time` makes it reachable for the first time (non-fatal, one extra Fitbit call
+> per manual import).
+>
+> **PHASE 3 — history visibility. SHIPPED + DEPLOYED.** Pagination and a date range, never a bigger
+> limit (session #43's standing rule).
+> - `GET /api/workouts` gains **`?start_date=`/`?end_date=`**, additive: **absent params produce a
+>   byte-identical outbound Supabase URL**, asserted in a test, so no prompt consumer's window moves.
+>   A malformed value is a **400**, never a silently-ignored filter.
+> - A **history store** merges paged-in rows for the History tab only. **`workoutLog` is never
+>   mutated** — the streak and the rec prompt keep their 60-row window.
+> - **"Load older"**, a **date-range picker** with month shortcuts, and a calendar **YEAR view**
+>   (12-month grid, per-week ember density ramp, drills into a month).
+> - A second, hidden cap was removed: `renderLog()` had its own hard `Math.min(filtered.length, 60)`.
+> - **`dedupe-workouts` is now DRY RUN by default** (`?apply=1` to delete) and the client shows a
+>   confirm listing the **count AND the dates**. It was the only unconfirmed destructive control in
+>   the app (§9). This deliberately changes the endpoint's default so the confirmation is mandatory
+>   rather than advisory, and so a cached client fails SAFE.
+> **Verified live against production:** "Load older" took the merged set **60 → 92** and the oldest
+> reachable date **2026-05-10 → 2026-04-07**, with **`workoutLog` still 60**. Month totals
+> **Apr 24 · May 32 · Jun 13 · Jul 12 · Aug 3** match #46's counted figures. Range boundaries
+> inclusive and exact (single-day 2026-04-07 → 1; 04-01..04-06 → 0); zero non-April leakage. Year
+> view totals `[0,0,0,24,32,13,12,3,0,0,0,0]`; the APR cell drills to "24 SESSIONS". Calendar month
+> view reaches **April 2026, 23 days with a workout**. Malformed rows: 8 loaded, **0 rendered**,
+> count surfaced to the athlete, no crash.
+> **⚠ LEXICOGRAPHIC EDGE, found by a failing test and kept:** `workouts.date` is `text`, so
+> `'10:20' <= '2026-04-30'` is TRUE. A **two-sided** range (every range the UI sends) excludes
+> malformed rows; a one-sided `end_date`-only range includes them. The server deliberately does not
+> filter them — it reports what is stored and the client excludes them **while surfacing the count**.
+>
+> **PHASE 4 — WEEKLY-PATH VERIFIED LIVE. ✅ LEDGER ROW 33 CLOSED. 8/8.** One sanctioned workout saved
+> on **profile 4** through the REAL `POST /api/workouts` (bench goal, weekly-eligible
+> 2026-08-02T02:47Z; the wrist goal correctly not eligible until 2026-08-04 and left alone). After
+> the fire-and-forget adapt settled (~2.5 min): `last_adapted_at` 2026-07-26 → **2026-08-03T16:49:06Z**,
+> `version` **8 → 9**, `adaptation_log` **7 → 8** with exactly one new **`weekly`** entry, and —
+> the point — **`arc_origin` STILL `2026-07-26`** and **`arc_state` BYTE-IDENTICAL**
+> (sha `1310c3ebd384d427`, `last_evaluated` still `2026-07-28T14:09:26.018Z`). That staleness is the
+> **decisive proof it was CARRIED, not recomputed** — the same reasoning that made row 32
+> conclusive. Wrist goal **byte-identical**. **Both halves of session #42's fix are now
+> production-proven**, which was the safety case for Phase 5.
+>
+> **PHASE 5 — PROFILE 1 MIGRATED. All three roadmap goals, unscoped, approved at the gate.**
+> Backup first: `backups/profile-1-2026-08-03T17-27-30-776Z.json`, 79,583 B, sha
+> `b4d54657bd5c0c6f…`, **gitignored, never committed**.
+> **⚠ A REAL DEFECT WAS FOUND IN THE ROLLBACK ITSELF, before any migration write** — by reading the
+> real `PATCH /api/profiles/:id` handler instead of trusting the doc. It does a **TWO-LEVEL merge**,
+> not a wholesale replace: an array/scalar replaces, a plain object is **shallow-merged one level
+> deeper**, and **a key absent from the body is left untouched**. So a plain snapshot PATCH restored
+> `goals` correctly (an array, so it takes every `goal_type`/`demand`/`estimate`/`arc_*` with it) but
+> would have left **`capacity` and `coexistence` behind** — a restore that does not restore. Fixed by
+> sending every live-only top-level key explicitly as `null`; both are truthiness-gated so null is
+> behaviourally identical to absent. `server/restoreShape.test.js` proves the whole migrate→restore
+> cycle offline against the REAL merge semantics and the REAL snapshot, and documents the one
+> remaining limit: **a NESTED key added by a future change would still survive.**
+> **Result, one goal at a time with per-goal verification:**
+>
+> | goal | goal_type | estimate | phases | version | adaptation_log |
+> |---|---|---|---|---|---|
+> | Fix Posture | `rehab` | 12–32 wk @4× | `[6,5,5]` + 1 horizon "months 4–6" | 8 → **9** | 7 → **8** |
+> | Fix Pubic Osteitis | `rehab` | 12–36 wk @5× | `[6,5,5]` + 1 horizon "months 4–6" | 10 → **11** | 9 → **10** |
+> | Build Muscle | `strength_load` | 20–40 wk @2× | `[6,5,5]` + 1 horizon "months 4–7" | 10 → **11** | 9 → **10** |
+>
+> **The fixed 3+2 skeleton is retired on profile 1** (`nnnhh` → `nnnh`, code-derived budgets).
+> **Version history and every adaptation-log entry are PRESERVED** — the Coach-Chat
+> `?mode=regenerate` path, never the reset path.
+> **Final sweep, all measured:** arc evaluation **3 goals in 1,196 ms**, all
+> `arc_origin 2026-08-03`, `position_week 0`, `calendar_week 1`, `drift −1`, `on_track`,
+> `needs_regeneration false`; immediate re-fire → `{skipped:true, reason:"fresh"}`. **ZERO AI on the
+> eval — `version` and `adaptation_log` unchanged on all three** (an adapt is the only reachable AI
+> path). Weekly-adapt eligibility **2026-08-10** for all three. Daily rec assembles at
+> **27,161 / 28,000, one rung (`historicalBrief->400`), `exerciseHistory` INTACT at 3,654** — the
+> arc block measured **748 chars** against a 736 prediction. **`workouts` and `exercises` untouched:
+> 93 rows / 332 rows, both spot-shas identical.** Only the three target goals changed; **the five
+> roadmap-less goals are byte-identical and no top-level key was added or removed.**
+>
+> **⚠ THE ONE THING THE ATHLETE MUST DO: all three migrated goals evaluated at
+> `confidence: "keyword"`, `tier: 2`, `qualifying_sessions: 0`, `matched_via: []`.** None of them is
+> linked to a schedule item, so the arc is matching by keyword alone — the weakest tier — and will
+> sit at position 0 until they are linked. The keystone join (`frequency_targets[].goal_ids`) exists
+> and the editor supports it. **This is the difference between an arc that tracks real work and one
+> that never moves.**
+>
+> **HONEST NOTE ON THE PROMPT BUDGET:** the 27,161 measurement has `microGoals` stubbed at 0 (that
+> endpoint PATCHes `current_value` on read, so it must be stubbed for a zero-write probe). Adding
+> #39's real 1,347 puts the untrimmed total at ~30,262, which fires a **second** rung
+> (`coachingBrief 2,428 → 400`) and lands ~26,480. **Either way `exerciseHistory` is rung 3 and is
+> never reached** — which is the safety property that matters.
+>
+> **PROFILE 1 CHANGED MID-SESSION AND IT WAS NOT US — recorded so a changed sha is never read as a
+> violation.** At the Phase 3 boundary `profile_data` moved. Diffed: exactly ONE field,
+> `focus_override.daily_override_state` `"forced"` → `"skipped"`. Corroborated:
+> `daily_recommendations` was regenerated **2026-08-03T16:42:03Z** with `daily_override_state:
+> "skipped"`, which requires a SUCCESSFUL `/api/ai` call — and every probe blocked every non-GET at
+> both the proxy and the Playwright route layer. **The athlete tapped "Skip focus today" in the real
+> app.** Two goals also adapted between snapshots, which is why the pre-migration snapshot was
+> re-taken rather than reused.
 >
 > **2026-08-02 session #46 — 🔎 PROFILE-1 DIAGNOSTIC. REPORT-ONLY, ZERO WRITES, NO CODE.** Three
 > athlete complaints diagnosed against real production data; two of the three had a cause nobody had
@@ -2504,6 +2675,68 @@ All verified present in `server.js`. `:id`/`:userId` = profile id.
 
 ## 6. Known Limitations
 
+### Session #47 findings (2026-08-03)
+
+- **✅ RESOLVED — the cold-boot exercise-history defect, and #46's description of it was WRONG in a
+  way that mattered.** It is a **RACE**, not a deterministic zero. `bootApp()` → `loadDailySteps()`
+  → (on resolve) `if (libView === 'dashboard') renderLibDashboard()` → `if (!libStats) {
+  loadLibrary(); return; }` DOES populate `libExercises`, and races the rec chain. Measured both
+  sides on the same production data: a fast run shows `libExercises = 75` at boot+9 s; delaying the
+  two library reads reproduces #46's zero exactly. **Non-determinism is worse than a consistent
+  bug** — the rec had full progression data on some days and none on others, with nothing in the
+  output to tell them apart. Fixed by `fetchAI` awaiting `ensureLibExercises()`; `bootApp` warms it
+  in parallel. Candidate fix (a) from §9 is now provably insufficient and should not be revisited.
+- **✅ RESOLVED — malformed `workouts.date`. It was a SERVER bug, not a client bug.** Root cause:
+  `wearables/fitbit.js normalize()`'s `String(startTime).slice(0,10)` against Fitbit's DETAIL shape
+  (`startTime: "HH:mm"`, date in `startDate`), written by `createWearableWorkout()` straight to
+  PostgREST, bypassing `POST /api/workouts`'s long-standing date guard. §9's suspect list
+  (`reLogWorkout`, `useTemplate`, the past-date picker) was wrong on all three. **Exactly 8 rows
+  exist across all six profiles**, all profile 1, all zero-`exercises`. Repair + CHECK constraint
+  written to `migrations/2026-08-03_*`, **NOT run** — review-then-apply.
+- **⚠ NEW, NOT FIXED — `GET /api/workouts` orders by `ts`, which is a LAST-WRITE stamp, so the
+  "newest 60" is not the 60 most recent by DATE.** Measured on profile 1: only **52 of 60** overlap
+  with the newest-60-by-date, and **workout id 68 has `ts = null`**, which sorts FIRST under
+  `order=ts.desc` (PostgREST puts NULLs first). Consequences: `workoutLog` — read by the streak, the
+  rec prompt's weekly-volume/variety blocks, and `/goal-progress` — silently drops ~8 genuinely
+  recent sessions and includes ~8 older ones. §6 already records that `ts` is client-supplied and
+  overwritten on every edit; this is the read-side consequence, which had not been stated. Logged
+  in §9.
+- **⚠ NEW, NOT CONFIRMED — `evaluateArcsForProfile` and `maybeAdaptAllRoadmaps` both fire
+  fire-and-forget on the same workout save and both rewrite the WHOLE `profile_data`.** Observed in
+  Phase 4: `arc_state.last_evaluated` did **not** move across a save (still
+  `2026-07-28T14:09:26.018Z`) even though the arc evaluation is 24 h-gated and was 6 days stale. The
+  likely explanation is a last-writer-wins race — the fast arc PATCH lands, then the slow (~2.5 min)
+  adapt PATCH, built from a profile read taken BEFORE it, overwrites it. **Benign in this instance**
+  (`arc_state` is a pure replay and `arc_origin` survived via `carryArcForward`), but it is the same
+  whole-column-rebuild bug class as #35/#42/#44 and would NOT be benign for a future non-replayable
+  field. **Deliberately not confirmed**: doing so needed a write beyond Phase 4's sanctioned scope.
+- **⚠ The `weekly` adaptation_log summary is timeline-estimate BASIS prose, not a weekly review —
+  and this is now a PATTERN, not a one-off.** §6 recorded one occurrence (Build Muscle,
+  2026-07-27) and said "not chased". Phase 4's brand-new `weekly` entry on profile 4's bench goal is
+  the same shape: *"A 25-30 lb strength gain to a true 175 single realistically takes 4-7 months…"*
+  That is an answer to "how long will this take", not "how did this week go". **Second confirmed
+  occurrence ⇒ worth an audit of `adaptGoalRoadmap`'s summary instruction.**
+- **⚠ Migrated goals start at arc `tier 2` / `confidence "keyword"` with ZERO qualifying sessions,
+  because none of profile 1's goals is linked to a schedule item.** The keystone join
+  (`frequency_targets[].goal_ids`, shipped Session A, first consumed Session B) is **unused on
+  profile 1**. Until the athlete links them, the arc matches by keyword only — the weakest evidence
+  tier — and `position_week` will not move. Not a bug; the single highest-value athlete action after
+  the migration.
+- **The `/api/workouts` date-range filter is LEXICOGRAPHIC, and a malformed row sorts below every
+  real date.** `date` is `text`, so `'10:20' <= '2026-04-30'` is TRUE and `'10:20' >= '2026-04-01'`
+  is FALSE. A **two-sided** range (every range the UI sends) excludes malformed rows; a one-sided
+  `end_date`-only range includes them. Deliberate: the server reports what is stored, the client
+  excludes them from date-keyed surfaces **while surfacing the count**. Moot once the repair runs.
+- **The restore path for a `profile_data` rollback is TOP-LEVEL-COMPLETE ONLY.**
+  `PATCH /api/profiles/:id` shallow-merges plain objects one level deep, so a NESTED key added by a
+  future migration would survive a restore. `scripts/profile_snapshot.js` nulls live-only TOP-LEVEL
+  keys; anything deeper needs the same treatment adding. Asserted by a test so it is a known,
+  tested limit rather than a surprise.
+- **Probe/tooling trap, general:** concatenating HTTP response chunks into a JS string corrupts any
+  multi-byte UTF-8 sequence that straddles a chunk boundary. This produced a phantom +2-char prompt
+  diff (an em-dash in a goal phase name) that read as a real product change until chased. **Collect
+  Buffers and decode once.** Same family as the arc close-out's harness learnings.
+
 ### Profile-1 diagnostic — findings (2026-08-02, session #46)
 
 > Report-only session. Nothing here was fixed. Every number below was measured against production
@@ -4024,6 +4257,12 @@ either the MACRO roadmap or a LEGACY per-goal roadmap — never current per-goal
 | 44 | **Data integrity — NEW** | **The malformed-`workouts.date` defect is STILL ACTIVE (8 rows, not the 6 on record)** | **⚠ OPEN — MEASURED, NOT FIXED (2026-08-02, session #46)** | Counted direct on profile 1. Six historical rows (ids 77/82/88/95/97/110) plus **two new ones: 100143 (`'10:14'`) and 100144 (`'10:52'`), both `ts` 2026-07-29T19:38Z, three seconds apart.** `workouts.date` is `text`; `POST /api/workouts` forwards `req.body` verbatim and its future-date guard only engages when `body.date` parses. Rows are invisible to every date-keyed view, dropped by `evaluateArcsForProfile`'s own `Date.parse` filter, and count toward no streak/target/tally. **CHECK TO CLOSE:** trace and close the client write path, then confirm no new malformed row appears after a full week of normal logging. Repairing the 8 existing rows is a **separate** review-then-apply decision. §6, §9 |
 | 45 | **L1 — migration scope** | **Roadmap shape and rec FORMAT are separable; the sandbox comparison was invalid** | **✅ VERIFIED (2026-08-02, session #46)** | Grep-verified: `capacity` and `coexistence` are read **only** by Profile-tab UI, never by any `fetchAI` builder; the **only** migration-derived block in the rec prompt is `buildArcStateContext()` (top-3 goals, `ARC_CONTEXT_CHAR_CAP = 950`, returns `''` with no `arc_state`). Rec format is governed by `buildResponseShapeSpec` / `buildTimeBudgetContext` / `REC_DEPTH_TIERS` / `resolveOptionDurations`, whose signatures take durations/counts/settings and **not goals**. **Sandbox counter-evidence, measured:** profile 9 has **0 workouts, 0 exercise rows, 0 coaching brief, 0 historical brief, 0 micro-goals and no `daily_recommendations` row at all** — the rec the athlete judged is not recoverable and was generated from a profile with no athlete data. §7 → "A1 ANSWERED" |
 
+| 46 | **L2 — #42 WEEKLY path** | **`arc_origin` + `arc_state` survive `maybeAdaptAllRoadmaps`** | **✅ CLOSED — VERIFIED LIVE (2026-08-03, session #47). This closes ROW 33.** | Vehicle was the BENCH goal exactly as row 33 specified (wrist correctly not eligible until 2026-08-04 and left untouched, byte-identical). ONE sanctioned workout saved on profile 4 through the REAL `POST /api/workouts`. Adapt settled in ~2.5 min: `last_adapted_at` 2026-07-26T02:47:22Z → **2026-08-03T16:49:06.342Z**, `version` **8→9**, `adaptation_log` **7→8** with exactly one new **`weekly`** entry — so an adapt genuinely ran. **`arc_origin` STILL `2026-07-26`**; **`arc_state` BYTE-IDENTICAL** (sha `1310c3ebd384d427` both sides). **Decisive:** `arc_state.last_evaluated` is still `2026-07-28T14:09:26.018Z` — 6 days older than the adapt — so the object on the new roadmap is provably the OLD one, i.e. CARRIED by `carryArcForward`, not recomputed. Same reasoning that made row 32 conclusive. **Both halves of BUG 3's fix are now production-proven.** |
+| 47 | **Rec prompt — row 43** | **`bootApp()` never loads the exercise library, so the daily rec is generated with an empty exercise history** | **✅ FIXED + VERIFIED (2026-08-03, session #47), `74137f2`** | **⚠ Row 43's premise is CORRECTED: it is a RACE, not a deterministic zero** — `bootApp → loadDailySteps → renderLibDashboard → loadLibrary` also populates it and races the rec chain. Fixed with §9 candidate **(b)**: `fetchAI` awaits `ensureLibExercises()` alongside `microGoalsReady`; `bootApp` warms it in parallel. Verified in a real browser on production profile 1, zero writes, library reads delayed to force the losing side: `exerciseHistory` **0 → 3,548**, `recentLog` **39 → 765**, audit correctly waited **20,495 ms**. **Warm boot: the FULL prompt is byte-identical pre vs post (27,711 chars, string equality)** for exactly one extra `GET /exercises`. Honesty guard added — an unloaded library is no longer reported as "No exercises logged". **Closing check from row 43 satisfied.** |
+| 48 | **Data integrity — row 44** | **The malformed-`workouts.date` writer** | **✅ ROOT-CAUSED + FIXED; repair WRITTEN, NOT RUN (2026-08-03, session #47)** | **It was a SERVER bug.** `wearables/fitbit.js normalize()` sliced `startTime` blind; Fitbit's DETAIL endpoint returns `"HH:mm"` with the date in `startDate`, and `createWearableWorkout()` writes direct to PostgREST, bypassing `POST /api/workouts`'s date guard. Proven 8/8 (every row has a `fitbit:` id, an auto-import note, and its own true `raw_response.startDate`). Scanned all six profiles: **exactly 8 rows, all profile 1**. `isValidWorkoutDate()` now guards all three insert paths. **REMAINING CHECK:** Shimmy runs `migrations/2026-08-03_repair_malformed_workout_dates.sql` then `…_workouts_date_format_check.sql`, then confirm zero malformed rows after a week of normal logging. |
+| 49 | **L1–L2 — MIGRATION** | **Profile 1's three legacy 3+2 roadmaps migrated to the new shape** | **✅ DONE + VERIFIED LIVE (2026-08-03, session #47)** | Snapshot first (`backups/profile-1-2026-08-03T17-27-30-776Z.json`, sha `b4d54657bd5c0c6f…`, gitignored). Coach-Chat `?mode=regenerate` path per goal, one at a time, each verified before the next. Fix Posture `rehab` 12–32 wk v8→9 log7→8 · Fix Pubic Osteitis `rehab` 12–36 wk v10→11 log9→10 · Build Muscle `strength_load` 20–40 wk v10→11 log9→10. All three `[6,5,5]`+1 horizon (3+2 retired). Arc eval: 3 goals in 1,196 ms, all `arc_origin 2026-08-03` / position 0 / calendar 1 / drift −1 / `on_track`; re-fire `{skipped:true,"fresh"}`; **ZERO AI (version + log unchanged on all three)**. Daily rec **27,161/28,000, one rung, `exerciseHistory` intact at 3,654**, arc block **748 chars**. `workouts` 93 / `exercises` 332, **both spot-shas identical**. Five roadmap-less goals byte-identical; no top-level key added or removed. **REMAINING CHECK:** the first real weekly adapt ~2026-08-10. |
+| 50 | **L2 — migration follow-up** | **Migrated goals are at arc `tier 2` / `keyword` confidence with 0 qualifying sessions** | **⚠ OPEN — NEEDS THE ATHLETE, NOT CODE** | None of profile 1's goals is linked to a schedule item, so the keystone join (`frequency_targets[].goal_ids`) is unused and the arc matches by keyword alone — the weakest tier. `position_week` will stay 0 until they are linked. **Check:** link each migrated goal to its schedule target in the Schedule editor, then confirm the next evaluation reports `tier 1` and a non-empty `matched_via`. |
+
 **Profile 1 was byte-identical across Sessions A, B and C** — goals sha256 `0901b047d1c95f50…`
 before and after each — and Session D was the first to change code it runs daily, which is why
 depth non-regression was that session's primary success criterion (rows 23–24).
@@ -5053,6 +5292,44 @@ Macro roadmap shape (stored on `profiles.roadmap_data`):
 ---
 
 ## 9. Technical Debt & Cleanup
+
+### Added 2026-08-03 (session #47)
+
+- [ ] **⚠ `GET /api/workouts` orders by `ts`, a LAST-WRITE stamp, so the "newest 60" is not the 60
+  most recent by DATE.** Measured on profile 1: only **52 of 60** overlap with the newest-60-by-date,
+  and **workout id 68 has `ts = null`** and therefore sorts FIRST (PostgREST puts NULLs first under
+  `desc`). `workoutLog` — the streak, the rec prompt's weekly-volume and variety blocks, and
+  `/goal-progress` — is therefore built from a window that silently drops ~8 genuinely recent
+  sessions. **Fix is one word (`order=date.desc,ts.desc`), but it CHANGES the window every one of
+  those consumers sees**, so it needs its own audit-then-approve pass, not a drive-by edit. The
+  History tab is unaffected — `renderLog()` sorts by date.
+- [ ] **⚠ `evaluateArcsForProfile` and `maybeAdaptAllRoadmaps` both fire-and-forget on the same
+  workout save and both rewrite the WHOLE `profile_data` — last writer wins.** Observed but NOT
+  confirmed in Phase 4 (see §6). Benign today because `arc_state` is a pure replay and `arc_origin`
+  is carried; **not benign for any future non-replayable field.** Same bug class as #35/#42/#44.
+  Options: serialize them (the `withRefreshLock`/`withV2Lock` pattern already exists), or have the
+  adapt re-read `profile_data` immediately before its PATCH.
+- [ ] **The `weekly` adaptation_log summary is sometimes timeline-estimate BASIS prose, not a review
+  of the week — now TWO confirmed occurrences** (Build Muscle 2026-07-27; profile 4's bench goal
+  2026-08-03). §6 previously called it a single occurrence and did not chase it. Worth auditing
+  `adaptGoalRoadmap`'s summary instruction.
+- [ ] **`ensureLibExercises()`, `loadLibrary()` and `ensureHistoryChipsLoaded()` all fetch the SAME
+  `GET /api/profiles/:id/exercises`.** Session #47 measured the warm boot at **two** calls to it
+  (was one); the chips loader makes a third on the first History-tab open. All three want different
+  slices of one payload. A single shared loader would remove two round trips — deferred as a
+  refactor, not a bug.
+- [ ] **`renderCalYear()` calls `calEnsureYearLoaded()` which fetches up to 1,000 rows per year.**
+  Bounded and cached per year, but for a multi-year athlete the year view will accumulate the whole
+  history in `historyExtra`. Fine at 92 workouts; revisit at a few thousand — the honest answer is
+  A2 item 1 (a code-computed rollup), not a bigger fetch.
+- [ ] **The `profile_data` restore is TOP-LEVEL-COMPLETE ONLY** — a NESTED key added by a future
+  migration survives, because `PATCH /api/profiles/:id` shallow-merges objects one level down.
+  Asserted by `server/restoreShape.test.js` so it is a tested limit, not a surprise. Extend the
+  null-out logic if any future migration writes inside an existing object.
+- [ ] **Probe/tooling: collect HTTP response Buffers and decode once.** Concatenating chunks into a
+  string corrupts a multi-byte UTF-8 sequence that straddles a chunk boundary; this produced a
+  phantom +2-char prompt diff that read as a real product change. General trap for any proxy-based
+  probe in this repo.
 
 ### Added 2026-08-02 (session #46) — profile-1 diagnostic
 

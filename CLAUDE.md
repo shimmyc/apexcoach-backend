@@ -3523,7 +3523,167 @@ the `localStorage.ac_cache` write (`:4991`) and before `cacheAIRecOnServer()` (`
 side effect is the `POST /api/ai` model call itself. (Runtime-confirmed on profile 4 in session #42,
 ledger row 28.)
 
-## NEXT SESSION STARTS HERE — fix the exercise-history race, then migrate (updated 2026-08-02, session #46)
+## Session #47 (2026-08-03) — exercise-library readiness, the Fitbit date bug, history visibility, and the profile-1 migration
+
+### 1. Exercise-library readiness (`ensureLibExercises`)
+
+`libExercises` is the SOLE source for **both** `buildLog()` (the `RECENT N-DAY LOG`) and
+`buildExerciseHistory()` (the `RECENT EXERCISE HISTORY` block carrying every PERSONAL BEST) in the
+daily-rec prompt. `loadLibrary()`'s only *direct* call sites are the Library tab.
+
+**⚠ Correction to session #46: it is a RACE, not a deterministic zero.** There is a third chain —
+`bootApp()` → `loadDailySteps()` → (on resolve) `if (libView === 'dashboard') renderLibDashboard()`
+→ `if (!libStats) { loadLibrary(); return; }` — which also populates it. It races
+`loadWorkouts → syncFitbit → /daily → resolveAIRecs → fetchAI`. Whichever wins decides whether the
+rec sees any exercise history at all. **Non-determinism is the worst version of this bug**: the rec
+had full progression data on some days and none on others with nothing in the output to distinguish
+them. It also means "just call `loadLibrary()` in `bootApp`" was never a fix.
+
+- **`libExercisesState` is THREE-valued** (`'unloaded' | 'loaded' | 'failed'`) plus
+  `libExercisesProfile` / `libExercisesPromise`. Three-valued because **an unknown must never be
+  reported as a zero** — that is the honesty guard below.
+- **`ensureLibExercises()`** — idempotent, deduped per profile, shares an in-flight fetch, and
+  **clears the cached promise on failure** so a later caller can retry rather than inherit it.
+  `loadLibrary()` sets the same state, so the two can never disagree.
+- **`fetchAI` awaits it** via `Promise.all([microGoalsReady, ensureLibExercises()])` — the same
+  shape as the micro-goals await that already guarded this assembly. **This is what makes it
+  deterministic.** `bootApp()` also calls it so the await joins an in-flight request and adds no
+  boot latency.
+- **Honesty guard in `buildLog()`**: when there are no rows AND `libExercisesState !== 'loaded'`, it
+  emits *"Exercise-level detail … could not be loaded. This is NOT a report of zero training…"*
+  instead of the literal false *"No exercises logged in the last 7 days."* After the fix that branch
+  is only reachable on a genuine fetch failure, but it must still never lie.
+- `switchProfile()` resets all four vars — the state is profile-scoped.
+
+**Measured (real browser, production profile 1, zero writes, library reads delayed to force the
+losing side):** `exerciseHistory` **0 → 3,548**, `recentLog` **39 → 765**, audit correctly waited
+**20,495 ms**. **Warm boot: the FULL assembled prompt is byte-identical pre vs post (27,711 chars,
+string equality, all 24 sections)** for exactly **one extra `GET /exercises`**.
+
+### 2. Fitbit's two activity shapes — the malformed-`workouts.date` root cause
+
+**⚠ THIS WAS NEVER A CLIENT BUG.** `POST /api/workouts` has rejected a non-`YYYY-MM-DD` date since
+2026-07-15. `createWearableWorkout()` inserts **straight into PostgREST** and bypassed it entirely.
+
+Fitbit returns two shapes for the same activity:
+
+| endpoint | `startTime` | date lives in |
+|---|---|---|
+| LIST `/1/user/-/activities/list.json` | full ISO datetime | `startTime` |
+| DETAIL `/1/user/-/activities/{logId}.json` | **`"HH:mm"`** | **`startDate`** |
+
+`normalize()` did `String(startTime).slice(0, 10)`, which on the DETAIL shape yields the TIME.
+Now it branches on whether `startTime` actually starts with a date, falls back to
+`startDate + "T" + startTime`, and emits **`null`** rather than a wrong value on an unrecognised
+shape (null is rejected by the insert guards; a wrong date is silent).
+
+- **`isValidWorkoutDate(v)`** (`server.js`) — ONE validator, now called by **all three** paths that
+  insert a workout row: the express route, `createWearableWorkout()`, and the sandbox seeder. It
+  also rejects well-formed-but-impossible dates (`2026-02-31`) that `new Date()` would roll over.
+- **Side effect, stated:** `fetchIntradayHr` does `Date.parse(normalized.start_time)`, which
+  returned **NaN** on the detail path — so **peak-HR-from-intraday has never once run**. A parseable
+  `start_time` makes it reachable for the first time. Non-fatal, one extra Fitbit call per manual
+  import.
+- **The repair dates are evidence, not guesses:** each row stores its own
+  `wearable_data.raw_response.startDate`, corroborated because `startDate + startTime + duration`
+  equals Fitbit's `lastModified` to the second. **`ts` is the IMPORT time and is wrong by up to 3
+  days** — it must not be used.
+
+### 3. History store — permanent, fully viewable history
+
+**Principle of record: history lives forever; every cap is a READ cap.** The fix is pagination + a
+date range, never a bigger limit (session #43's standing rule).
+
+- `GET /api/workouts` gains **`?start_date=`/`?end_date=`**, validated with the same
+  `isValidWorkoutDate`. **Absent params produce a byte-identical outbound Supabase URL** (asserted in
+  `server/workoutsRange.test.js`), so no prompt consumer's window moves.
+- **`workoutLog` is NEVER mutated.** Paged-in rows live in `historyExtra`; `historyAllWorkouts()`
+  merges and dedupes (by id, falling back to `date|ts`) and is memoised via `historyInvalidateMerge()`.
+  Only `renderLog()` and `findEntry()`/`findEntriesOn()` read the merged set — the streak and the rec
+  prompt keep their 60-row window. Same pattern as the Log-past panel's `logPastExtra`.
+- **`historyDateIsValid()` / `historyMalformedCount()`** — malformed rows are excluded from every
+  date-keyed surface but their **count is surfaced to the athlete**, never silently disappeared.
+- `renderLog()` had a **second hidden cap** (`Math.min(filtered.length, 60)`); it is now driven by
+  `historyShown`, which "Load older" raises.
+- **Year view** (`renderCalYear`) — 12-month grid, per-WEEK density (366 legible day cells do not fit
+  a phone, and the question a year answers is "where were the gaps"), ember opacity ramp matching the
+  muscle heatmap, clicking a month calls `historyGoToMonth()`. `calEnsureYearLoaded()` pulls the year
+  in one bounded call, cached per year.
+- **`dedupe-workouts` is DRY RUN by default** (`?apply=1` to delete) and the client confirm lists the
+  **count AND the dates**. This deliberately changes the endpoint's default so the confirmation is
+  mandatory rather than advisory, and so a cached client fails SAFE.
+
+**⚠ Lexicographic edge:** `workouts.date` is `text`, so `'10:20' <= '2026-04-30'` is TRUE. A
+two-sided range (every range the UI sends) excludes malformed rows; a one-sided `end_date`-only
+range includes them. The server reports what is stored; the client excludes and counts.
+
+### 4. Migration backup/rollback — and the defect found in it
+
+**`PATCH /api/profiles/:id` does a TWO-LEVEL merge, not a wholesale replace.** Per key in the body:
+an array or scalar **replaces**; a plain object present on both sides is **shallow-merged one level
+deeper**; a key **absent from the body is left untouched**.
+
+Consequence: a plain snapshot PATCH restores `goals` correctly (an array, so it takes every
+`goal_type`/`demand`/`estimate`/`arc_origin`/`arc_state` with it) but **leaves behind any NEW
+top-level key the migration added** — `capacity`, `coexistence`. That is a restore that does not
+restore. `scripts/profile_snapshot.js` therefore sends every live-only top-level key explicitly as
+`null`; both are truthiness-gated, so null is behaviourally identical to absent, and verification
+strips those nulls before demanding a byte-identical sha.
+`server/restoreShape.test.js` proves the whole migrate→restore cycle offline against the REAL merge
+semantics (with assertions that fail if the route's two branches change) and documents the remaining
+limit: **a NESTED key added by a future change would still survive.**
+
+### 5. Profile-1 migration — as executed
+
+Per goal: `plan-setup` (writes `plan_draft` only) → `estimate` (commits **only when the week fits**;
+profile 1 has no `capacity`, so `has_capacity:false` ⇒ `fits:true` ⇒ commits, and the negotiation
+cannot fire) → `roadmap?mode=regenerate` (version **+1**, `adaptation_log` **appended**, never reset).
+`arc_origin`/`arc_state` then appear at the next `evaluateArcsForProfile`.
+
+| goal | goal_type | estimate | phases | version | log |
+|---|---|---|---|---|---|
+| Fix Posture | `rehab` | 12–32 wk @4× | `[6,5,5]` + horizon "months 4–6" | 8→9 | 7→8 |
+| Fix Pubic Osteitis | `rehab` | 12–36 wk @5× | `[6,5,5]` + horizon "months 4–6" | 10→11 | 9→10 |
+| Build Muscle | `strength_load` | 20–40 wk @2× | `[6,5,5]` + horizon "months 4–7" | 10→11 | 9→10 |
+
+Arc eval: 3 goals / 1,196 ms / **zero AI** (version + log unchanged) / all `arc_origin 2026-08-03`,
+position 0, calendar 1, drift −1, `on_track`. Rec assembles **27,161 / 28,000, one rung, arc block
+748 chars, `exerciseHistory` intact at 3,654**. `workouts` 93 / `exercises` 332, spot-shas identical.
+
+**⚠ All three landed at `tier 2` / `confidence "keyword"` / 0 qualifying sessions** — profile 1 uses
+none of the keystone join (`frequency_targets[].goal_ids`), so the arc matches by keyword alone and
+`position_week` will not move until the athlete links each goal to its schedule target.
+
+---
+
+## NEXT SESSION STARTS HERE — run the repair SQL, then watch the first real weekly adapt (updated 2026-08-03, session #47)
+
+> **⚠ STATUS: all five phases of session #47 shipped. Profile 1 IS MIGRATED. There is no open bug in
+> what shipped. Two items need SHIMMY, not code, and one needs the calendar.**
+>
+> | # | Work | Why |
+> |---|---|---|
+> | **1** | **Shimmy runs the malformed-date repair SQL, then the CHECK constraint** | `migrations/2026-08-03_repair_malformed_workout_dates.sql` → verify (Section A) → repair (B) → confirm (C, must return 0 rows), THEN `…_workouts_date_format_check.sql`. The constraint **will fail** while any of the 8 rows remain — that is the design. **One judgement call is flagged in the file's header:** 7 of the 8 land on a day that already has a logged workout, so those days will then show TWO sessions (today they show zero). If any should be merged instead, delete that id from Section B and use the app's wearable match/merge flow — never merge in SQL. |
+> | **2** | **Shimmy links the three migrated goals to their schedule targets** (ledger row 50) | All three evaluated at `tier 2` / `confidence "keyword"` / **0 qualifying sessions** / `matched_via: []`, because profile 1 uses none of the keystone join. **Until this is done the arc cannot move off position 0** — it is the single highest-value athlete action post-migration. Schedule card → each frequency target → link the goal. Then confirm the next evaluation reports `tier 1` and a non-empty `matched_via`. |
+> | **3** | **First real weekly adapt on migrated profile 1 — ~2026-08-10** (ledger row 49's remaining check) | All three goals are weekly-eligible **2026-08-10T17:29–17:31Z**. On or after that, a workout save fires `maybeAdaptAllRoadmaps`. **Confirm `arc_origin` is still `2026-08-03` and `arc_state` is still present on all three, while `version` increments and each gains a `weekly` entry** — i.e. the same check Phase 4 passed on profile 4, now on the real profile. This closes the loop. |
+> | **4** | **Row 28 / item (c) — WAIT, do not build.** | Unchanged. Route (1) by decision: profile 4 accumulates real qualifying sessions on the bench goal until a genuine peak-then-gap forms. **Do not synthesise a re-ramp; the sandbox does not count.** |
+> | **5** | **Sandbox exploration resumes on the repaired sandbox** (ledger row 41) | Unchanged and still blocked on the athlete: the pre-#45 flow destroyed the shoulder goal's intake answers, and they must not be invented (§0.2 rule 5). |
+>
+> **Year view SHIPPED — it was NOT cut.** The Phase 3 brief named it as the designated first cut if
+> the phase ballooned; it did not, so the 12-month grid, per-week density, and month drill-down all
+> shipped and are verified live.
+>
+> **Read before starting:** §6 → "Session #47 findings" (three doc corrections, two new unfixed
+> issues), §7 ledger rows **46–50**, §9 → "Added 2026-08-03", and §7 → "⚠ PER-GOAL vs MACRO" (still
+> the easiest thing to get wrong — **the MACRO roadmap is still 3+2 and was NOT migrated**).
+>
+> **Two new open items, logged not fixed:** `GET /api/workouts` orders by `ts` (a last-write stamp),
+> so the "newest 60" is not the newest 60 by date — 52/60 overlap, and one row with `ts = null`
+> sorts first; and `evaluateArcsForProfile` + `maybeAdaptAllRoadmaps` both rewrite the whole
+> `profile_data` fire-and-forget on the same save, last writer wins (observed, deliberately not
+> confirmed — confirming needed a write beyond the sanctioned scope).
+
+## Superseded next-session block (session #46) — kept for the record
 
 > **⚠ STATUS: three athlete complaints are now diagnosed with real numbers, and TWO of them have a
 > named cause that was not in any document before. One athlete hypothesis (prompt trimming) was
