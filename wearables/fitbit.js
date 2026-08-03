@@ -37,8 +37,39 @@ async function fitGet(endpoint, token) {
 // — list rows are normalized as far as the list endpoint can take them.
 function normalize(activity) {
   if (!activity) return null;
-  var startISO = activity.startTime || activity.originalStartTime || null;
-  var date = startISO ? String(startISO).slice(0, 10) : null;
+  // ⚠ FITBIT RETURNS TWO DIFFERENT SHAPES FOR THE SAME ACTIVITY (fixed 2026-08-03,
+  // session #47). This is the root cause of the malformed-`workouts.date` defect:
+  //   LIST   /1/user/-/activities/list.json      -> startTime = FULL ISO datetime
+  //                                                 ("2026-07-28T10:14:00.000-05:00")
+  //   DETAIL /1/user/-/activities/{logId}.json   -> startTime = "HH:mm" ONLY,
+  //                                                 with the date in `startDate`
+  // The old code was `String(startTime).slice(0, 10)`, which on the DETAIL shape
+  // yields the TIME STRING itself. `createWearableWorkout()` writes that straight
+  // into `workouts.date` (a `text` column) via a direct PostgREST insert, so every
+  // "Import as Workout" produced a row invisible to every date-keyed view.
+  // Confirmed against all 8 affected profile-1 rows: each stores
+  // wearable_data.raw_response.startDate = the real date and .startTime = the
+  // exact value that ended up in `date`.
+  var rawStart = activity.startTime || activity.originalStartTime || null;
+  var rawStartDate = activity.startDate || activity.originalStartDate || null;
+  var startISO = null;
+  var date = null;
+  if (rawStart && /^\d{4}-\d{2}-\d{2}/.test(String(rawStart))) {
+    // LIST shape — a full ISO datetime. Unchanged behaviour.
+    startISO = rawStart;
+    date = String(rawStart).slice(0, 10);
+  } else if (rawStartDate && /^\d{4}-\d{2}-\d{2}$/.test(String(rawStartDate))) {
+    // DETAIL shape — recombine the two halves. No timezone designator is added:
+    // Fitbit's startDate/startTime pair is LOCAL wall-clock, and the only
+    // consumer (fetchIntradayHr) needs the wall-clock HH:mm back out.
+    date = String(rawStartDate);
+    startISO = rawStart ? date + "T" + String(rawStart) + (/^\d{2}:\d{2}$/.test(String(rawStart)) ? ":00" : "") : date;
+  } else {
+    // Neither shape recognised — emit null rather than a wrong value. A null
+    // date is rejected by the callers' validation; a wrong one is silent.
+    startISO = rawStart;
+    date = null;
+  }
   // Fitbit's duration is in milliseconds.
   var durationMin = activity.duration ? Math.round(activity.duration / 60000) : null;
 

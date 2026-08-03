@@ -991,6 +991,7 @@ input[type=range]{width:100%;accent-color:var(--accent)}
       <div style="display:flex;gap:4px;margin-bottom:4px">
         <button id="cal-mode-week" class="navBtn active" onclick="setCalMode('week')" style="flex:1;text-align:center">Week</button>
         <button id="cal-mode-month" class="navBtn" onclick="setCalMode('month')" style="flex:1;text-align:center">Month</button>
+        <button id="cal-mode-year" class="navBtn" onclick="setCalMode('year')" style="flex:1;text-align:center">Year</button>
       </div>
       <div class="statsGrid" id="week-stats"></div>
       <div id="double-skip-warn" style="display:none;background:var(--bg-surface-2);border:1px solid var(--border-subtle);color:var(--color-caution);padding:12px 16px;border-radius:12px;font-size:15px">
@@ -1996,6 +1997,19 @@ function switchProfile() {
   streakLoggedToday = false;
   dailyCheckin = null;
   manualCheckinContext = null;
+  // Exercise-library readiness is profile-scoped (session #47) — reset it so a
+  // switch can never leave the previous athlete's exercises in the rec prompt.
+  libExercises = [];
+  libExercisesState = 'unloaded';
+  libExercisesProfile = null;
+  libExercisesPromise = null;
+  // Paged-in history is profile-scoped too (session #47).
+  historyExtra = [];
+  historyRange = null;
+  historyShown = 60;
+  historyServerExhausted = false;
+  historyFetching = false;
+  historyMergeCache = null;
   loadProfileSelector();
 }
 
@@ -2564,6 +2578,12 @@ function bootApp() {
   renderSchedule();
   renderProfileTab();
   loadMicroGoals();
+  // Warm the exercise library on boot (session #47). loadLibrary()'s only call
+  // sites are the Library tab, so before this the daily rec was assembled from
+  // an EMPTY libExercises on every cold boot. Starting the fetch here in
+  // parallel means fetchAI's own await (which is what actually guarantees it)
+  // joins an in-flight request instead of serialising one onto the rec.
+  ensureLibExercises();
   loadDailySteps();
   loadBodyMetrics();
 
@@ -3006,11 +3026,15 @@ function loadWorkouts() {
       if (data.success) {
         workoutLog = data.workouts || [];
         medLog = workoutLog.filter(function(w) { return w.med; }).map(function(w) { return w.date; });
+        // The merged history view is derived from workoutLog — drop the memo
+        // whenever the base set is replaced (session #47).
+        if (typeof historyInvalidateMerge === 'function') historyInvalidateMerge();
       }
     })
     .catch(function() {
       workoutLog = JSON.parse(localStorage.getItem('ac_log') || '[]');
       medLog = JSON.parse(localStorage.getItem('ac_med') || '[]');
+      if (typeof historyInvalidateMerge === 'function') historyInvalidateMerge();
     })
     .then(function() {
       calculateStreak();
@@ -4511,7 +4535,16 @@ function fetchAI(opts) {
         .catch(function(e) { console.warn('[ApexCoach] fetchAI micro-goals refresh skipped:', e && e.message); })
     : Promise.resolve();
 
-  microGoalsReady.then(function() {
+  // The exercise library is the SOLE source for buildLog() and
+  // buildExerciseHistory() below, and bootApp() historically never loaded it —
+  // so a cold-boot rec assembled with an empty history (session #46 measured
+  // 4,274 chars of strength/progression signal missing). Awaiting it here is
+  // the deterministic fix: same shape as the micro-goals await that already
+  // guards this assembly. bootApp() also warms it, so in practice this joins an
+  // in-flight request rather than starting one, and adds no boot latency.
+  var promptDataReady = Promise.all([microGoalsReady, ensureLibExercises()]);
+
+  promptDataReady.then(function() {
   try {
   // Condensed last-N-day exercise summary: one line per logged exercise as
   // "DATE: EXERCISE (SETS x REPS @ WEIGHT)" — far smaller than dumping full
@@ -4530,7 +4563,19 @@ function fetchAI(opts) {
         }
       }
     }
-    if (!rows.length) return 'No exercises logged in the last ' + nUnit(days, 'day') + '.';
+    if (!rows.length) {
+      // HONESTY GUARD (session #47). An UNLOADED library is not a zero. Before
+      // this, a cold boot emitted the literal "No exercises logged in the last
+      // 7 days." — a false statement, sitting six lines below a THIS WEEK SO
+      // FAR block (built from workoutLog, a different source) reading
+      // "Sessions completed: 7". fetchAI now awaits ensureLibExercises(), so
+      // this branch is only reachable on a genuine fetch failure — but it must
+      // still never report an unknown as a zero.
+      if (libExercisesState !== 'loaded') {
+        return 'Exercise-level detail for the last ' + nUnit(days, 'day') + ' could not be loaded. This is NOT a report of zero training — use the weekly volume block above for sessions actually completed, and do not claim the athlete has trained nothing.';
+      }
+      return 'No exercises logged in the last ' + nUnit(days, 'day') + '.';
+    }
     rows.sort(function(a, b) { return a.date < b.date ? -1 : (a.date > b.date ? 1 : 0); });
     var lines = [];
     for (var ri = 0; ri < rows.length; ri++) {
@@ -5042,7 +5087,7 @@ function fetchAI(opts) {
     console.error('[ApexCoach] fetchAI: unexpected error -', outerErr);
     document.getElementById('ai-content').innerHTML = '<div style="text-align:center;padding:20px 0"><p style="color:#e87;font-size:15px;margin-bottom:12px">Unable to load recommendation</p><p style="color:var(--text-dim);font-size:13px;margin-bottom:16px">' + (outerErr.message || 'Unexpected error') + '</p><button onclick="retryAIManually()" style="background:transparent;border:1px solid #333;color:var(--text-sec);padding:8px 20px;cursor:pointer;border-radius:6px;font-size:14px;font-family:DM Sans,sans-serif">Retry</button></div>';
   }
-  }); // end microGoalsReady.then
+  }); // end promptDataReady.then (micro-goals + exercise library)
 }
 
 var expandedOption = 0;
@@ -14544,6 +14589,58 @@ function doSaveWorkout() {
 var libView = 'dashboard';
 var libExercises = [];
 var libStats = null;
+
+// ── EXERCISE-LIBRARY READINESS (session #47) ──────────────────────────────
+// libExercises is the SOLE source for BOTH buildLog() (the RECENT N-DAY LOG)
+// and buildExerciseHistory() (the RECENT EXERCISE HISTORY block carrying every
+// PERSONAL BEST) in the daily-rec prompt. But loadLibrary()'s only call sites
+// are the Library tab, and bootApp() never called it — so on a cold boot the
+// rec was assembled with libExercises = []. Measured session #46 on profile 1:
+// exerciseHistory 3,548 -> 0 chars and recentLog 765 -> 39 chars, the 39 being
+// the literal FALSE line "No exercises logged in the last 7 days."
+// Same race class as the /goal-progress one fixed in session #43 (ROADMAP §9).
+//
+// libExercisesState is THREE-valued on purpose: 'unloaded' must never be
+// reported to the model as "zero exercises" — an unknown is not a zero. See
+// buildLog()'s guard.
+var libExercisesState = 'unloaded';   // 'unloaded' | 'loaded' | 'failed'
+var libExercisesProfile = null;       // which profile the state above belongs to
+var libExercisesPromise = null;       // in-flight fetch, so concurrent callers share one
+
+// Resolve once libExercises is populated for the CURRENT profile. Idempotent
+// and deduped: already-loaded returns immediately (so a Library-tab visit or an
+// earlier bootApp warm-up satisfies it with no second request), an in-flight
+// fetch is shared, and a FAILED attempt clears the cached promise so a later
+// caller can retry rather than inheriting the failure forever.
+function ensureLibExercises() {
+  if (!currentProfileId) return Promise.resolve();
+  var pid = currentProfileId;
+  if (libExercisesProfile === pid && libExercisesState === 'loaded') return Promise.resolve();
+  if (libExercisesProfile === pid && libExercisesPromise) return libExercisesPromise;
+  libExercisesProfile = pid;
+  libExercisesPromise = fetch('/api/profiles/' + pid + '/exercises')
+    .then(function(r) { return r.json(); })
+    .then(function(data) {
+      if (currentProfileId !== pid) return; // profile switched mid-flight — discard
+      if (data && data.success) {
+        libExercises = data.exercises || [];
+        libExercisesState = 'loaded';
+      } else {
+        libExercisesState = 'failed';
+      }
+    })
+    .catch(function(e) {
+      if (currentProfileId !== pid) return;
+      libExercisesState = 'failed';
+      console.warn('[ApexCoach] ensureLibExercises failed:', e && e.message);
+    })
+    .then(function() {
+      // Release the cached promise. A 'loaded' state now short-circuits above,
+      // so this only matters for the failure case, where it permits a retry.
+      if (libExercisesProfile === pid) libExercisesPromise = null;
+    });
+  return libExercisesPromise;
+}
 var libCharts = {};
 var LIB_COLORS = { 'Strength':'#4488bb','Cardio':'#f5a623','Martial Arts':'#e84545','Sports':'#22c97a','Mind & Body':'#9966cc','Rehab & Recovery':'#f07020','Mixed Training':'#22c97a','Rest':'#555','Other':'#888' };
 var CAT_COLORS = { strength:'#4488bb', cardio:'#f5a623', martial_arts:'#e84545', sports:'#22c97a', mind_body:'#9966cc', rehab:'#f07020', mixed:'#22c97a', rest:'#555', other:'#888', combat:'#e84545', core:'#ff6b35', mobility:'#9966cc' };
@@ -14605,7 +14702,14 @@ function loadLibrary() {
     fetch('/api/profiles/' + currentProfileId + '/exercises').then(function(r) { return r.json(); }),
     fetch('/api/profiles/' + currentProfileId + '/exercises/stats').then(function(r) { return r.json(); })
   ]).then(function(results) {
-    if (results[0].success) libExercises = results[0].exercises || [];
+    // Keep the readiness state in lockstep with the data it describes, so
+    // ensureLibExercises() and loadLibrary() can never disagree about whether
+    // libExercises is populated (session #47).
+    if (results[0].success) {
+      libExercises = results[0].exercises || [];
+      libExercisesState = 'loaded';
+      libExercisesProfile = currentProfileId;
+    }
     if (results[1].success) libStats = results[1].stats || {};
     renderLibImportBanner();
     if (libView === 'dashboard') renderLibDashboard();
@@ -15530,42 +15634,78 @@ function reformatAllTitles() {
     });
 }
 
+// MANDATORY CONFIRMATION (session #47). This is a BULK DELETE of real workout
+// history and used to fire on a single tap with no confirm at all — the only
+// unconfirmed destructive control in the app (ROADMAP §9). The flow is now
+// report -> show exactly what would go -> confirm -> apply, and the server is
+// dry-run by default so the confirmation cannot be skipped by a stale client.
 function dedupeWorkouts() {
   if (!currentProfileId) return;
   var btn = document.getElementById('dedupe-btn');
   if (btn) { btn.textContent = 'Checking...'; btn.disabled = true; }
+  var reset = function(label) {
+    setTimeout(function() { if (btn) { btn.textContent = 'Remove Duplicates'; btn.disabled = false; } }, 3000);
+    if (btn) btn.textContent = label;
+  };
   fetch('/api/profiles/' + currentProfileId + '/dedupe-workouts', { method: 'POST' })
     .then(function(r) { return r.json(); })
-    .then(function(data) {
-      if (data.success) {
-        if (data.deleted > 0) {
-          if (btn) btn.textContent = 'Removed ' + data.deleted + ' duplicates!';
-          // Reload workouts
-          fetch('/api/workouts?profile_id=' + currentProfileId + '&limit=200')
-            .then(function(r) { return r.json(); })
-            .then(function(wkData) {
-              if (wkData.success && Array.isArray(wkData.workouts)) {
-                workoutLog = wkData.workouts;
-                localStorage.setItem('ac_log', JSON.stringify(workoutLog));
-                renderLog();
-                renderLogArea();
-                renderCalendar();
-                loadLibrary();
-              }
-            });
-        } else {
-          if (btn) btn.textContent = 'No duplicates found';
-        }
-      } else {
-        if (btn) btn.textContent = 'Error';
-      }
-      setTimeout(function() {
-        if (btn) { btn.textContent = 'Remove Duplicates'; btn.disabled = false; }
-      }, 3000);
+    .then(function(plan) {
+      if (!plan || !plan.success) { reset('Error'); return; }
+      var rows = Array.isArray(plan.would_delete) ? plan.would_delete : [];
+      if (!plan.duplicates_found) { reset('No duplicates found'); return; }
+      // Name every row that would go — count AND dates, so the decision is made
+      // on what is actually at stake rather than on a bare number.
+      var lines = rows.slice(0, 20).map(function(w) {
+        return '  • ' + w.date + '  ' + (w.type || 'Workout');
+      }).join('\n');
+      var more = rows.length > 20 ? '\n  … and ' + (rows.length - 20) + ' more' : '';
+      var msg = 'Permanently delete ' + plan.duplicates_found + ' duplicate workout'
+        + (plan.duplicates_found === 1 ? '' : 's') + '?\n\n'
+        + 'These rows share a date AND a timestamp with another workout that is being KEPT:\n\n'
+        + lines + more
+        + '\n\nThis cannot be undone.';
+      if (!confirm(msg)) { reset('Cancelled'); return; }
+      if (btn) btn.textContent = 'Deleting...';
+      return fetch('/api/profiles/' + currentProfileId + '/dedupe-workouts?apply=1', { method: 'POST' })
+        .then(function(r) { return r.json(); })
+        .then(function(data) { dedupeApplied(data, btn); });
     })
-    .catch(function(err) {
-      if (btn) { btn.textContent = 'Error'; btn.disabled = false; }
-    });
+    .catch(function() { if (btn) { btn.textContent = 'Error'; btn.disabled = false; } });
+}
+
+function dedupeApplied(data, btn) {
+  if (data && data.success) {
+    if (data.deleted > 0) {
+      if (btn) btn.textContent = 'Removed ' + data.deleted + ' duplicates!';
+      // Reload workouts. The paged-in history store is rebuilt from scratch —
+      // rows were just deleted, so anything already absorbed may be stale.
+      historyExtra = [];
+      historyServerExhausted = false;
+      historyShown = 60;
+      calYearLoaded = {};
+      historyInvalidateMerge();
+      fetch('/api/workouts?profile_id=' + currentProfileId + '&limit=200')
+        .then(function(r) { return r.json(); })
+        .then(function(wkData) {
+          if (wkData.success && Array.isArray(wkData.workouts)) {
+            workoutLog = wkData.workouts;
+            localStorage.setItem('ac_log', JSON.stringify(workoutLog));
+            historyInvalidateMerge();
+            renderLog();
+            renderLogArea();
+            renderCalendar();
+            loadLibrary();
+          }
+        });
+    } else {
+      if (btn) btn.textContent = 'No duplicates found';
+    }
+  } else {
+    if (btn) btn.textContent = 'Error';
+  }
+  setTimeout(function() {
+    if (btn) { btn.textContent = 'Remove Duplicates'; btn.disabled = false; }
+  }, 3000);
 }
 
 function renderDonutChart() {
@@ -16366,10 +16506,120 @@ function setCalMode(mode) {
   calDetailDate = null;
   document.getElementById('cal-mode-week').classList.toggle('active', mode === 'week');
   document.getElementById('cal-mode-month').classList.toggle('active', mode === 'month');
+  var yb = document.getElementById('cal-mode-year');
+  if (yb) yb.classList.toggle('active', mode === 'year');
+  // The year view spans 12 months, and only ~11 weeks of that is in the default
+  // 60-row window — so entering it fetches the whole year in ONE bounded call
+  // rather than rendering a mostly-empty grid (session #47).
+  if (mode === 'year') calEnsureYearLoaded(new Date().getFullYear());
   renderCalendar();
 }
 
-function calNav(dir) { calOffset += dir; calDetailDate = null; renderCalendar(); }
+// ── YEAR VIEW (session #47) ───────────────────────────────────────────────
+// 12-month grid, one mini-column of WEEK density cells per month. Week rather
+// than per-day: 366 legible day cells do not fit a phone, and the question a
+// year view answers is "where were the gaps", which weeks answer better.
+var calYearLoaded = {};   // year -> true, so re-entering costs nothing
+var calYearLoading = null;
+
+function calEnsureYearLoaded(year) {
+  if (!currentProfileId || calYearLoaded[year] || calYearLoading === year) return;
+  calYearLoading = year;
+  fetch('/api/workouts?profile_id=' + currentProfileId + '&limit=1000&start_date=' + year + '-01-01&end_date=' + year + '-12-31')
+    .then(function(r) { return r.json(); })
+    .then(function(data) {
+      if (data && data.success) { historyAbsorb(data.workouts); calYearLoaded[year] = true; }
+    })
+    .catch(function(e) { console.warn('[Calendar] year load failed:', e && e.message); })
+    .then(function() { calYearLoading = null; renderCalendar(); });
+}
+
+// Ember opacity ramp on training density — the same visual language the muscle
+// heatmap uses. Zero is a neutral surface, never a coloured "bad" state.
+function calDensityStyle(sessions) {
+  if (!sessions) return 'background:var(--bg-surface-2);border:1px solid var(--border-subtle)';
+  var a = Math.min(0.85, 0.18 + 0.22 * sessions);
+  return 'background:rgba(255,74,28,' + a.toFixed(2) + ');border:1px solid transparent';
+}
+
+function renderCalYear() {
+  var year = new Date().getFullYear() + calOffset;
+  var titleEl = document.getElementById('cal-title');
+  if (titleEl) titleEl.textContent = String(year) + (calYearLoading === year ? '  ·  loading…' : '');
+
+  var todayStr = ds(0);
+  var monthNames = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+  var h = '<div style="grid-column:1 / -1;display:grid;grid-template-columns:repeat(auto-fill,minmax(96px,1fr));gap:10px">';
+
+  for (var m = 0; m < 12; m++) {
+    var daysInMonth = new Date(year, m + 1, 0).getDate();
+    // Bucket the month into calendar weeks (Mon-first), counting SESSIONS —
+    // several days carry two workouts, and a year view that showed only the
+    // first would understate real volume.
+    var weeks = [], total = 0;
+    var wk = 0;
+    for (var day = 1; day <= daysInMonth; day++) {
+      var mm = String(m + 1).padStart(2, '0');
+      var dd = String(day).padStart(2, '0');
+      var dstr = year + '-' + mm + '-' + dd;
+      var dow = new Date(year, m, day).getDay();
+      var monIdx = (dow === 0) ? 6 : dow - 1;
+      if (day > 1 && monIdx === 0) wk++;
+      var n = findEntriesOn(dstr).length;
+      weeks[wk] = (weeks[wk] || 0) + n;
+      total += n;
+    }
+    var isCurrentMonth = (year === new Date().getFullYear() && m === new Date().getMonth());
+    h += '<div onclick="historyGoToMonth(' + year + ',' + m + ')" title="Open ' + monthNames[m] + ' ' + year + '" style="cursor:pointer;background:var(--bg-surface-1);border:1px solid ' + (isCurrentMonth ? 'var(--accent-ember)' : 'var(--border-subtle)') + ';border-radius:12px;padding:8px">';
+    h += '<div style="display:flex;align-items:baseline;justify-content:space-between;margin-bottom:6px">';
+    h += '<span style="font-size:11px;letter-spacing:0.06em;text-transform:uppercase;color:' + (isCurrentMonth ? 'var(--accent-ember)' : 'var(--text-muted)') + '">' + monthNames[m] + '</span>';
+    h += '<span class="oswald" style="font-size:15px;color:' + (total ? 'var(--text-primary)' : 'var(--text-muted)') + '">' + total + '</span>';
+    h += '</div>';
+    h += '<div style="display:flex;gap:3px">';
+    for (var wi = 0; wi < Math.max(weeks.length, 5); wi++) {
+      h += '<div style="flex:1;height:22px;border-radius:4px;' + calDensityStyle(weeks[wi] || 0) + '"></div>';
+    }
+    h += '</div></div>';
+  }
+  h += '</div>';
+
+  var grid = document.getElementById('cal-grid');
+  if (grid) grid.innerHTML = h;
+  var detail = document.getElementById('cal-detail');
+  if (detail) detail.style.display = 'none';
+
+  // Year totals reuse the existing stats/breakdown renderers so the year view
+  // inherits their styling rather than introducing a parallel one.
+  var doneC = 0, mobC = 0, medC = 0, types = {};
+  var all = historyAllWorkouts();
+  for (var i = 0; i < all.length; i++) {
+    var w = all[i];
+    if (!historyDateIsValid(w) || w.date.slice(0, 4) !== String(year)) continue;
+    if (w.done) { doneC++; var cat = String(w.type || 'Other').split(' ')[0]; types[cat] = (types[cat] || 0) + 1; }
+    if (w.mobility) mobC++;
+  }
+  for (var mi = 0; mi < medLog.length; mi++) if (String(medLog[mi]).slice(0, 4) === String(year)) medC++;
+  var daysInYear = ((year % 4 === 0 && year % 100 !== 0) || year % 400 === 0) ? 366 : 365;
+  renderCalStats(doneC, mobC, medC, daysInYear);
+  renderCalBreakdown(types, String(year));
+}
+
+function calNav(dir) {
+  calOffset += dir;
+  calDetailDate = null;
+  // Navigating BACK past the default 60-row window used to render an empty
+  // grid even though the workouts existed (session #47). Pull the period being
+  // navigated to, bounded and cached, before painting.
+  if (calMode === 'year') {
+    calEnsureYearLoaded(new Date().getFullYear() + calOffset);
+  } else {
+    var ref = new Date(); ref.setDate(1);
+    ref.setMonth(ref.getMonth() + (calMode === 'month' ? calOffset : 0));
+    if (calMode === 'week') { ref = new Date(); ref.setDate(ref.getDate() + calOffset * 7); }
+    calEnsureYearLoaded(ref.getFullYear());
+  }
+  renderCalendar();
+}
 
 function toggleCalDetail(dateStr) {
   calDetailDate = (calDetailDate === dateStr) ? null : dateStr;
@@ -16416,10 +16666,23 @@ function catAbbrev(type) {
 }
 
 function findEntry(dateStr) {
-  for (var j = 0; j < workoutLog.length; j++) {
-    if (workoutLog[j].date === dateStr) return workoutLog[j];
+  // Reads the MERGED history store (session #47) so the calendar can show a
+  // month that was paged in or fetched by date range. Before this it read the
+  // 60-row `workoutLog` only, which is why navigating back to April rendered an
+  // empty grid even though all 24 of that month's workouts existed.
+  var all = historyAllWorkouts();
+  for (var j = 0; j < all.length; j++) {
+    if (all[j].date === dateStr) return all[j];
   }
   return null;
+}
+
+// Every workout on a date, not just the first — the year view counts sessions,
+// and several days carry two (a manual log plus an imported wearable activity).
+function findEntriesOn(dateStr) {
+  var all = historyAllWorkouts(), out = [];
+  for (var j = 0; j < all.length; j++) if (all[j].date === dateStr) out.push(all[j]);
+  return out;
 }
 
 function buildDayCell(dateStr, dayNum, isToday, entry) {
@@ -16469,6 +16732,10 @@ function renderCalDetail() {
 
 function renderCalendar() {
   var todayStr = ds(0);
+
+  // Year view owns its own grid entirely (session #47) — it does not use the
+  // 7-column day layout, so it returns before the week/month branches.
+  if (calMode === 'year') { renderCalYear(); return; }
 
   if (calMode === 'week') {
     // Week view: 7 days centered on current week, offset by calOffset weeks
@@ -16766,6 +17033,254 @@ function formatNotesWithAI() {
   });
 }
 
+// ── HISTORY STORE — permanent, fully viewable history (session #47) ───────
+// PRINCIPLE OF RECORD (ROADMAP §7 → A3): workout history lives forever. Nothing
+// in the app deletes it; every cap is a READ cap. `loadWorkouts()` fetches
+// `?limit=60`, which for this athlete (~5.5 sessions/week) reaches back only
+// ~11 weeks — all of April 2026 and part of May sat outside EVERY
+// `workoutLog`-driven surface (History list, calendar, streak).
+//
+// The fix is pagination + a date range, NOT a bigger limit. That is the same
+// standing rule session #43 set for /goal-progress: a payload that grows with
+// every logged row forever is never the right answer.
+//
+// ⚠ `workoutLog` IS DELIBERATELY NEVER MUTATED HERE. It is read by the streak
+// calculation, the weekly-volume/variety blocks in the daily-rec prompt, and
+// `resolveOptionDurations` — all of which are specified against the 60-row
+// window. Paged-in rows live in `historyExtra` and are merged ONLY for the
+// History tab's own surfaces (the sessions list and the calendar). Same pattern
+// as the Log-past panel's `logPastExtra` (session #21).
+var historyExtra = [];            // rows loaded beyond workoutLog's 60
+var historyRange = null;          // {start,end} active date-range filter, or null
+var historyShown = 60;            // how many list rows are revealed
+var historyServerExhausted = false;
+var historyFetching = false;
+var historyMergeCache = null;     // memo — renderLog runs on every paint
+var historyMergeVersion = 0;
+
+function historyInvalidateMerge() { historyMergeCache = null; historyMergeVersion++; }
+
+// workoutLog + historyExtra, deduped by id, newest first. Rows without an id
+// (never observed, but the calendar's findEntry tolerated it) fall back to a
+// date|ts key so a malformed row can't collapse two real ones.
+function historyAllWorkouts() {
+  if (historyMergeCache) return historyMergeCache;
+  var seen = {}, out = [];
+  var push = function(w) {
+    if (!w) return;
+    var k = (w.id != null) ? 'id:' + w.id : 'dt:' + w.date + '|' + w.ts;
+    if (seen[k]) return;
+    seen[k] = 1; out.push(w);
+  };
+  for (var i = 0; i < workoutLog.length; i++) push(workoutLog[i]);
+  for (var j = 0; j < historyExtra.length; j++) push(historyExtra[j]);
+  out.sort(function(a, b) {
+    return b.date > a.date ? 1 : b.date < a.date ? -1 : (b.ts || 0) - (a.ts || 0);
+  });
+  historyMergeCache = out;
+  return out;
+}
+
+// A row is renderable on a date-keyed surface only if its `date` really is a
+// date. Eight profile-1 rows held a TIME STRING (session #47, repaired by
+// migrations/2026-08-03_repair_malformed_workout_dates.sql). Until that SQL is
+// run they must degrade gracefully — excluded from the list and the calendar
+// rather than throwing or rendering under a garbage heading. Surfaced honestly
+// via historyMalformedCount() so they are never silently disappeared.
+function historyDateIsValid(w) {
+  return !!(w && typeof w.date === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(w.date));
+}
+function historyMalformedCount() {
+  var all = historyAllWorkouts(), n = 0;
+  for (var i = 0; i < all.length; i++) if (!historyDateIsValid(all[i])) n++;
+  return n;
+}
+
+function historyOldestLoadedDate() {
+  var all = historyAllWorkouts();
+  for (var i = all.length - 1; i >= 0; i--) if (historyDateIsValid(all[i])) return all[i].date;
+  return null;
+}
+
+// Merge fetched rows in, skipping anything already present.
+function historyAbsorb(rows) {
+  if (!Array.isArray(rows) || !rows.length) return 0;
+  var have = {};
+  var all = historyAllWorkouts();
+  for (var i = 0; i < all.length; i++) if (all[i] && all[i].id != null) have['id:' + all[i].id] = 1;
+  var added = 0;
+  for (var j = 0; j < rows.length; j++) {
+    var w = rows[j];
+    if (!w || w.id == null || have['id:' + w.id]) continue;
+    historyExtra.push(w); have['id:' + w.id] = 1; added++;
+  }
+  if (added) historyInvalidateMerge();
+  return added;
+}
+
+// "Load older": reveal more of what is already in memory first; only hit the
+// server when the reveal would run past everything loaded. Mirrors
+// logPastSeeMore()'s shape so the two paging surfaces behave the same way.
+function historyLoadOlder() {
+  var loaded = historyAllWorkouts().length;
+  if (historyShown < loaded) {
+    historyShown = Math.min(historyShown + 60, loaded);
+    renderLog();
+    if (historyShown < loaded || historyServerExhausted) return;
+  }
+  if (historyServerExhausted || historyFetching || !currentProfileId) { renderLog(); return; }
+  historyFetching = true;
+  renderLog(); // paint the "Loading…" state
+  var offset = historyAllWorkouts().length;
+  fetch('/api/workouts?profile_id=' + currentProfileId + '&limit=60&offset=' + offset)
+    .then(function(r) { return r.json(); })
+    .then(function(data) {
+      var rows = (data && data.success && Array.isArray(data.workouts)) ? data.workouts : [];
+      var added = historyAbsorb(rows);
+      // A short page means the server has nothing further. Also stop when a full
+      // page added nothing new, which is the only way this could otherwise loop.
+      if (rows.length < 60 || added === 0) historyServerExhausted = true;
+      historyShown = Math.min(historyShown + 60, historyAllWorkouts().length);
+    })
+    .catch(function(e) { console.warn('[History] load older failed:', e && e.message); })
+    .then(function() {
+      historyFetching = false;
+      historyInvalidateMerge();
+      renderLog();
+      renderCalendar();
+      if (typeof ensureHistoryChipsLoaded === 'function') ensureHistoryChipsLoaded();
+    });
+}
+
+// Date-range fetch. Uses the additive ?start_date=/?end_date= params added to
+// GET /api/workouts this session. The range is applied as a FILTER too, so the
+// list and the calendar both scope to it.
+function historyApplyRange(start, end) {
+  if (!currentProfileId) return;
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(start) || !/^\d{4}-\d{2}-\d{2}$/.test(end)) return;
+  if (start > end) { var t = start; start = end; end = t; }
+  historyRange = { start: start, end: end };
+  logDateFilter = null;
+  logFilter = 'all';
+  var dfEl = document.getElementById('log-date-filter');
+  if (dfEl) dfEl.style.display = 'none';
+  historyShown = 60;
+  historyFetching = true;
+  renderLog();
+  // limit=1000 is a bounded window (a calendar year of daily training is ~400
+  // rows), not an unbounded blob — and it only ever loads what the athlete
+  // explicitly asked to see.
+  fetch('/api/workouts?profile_id=' + currentProfileId + '&limit=1000&start_date=' + start + '&end_date=' + end)
+    .then(function(r) { return r.json(); })
+    .then(function(data) {
+      if (data && data.success) historyAbsorb(data.workouts);
+      else console.warn('[History] range fetch rejected:', data && data.error);
+    })
+    .catch(function(e) { console.warn('[History] range fetch failed:', e && e.message); })
+    .then(function() {
+      historyFetching = false;
+      historyInvalidateMerge();
+      renderLog();
+      renderCalendar();
+      if (typeof ensureHistoryChipsLoaded === 'function') ensureHistoryChipsLoaded();
+      var section = document.getElementById('history-list-section');
+      if (section) section.scrollIntoView({ behavior: 'smooth' });
+    });
+}
+
+function historyClearRange() {
+  historyRange = null;
+  historyShown = 60;
+  renderLog();
+  renderCalendar();
+}
+
+// Jump straight to a month (used by the year view's month cells and the picker).
+function historyGoToMonth(year, monthIdx) {
+  var last = new Date(year, monthIdx + 1, 0).getDate();
+  var mm = String(monthIdx + 1).padStart(2, '0');
+  historyApplyRange(year + '-' + mm + '-01', year + '-' + mm + '-' + String(last).padStart(2, '0'));
+}
+
+function historyOnPickerApply() {
+  var s = document.getElementById('hist-range-start');
+  var e = document.getElementById('hist-range-end');
+  if (!s || !e || !s.value || !e.value) return;
+  historyApplyRange(s.value, e.value);
+}
+
+// ── HISTORY CONTROLS (session #47) ────────────────────────────────────────
+// Tactical Instrument tokens throughout: dark-first surfaces, muted text, and
+// EMBER reserved for interactive accents only (the Apply button, the active
+// range chip, the Load-older action) — never as decoration.
+function historyControlsHtml(visibleCount) {
+  var oldest = historyOldestLoadedDate();
+  var malformed = historyMalformedCount();
+  var h = '<div id="hist-controls" style="margin-bottom:12px">';
+
+  // Active range chip — ember, dismissible.
+  if (historyRange) {
+    h += '<div style="display:flex;align-items:center;justify-content:space-between;gap:8px;background:var(--bg-surface-2);border:1px solid var(--accent-ember);border-radius:9999px;padding:8px 14px;margin-bottom:8px">';
+    h += '<span style="font-size:12px;color:var(--accent-ember);font-family:IBM Plex Mono,monospace">' + historyRange.start + ' &rarr; ' + historyRange.end + '</span>';
+    h += '<button onclick="historyClearRange()" style="background:transparent;border:none;color:var(--accent-ember);cursor:pointer;font-size:16px;padding:0 4px;min-height:24px">&times;</button>';
+    h += '</div>';
+  }
+
+  // Collapsible date-range picker.
+  h += '<div style="background:var(--bg-surface-1);border:1px solid var(--border-subtle);border-radius:12px;padding:10px 12px">';
+  h += '<button onclick="historyTogglePicker()" style="background:transparent;border:none;color:var(--text-muted);cursor:pointer;font-size:11px;letter-spacing:0.06em;text-transform:uppercase;padding:0;font-family:Inter,sans-serif;display:flex;align-items:center;gap:6px;width:100%">';
+  h += '<span style="color:var(--accent-ember)">' + (historyPickerOpen ? '&#9662;' : '&#9656;') + '</span> Jump to a date range';
+  h += '</button>';
+  if (historyPickerOpen) {
+    var defEnd = ds(0);
+    var defStart = (historyRange && historyRange.start) || (oldest || ds(-30));
+    h += '<div style="margin-top:10px;display:flex;flex-wrap:wrap;gap:8px;align-items:flex-end">';
+    h += '<label style="font-size:10px;color:var(--text-muted);letter-spacing:0.06em;text-transform:uppercase">From<br><input type="date" id="hist-range-start" value="' + attrEsc(historyRange ? historyRange.start : defStart) + '" max="' + defEnd + '" style="margin-top:4px;background:var(--bg-surface-2);border:1px solid var(--border-subtle);color:var(--text-primary);padding:8px 10px;border-radius:8px;font-size:13px;font-family:Inter,sans-serif"></label>';
+    h += '<label style="font-size:10px;color:var(--text-muted);letter-spacing:0.06em;text-transform:uppercase">To<br><input type="date" id="hist-range-end" value="' + attrEsc(historyRange ? historyRange.end : defEnd) + '" max="' + defEnd + '" style="margin-top:4px;background:var(--bg-surface-2);border:1px solid var(--border-subtle);color:var(--text-primary);padding:8px 10px;border-radius:8px;font-size:13px;font-family:Inter,sans-serif"></label>';
+    h += '<button onclick="historyOnPickerApply()" style="background:var(--accent-ember);border:none;color:#fff;padding:9px 18px;border-radius:9999px;cursor:pointer;font-size:12px;font-weight:600;font-family:Inter,sans-serif;min-height:38px">Apply</button>';
+    h += '</div>';
+    // Quick month shortcuts for the last 6 months — the common case is "show me
+    // April", and typing two dates for that is friction.
+    h += '<div style="margin-top:10px;display:flex;gap:6px;flex-wrap:wrap">';
+    for (var mo = 0; mo < 6; mo++) {
+      var d = new Date(); d.setDate(1); d.setMonth(d.getMonth() - mo);
+      var lbl = d.toLocaleDateString('en-US', { month: 'short', year: '2-digit' });
+      h += '<button onclick="historyGoToMonth(' + d.getFullYear() + ',' + d.getMonth() + ')" style="font-size:11px;font-weight:600;padding:5px 12px;border-radius:9999px;border:1px solid var(--border-subtle);background:var(--bg-surface-2);color:var(--text-muted);cursor:pointer;font-family:Inter,sans-serif">' + lbl + '</button>';
+    }
+    h += '</div>';
+  }
+  h += '</div>';
+
+  if (oldest) {
+    h += '<p class="font-mono" style="font-size:9px;color:var(--text-muted);letter-spacing:0.12em;margin-top:8px">LOADED BACK TO ' + oldest + (historyServerExhausted ? ' · FULL HISTORY' : '') + '</p>';
+  }
+  // Malformed rows are reported, never silently dropped.
+  if (malformed) {
+    h += '<p style="font-size:11px;color:var(--color-caution);margin-top:6px;line-height:1.4">' + malformed + ' workout' + (malformed === 1 ? '' : 's') + ' can’t be shown — the stored date is not a real date. A repair is written and waiting to be run.</p>';
+  }
+  h += '</div>';
+  return h;
+}
+
+var historyPickerOpen = false;
+function historyTogglePicker() { historyPickerOpen = !historyPickerOpen; renderLog(); }
+
+function historyLoadMoreHtml(filteredCount, shownCount) {
+  // A date range is a bounded window that was fetched whole — paging further
+  // inside it is meaningless, so the control is suppressed.
+  if (historyRange) return '';
+  if (logDateFilter) return '';
+  var more = filteredCount > shownCount;
+  if (historyFetching) {
+    return '<p class="font-mono" style="font-size:10px;color:var(--text-muted);letter-spacing:0.16em;text-align:center;padding:16px 0;animation:pulse 1.6s infinite">LOADING OLDER SESSIONS...</p>';
+  }
+  if (!more && historyServerExhausted) {
+    return '<p class="font-mono" style="font-size:9px;color:var(--text-muted);letter-spacing:0.12em;text-align:center;padding:16px 0">THAT IS YOUR COMPLETE HISTORY</p>';
+  }
+  if (!more && !historyServerExhausted && logFilter !== 'all') return '';
+  return '<button onclick="historyLoadOlder()" style="display:block;width:100%;margin-top:8px;background:var(--bg-surface-2);border:1px solid var(--accent-ember);color:var(--accent-ember);padding:12px;border-radius:12px;cursor:pointer;font-size:13px;font-weight:600;font-family:Inter,sans-serif;min-height:44px">Load older sessions</button>';
+}
+
 // ── RENDER LOG - with collapsed cards ─────────────────────────────────────
 var expandedCards = {};
 var logFilter = 'all';
@@ -17058,7 +17573,17 @@ function loggedDerivedDuration(exercises, workout) {
 function renderLog() {
   var now = new Date();
   var todayStr = ds(0);
-  var filtered = workoutLog.filter(function(w) {
+  // Source from the MERGED history store (session #47), not the 60-row
+  // `workoutLog`, so anything paged in or fetched by date range is visible.
+  // `workoutLog` itself is untouched and still drives the streak and the
+  // rec prompt's weekly-volume/variety blocks.
+  var source = historyAllWorkouts();
+  // Malformed-date rows are excluded from every date-keyed surface rather than
+  // rendered under a garbage heading — see historyDateIsValid(). Their count is
+  // surfaced below so they are never silently disappeared.
+  var filtered = source.filter(function(w) {
+    if (!historyDateIsValid(w)) return false;
+    if (historyRange) return w.date >= historyRange.start && w.date <= historyRange.end;
     if (logDateFilter) return w.date === logDateFilter;
     if (logFilter === 'all') return true;
     var d = new Date(w.date + 'T12:00:00');
@@ -17075,17 +17600,30 @@ function renderLog() {
     return b.date > a.date ? 1 : b.date < a.date ? -1 : (b.ts || 0) - (a.ts || 0);
   });
 
-  var countLabel = logDateFilter ? 'SHOWING 1 DATE' : logFilter !== 'all' ? filtered.length + ' SESSIONS (' + logFilter.toUpperCase() + ')' : 'HISTORY - ' + workoutLog.length + ' SESSIONS';
+  var countLabel = historyRange
+    ? filtered.length + ' SESSIONS · ' + historyRange.start + ' → ' + historyRange.end
+    : logDateFilter ? 'SHOWING 1 DATE'
+    : logFilter !== 'all' ? filtered.length + ' SESSIONS (' + logFilter.toUpperCase() + ')'
+    : 'HISTORY - ' + filtered.length + ' SESSIONS LOADED';
   document.getElementById('log-count').textContent = countLabel;
 
+  // The range picker + "load older" control render ABOVE the list and must be
+  // present even when the current filter matches nothing, otherwise an empty
+  // range is a dead end with no way back.
+  var controlsHTML = historyControlsHtml(filtered.length);
+
   if (!filtered.length) {
-    document.getElementById('log-entries').innerHTML = '<p style="color:var(--text-dim);font-style:italic;text-align:center;padding:40px 0;font-size:15px">No sessions found.</p>';
+    document.getElementById('log-entries').innerHTML = controlsHTML +
+      '<p style="color:var(--text-dim);font-style:italic;text-align:center;padding:40px 0;font-size:15px">No sessions found.</p>';
     return;
   }
 
-  var html = '';
+  var html = controlsHTML;
   var histLinkNames = [];   // exercise names to exact/alias-resolve for name-tap linking
-  var limit = Math.min(filtered.length, 60);
+  // Was a hard `Math.min(filtered.length, 60)` — a SECOND cap on top of
+  // loadWorkouts()'s 60, so even loaded rows could not be seen. Now driven by
+  // historyShown, which "Load older" raises (session #47).
+  var limit = Math.min(filtered.length, historyShown);
   for (var i = 0; i < limit; i++) {
     var w = filtered[i];
     var cardId = w.id || ('d' + w.date + i);
@@ -17156,6 +17694,8 @@ function renderLog() {
     html += '</div></div>';
     html += '</div>';
   }
+  // Footer: "Load older" / exhausted marker, below the last card (session #47).
+  html += historyLoadMoreHtml(filtered.length, limit);
   document.getElementById('log-entries').innerHTML = html;
   renderHistoryQuickView();
   // Resolve exercise-name links across the painted rows, then re-render once so

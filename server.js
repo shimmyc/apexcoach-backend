@@ -2181,6 +2181,33 @@ app.get("/api/workouts", async function(req, res) {
     var offset = parseInt(req.query.offset, 10);
     if (!isNaN(offset) && offset > 0) url += "&offset=" + offset;
     if (profileId) url += "&profile_id=eq." + profileId;
+    // Optional date-range filter (2026-08-03, session #47). Additive and
+    // backward-compatible: absent params behave exactly as before, so NO
+    // existing caller changes and the default limits for prompt consumers are
+    // untouched. This is what makes history genuinely reachable — the athlete's
+    // April 2026 sessions sit outside the default 60-row window and were
+    // otherwise only reachable via the Log-past panel's offset paging.
+    //
+    // Format is validated with the SAME shared helper the insert paths use, so
+    // there is one definition of a valid workout date. An invalid value is a
+    // 400, never a silently-ignored filter that would return the wrong window.
+    // `date` is a `text` column, so these are lexicographic comparisons — which
+    // is exactly right for zero-padded YYYY-MM-DD, and is why the format guard
+    // matters here too.
+    var startDate = req.query.start_date;
+    var endDate = req.query.end_date;
+    if (startDate != null && startDate !== "") {
+      if (!isValidWorkoutDate(startDate)) {
+        return res.status(400).json({ success: false, error: "Invalid start_date (expected YYYY-MM-DD)" });
+      }
+      url += "&date=gte." + encodeURIComponent(String(startDate));
+    }
+    if (endDate != null && endDate !== "") {
+      if (!isValidWorkoutDate(endDate)) {
+        return res.status(400).json({ success: false, error: "Invalid end_date (expected YYYY-MM-DD)" });
+      }
+      url += "&date=lte." + encodeURIComponent(String(endDate));
+    }
     var r = await fetch(url, { headers: sbHeaders() });
     var data = await r.json();
     res.json({ success: true, workouts: Array.isArray(data) ? data : [] });
@@ -2418,6 +2445,28 @@ async function findWearableMatchOnSave(profileId, workout) {
   };
 }
 
+// ── WORKOUT DATE VALIDATION (session #47) ────────────────────────────────
+// `workouts.date` is a `text` column, so Postgres accepts literally anything.
+// ONE implementation, used by EVERY path that inserts a workout row, so the
+// express route and the direct-to-PostgREST wearable importer cannot drift.
+//
+// This exists because the malformed-date defect was NOT a client bug: the
+// express route below has always rejected a non-YYYY-MM-DD date, but
+// `createWearableWorkout()` writes straight to PostgREST and bypassed it
+// entirely. Eight profile-1 rows were written that way between 2026-05-28 and
+// 2026-07-29, each holding a TIME STRING (see ROADMAP §6). Any future direct
+// writer MUST call this.
+function isValidWorkoutDate(v) {
+  if (v == null || v === "") return false;
+  var s = String(v);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(s)) return false;
+  var d = new Date(s + "T12:00:00");
+  if (isNaN(d.getTime())) return false;
+  // Reject a well-formed-but-impossible date (e.g. 2026-02-31, which JS would
+  // silently roll into March).
+  return d.toISOString().slice(0, 10) === s;
+}
+
 app.post("/api/workouts", async function(req, res) {
   try {
     var body = req.body || {};
@@ -2425,7 +2474,7 @@ app.post("/api/workouts", async function(req, res) {
     // Past dates are allowed so users can log a missed session.
     if (body.date != null && body.date !== "") {
       var dateStr = String(body.date);
-      if (!/^\d{4}-\d{2}-\d{2}$/.test(dateStr)) {
+      if (!isValidWorkoutDate(dateStr)) {
         return res.status(400).json({ success: false, error: "Invalid date format (expected YYYY-MM-DD)" });
       }
       var parsed = new Date(dateStr + "T12:00:00");
@@ -2590,15 +2639,40 @@ app.post("/api/profiles/:id/dedupe-workouts", async function(req, res) {
     // Group by date+ts to find true duplicates (same date AND same timestamp)
     var seen = {};
     var dupeIds = [];
+    var plan = [];
     for (var i = 0; i < workouts.length; i++) {
       var w = workouts[i];
       var key = w.date + '|' + (w.ts || 0);
       if (seen[key]) {
         // Keep the first one (earlier in the array = higher ID typically), delete this one
         dupeIds.push(w.id);
+        plan.push({ id: w.id, date: w.date, type: w.type, ts: w.ts, keeping_id: seen[key] });
       } else {
         seen[key] = w.id;
       }
+    }
+
+    // ⚠ DRY RUN BY DEFAULT (session #47). This endpoint performs a BULK DELETE of
+    // real workout history and was previously fired by a single unconfirmed tap —
+    // the only unconfirmed destructive control in the app (ROADMAP §9). It now
+    // requires an explicit `?apply=1`, matching the discipline every other
+    // destructive tool here already uses (orphaned-exercises, re-merge, the
+    // sandbox seeder): report -> human review -> apply.
+    //
+    // This DOES change the endpoint's default behaviour, deliberately: it makes
+    // the confirmation mandatory rather than advisory, and it fails SAFE for a
+    // client running a cached build, which would otherwise still one-tap delete.
+    var apply = req.query.apply === "1" || req.query.apply === "true";
+    if (!apply) {
+      console.log("[dedupe] DRY RUN for profile " + profileId + ": " + dupeIds.length + " duplicate(s) would be deleted");
+      return res.json({
+        success: true,
+        dry_run: true,
+        duplicates_found: dupeIds.length,
+        deleted: 0,
+        would_delete: plan,
+        note: "Nothing was deleted. Re-send with ?apply=1 to perform the delete.",
+      });
     }
 
     console.log("[dedupe] Found " + dupeIds.length + " duplicate workouts for profile " + profileId);
@@ -2611,7 +2685,7 @@ app.post("/api/profiles/:id/dedupe-workouts", async function(req, res) {
       if (dr.ok) deleted++;
     }
     console.log("[dedupe] Deleted " + deleted + " duplicates");
-    res.json({ success: true, duplicates_found: dupeIds.length, deleted: deleted });
+    res.json({ success: true, dry_run: false, duplicates_found: dupeIds.length, deleted: deleted, deleted_rows: plan });
   } catch (e) {
     console.error("[dedupe] Error:", e);
     res.status(500).json({ success: false, error: e.message });
@@ -8272,6 +8346,18 @@ app.post("/api/debug/seed-sandbox-workouts/:profileId", async function(req, res)
         ts: seedParse(s.date) + i,     // unique + chronologically ordered
       };
     });
+    // Third and last workout-insert path — same guard as the express route and
+    // the wearable importer, so all three share ONE definition of a valid date
+    // (session #47). The generator only ever emits YYYY-MM-DD today; this makes
+    // a future generator bug impossible to persist rather than merely unlikely.
+    var badSeedDates = wRows.filter(function(w) { return !isValidWorkoutDate(w.date); });
+    if (badSeedDates.length) {
+      return res.status(500).json({
+        success: false,
+        error: "seed plan produced " + badSeedDates.length + " row(s) with an invalid date (expected YYYY-MM-DD)",
+        sample: badSeedDates.slice(0, 5).map(function(w) { return w.date; }),
+      });
+    }
     var inserted = await seedInsertChunked("workouts", wRows);
     // Correlate by `ts` rather than trusting PostgREST to echo insertion order.
     var idByTs = {};
@@ -14281,6 +14367,20 @@ async function createWearableWorkout(profileId, provider, namespacedActivityId, 
   if (detail.avg_hr != null) noteParts.push("avg HR: " + detail.avg_hr + " bpm");
   var notes = noteParts.join(", ")
     + "\n[source: " + provider + "_activity, activityId=" + bareId + "]";
+
+  // ⚠ THIS IS THE PATH THAT WROTE THE 8 MALFORMED ROWS (session #47). It inserts
+  // straight into PostgREST, so `POST /api/workouts`'s date guard never applied.
+  // The root cause is fixed in wearables/fitbit.js normalize(); this is the
+  // defence-in-depth that makes a bad date impossible to persist from here,
+  // whatever a provider adapter returns in future. Failing loudly beats writing
+  // an invisible row: an import that cannot be dated is not a usable workout.
+  if (!isValidWorkoutDate(detail.date)) {
+    throw new Error(
+      "refusing to import " + provider + " activity " + bareId +
+      ": adapter returned an invalid workout date " + JSON.stringify(detail.date) +
+      " (expected YYYY-MM-DD)"
+    );
+  }
 
   var payload = {
     profile_id: parseInt(profileId, 10),
