@@ -57,11 +57,31 @@ function canon(v) {
 const sha = v => crypto.createHash('sha256').update(JSON.stringify(canon(v))).digest('hex');
 
 // ── The snapshot: the REAL one, if present; else a faithful minimal stand-in ─
+//
+// ⚠ The real snapshot is normalised to a PRE-migration baseline first. Without
+// that, this test is coupled to a file whose content changes: once profile 1 was
+// migrated, `backups/` gained a POST-migration snapshot whose goals already
+// carry goal_type/demand/estimate, and the "the naive restore leaves migration
+// keys behind" assertions failed against it. The test must define its own
+// starting state, not inherit whatever the newest backup happens to be.
+function stripMigrationKeys(pd) {
+  const c = JSON.parse(JSON.stringify(pd));
+  delete c.capacity;
+  delete c.coexistence;
+  (c.goals || []).forEach(g => {
+    delete g.goal_type; delete g.demand; delete g.estimate; delete g.plan_draft;
+    if (g.roadmap) { delete g.roadmap.estimate; delete g.roadmap.arc_origin; delete g.roadmap.arc_state; }
+  });
+  return c;
+}
 function loadSnapshot() {
   const dir = path.join(ROOT, 'backups');
   if (fs.existsSync(dir)) {
     const f = fs.readdirSync(dir).filter(x => /^profile-1-.*\.json$/.test(x)).sort().pop();
-    if (f) return JSON.parse(fs.readFileSync(path.join(dir, f), 'utf8'));
+    if (f) {
+      const raw = JSON.parse(fs.readFileSync(path.join(dir, f), 'utf8'));
+      return { profile_id: raw.profile_id, profile_data: stripMigrationKeys(raw.profile_data) };
+    }
   }
   return {
     profile_id: 1,
@@ -100,6 +120,15 @@ function migrate(pd) {
   m.coexistence = { verdict: 'coexist', computed_at: '2026-08-03' };
   return m;
 }
+
+test('the baseline really is PRE-migration (guards the coupling that broke this once)', () => {
+  const pd = snap.profile_data;
+  assert.ok(!('capacity' in pd) && !('coexistence' in pd), 'baseline must carry no migration top-level keys');
+  assert.ok(!(pd.goals || []).some(g => g.goal_type || g.demand || g.estimate),
+    'baseline goals must carry no migration fields');
+  assert.ok(!(pd.goals || []).some(g => g.roadmap && (g.roadmap.arc_origin || g.roadmap.arc_state)),
+    'baseline roadmaps must carry no arc fields');
+});
 
 test('the simulated migration really does change the things we claim it changes', () => {
   const after = migrate(snap.profile_data);
