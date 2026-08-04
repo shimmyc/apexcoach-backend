@@ -3656,6 +3656,220 @@ none of the keystone join (`frequency_targets[].goal_ids`), so the arc matches b
 
 ---
 
+## History-Informed Intake (2026-08-04, session #48) — question shaping
+
+**Before intake questions are generated, code aggregates the athlete's FULL logged history and
+hands the model a small computed rollup.** The model uses it to ask better questions and nothing
+else. `server.js` only; **no migration, no client change, no new dependency.** Shipped `3ca4ba8`.
+
+### The defect, located precisely
+
+The new-goal pipeline is five sequential calls, four of them model calls:
+
+| # | Step | Model | What it received BEFORE this session |
+|---|---|---|---|
+| 1 | `GET .../goals/:goalId/intake` | Haiku | title, `goal.type`, description, `ai_prompt_context` **800 chars** |
+| 2 | `POST .../intake` | — | the athlete's typed answers |
+| 3 | `POST .../plan-setup` → `demand` | Sonnet | title, description, answers, `ai_prompt_context` **600 chars** |
+| 4 | `POST .../estimate` → `estimate` | Sonnet | the above + `goal_type` + the step-3 demand, ctx **500 chars** |
+| 5 | `POST .../roadmap` | Sonnet | **the first and only step that read a logged row** |
+
+`estimate.total_weeks_low/high` is what `derivePhasePlan()` converts into phase count and each
+phase's week budget. **So `demand` and `estimate` were 100% self-report, and history arrived one
+step too late** — by the time step 5 saw the log, the timeline and the phase skeleton were fixed.
+Two athletes with identical goal text and opposite logs got materially the same roadmap; only the
+prose differed. That is exactly the defect the athlete described.
+
+### `getTrainingHistorySummary(profileId, {keywords, today})`
+
+Two outputs, deliberately — the same split Layer 2 uses for `arc_state`:
+- a **structured object** (~19 KB on a real profile) for CODE. It never leaves the server.
+- a **rendered text block** for the MODEL. **Measured 202–1,120 chars.** The model never sees a row.
+
+`buildTrainingHistorySummary(workouts, exercises, todayYmd, opts)` is **pure over its inputs**, so
+it is directly unit-testable against a fixture; the fetch is the caller's job.
+
+Profile-level: `total_sessions`, `distinct_days`, first/last date, `span_days`,
+`sessions_per_week_{4w,8w,12w,all_time}`, `longest_gap_days` + from/to, `current_gap_days`,
+`category_totals`, `per_month`. Per-exercise: `first_date`, `last_date`, `sessions`, and all four
+best fields. Goal-relevant slice: matched exercises **with their own first/last/sessions/best**,
+matched session types, `by_source` coverage, `confidence`, `specific_terms`, `specific_term_hits`.
+Endurance view: distance rollups, **`null` when there is no distance data at all** — which is
+profile 1's real state (0 of 332 rows carry `distance_miles`).
+
+**Self-capping like `buildArcStateContext`:** `HX_MAX_EXERCISE_LINES = 6`, `HX_MAX_MONTHS = 6`,
+`HX_BLOCK_CHAR_CAP = 1600`, and the cap drops **whole lines** — a half-printed week number is worse
+than an omitted line.
+
+### THE LAYERED MATCHER — exercise-level FIRST (the athlete's steer)
+
+| layer | source | sets |
+|---|---|---|
+| **PRIMARY** | per-day `exercises` rows — name plus weight/reps/duration/distance | `confidence: "exercise"` |
+| **SECONDARY** | workout **title + notes** via an ALL-CATEGORIES parse | `confidence: "category"` |
+| **NONE** | neither fired | `confidence: "none"` |
+
+**The secondary layer is MANDATORY, not optional, and the audit's own numbers are why:** cardio
+sessions frequently log **zero** exercise rows (3 of 10 sampled on profile 1) and `distance_miles`
+is NULL on **all 332** of profile 1's rows. An exercise-only matcher would report "no evidence" for
+real cardio work. **`by_source` reports how often each layer actually fires** — on profile 1 a
+running goal is `{exercise: 0, category: 25, category_only: 25}`; on the seeded runner fixture it is
+`{exercise: 20, category: 61, both: 20, category_only: 41}`.
+
+**Tokenization, on both layers.** Word-boundary matching (whole normalized tokens, never
+`indexOf`), **≥4 chars unless whitelisted** (`HX_SHORT_TOKEN_OK`: run, row, jog, ski, gym, abs, hip,
+arm, leg, 5k, 10k, ohp, rdl), bare numbers dropped, and **hyphen-normalized on BOTH sides**:
+`hxNameForms()` exposes each word plus the whole name joined, and `hxGoalTokens()` emits the joined
+compound for hyphenated/spaced pairs. Goal `"pull-ups"` → `pullup`; stored `"Pull-Up"` → `pullup`.
+
+**`HX_GENERIC_TOKENS` — a match made ONLY of generic tokens is not exercise evidence.** It falls
+through to the category layer instead. This is what stops a "Bench Press" goal claiming "Overhead
+Press" on the strength of `press` alone.
+
+**`hxAllCategories()` is a NEW function; `inferWorkoutCategoryServer` is untouched.** The ordered
+first-match-wins version is still used everywhere else and is asserted byte-identical by test.
+67% of profile 1's real workout titles name 2+ categories, and first-match-wins undercounts its
+cardio by **15 of 25 sessions**.
+
+### Measured against profile 1's REAL log — the four acceptance criteria
+
+| # | criterion | result |
+|---|---|---|
+| AC1 | crunch false positive **4 → 0** | ✅ `run` was a substring of "C-**run**-ches"; the old rule matched `Crunches ×3` + `Standing Oblique Crunch ×1` and **zero** real runs |
+| AC2 | cardio recovery **15 of 25** | ✅ first-match-wins 10 → all-categories 25 |
+| AC3 | `Pull-Up` visible to a pull-up goal | ✅ matched at `confidence: exercise` |
+| AC4 | the honest negative | ✅ *"NONE of those sessions mentions run or half or mile specifically. There is NO direct evidence of this exact activity."* — the block never presents crunches as running |
+
+### Two defects in this code found BY the measurement, not by inspection
+
+1. **`pull` alone dragged "Band Pull-Apart" into a pull-up goal.** `pull` / `push` / `leg` / `arm` /
+   `core` / `upper` / `lower` are movement-FAMILY words, not exercise identities — now generic. The
+   compound (`pullup`) carries the real match. Re-measured: `["Band Pull-Apart","Pull-Up"]` → `["Pull-Up"]`.
+2. **A 28-minute run rendered as `28:00 hold`.** That is the `duration_minutes` overload (ROADMAP
+   §6 — hold duration AND session length, still undistinguished in v1). Disambiguated by category
+   for the **LABEL ONLY** via `HX_SESSION_LENGTH_CATEGORIES` (cardio / martial_arts / sports /
+   mind_body = session), the same rule Engine v2 used. No stored value is touched.
+
+Compound generation also leaked junk tokens (`225lbs`, `1mile`, `20pull`) into the rendered
+sentence; compounds built from a bare number are now skipped, and the "NONE of those sessions
+mentions…" line names at most **3** terms.
+
+### Honest limits — stated, not glossed
+
+- **`press` → "Overhead Press" survives token overlap.** The generic-token rule stops it being
+  reported as *specific* evidence, but overlap on a shared word is a structural limit of token
+  matching. The mitigation is that an uncertain match produces a **question**, never a silent
+  estimate adjustment.
+- **Cardio's missing exercise rows** mean the category layer is doing the work for endurance goals,
+  and it is labelled *"matched only at the activity-category level, NOT on a named exercise —
+  weaker evidence"* in the block itself.
+- **`distance_miles` is NULL across all 332 of profile 1's rows**, so #46 A2's proposed
+  "recent distances/paces" view has nothing to compute from on the real athlete. `endurance` is
+  `null` rather than a fabricated zero.
+- **`makeTargetMatcher` cannot run off a goal title** and was NOT used: `activityMuscles()` returns
+  `[]` for 6 of 7 real goal titles, and `satisfies` returns false immediately on empty muscles.
+
+### Wiring — `GET /intake` ONLY
+
+`plan-setup` and `/estimate` receive **nothing** this session; estimate grounding (b) is designed
+and documented but **not built**, pending explicit approval. Asserted by test.
+
+The system prompt gains a conditional instruction block: don't ask what the log already answers; do
+ask about what it contradicts or leaves ambiguous; you may reference a fact so the athlete sees you
+read their log; **never restate a number that is not in the block and never contradict one**; and
+when there is no history, do not state or imply any logged fact. A permanent one-line diagnostic
+logs `has_history / days / matched / confidence / by_source / specific_hits / block_chars` per call.
+
+### Cold start and failure
+
+- `has_history: false` → a **202-char** honest statement (*"none on record… Do NOT state or imply
+  any logged fact"*). Verified live on profile 9 (0 workouts, 0 exercise rows).
+- **A failed read returns `null`, and a null summary emits NO block at all.** This is the session
+  #47 Phase 1 bug class: an *unloaded* history must never be rendered as *"no exercises logged"*.
+- History exists but nothing matches → *"NO logged sessions match"*, while still reporting the
+  profile-level history. It never claims zero history.
+
+### Blast radius — proven, not asserted
+
+`public/index.html` is **byte-identical** to the pinned pre-change commit `dc72f04`, so the
+daily-rec prompt has a **0-char delta by construction** — the rec is assembled in the browser and
+this session did not touch it. `extractGoalKeywords` / `GOAL_STOP_WORDS` / `ARC_WEAK_KEYWORDS` /
+`getGoalSessionDates` / `inferWorkoutCategoryServer` are all byte-identical to the same commit.
+Profile 1's three migrated goals still evaluate at `tier 2` / `keyword` / `qualifying_sessions_28d
+0` / `arc_origin 2026-08-03`, unchanged. **Profile 1 `profile_data` sha256
+`4313ea6a3896b172b5a2e387627ec6bc1075007f416ba460027c803e8130b9d6` identical at session start and
+session end.** Profile 4 sha `c356df4b8457d59b`, untouched.
+
+### The conflict rule — DESIGNED AND APPROVED, deliberately NOT built this session
+
+Code detects → gates on **materiality AND match confidence** → the model **asks** → code uses the
+reconciled answer → unresolved defaults to the **conservative (longer)** reading, stated in
+`estimate.basis`. Two binding guards: **never raise a discrepancy on `confidence: "none"`** (a
+low-confidence miss means "the log has no opinion", not "the athlete is wrong"), and **nothing
+writes to the goal from a discrepancy** — it only changes which questions get asked. The
+`specific_term_hits` field is the signal a discrepancy check would gate on; it is already computed
+and exposed. Building it belongs with (b).
+
+### (b) ESTIMATE GROUNDING — approved as DESIGN, NOT built. Exact insertion points.
+
+| route | insertion | measured cost |
+|---|---|---|
+| `POST .../plan-setup` | block appended to the user message, before "Propose how this athlete should train" | 1,460 → ~2,500 chars |
+| `POST .../estimate` | block appended, plus a **code-derived starting-point classification** | 1,412 → ~2,452 chars |
+
+**The load-bearing rule:** the model still authors the week range, but the *starting-point
+classification* it reasons from is **code-derived from the aggregate, not inferred by the model** —
+a small band (e.g. `trained_recently` / `detrained` / `no_relevant_history`) computed from
+`per_week_8w`, `current_gap_days`, `longest_gap_days` and `goal_relevant.sessions`, stated in the
+block, with the prompt requiring the range to be consistent with it. **No new model-authored number
+reaches storage** — `derivePhasePlan` still owns phase count and week budgets, `normalizeDemand`
+still clamps, and the dial lock is still server-authoritative.
+
+**Both Layer-1 prompts are server-side with their own `max_tokens` (500 / 400). They share nothing
+with `fetchAI`'s 28,000-char daily-rec guard.** Adding the block costs that guard 0 chars.
+
+### Test harness
+
+`server/historyIntake.test.js` — **28 tests**, real shipped functions extracted from `server.js` by
+source slicing and evaluated in a `vm` sandbox. The extractor is comment/string/template/
+regex-literal aware, has an **over-capture guard that throws**, and **re-parses every slice**. The
+"before" reference is the **pinned commit `dc72f04`, never `HEAD`** (session #44's learning), with
+an assertion that the pinned commit does *not* already contain this session's work.
+
+**The harness caught a real imprecision in its own assertions:** a "must not call
+`extractGoalKeywords`" check failed because the new section's own doc comment *names* those
+functions to say it does not use them. Fixed by checking `stripToCode()` output — comments are not
+calls — plus a positive assertion so the guard cannot be vacuous. **Suites 330 → 358, all green.**
+
+---
+
+## NEXT SESSION STARTS HERE — (b) estimate grounding, then the repair SQL (updated 2026-08-04, session #48)
+
+> **⚠ STATUS: (a) question shaping is SHIPPED and VERIFIED LIVE. (b) estimate grounding is
+> DESIGNED, DOCUMENTED and NOT BUILT — it needs explicit approval. There is no open bug in what
+> shipped.**
+>
+> | # | Work | Why |
+> |---|---|---|
+> | **1** | **(b) ESTIMATE GROUNDING — awaiting approval** | The design and its exact insertion points are in "History-Informed Intake" above. This is the half that actually changes the roadmap: `estimate` feeds `derivePhasePlan`, which owns phase count and week budgets. Until it ships, two athletes with identical goal text still get the same timeline — (a) only changes the questions. **Audit is already done; this is a build session if approved.** |
+> | **2** | **Shimmy runs the malformed-date repair SQL, then the CHECK constraint** | Unchanged from #47. `migrations/2026-08-03_repair_malformed_workout_dates.sql` → verify (§A) → repair (§B) → confirm (§C, must return 0 rows), THEN `…_workouts_date_format_check.sql`. **One judgement call is flagged in the file header:** 7 of the 8 rows land on a day that already has a logged workout. |
+> | **3** | **Shimmy links the three migrated goals to their schedule targets** | Unchanged and still the highest-value athlete action. All three sit at `tier 2` / `keyword` / **0 qualifying sessions** — re-confirmed live this session. **Until this is done the arc cannot move off position 0.** |
+> | **4** | **First real weekly adapt on migrated profile 1 — ~2026-08-10** | Confirm `arc_origin` is still `2026-08-03` and `arc_state` still present on all three while `version` increments and each gains a `weekly` entry. |
+> | **5** | **Arc Tier-2 matching improvement — NEWLY SCOPED by this session** | The arc's keyword tier has the exact defects session #48 measured and fixed elsewhere: substring matching (`run`→`Crunches`), hyphen asymmetry (`pullups` never reaches `Pull-Up`), and first-match-wins category inference. `hxGoalTokens`/`hxNameForms`/`hxAllCategories` are the proven replacement. **Deliberately NOT applied to the arc this session** — it would move arc evidence for every unlinked goal, which is all three of profile 1's. Its own scope, with its own before/after verification. |
+> | **6** | **Row 28 / item (c) — WAIT, do not build.** | Unchanged. Route (1): profile 4 accumulates real qualifying sessions until a genuine peak-then-gap forms. **Do not synthesise a re-ramp.** |
+>
+> **Fixture profiles 10 (HX Runner) and 11 (HX Nonrunner) are the motivating-case bed** — identical
+> seeded structure, differing by exactly 20 `Easy Run` sessions. Profile 9 stays the cold-start bed
+> (0 workouts). Purge with `POST /api/debug/purge-sandbox-workouts/{10,11}?apply=1` when done.
+>
+> **Read before starting:** "History-Informed Intake" above (the layered matcher and its honest
+> limits), ROADMAP §6 → "Session #48 findings", §7 ledger rows **51–54**, and §7 → "⚠ PER-GOAL vs
+> MACRO" (still the easiest thing to get wrong).
+
+---
+
+## Superseded next-session block (session #47) — kept for the record
+
 ## NEXT SESSION STARTS HERE — run the repair SQL, then watch the first real weekly adapt (updated 2026-08-03, session #47)
 
 > **⚠ STATUS: all five phases of session #47 shipped. Profile 1 IS MIGRATED. There is no open bug in
