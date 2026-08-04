@@ -3963,6 +3963,71 @@ marker now points at `var ARC_WEAK_KEYWORDS`, a declaration stable in both file 
 
 ---
 
+## Goal→Schedule Linking — where the control actually is (traced 2026-08-04, post-#49)
+
+**⚠ The #49 close-out described this path incompletely and the athlete could not find the control.
+Corrected here from a source trace plus a real read-only browser probe against production** (every
+non-GET aborted at the route layer; the two GETs that write as a side effect — `/daily`,
+`/micro-goals` — stubbed). **Report-only: zero writes.**
+
+**The control EXISTS, IS DEPLOYED, and DOES RENDER.** Measured in headless Chromium at both
+1440×1200 and 390×844: **6 pickers, 48 pills, `offsetHeight > 0`**, label `"Serves which goals?"`,
+pills named after all 8 goals. The deployed `index.html` is **byte-identical to the repo copy** after
+CRLF normalisation, and is served `Cache-Control: no-store, must-revalidate` — so a stale cached
+client is ruled out.
+
+### The path
+**Profile tab → Schedule card → "YOUR TRAINING BLUEPRINT ▸ Edit" → scroll INSIDE a Weekly Target
+row → "Serves which goals?" → tap a goal pill.** The tap writes immediately (`schedPersist()`); there
+is no separate save.
+
+### Why he saw nothing — it is the LAST control in a tall row
+`schedTargetRow` (`public/index.html:12477`) emits, in order: activity text input · 🗑 delete ·
+stackable checkbox · its italic explainer line · x/week stepper · day dropdown · duration dropdown ·
+**then** `schedGoalPickerHtml`. At 390 px the first picker sits **448 px below the top of the Schedule
+card** — just past the first fold; a screenshot shows the viewport cutting off exactly at the
+stackable checkbox. Nothing labelled *goal selector*, *link* or *target* appears as a heading.
+
+### Call sites and the write path
+| Symbol | Line | Role |
+|---|---|---|
+| `schedGoalPickerHtml(kind, idx, item, day)` | `:12499` | renders the pill row |
+| ↳ called from anchor editor | `:12412` | **only when a day is OPEN** (`schedOpenDay`) — tap a day pill first |
+| ↳ called from weekly-target row | `:12491` | the one that matters |
+| ↳ called from addon row | `:12601` | presence-level evidence only |
+| `schedToggleGoalLink(...)` | `:12526` | toggles `item.goal_ids`, **deletes the key when the last link is removed** (absent ≠ `[]`), then `schedPersist()` + `renderSchedule()` |
+| `capApplyDelta` | `:6625`–`:6645` | **the OTHER write path** — approving a Layer-3 coexistence proposal |
+
+### Preconditions — and none of them was the problem
+`schedGoalPickerHtml`'s **only** gates are `currentProfileData.goals.length > 0` (`:12500`, else it
+returns `''` **silently**) and, per pill, `g.id` (`:12506`). It is **NOT** gated on roadmap presence,
+`arc_state`, new-shape, `goal_type`, or tab state — only on `schedEditMode`, via the read-only branch
+in `schedRenderTargets` (`:12451`). **The one way to get "nothing at all" is a stale
+`localStorage.ac_profile_data`** with no `goals` (boot reads localStorage at `:3006`, then calls
+`refreshProfileData()`); not the cause here, since all 8 of his goals carry ids server-side.
+
+**Also checked and ruled out:** `loadSchedule()`'s legacy-migration branch does **not** wipe his
+targets — profile 1's schedule carries both legacy day keys *and* v2 keys, and `schedIsNewFormat()`
+tests for `anchors`/`frequency_targets`/`addons` **first**, so the v2 branch wins and all 4 targets
+survive.
+
+### How `goal_ids` has ever actually been set
+**Profile 4's links came from `capApplyDelta`, not the picker** — approving a Layer-3 coexistence
+delta (Session C, #38). The signature is visible in the data: `ft4 "Rehab right wrist tendonitis"`
+and `ft5 "Run a first marathon"` have **activity names identical to their goal titles**, which is
+what a code-authored `create` op produces; `ft1`/`ft2 "Upper Body Strength"` were attached by the
+`link_existing` op. `profile_data.coexistence` is present with a confirmed gate. **Not** an admin
+endpoint, **not** a migration, **not** Coach Chat — those have never written this field.
+
+### PATCH merge depth (verified in source, not from the doc)
+`PATCH /api/profiles/:id` merges `profile_data` **one level deep**: for each key, plain-object ↔
+plain-object is `Object.assign`'d, everything else replaces. So a body of
+`{profile_data:{schedule:{frequency_targets:[…]}}}` replaces **only** `frequency_targets` and
+preserves `anchors`, `addons` and the legacy day keys — but because **arrays replace wholesale**, the
+array must contain **every** target, complete.
+
+---
+
 ## NEXT SESSION STARTS HERE — the arc-origin backdating audit (updated 2026-08-04, session #49)
 
 > **⚠ STATUS: the matcher port is SHIPPED and VERIFIED. There is no open bug. The arc's evidence
@@ -3971,7 +4036,7 @@ marker now points at `var ARC_WEAK_KEYWORDS`, a declaration stable in both file 
 > | # | Work | Why |
 > |---|---|---|
 > | **1** | **ARC-ORIGIN BACKDATING AUDIT — profile 1's three migrated goals. The athlete's top open item.** | All three have `arc_origin 2026-08-03` (migration day), so the arc's evidence window is **~1 day** and `calendar_week` is 1. **Evidence only: find each goal's REAL evidenced start — the goal creation date, or the first matching logged session now computed by the corrected matcher — and NEVER guess** (§0.2 rule 5). An offline simulation this session (in-memory clones, zero writes) put all three at `position 0 / calendar 18 / drift −18 / stalled` if the origin moved to 2026-04-07, which is the honest earned position and exactly why the matcher had to be fixed first. |
-> | **2** | **Shimmy links the three migrated goals to their schedule targets — and the UI path is UNDOCUMENTED.** | **This is the real blocker, not the matcher.** All three sit at `tier 2` / `keyword` / **0 qualifying sessions**, and keyword matching will *never* find "Fix Posture" in an exercise name — linking is what actually turns evidence on. **The athlete has already looked in the roadmap section and could not find it.** The join is `profile_data.schedule.frequency_targets[].goal_ids`, edited via `schedGoalPickerHtml`/`schedToggleGoalLink` in the **Schedule card's target/addon rows in EDIT mode** (Profile tab → Schedule → "YOUR TRAINING BLUEPRINT ▸ Edit"). **Trace it live and either document it or expose it where the athlete looked.** |
+> | **2** | **Shimmy links the three migrated goals to their schedule targets. ⚠ PATH CORRECTED — see "Goal→Schedule Linking" below.** | **This is the real blocker, not the matcher.** All three sit at `tier 2` / `keyword` / **0 qualifying sessions**. The control **exists, is deployed and renders** — it is the LAST element inside each Weekly Target row, labelled **"Serves which goals?"**, ~448 px below the Schedule-card top on a phone. **Only "Build Muscle" has an honest target to link to (Upper + Lower Body Strength). "Fix Posture" has only an ADDON (presence-level = any training day counts) and "Fix Pubic Osteitis" has NO suitable item at all** — those two need a real target created, not a forced link. |
 > | **3** | **Shimmy runs the malformed-date repair SQL, then the CHECK constraint** | Unchanged from #47. `migrations/2026-08-03_repair_malformed_workout_dates.sql` → verify (§A) → repair (§B) → confirm (§C, must return 0 rows), THEN `…_workouts_date_format_check.sql`. **One judgement call is flagged in the file header:** 7 of the 8 rows land on a day that already has a logged workout. |
 > | **4** | **(b) ESTIMATE GROUNDING — still designed, still awaiting approval** | Unchanged from #48. `CLAUDE.md` → "History-Informed Intake" → "(b) ESTIMATE GROUNDING". This is the half that changes the roadmap: `estimate` feeds `derivePhasePlan`, which owns phase count and week budgets. |
 > | **5** | **First real weekly adapt on migrated profile 1 — ~2026-08-10** | Confirm `arc_origin` and `arc_state` survive while `version` increments and each goal gains a `weekly` entry. |
