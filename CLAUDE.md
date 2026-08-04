@@ -3843,6 +3843,156 @@ calls — plus a positive assertion so the guard cannot be vacuous. **Suites 330
 
 ---
 
+## Arc + Roadmap Matcher Port (2026-08-04, session #49) — one matcher, three evidence rules
+
+**Session #48 built the layered matcher for INTAKE only**, on explicit instruction to leave the arc
+byte-identical. The same substring/tokenization defect still governed **(a)** which logged sessions
+count toward a goal's **earned arc position** and **(b)** what grounds roadmap **CONTENT**. This
+session ported it. `server.js` only; **no migration, no client change, no new dependency.** Shipped
+`b55c627`. Suites **358 → 384**.
+
+### ONE IMPLEMENTATION, THREE EVIDENCE RULES
+
+The matching loop is factored out of `buildTrainingHistorySummary` into shared
+**`hxMatchGoalDays()`** / **`hxExerciseMatch()`**. `getGoalSessionDates` — the forked arc matcher —
+is **removed**. `extractGoalKeywords` survives for exactly **one** non-evidence consumer,
+`targetServesGoal` (Layer 3 schedule links; ROADMAP §7 ledger row 54).
+
+The three consumers differ **only in their evidence RULE**, never in their matching:
+
+| Consumer | Reads | Why |
+|---|---|---|
+| **intake** | `matched_dates` (both layers) | it asks QUESTIONS, so a category-level match is useful context |
+| **arc** (`arcKeywordDates`) | `specific_dates` ONLY | it drives NUMBERS — "any cardio" must never earn a running goal position |
+| **roadmap** (`getGoalExerciseContext`) | exercise layer only | `best_set`/`recent_volume`/`trend` are per-ROW arithmetic; a category match has no rows |
+
+`hxMatchGoalDays` returns the DATE SETS (`exercise_dates` / `category_dates` / `specific_dates` /
+`matched_dates`), added **additively** to `goal_relevant`. Intake ignores them — that is what keeps
+this one implementation rather than a fork.
+
+### ⚠ NOT A WHOLESALE PORT — the audit is the reason this session exists
+
+Handing the arc the matcher's raw CATEGORY layer would have replaced one false positive with a
+**bigger** one. Measured on profile 1's real log:
+- a **bench** goal → **45** strength sessions;
+- a **running** goal → **25** cardio sessions with **zero** actual runs;
+- **"Fix Posture" / "Fix Pubic Osteitis" / "Build Muscle"** → **4 phantom sessions each**, because
+  `hxAllCategories` **falls back to `["other"]`** for a title naming no category, and 4 uncategorised
+  junk workouts (`Test Workout`, `Workout` ×2, `Walking`) also parse to `["other"]`.
+
+**`HX_UNMATCHABLE_CATEGORIES = { other, rest }`** rejects both. `other` is a *fallback*, not a
+category; `rest` is the absence of training. This applies everywhere the matcher runs, **including
+intake** — which is why 6 of profile 1's 8 goals now show an honest *"NO logged sessions match"*
+where they previously claimed 2–4 category-level sessions that were Test Workout / Meditation /
+Walking. Fixtures 10/11 (both `cardio` goals) are byte-identical.
+
+### ⚠ THE DESCRIPTION FIREHOSE — found in VERIFICATION, not inspection
+
+The first cut passed `hxGoalTokens(title, description)` into both evidence paths, matching intake.
+Measured against real goals, that made matching **worse**: a goal *description* here is freeform
+coaching prose (profile 1's pinky goal carries **~2,000 words**), so tokenising it injects ordinary
+English.
+
+| Goal | Leak |
+|---|---|
+| pinky (hand rehab) | `Reverse Lunge` via `reverse`; **`Thoracic Extension Over Foam Roller` via the PREPOSITION `over`**; `Band Pull-Apart` via `band` — 4 real matches → 12 |
+| `Stamina` | 5 sessions via `full` ("**Full** MMA rounds" reaching "Strength (**Full** Body)") and `without` — 0 → 5 |
+
+**Both evidence paths read the goal TITLE only** (`hxGoalTokens(title, "")`), which is also what both
+pre-port paths did — so the port is a pure matching-semantics change with an unchanged input
+contract. **Intake is untouched and still reads both**, because a loose match there costs a slightly
+worse question, not a wrong number. Using a description safely needs its own rule (ROADMAP row 54).
+`Fix Posture`'s description *does* carry one genuine signal — "rounded shoulders" reaches
+`Shoulder Blade Retraction` / `Shoulder Blade Mobility` / `Shoulder Roll` — so this is a real
+trade-off, not a free win, and it is recorded as such.
+
+### Other changes
+- `arcQualifyingDates`' tier-2 return keeps `tier: 2` / `confidence: "keyword"` **byte-compatible**
+  so no UI or downstream consumer moves; **`matched_via` is now populated** (it was always `[]`), so
+  the athlete can finally see WHY a session counted. Purely additive — nothing branches on it.
+- `evaluateArcsForProfile`'s workouts fetch gained **`notes`**, so the Tier-2 category layer reads
+  the same `type + notes` text the intake matcher parses. Tier 1 ignores it.
+- `arcKeywordDates` takes the rows the caller **already fetched** — no second round-trip, and the
+  category layer needs the workouts anyway.
+- `getGoalExerciseContext`'s signature changed from `extractGoalKeywords(title)` (string array) to
+  `hxGoalTokens(title, "")` (token objects) across all **5** call sites — call sites adapted, logic
+  not forked.
+- Dead local `doneById` removed (already dead before this session).
+
+### Measured on profile 1's REAL log — 93 workouts, 332 exercise rows, 75 distinct names
+
+| Check | Result |
+|---|---|
+| Arc state, all 3 migrated goals | **byte-identical** — `position_week 0`, `calendar_week 1`, `drift −1`, `on_track`, `qualifying_28d 0`, `needs_regeneration false` |
+| False positives removed | **7** — bench 3 (`Overhead Press`), half-marathon 4 (`Crunches` ×3 + `Standing Oblique Crunch`) |
+| True positives gained | **1** — `Pull-Up`, previously invisible to a `pullups` goal through hyphen asymmetry |
+| Names added/removed, all 8 real goals × 75 names | **zero** |
+| Pinky goal | its 4 real matches, identical both ways |
+| Phantom sessions on the 3 real goals | **0** (would have been 4 each) |
+| Intake block, fixtures 10 + 11 | **byte-identical** (1,087 / 1,063 chars); `by_source` and `specific_term_hits` unchanged |
+| Daily-rec prompt | **0-char delta BY CONSTRUCTION** — `public/index.html` is byte-identical to `aff60c1` and contains **0** references to any ported function |
+| Writes / AI calls during verification | **0 / 0** (harness recorded and refused every non-GET) |
+
+**⚠ THE HEADLINE, STATED PLAINLY: the port changes NOTHING for any goal currently stored, on any
+profile.** Profile 4's two arc goals are **tier 1** (linked, so Tier 2 never runs); its three legacy
+roadmaps and profile 1's three migrated goals all match nothing either way; profile 9's arc goal has
+an empty log. There was therefore **no live behavioural signal available to distinguish new code
+from old** — this is recorded so a future session does not hunt for one. The value is entirely
+forward-looking: **backdating will replay months of history through a matcher that does not count
+crunches as runs.**
+
+### Verification
+`server/arcMatcherPort.test.js` — **26 tests**, real shipped functions extracted from **both** file
+versions (pinned `aff60c1`, never `HEAD`), comment/string/regex-aware brace scanner, over-capture
+guard, mandatory re-parse. Every claim is a measured before/after. Plus an offline replay of the
+**real** `POST /api/debug/evaluate-arcs/1` route through the actual booted `server.js` with
+`node-fetch` stubbed against profile 1's real rows.
+
+**Two harness traps fired again and are worth re-recording:**
+1. **`assert.deepStrictEqual` fails across vm realms** — even `[]` vs `[]` throws, because the
+   sandbox array's prototype is not this realm's. Compare a serialised form. (ROADMAP §9, #45.)
+2. **`stripToCode()` blanks string bodies by design**, so searching its output for a string literal
+   (`confidence: "keyword"`, `hxGoalTokens(title, "")`) can NEVER match. Use the **raw** slice for
+   literal checks and the stripped form for identifier/call checks. Fired twice in one file.
+
+Two pre-existing suites needed their extractors updated, neither by weakening an assertion:
+`historyIntake.test.js`'s slice list gained the new shared functions, and its `decision 4` test
+("the arc is byte-identical") was **rewritten, not deleted**, to record that #49 reversed that
+decision with approval. `arcFlag.test.js` sliced up to a comment this session rewrote; its end
+marker now points at `var ARC_WEAK_KEYWORDS`, a declaration stable in both file versions.
+
+---
+
+## NEXT SESSION STARTS HERE — the arc-origin backdating audit (updated 2026-08-04, session #49)
+
+> **⚠ STATUS: the matcher port is SHIPPED and VERIFIED. There is no open bug. The arc's evidence
+> path is now correct, which was the prerequisite for backdating — that is the next session.**
+>
+> | # | Work | Why |
+> |---|---|---|
+> | **1** | **ARC-ORIGIN BACKDATING AUDIT — profile 1's three migrated goals. The athlete's top open item.** | All three have `arc_origin 2026-08-03` (migration day), so the arc's evidence window is **~1 day** and `calendar_week` is 1. **Evidence only: find each goal's REAL evidenced start — the goal creation date, or the first matching logged session now computed by the corrected matcher — and NEVER guess** (§0.2 rule 5). An offline simulation this session (in-memory clones, zero writes) put all three at `position 0 / calendar 18 / drift −18 / stalled` if the origin moved to 2026-04-07, which is the honest earned position and exactly why the matcher had to be fixed first. |
+> | **2** | **Shimmy links the three migrated goals to their schedule targets — and the UI path is UNDOCUMENTED.** | **This is the real blocker, not the matcher.** All three sit at `tier 2` / `keyword` / **0 qualifying sessions**, and keyword matching will *never* find "Fix Posture" in an exercise name — linking is what actually turns evidence on. **The athlete has already looked in the roadmap section and could not find it.** The join is `profile_data.schedule.frequency_targets[].goal_ids`, edited via `schedGoalPickerHtml`/`schedToggleGoalLink` in the **Schedule card's target/addon rows in EDIT mode** (Profile tab → Schedule → "YOUR TRAINING BLUEPRINT ▸ Edit"). **Trace it live and either document it or expose it where the athlete looked.** |
+> | **3** | **Shimmy runs the malformed-date repair SQL, then the CHECK constraint** | Unchanged from #47. `migrations/2026-08-03_repair_malformed_workout_dates.sql` → verify (§A) → repair (§B) → confirm (§C, must return 0 rows), THEN `…_workouts_date_format_check.sql`. **One judgement call is flagged in the file header:** 7 of the 8 rows land on a day that already has a logged workout. |
+> | **4** | **(b) ESTIMATE GROUNDING — still designed, still awaiting approval** | Unchanged from #48. `CLAUDE.md` → "History-Informed Intake" → "(b) ESTIMATE GROUNDING". This is the half that changes the roadmap: `estimate` feeds `derivePhasePlan`, which owns phase count and week budgets. |
+> | **5** | **First real weekly adapt on migrated profile 1 — ~2026-08-10** | Confirm `arc_origin` and `arc_state` survive while `version` increments and each goal gains a `weekly` entry. |
+> | **6** | **Year-view calendar UX** | Shipped #47, never given a design pass. |
+> | **7** | **Adaptive conversational intake** | Future. |
+> | **8** | **Row 28 — WAIT, do not synthesise.** | Profile 4 accumulates real qualifying sessions until a genuine peak-then-gap forms. |
+>
+> **What the athlete needs to know in one paragraph:** the port **does not change his three goals'
+> numbers**, and it cannot manufacture evidence that is not in the log — "Fix Posture" is not the
+> name of any exercise he has ever logged. Its value is that backdating will now replay months of
+> history through a matcher that does not count crunches as runs. **The thing that actually turns
+> evidence on for those three goals is linking them to schedule targets (item 2).**
+>
+> **Read before starting:** "Arc + Roadmap Matcher Port" above (the three evidence rules, the
+> `other`-category rejection, and the description firehose), ROADMAP §6 → "Session #49 findings",
+> §7 ledger rows **51–57**, and §7 → "⚠ PER-GOAL vs MACRO" (still the easiest thing to get wrong).
+
+---
+
+## Superseded next-session block (session #48) — kept for the record
+
 ## NEXT SESSION STARTS HERE — (b) estimate grounding, then the repair SQL (updated 2026-08-04, session #48)
 
 > **⚠ STATUS: (a) question shaping is SHIPPED and VERIFIED LIVE. (b) estimate grounding is

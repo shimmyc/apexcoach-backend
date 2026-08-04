@@ -4,6 +4,83 @@
 > Pairs with `CLAUDE.md` (deep implementation notes) and `FORMULAS.md` (readiness/sleep math).
 > Last updated: 2026-08-04.
 >
+> **2026-08-04 session #49 — ✅ THE #48 MATCHER PORTED TO THE ARC + ROADMAP GROUNDING. ONE
+> IMPLEMENTATION, THREE EVIDENCE RULES.** Audit-then-build, gated. One commit (`b55c627`),
+> `server.js` + one new test file + two existing suites' extractors. **No migration, no client
+> change, no new dependency.** Suites **358 → 384**. **Profile 1 `profile_data` sha
+> `4313ea6a3896b172b5a2e387627ec6bc1075007f416ba460027c803e8130b9d6` IDENTICAL at session start,
+> mid-session, pre-deploy and post-deploy** (93 workouts / 332 exercise rows, both unchanged).
+> Profile 4 sha `c356df4b8457d59b`, untouched.
+>
+> **THE DEFECT.** #48 fixed the substring/tokenization defect for **intake only**, on instruction to
+> leave the arc byte-identical. The same defect still governed **(a)** which logged sessions count
+> toward a goal's **earned arc position** and **(b)** what grounds roadmap **CONTENT**. Measured on
+> profile 1's real 332 rows: a half-marathon goal's arc evidence was **`Crunches` ×3 +
+> `Standing Oblique Crunch` ×1 and ZERO runs** (`run` is a substring of "C-**run**-ches"); a bench
+> goal was grounded in **`Overhead Press` at 22.5 lb dumbbells**.
+>
+> **THE PORT.** The matching loop is factored out of `buildTrainingHistorySummary` into shared
+> `hxMatchGoalDays()`/`hxExerciseMatch()`. `getGoalSessionDates` is **removed**.
+> `extractGoalKeywords` survives for exactly ONE non-evidence consumer, `targetServesGoal`.
+> The consumers differ **only in their evidence RULE**: intake reads `matched_dates` (both layers,
+> it asks questions); the **arc** reads `specific_dates` ONLY (it drives numbers); **roadmap
+> grounding** reads the exercise layer only (`best_set`/`trend` are per-ROW arithmetic).
+>
+> **⚠ NOT WHOLESALE — the audit is why this session exists.** Handing the arc the raw CATEGORY layer
+> would have replaced one false positive with a bigger one: **45** strength sessions for a bench
+> goal, **25** cardio sessions for a running goal with zero runs, and — worst — **4 phantom sessions
+> each** for **Fix Posture / Fix Pubic Osteitis / Build Muscle**, because `hxAllCategories` falls
+> back to `["other"]` for a title naming no category and 4 uncategorised junk workouts
+> (`Test Workout`, `Workout` ×2, `Walking`) parse to `["other"]` too.
+> **`HX_UNMATCHABLE_CATEGORIES = { other, rest }`** rejects both, everywhere the matcher runs.
+>
+> **⚠ THE DESCRIPTION FIREHOSE — FOUND IN VERIFICATION, NOT INSPECTION, AND IT REVERSED A DESIGN
+> CHOICE MID-BUILD.** The first cut passed `hxGoalTokens(title, description)` into both evidence
+> paths, mirroring intake. Measured against real goals that made matching **worse**: a description
+> here is freeform coaching prose (profile 1's pinky goal is **~2,000 words**), so tokenising it
+> injects ordinary English — the pinky goal reached **`Reverse Lunge`** via `reverse`,
+> **`Thoracic Extension Over Foam Roller` via the PREPOSITION `over`**, and `Band Pull-Apart` via
+> `band` (4 real matches → 12); **`Stamina`** gained **5** sessions via `full` ("**Full** MMA rounds"
+> reaching "Strength (**Full** Body)") and `without` (0 → 5). **Both evidence paths now read the
+> goal TITLE only** — which is also what both pre-port paths did, so the port is a pure
+> matching-semantics change with an unchanged input contract. Intake is untouched and still reads
+> both. **This is a real trade-off, not a free win:** `Fix Posture`'s description genuinely reaches
+> `Shoulder Blade Retraction`/`Shoulder Blade Mobility`/`Shoulder Roll` via "rounded shoulders", and
+> that signal is given up. Using a description safely needs its own rule — §7 ledger row 54.
+>
+> **MEASURED ON THE REAL LOG (93 workouts / 332 rows / 75 names):** arc state on all three migrated
+> goals **byte-identical** (`position_week 0`, `calendar_week 1`, `drift −1`, `on_track`,
+> `qualifying_28d 0`); **7 false positives removed** (bench 3, half-marathon 4); **1 true positive
+> gained** (`Pull-Up`); **zero** names added or removed across all 8 real goal titles; the pinky
+> goal's 4 matches identical both ways; **0** phantom sessions where there would have been 4 each.
+> Rendered intake block **byte-identical on fixtures 10 and 11** (1,087 / 1,063 chars).
+>
+> **⚠ THE HEADLINE FOR THE ATHLETE: the port changes NOTHING for any goal currently stored, on ANY
+> profile — and that is correct.** Profile 4's two arc goals are **tier 1** (linked, so Tier 2 never
+> runs); its 3 legacy roadmaps and profile 1's 3 migrated goals match nothing either way; profile 9's
+> arc goal has an empty log. **There was consequently NO live behavioural signal available to
+> distinguish new code from old** — recorded so a future session does not hunt for one. The value is
+> entirely forward-looking: **backdating will replay months of history through a matcher that does
+> not count crunches as runs.** An offline simulation (in-memory clones, zero writes) put all three
+> goals at `position 0 / calendar 18 / drift −18 / stalled` at an origin of 2026-04-07.
+>
+> **⚠ AND THE REAL BLOCKER IS NOT THE MATCHER.** All three goals sit at `tier 2` / `keyword` /
+> **0 qualifying sessions**, and keyword matching will *never* find "Fix Posture" in an exercise
+> name. **Linking each goal to a schedule target is what actually turns evidence on** — and the
+> athlete has already looked in the roadmap section and could not find the control. §7 ledger row 50,
+> now elevated to the top of the handoff alongside the backdating audit.
+>
+> **BLAST RADIUS PROVEN:** `public/index.html` is **byte-identical to `aff60c1`** and contains **0**
+> references to any ported function, so the daily-rec prompt has a **0-char delta by construction**.
+> The dry-run arc sweep is provably write-free (`if (changed && !opts.dryRun)` gates the only PATCH);
+> the offline harness recorded and **refused** every non-GET and every Anthropic call — **0 writes,
+> 0 AI**.
+>
+> **TWO HARNESS TRAPS FIRED AGAIN** (both loud, both mine, neither a product bug):
+> `assert.deepStrictEqual` **fails across vm realms** (even `[]` vs `[]`), and `stripToCode()`
+> **blanks string bodies by design**, so searching its output for a string literal can never match —
+> that one fired **twice in one file**. §9.
+>
 > **2026-08-04 session #48 — ✅ HISTORY-INFORMED INTAKE: QUESTION SHAPING (a) SHIPPED AND VERIFIED
 > LIVE. Estimate grounding (b) DESIGNED, NOT BUILT.** Audit-then-build, gated. One commit
 > (`3ca4ba8`), `server.js` + one new test file. **No migration, no client change, no new dependency.**
@@ -2766,6 +2843,62 @@ All verified present in `server.js`. `:id`/`:userId` = profile id.
 
 ## 6. Known Limitations
 
+### Session #49 findings (2026-08-04)
+
+- **✅ RESOLVED — the arc's Tier-2 matcher and `getGoalExerciseContext` now run the #48 matcher.**
+  §6's session-#48 entry recorded this as "measurably broken, quantified, deliberately NOT fixed".
+  It is fixed: `getGoalSessionDates` is gone, both paths call the shared
+  `hxMatchGoalDays()`/`hxExerciseMatch()`, and the before/after is measured row by row on profile 1's
+  real log. `extractGoalKeywords` remains only for `targetServesGoal`.
+- **⚠ A GOAL DESCRIPTION MUST NOT BE TOKENISED INTO EVIDENCE — found by measurement, and it reversed
+  a design choice mid-build.** Descriptions in this app are freeform coaching prose of arbitrary
+  length (profile 1's pinky goal carries **~2,000 words**), so every ordinary English word in them
+  becomes a matching token. Measured: **`Thoracic Extension Over Foam Roller` matched a HAND-rehab
+  goal through the preposition `over`**; `Reverse Lunge` through `reverse`; `Band Pull-Apart` through
+  `band`; and **`Stamina` gained 5 sessions through `full`**, because "Full MMA rounds" and
+  "Strength (**Full** Body)" share a word. Both evidence paths read the **title only**. **Intake
+  still reads both and is unchanged** — a loose match there costs a slightly worse question, not a
+  wrong number. **This is a genuine trade-off, not a free win:** `Fix Posture`'s description reaches
+  `Shoulder Blade Retraction` / `Shoulder Blade Mobility` / `Shoulder Roll` through "rounded
+  shoulders", and that real signal is given up. A safe description rule (e.g. admit only description
+  tokens that appear in the exercise-name vocabulary, or cap them) is scoped, not built — row 54.
+- **⚠ `hxAllCategories` NEVER returns empty — it falls back to `["other"]`, and `other` is not a
+  category.** A goal title naming no category ("Fix Posture", "Build Muscle") therefore matched every
+  uncategorised workout: measured, **4 phantom sessions each** on profile 1 (`Test Workout`,
+  `Workout` ×2, `Walking`). Fixed by `HX_UNMATCHABLE_CATEGORIES = { other, rest }`. **This changed
+  INTAKE too, and for the better** — 6 of profile 1's 8 goals now show an honest *"NO logged sessions
+  match"* where they previously claimed 2–4 category-level sessions that were Test Workout /
+  Meditation / Walking. Fixtures 10/11 (both `cardio` goals) are byte-identical.
+- **⚠ THE PORT IS A NO-OP ON EVERY GOAL CURRENTLY STORED, ON EVERY PROFILE — so there was no live
+  behavioural signal to distinguish new code from old.** Profile 4's two arc goals are **tier 1**
+  (linked, so Tier 2 never runs) and its three legacy roadmaps match nothing either way; profile 1's
+  three migrated goals match nothing either way; profile 9's arc goal has an empty log; fixtures
+  10/11 have no roadmaps and so no arc. Post-deploy verification is therefore a confirmation that the
+  endpoints return the expected values, **not** independent proof that the new build is serving —
+  the behavioural proof is the offline before/after against the real shipped code from both file
+  versions. **Recorded so a future session does not spend time hunting for a probe that cannot
+  exist.**
+- **The arc's evidence window is bounded by `arc_origin`, which is why the port had to precede
+  backdating.** All three of profile 1's migrated goals have `arc_origin 2026-08-03`, so
+  `evaluateArcsForProfile` fetches from that date forward — **~1 day, 1 logged session**. Even a
+  perfect matcher sees almost nothing today. Backdating without this fix would have replayed months
+  of history through the crunch-matching matcher and produced a confidently wrong earned position
+  instead of an honestly zero one.
+- **`duration_minutes` overload — FOURTH sighting, now accruing as tracked tech debt.** The column
+  means BOTH hold duration AND session length, with nothing in the schema distinguishing them.
+  Engine v2 worked around it by category; session #48 worked around it by category for a display
+  label; this session inherits that same workaround inside `renderTrainingHistoryBlock`. **Three
+  separate features have now had to implement the same category heuristic.** Scoped proposal in §9 —
+  **not built.**
+- **Harness trap, re-confirmed: `stripToCode()` blanks string bodies BY DESIGN.** Searching its
+  output for a string literal (`confidence: "keyword"`, `hxGoalTokens(title, "")`) can therefore
+  never match, and the assertion fails looking like a product regression. **Fired twice in one
+  file.** Use the RAW slice for literal checks and the stripped form for identifier/call checks.
+- **Harness trap, re-confirmed: `assert.deepStrictEqual` fails across vm realms** — even `[]` vs `[]`
+  throws "same structure but not reference-equal", because the sandbox array's prototype is not the
+  test realm's. Already recorded in §9 from session #45; it caught a fresh victim here. Compare a
+  serialised form.
+
 ### Session #48 findings (2026-08-04)
 
 - **The new-goal pipeline read NO logged history before roadmap generation — an ORDERING defect, not
@@ -4400,12 +4533,15 @@ either the MACRO roadmap or a LEGACY per-goal roadmap — never current per-goal
 | 47 | **Rec prompt — row 43** | **`bootApp()` never loads the exercise library, so the daily rec is generated with an empty exercise history** | **✅ FIXED + VERIFIED (2026-08-03, session #47), `74137f2`** | **⚠ Row 43's premise is CORRECTED: it is a RACE, not a deterministic zero** — `bootApp → loadDailySteps → renderLibDashboard → loadLibrary` also populates it and races the rec chain. Fixed with §9 candidate **(b)**: `fetchAI` awaits `ensureLibExercises()` alongside `microGoalsReady`; `bootApp` warms it in parallel. Verified in a real browser on production profile 1, zero writes, library reads delayed to force the losing side: `exerciseHistory` **0 → 3,548**, `recentLog` **39 → 765**, audit correctly waited **20,495 ms**. **Warm boot: the FULL prompt is byte-identical pre vs post (27,711 chars, string equality)** for exactly one extra `GET /exercises`. Honesty guard added — an unloaded library is no longer reported as "No exercises logged". **Closing check from row 43 satisfied.** |
 | 48 | **Data integrity — row 44** | **The malformed-`workouts.date` writer** | **✅ ROOT-CAUSED + FIXED; repair WRITTEN, NOT RUN (2026-08-03, session #47)** | **It was a SERVER bug.** `wearables/fitbit.js normalize()` sliced `startTime` blind; Fitbit's DETAIL endpoint returns `"HH:mm"` with the date in `startDate`, and `createWearableWorkout()` writes direct to PostgREST, bypassing `POST /api/workouts`'s date guard. Proven 8/8 (every row has a `fitbit:` id, an auto-import note, and its own true `raw_response.startDate`). Scanned all six profiles: **exactly 8 rows, all profile 1**. `isValidWorkoutDate()` now guards all three insert paths. **REMAINING CHECK:** Shimmy runs `migrations/2026-08-03_repair_malformed_workout_dates.sql` then `…_workouts_date_format_check.sql`, then confirm zero malformed rows after a week of normal logging. |
 | 49 | **L1–L2 — MIGRATION** | **Profile 1's three legacy 3+2 roadmaps migrated to the new shape** | **✅ DONE + VERIFIED LIVE (2026-08-03, session #47)** | Snapshot first (`backups/profile-1-2026-08-03T17-27-30-776Z.json`, sha `b4d54657bd5c0c6f…`, gitignored). Coach-Chat `?mode=regenerate` path per goal, one at a time, each verified before the next. Fix Posture `rehab` 12–32 wk v8→9 log7→8 · Fix Pubic Osteitis `rehab` 12–36 wk v10→11 log9→10 · Build Muscle `strength_load` 20–40 wk v10→11 log9→10. All three `[6,5,5]`+1 horizon (3+2 retired). Arc eval: 3 goals in 1,196 ms, all `arc_origin 2026-08-03` / position 0 / calendar 1 / drift −1 / `on_track`; re-fire `{skipped:true,"fresh"}`; **ZERO AI (version + log unchanged on all three)**. Daily rec **27,161/28,000, one rung, `exerciseHistory` intact at 3,654**, arc block **748 chars**. `workouts` 93 / `exercises` 332, **both spot-shas identical**. Five roadmap-less goals byte-identical; no top-level key added or removed. **REMAINING CHECK:** the first real weekly adapt ~2026-08-10. |
-| 50 | **L2 — migration follow-up** | **Migrated goals are at arc `tier 2` / `keyword` confidence with 0 qualifying sessions** | **⚠ OPEN — NEEDS THE ATHLETE, NOT CODE** | None of profile 1's goals is linked to a schedule item, so the keystone join (`frequency_targets[].goal_ids`) is unused and the arc matches by keyword alone — the weakest tier. `position_week` will stay 0 until they are linked. **Check:** link each migrated goal to its schedule target in the Schedule editor, then confirm the next evaluation reports `tier 1` and a non-empty `matched_via`. **Re-confirmed unchanged 2026-08-04 (session #48).** |
+| 50 | **L2 — migration follow-up** | **Migrated goals are at arc `tier 2` / `keyword` confidence with 0 qualifying sessions** | **⚠ OPEN — NEEDS THE ATHLETE, NOT CODE. ELEVATED 2026-08-04 (session #49) to the top of the handoff alongside the backdating audit.** | None of profile 1's goals is linked to a schedule item, so the keystone join (`frequency_targets[].goal_ids`) is unused and the arc matches by keyword alone — the weakest tier. **Session #49 makes this the decisive blocker, not the matcher:** the ported matcher is correct and still returns 0, because keyword matching will NEVER find "Fix Posture" in an exercise name. Linking is what actually turns evidence on. **⚠ THE UI PATH IS UNDOCUMENTED AND THE ATHLETE COULD NOT FIND IT — he looked in the roadmap section.** It lives in the **Schedule card**, not the roadmap: Profile tab → Schedule → **"YOUR TRAINING BLUEPRINT ▸ Edit"** → each frequency-target / addon row carries a goal pill selector (`schedGoalPickerHtml` / `schedToggleGoalLink`, session #35). **Check:** link each migrated goal to its schedule target, then confirm the next evaluation reports `tier 1` and a non-empty `matched_via`. **Next session should trace this live and either document it properly or expose it where the athlete looked.** |
 
 | 51 | **Intake — (a) question shaping** | **The new-goal intake reads the athlete's real logged history and shapes its questions from it** | **✅ SHIPPED + VERIFIED LIVE (2026-08-04, session #48), `3ca4ba8`** | `getTrainingHistorySummary` + the layered matcher, wired into `GET /intake` only. **The four acceptance criteria measured against profile 1's REAL log:** crunch false positive **4→0**, cardio recovered **15 of 25**, `Pull-Up` visible to a pull-up goal, and the honest negative (*"NONE of those sessions mentions run or half or mile specifically"*). **Live on two seeded fixtures with identical goal text:** runner → `confidence exercise`, `by_source {exercise 20, category 61}`, `specific_term_hits 20`, endurance populated; non-runner → `confidence category`, `{exercise 0, category 41}`, `specific_term_hits 0`, endurance `null`. **Verbatim question overlap 0 of 5**, and the decisive asymmetry held: the runner is never asked their longest run, the non-runner is. Block measured **202–1,120 chars**. Suites 330→358. |
 | 52 | **Intake — (b) estimate grounding** | **The honest-timeline estimate starts from demonstrated ability, not self-report alone** | **⚠ NOT BUILT — DESIGNED, DOCUMENTED, AWAITING EXPLICIT APPROVAL** | Deliberately out of scope for #48 per the gate. Design of record: `CLAUDE.md` → "History-Informed Intake" → "(b) ESTIMATE GROUNDING". Exact insertion points and measured costs: `plan-setup` 1,460 → ~2,500 chars; `/estimate` 1,412 → ~2,452 chars — both server-side prompts with their own `max_tokens`, sharing nothing with `fetchAI`'s 28,000-char guard. **The load-bearing rule:** the model authors the range, but the starting-point classification it reasons from is **code-derived** from the aggregate, so no new model-authored number reaches storage. **Check to close:** two profiles with identical goal text and materially different logs must produce materially DIFFERENT code-derived `estimate` / `derivePhasePlan` output, with an assertion that every number in a stored `estimate` traces to a code-computed aggregate. |
 | 53 | **Intake — conflict rule** | **Log-vs-self-report disagreement is surfaced as a question, never silently resolved** | **⚠ NOT BUILT — APPROVED AS DESIGN** | Belongs with (b). Code detects → gates on **materiality AND match confidence** → the model asks → code uses the reconciled answer → unresolved defaults to the **conservative (longer)** reading, stated in `basis`. Two binding guards: never raise a discrepancy on `confidence: "none"`, and nothing writes to the goal from a discrepancy. `specific_term_hits` is the signal it gates on and is already computed and exposed. |
-| 54 | **L2 — arc Tier-2 matching** | **The arc's keyword tier carries the exact defects #48 measured and fixed elsewhere** | **⚠ OPEN — NEWLY SCOPED, deliberately NOT fixed** | Measured on profile 1's real rows: `run` substring-matches `Crunches` (4 false positives, 0 real runs for a running goal); hyphen asymmetry hides `Pull-Up` from a `pullups` goal; `press` reaches `Overhead Press`; and first-match-wins category inference under-counts cardio 10-vs-25. `hxGoalTokens` / `hxNameForms` / `hxAllCategories` are the proven replacement. **NOT applied to the arc this session by explicit decision** — it would move arc evidence for every unlinked goal, which is all three of profile 1's migrated goals. **Check to close:** apply the matcher behind its own before/after comparison and confirm each migrated goal's `qualifying_sessions_28d` / `matched_via` change is explainable row by row. |
+| 54 | **L2 — arc Tier-2 matching** | **The arc's keyword tier carries the exact defects #48 measured and fixed elsewhere** | **✅ CLOSED — PORTED AND VERIFIED (2026-08-04, session #49), `b55c627`** | `getGoalSessionDates` is REMOVED; the arc calls the shared `hxMatchGoalDays()`, reading `specific_dates` (not the raw category set — that would have credited a bench goal 45 strength sessions and a running goal 25 cardio sessions with zero runs). Measured row by row on profile 1's real log: **7 false positives removed** (bench 3 × `Overhead Press`, half-marathon 4 × crunches), **1 true positive gained** (`Pull-Up`), **zero** names added or removed across all 8 real goal titles × 75 names, and all three migrated goals' arc states **byte-identical** (`position 0 / calendar 1 / drift −1 / on_track / qualifying_28d 0`). `tier`/`confidence` labels unchanged; `matched_via` now populated. **REMAINING FOLLOW-UPS, both deliberately out of scope:** (a) `targetServesGoal` (Layer 3 schedule links) still uses `extractGoalKeywords` — it decides links, not evidence, and matters more once linking is actually used; (b) a SAFE rule for using a goal DESCRIPTION, which is currently excluded because tokenising freeform prose reached `Thoracic Extension Over Foam Roller` through the preposition `over`. |
+| 55 | **L2 — arc evidence rule** | **The arc counts only days that NAME the goal, never raw category agreement** | **✅ SHIPPED + VERIFIED (2026-08-04, session #49)** | `arcKeywordDates` returns `hxMatchGoalDays().specific_dates` — exercise-level matches PLUS category days whose own text or exercises mention a specific goal term. Proven both ways on the seeded runner pair reproduced in test: a real runner earns **21** days including a cardio session carrying **zero exercise rows** (the reason the category layer is mandatory), while a non-runner with the SAME 21 cardio sessions earns **0**. Regression-tested against the `other`-category phantom case: "Fix Posture" / "Fix Pubic Osteitis" / "Build Muscle" each match **0** uncategorised workouts, and the guard is proven non-vacuous by bypassing it in-sandbox and observing the 4 phantom days return. |
+| 56 | **Roadmap grounding** | **A goal roadmap is no longer grounded in a different exercise** | **✅ SHIPPED + VERIFIED (2026-08-04, session #49)** | `getGoalExerciseContext` takes token objects and the exercise layer ONLY. Measured on profile 1's real rows: a bench goal went from `total_sessions 2, best_set 12.5 lb × 10, trend plateauing` (Overhead Press) to the honest zero shape; a running goal went from `total_sessions 2, best_set 5 lb × 25` (crunches) to the same. A category-only match is asserted to produce the exact zero object — never a null-filled one that reads as evidence — and a REAL match still grounds correctly, so the change is not a mute button. All 5 call sites adapted; the per-goal aggregation loop is untouched. |
+| 57 | **Blast radius** | **The daily-rec prompt is provably outside this change** | **✅ VERIFIED (2026-08-04, session #49)** | `public/index.html` is **byte-identical** to the pinned pre-change commit `aff60c1` (`git diff --quiet`), and contains **0** references to `extractGoalKeywords` / `getGoalExerciseContext` / `hxGoalTokens` / `arcKeywordDates`. The rec prompt is assembled in the browser, so the char delta is **0 by construction** — stated rather than re-measured in a browser, per the session brief. |
 
 **Profile 1 was byte-identical across Sessions A, B and C** — goals sha256 `0901b047d1c95f50…`
 before and after each — and Session D was the first to change code it runs daily, which is why
@@ -5436,6 +5572,56 @@ Macro roadmap shape (stored on `profiles.roadmap_data`):
 ---
 
 ## 9. Technical Debt & Cleanup
+
+### Added 2026-08-04 (session #49)
+
+- **⚠ `exercises.duration_minutes` OVERLOAD — FOURTH sighting. Now formally accruing debt with a
+  scoped proposal. NOT BUILT — this is a record, not a task.** The column means **both** a hold
+  duration (Dead Hang `0.5` = 30 s) **and** a session length (a 28-minute run = `28`), with nothing
+  in the schema distinguishing them. Every feature that needs to render or reason about it has had
+  to re-implement the same category heuristic:
+  1. **Engine v2 `v2Progression.js`** — disambiguates by `main_category` into `best_duration_seconds`
+     vs `best_session_minutes` (found by running the audit against real data: it had reported
+     *"MMA Sparring PB 60:00 hold"* and prescribed `+5-10 s hold` on a sparring session).
+  2. **Session #48 `renderTrainingHistoryBlock`** — `HX_SESSION_LENGTH_CATEGORIES`, after a 28-minute
+     run rendered as **"28:00 hold"**.
+  3. **Session #49** — inherits (2) unchanged through the shared matcher.
+  **Three separate features, one workaround, copied three times.** The heuristic is also only ever
+  correct on average: a 45-minute yoga session and a 45-second yoga hold are indistinguishable.
+  **Scoped proposal (do NOT build without its own session):** add a nullable
+  `exercises.duration_kind text CHECK (duration_kind IN ('hold','session'))`, defaulted `null` =
+  "unknown, fall back to the existing category heuristic", so every existing row and every existing
+  reader keeps working byte-identically. Populate it forward from the extraction prompt (which
+  already knows which it emitted) and leave history unconverted rather than guessing. Retire the
+  three copies of the heuristic onto one helper that reads the column when present. **Cost is one
+  migration + one extraction-prompt field + one shared helper; the risk is that a
+  partially-populated column is worse than a consistent heuristic, which is exactly why it needs its
+  own scope and its own before/after.**
+- **`targetServesGoal` (Layer 3 coexistence) still uses `extractGoalKeywords` + raw `indexOf`.** It
+  is now the ONLY consumer of that function. It decides schedule LINKS, not evidence, so it was left
+  untouched by decision — but it carries the same defects (`run` substring-matches `Crunches`,
+  hyphen asymmetry, generic-token overlap) and it matters **more** once linking is actually used,
+  which is exactly what ledger row 50 is asking the athlete to do. §7 ledger row 54.
+- **A goal DESCRIPTION is currently unusable as matching input, and a real signal is being given up
+  for it.** Tokenising freeform prose reached `Thoracic Extension Over Foam Roller` through the
+  preposition `over`. But `Fix Posture`'s description genuinely reaches `Shoulder Blade Retraction` /
+  `Shoulder Blade Mobility` / `Shoulder Roll` through "rounded shoulders". **Candidate rules, none
+  built:** admit only description tokens that appear in the `exercise_catalog` / logged-name
+  vocabulary; or cap description tokens to the first N content words; or require a description token
+  to co-occur with a title token. Needs its own before/after on real goals.
+- **`shoulder` is a candidate `HX_GENERIC_TOKEN` and was NOT added.** It is an anatomical region in
+  the same class as `leg` / `arm` / `core` / `upper` / `lower`, which ARE generic. Adding it would
+  change #48's shipped intake behaviour, so it was left alone. Worth deciding deliberately rather
+  than by omission.
+- **Harness: `stripToCode()` blanks string bodies by design** — searching its output for a string
+  literal can never match, and the failure reads like a product regression. Fired **twice** in
+  `arcMatcherPort.test.js`. Convention going forward: **raw slice for literal checks, stripped slice
+  for identifier/call checks**, and say which in a comment.
+- **Two pre-existing suites had extractors coupled to source details this session changed** —
+  `historyIntake.test.js`'s slice list (a refactor moved functions out from under it) and
+  `arcFlag.test.js`'s end marker (a **comment** it sliced up to was rewritten). Both were fixed
+  without weakening an assertion. **Convention: a slice end-marker should be a DECLARATION, never a
+  comment.**
 
 ### Added 2026-08-04 (session #48)
 
