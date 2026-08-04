@@ -4880,6 +4880,487 @@ async function getFullExerciseContext(profileId, days) {
   };
 }
 
+// ── HISTORY-INFORMED INTAKE (CC session #48) ─────────────────────────────────
+// getTrainingHistorySummary() reads the athlete's FULL logged history and
+// returns a CODE-COMPUTED aggregate. Two outputs, deliberately:
+//   - a structured object (~19 KB on a real profile) for CODE consumers;
+//   - a small rendered text block (measured 201-1,040 chars) for the MODEL.
+// The model NEVER sees a row. This is the same split Layer 2 uses for
+// arc_state: code computes, the model narrates and asks.
+//
+// ⚠ THIS IS A SEPARATE MATCHER FROM THE ARC'S TIER-2 PATH, ON PURPOSE.
+// `extractGoalKeywords` / `getGoalSessionDates` (the arc's keyword tier) are
+// deliberately NOT modified and NOT called from here — changing them in place
+// would silently move arc evidence for every unlinked goal, which is all three
+// of profile 1's migrated goals. Improving the arc's matching is its own scope
+// (ROADMAP §7). Asserted byte-identical by test.
+
+var HX_WORKOUT_LIMIT = 5000;
+var HX_EXERCISE_LIMIT = 10000;
+var HX_YMD_RE = /^\d{4}-\d{2}-\d{2}$/;
+var HX_BLOCK_CHAR_CAP = 1600;
+var HX_MAX_EXERCISE_LINES = 6;
+var HX_MAX_MONTHS = 6;
+
+// Tokens shorter than 4 chars are dropped UNLESS whitelisted — this is what
+// stops `run` substring-matching "C-run-ches" (measured: 4 false positives on
+// profile 1's real log, now 0). Whitelisted short tokens are real training
+// modalities that legitimately appear as whole words.
+var HX_SHORT_TOKEN_OK = { run: 1, row: 1, jog: 1, ski: 1, gym: 1, abs: 1, hip: 1, arm: 1, leg: 1, "5k": 1, "10k": 1, ohp: 1, rdl: 1 };
+
+// Tokens too common across exercise names to identify a goal on their own. A
+// match made ONLY of these is not accepted as exercise-level evidence — it
+// falls through to the category layer. This is what stops a "Bench Press" goal
+// claiming "Overhead Press" as its evidence on the strength of `press` alone.
+// The honest limit is stated in the docs: it does not eliminate token overlap,
+// it stops overlap on a GENERIC token from being reported as specific evidence.
+var HX_GENERIC_TOKENS = {
+  press: 1, row: 1, raise: 1, curl: 1, hold: 1, stretch: 1, extension: 1, flexion: 1,
+  workout: 1, session: 1, sessions: 1, training: 1, train: 1, exercise: 1, exercises: 1,
+  fitness: 1, strength: 1, cardio: 1, weight: 1, weights: 1, machine: 1, body: 1,
+  // `pull` / `push` are movement-family words, not exercise identities:
+  // pull-up, pulldown, pull-apart and face pull all carry `pull`. Measured on
+  // profile 1, a "pull-ups" goal reached "Band Pull-Apart" through `pull`
+  // alone. The compound form below (`pullup`) is what carries the real match.
+  pull: 1, push: 1, leg: 1, arm: 1, core: 1, upper: 1, lower: 1,
+};
+
+// Goal-phrase stop words. Superset of GOAL_STOP_WORDS with the extra filler a
+// free-text goal title carries. GOAL_STOP_WORDS itself is untouched.
+var HX_STOP = {
+  the:1,a:1,an:1,and:1,or:1,to:1,of:1,for:1,in:1,on:1,at:1,by:1,with:1,from:1,
+  my:1,your:1,his:1,her:1,their:1,its:1,this:1,that:1,
+  get:1,getting:1,gain:1,build:1,building:1,improve:1,improving:1,better:1,best:1,
+  more:1,less:1,do:1,doing:1,be:1,become:1,reach:1,hit:1,goal:1,goals:1,
+  want:1,wanting:1,able:1,work:1,working:1,into:1,up:1,out:1,per:1,
+  week:1,weeks:1,day:1,days:1,daily:1,weekly:1,month:1,months:1,year:1,years:1,
+  every:1,some:1,again:1,back:1,first:1,next:1,one:1,two:1,new:1,own:1,
+  complete:1,finish:1,start:1,keep:1,stay:1,make:1,take:1,run_:0,
+};
+
+// Normalize ONE token: lowercase, strip non-alphanumerics, and produce both the
+// raw and a naive singular. Both forms are kept so "pullups" (goal, hyphen
+// stripped) and "Pull-Up" (stored name) collide on "pullup" WITHOUT
+// "crunches" collapsing onto "run".
+function hxTokenForms(word) {
+  var w = String(word || "").toLowerCase().replace(/[^a-z0-9]/g, "");
+  if (!w) return [];
+  var out = [w];
+  if (w.length > 2 && /s$/.test(w) && !/ss$/.test(w)) out.push(w.slice(0, -1));
+  return out;
+}
+
+// Every token form a stored exercise name can be matched on: each word, PLUS
+// the whole name joined. The joined form is what lets a goal's "pullups" reach
+// a stored "Pull-Up" (joined -> "pullup") — hyphen-normalized on BOTH sides.
+function hxNameForms(name) {
+  var set = {};
+  String(name || "").toLowerCase().split(/[^a-z0-9]+/).forEach(function(w) {
+    hxTokenForms(w).forEach(function(f) { set[f] = true; });
+  });
+  hxTokenForms(String(name || "").replace(/[^a-zA-Z0-9]/g, "")).forEach(function(f) { set[f] = true; });
+  return set;
+}
+
+// The goal's own searchable tokens, with the generic ones flagged rather than
+// dropped (they still count as corroboration, just never on their own).
+function hxGoalTokens(title, description) {
+  var text = (String(title || "") + " " + String(description || "")).toLowerCase();
+  var seen = {}, out = [];
+  var push = function(w) {
+    if (!w || HX_STOP[w]) return;
+    if (/^\d+$/.test(w)) return;                       // bare numbers identify nothing
+    if (w.length < 4 && !HX_SHORT_TOKEN_OK[w]) return; // the anti-substring rule
+    hxTokenForms(w).forEach(function(f) {
+      if (seen[f]) return;
+      seen[f] = true;
+      out.push({ token: f, generic: !!HX_GENERIC_TOKENS[f] });
+    });
+  };
+  text.split(/[^a-z0-9]+/).forEach(push);
+  // HYPHEN NORMALIZATION, SYMMETRICALLY. Splitting alone turns the goal's
+  // "pull-ups" into `pull` + `ups`, which is the generic family word plus a
+  // dropped stub — so the specific identity is lost on the GOAL side even
+  // though hxNameForms() recovers it on the stored-name side. Emitting the
+  // joined compound restores the symmetry the design requires: goal
+  // "pull-ups" -> `pullup`, stored "Pull-Up" -> `pullup`.
+  (text.match(/[a-z0-9]+(?:[-\s][a-z0-9]+)+/g) || []).forEach(function(phrase) {
+    var words = phrase.split(/[-\s]+/).filter(Boolean);
+    for (var i = 0; i + 1 < words.length; i++) {
+      var a = words[i], b = words[i + 1];
+      if (HX_STOP[a] || HX_STOP[b]) continue;
+      // A compound built from a bare number ("225lbs", "20pull", "1mile") is
+      // noise: it can never match a stored exercise name and it pollutes the
+      // rendered term list the athlete's coach reads.
+      if (/^\d+$/.test(a) || /^\d+$/.test(b)) continue;
+      push(a + b);
+    }
+  });
+  return out;
+}
+
+// ALL categories named in a string, never first-match-wins. The ordered
+// first-match `inferWorkoutCategoryServer` is left untouched and still used
+// everywhere else; 67% of profile 1's workout titles name 2+ categories, and
+// first-match-wins under-counts its cardio by 15 of 25 sessions (measured).
+var HX_CATEGORY_RES = [
+  ["martial_arts", /\b(mma|bjj|jiu.?jitsu|muay|boxing|kickbox|martial|spar|wrestling|judo|grappl|striking)\b/],
+  ["strength", /\b(strength|lift|weights?|squat|deadlift|bench|press|row|powerlift|olympic|calisthenic|upper|lower|full body|pushup|pullup|chinup)\b/],
+  ["cardio", /\b(cardio|run|jog|walk|hike|cycle|bike|elliptic|treadmill|swim|row|erg|hiit|conditioning|jump rope)\b/],
+  ["mind_body", /\b(yoga|pilates|stretch|mobility|meditat|breath|mind ?body)\b/],
+  ["rehab", /\b(pt|physical therapy|rehab|foam roll|active recovery)\b/],
+  ["sports", /\b(tennis|basketball|soccer|volleyball|golf|ski|snowboard|surf|climb|sport)\b/],
+];
+function hxAllCategories(text) {
+  var t = String(text || "").toLowerCase();
+  if (/rest|recovery day|day off|off day/.test(t)) return ["rest"];
+  var out = [];
+  HX_CATEGORY_RES.forEach(function(p) { if (p[1].test(t)) out.push(p[0]); });
+  return out.length ? out : ["other"];
+}
+
+// Categories whose `duration_minutes` means SESSION LENGTH, not a hold. See
+// the render note below — this is the v2 disambiguation rule, applied here to
+// a display label only, never to a stored value.
+var HX_SESSION_LENGTH_CATEGORIES = { cardio: 1, martial_arts: 1, sports: 1, mind_body: 1 };
+
+function hxNum(v) { if (v === null || v === undefined || v === "") return null; var n = Number(v); return isFinite(n) ? n : null; }
+function hxDayMs(d) { return Date.parse(String(d).slice(0, 10) + "T12:00:00"); }
+function hxShiftYmd(ymd, deltaDays) {
+  var ms = hxDayMs(ymd);
+  if (isNaN(ms)) return null;
+  return ymdLocal(new Date(ms + deltaDays * 86400000));
+}
+function hxFmtSecs(s) {
+  if (s == null) return null;
+  var m = Math.floor(s / 60), r = Math.round(s % 60);
+  return m ? (m + ":" + String(r).padStart(2, "0")) : (s + "s");
+}
+
+// THE AGGREGATE. Pure over its inputs — the fetch is the caller's job, so this
+// is directly unit-testable against a fixture.
+function buildTrainingHistorySummary(workouts, exercises, todayYmd, opts) {
+  opts = opts || {};
+  var goalTokens = opts.goalTokens || [];
+  var goalCategories = opts.goalCategories || [];
+
+  var done = (workouts || []).filter(function(w) {
+    return w && w.done === true && HX_YMD_RE.test(String(w.date || ""));
+  });
+  var validEx = (exercises || []).filter(function(e) {
+    return e && e.name && HX_YMD_RE.test(String(e.date || ""));
+  });
+
+  if (!done.length) {
+    return {
+      has_history: false, total_sessions: 0, distinct_days: 0,
+      goal_relevant: { tokens: goalTokens.map(function(t) { return t.token; }), categories: goalCategories,
+        sessions: 0, confidence: "none", by_source: { exercise: 0, category: 0 },
+        matched_exercises: [], matched_session_types: [],
+        specific_terms: [], specific_term_hits: 0 },
+    };
+  }
+
+  var doneByDate = {};
+  var doneById = {};
+  done.forEach(function(w) {
+    (doneByDate[w.date] = doneByDate[w.date] || []).push(w);
+    if (w.id != null) doneById[w.id] = w;
+  });
+  var dates = Object.keys(doneByDate).sort();
+
+  // ── profile-level rollups ────────────────────────────────────────────────
+  var months = {}, catTotals = {};
+  done.forEach(function(w) {
+    var m = w.date.slice(0, 7);
+    months[m] = months[m] || { total: 0, cats: {} };
+    months[m].total++;
+    hxAllCategories(String(w.type || "") + " " + String(w.notes || "")).forEach(function(c) {
+      months[m].cats[c] = (months[m].cats[c] || 0) + 1;
+      catTotals[c] = (catTotals[c] || 0) + 1;
+    });
+  });
+
+  var longestGap = 0, gapFrom = null, gapTo = null;
+  for (var i = 1; i < dates.length; i++) {
+    var g = Math.round((hxDayMs(dates[i]) - hxDayMs(dates[i - 1])) / 86400000) - 1;
+    if (g > longestGap) { longestGap = g; gapFrom = dates[i - 1]; gapTo = dates[i]; }
+  }
+  var currentGap = Math.round((hxDayMs(todayYmd) - hxDayMs(dates[dates.length - 1])) / 86400000);
+  function perWeek(nDays) {
+    var since = hxShiftYmd(todayYmd, -nDays);
+    if (!since) return null;
+    var n = dates.filter(function(d) { return d >= since && d <= todayYmd; }).length;
+    return Math.round((n / (nDays / 7)) * 10) / 10;
+  }
+  var spanDays = Math.round((hxDayMs(dates[dates.length - 1]) - hxDayMs(dates[0])) / 86400000) + 1;
+
+  // ── per-exercise first/last/best ─────────────────────────────────────────
+  var byName = {};
+  validEx.forEach(function(e) {
+    var g2 = byName[e.name] = byName[e.name] || {
+      name: e.name, category: e.main_category || e.category || "other",
+      first: e.date, last: e.date, days: {},
+      best_weight: null, best_reps: null, best_secs: null, best_miles: null,
+    };
+    if (e.date < g2.first) g2.first = e.date;
+    if (e.date > g2.last) g2.last = e.date;
+    g2.days[e.date] = true;
+    var w2 = hxNum(e.weight_lbs), r2 = hxNum(e.reps), dm = hxNum(e.duration_minutes), mi = hxNum(e.distance_miles);
+    if (w2 != null && (g2.best_weight == null || w2 > g2.best_weight)) g2.best_weight = w2;
+    if (r2 != null && (g2.best_reps == null || r2 > g2.best_reps)) g2.best_reps = r2;
+    if (dm != null) { var s2 = Math.round(dm * 60); if (g2.best_secs == null || s2 > g2.best_secs) g2.best_secs = s2; }
+    if (mi != null && (g2.best_miles == null || mi > g2.best_miles)) g2.best_miles = mi;
+  });
+  function shapeExercise(g3) {
+    return {
+      name: g3.name, category: g3.category, first_date: g3.first, last_date: g3.last,
+      sessions: Object.keys(g3.days).length,
+      best_weight_lbs: g3.best_weight, best_reps: g3.best_reps,
+      best_duration_seconds: g3.best_secs, best_distance_miles: g3.best_miles,
+    };
+  }
+  var exList = Object.keys(byName).map(function(k) { return shapeExercise(byName[k]); })
+    .sort(function(a, b) { return b.sessions - a.sessions; });
+
+  // ── THE LAYERED MATCHER ──────────────────────────────────────────────────
+  // PRIMARY   — per-day exercise rows. A matched named exercise is the
+  //             strongest evidence and requires at least one NON-GENERIC token.
+  // SECONDARY — workout title + notes via the all-categories parse, as
+  //             supplement AND as fallback where exercise rows are absent.
+  //             Mandatory, not optional: cardio sessions frequently log zero
+  //             exercise rows and distance_miles is NULL across profile 1.
+  // NONE      — neither fired.
+  var specificTokens = goalTokens.filter(function(t) { return !t.generic; }).map(function(t) { return t.token; });
+  var exerciseDays = {}, categoryDays = {}, matchedExNames = {}, matchedTypes = {}, specificDays = {};
+
+  if (goalTokens.length) {
+    validEx.forEach(function(e) {
+      var forms = hxNameForms(e.name);
+      var anySpecific = false, anyHit = false;
+      goalTokens.forEach(function(t) {
+        if (!forms[t.token]) return;
+        anyHit = true;
+        if (!t.generic) anySpecific = true;
+      });
+      if (!anyHit || !anySpecific) return;   // generic-only overlap is not evidence
+      if (!doneByDate[e.date]) return;       // must sit on a completed session
+      exerciseDays[e.date] = true;
+      specificDays[e.date] = true;
+      matchedExNames[e.name] = true;
+    });
+  }
+
+  if (goalCategories.length) {
+    done.forEach(function(w) {
+      var text = String(w.type || "") + " " + String(w.notes || "");
+      var cats = hxAllCategories(text);
+      var overlap = cats.some(function(c) { return goalCategories.indexOf(c) >= 0; });
+      if (!overlap) return;
+      categoryDays[w.date] = true;
+      matchedTypes[String(w.type || "Workout")] = true;
+      // Does this session mention a SPECIFIC goal term anywhere? This is what
+      // separates "25 cardio sessions" from "25 RUNNING sessions".
+      var lower = text.toLowerCase();
+      var exNames = (validEx.filter(function(e) { return e.date === w.date; })
+        .map(function(e) { return String(e.name || "").toLowerCase(); }).join(" "));
+      var hay = hxNameForms(lower + " " + exNames);
+      if (specificTokens.some(function(t) { return hay[t]; })) specificDays[w.date] = true;
+    });
+  }
+
+  var allDays = {};
+  Object.keys(exerciseDays).forEach(function(d) { allDays[d] = true; });
+  Object.keys(categoryDays).forEach(function(d) { allDays[d] = true; });
+  var matchedDates = Object.keys(allDays).sort();
+  var confidence = Object.keys(exerciseDays).length ? "exercise"
+    : (Object.keys(categoryDays).length ? "category" : "none");
+
+  var since8 = hxShiftYmd(todayYmd, -56);
+  var goalRelevant = {
+    tokens: goalTokens.map(function(t) { return t.token; }),
+    specific_terms: specificTokens,
+    categories: goalCategories,
+    sessions: matchedDates.length,
+    first_date: matchedDates.length ? matchedDates[0] : null,
+    last_date: matchedDates.length ? matchedDates[matchedDates.length - 1] : null,
+    per_week_8w: since8 ? Math.round((matchedDates.filter(function(d) { return d >= since8; }).length / 8) * 10) / 10 : null,
+    confidence: confidence,
+    // PER-SOURCE COVERAGE — how often each layer actually fires.
+    by_source: {
+      exercise: Object.keys(exerciseDays).length,
+      category: Object.keys(categoryDays).length,
+      both: matchedDates.filter(function(d) { return exerciseDays[d] && categoryDays[d]; }).length,
+      category_only: matchedDates.filter(function(d) { return !exerciseDays[d] && categoryDays[d]; }).length,
+    },
+    // Days whose text or exercises actually name a specific goal term. A large
+    // `sessions` with `specific_term_hits: 0` means "trained in this general
+    // area, but never this specific thing" — the honest negative.
+    specific_term_hits: Object.keys(specificDays).length,
+    matched_exercises: Object.keys(matchedExNames).map(function(n) { return shapeExercise(byName[n]); })
+      .sort(function(a, b) { return b.sessions - a.sessions; }),
+    matched_session_types: Object.keys(matchedTypes).sort(),
+  };
+
+  // Endurance view — null when there is no distance data at all, which is
+  // profile 1's real state (0 of 332 rows carry distance_miles).
+  var distRows = validEx.filter(function(e) { return hxNum(e.distance_miles) != null; });
+  var endurance = null;
+  if (distRows.length) {
+    var longest = 0, recent = 0, recentDays = {};
+    distRows.forEach(function(e) {
+      var mi = hxNum(e.distance_miles);
+      if (mi > longest) longest = mi;
+      if (since8 && e.date >= since8) { recent += mi; recentDays[e.date] = true; }
+    });
+    endurance = {
+      sessions_with_distance: distRows.length,
+      longest_single_distance_miles: Math.round(longest * 100) / 100,
+      distance_miles_last_8w: Math.round(recent * 10) / 10,
+      distance_days_last_8w: Object.keys(recentDays).length,
+    };
+  }
+
+  return {
+    has_history: true,
+    total_sessions: done.length,
+    distinct_days: dates.length,
+    first_session_date: dates[0],
+    last_session_date: dates[dates.length - 1],
+    span_days: spanDays,
+    sessions_per_week_all_time: Math.round((dates.length / (spanDays / 7)) * 10) / 10,
+    sessions_per_week_4w: perWeek(28),
+    sessions_per_week_8w: perWeek(56),
+    sessions_per_week_12w: perWeek(84),
+    longest_gap_days: longestGap,
+    longest_gap_from: gapFrom,
+    longest_gap_to: gapTo,
+    current_gap_days: currentGap,
+    category_totals: catTotals,
+    per_month: months,
+    exercises: exList,
+    goal_relevant: goalRelevant,
+    endurance: endurance,
+  };
+}
+
+// Fetch + aggregate. Returns NULL on any read failure — a null summary emits NO
+// block at all, which is deliberate: an unloaded history must never be rendered
+// as "no exercises logged" (the session #47 Phase 1 bug class).
+async function getTrainingHistorySummary(profileId, opts) {
+  opts = opts || {};
+  try {
+    var wr = await fetch(SUPABASE_URL + "/rest/v1/workouts?profile_id=eq." + profileId +
+      "&select=id,date,type,notes,done&order=date.asc&limit=" + HX_WORKOUT_LIMIT, { headers: sbHeaders() });
+    var workouts = await wr.json();
+    if (!Array.isArray(workouts)) throw new Error("workouts read returned a non-array");
+
+    var er = await fetch(SUPABASE_URL + "/rest/v1/exercises?profile_id=eq." + profileId +
+      "&select=name,date,sets,reps,weight_lbs,distance_miles,duration_minutes,main_category,category&order=date.asc&limit=" + HX_EXERCISE_LIMIT,
+      { headers: sbHeaders() });
+    var exercises = await er.json();
+    if (!Array.isArray(exercises)) throw new Error("exercises read returned a non-array");
+
+    return buildTrainingHistorySummary(workouts, exercises, opts.today || dateStr(0), {
+      goalTokens: opts.goalTokens || [],
+      goalCategories: opts.goalCategories || [],
+    });
+  } catch (e) {
+    console.warn("[HistoryIntake] summary unavailable for profile " + profileId + ": " + e.message);
+    return null;   // caller emits NOTHING — never a fabricated "no history" claim
+  }
+}
+
+// THE PROMPT BLOCK. Self-capping like buildArcStateContext: whole-line drops,
+// never a mid-number truncation.
+function renderTrainingHistoryBlock(summary) {
+  if (!summary) return "";        // read failed — say nothing at all
+  if (!summary.has_history) {
+    return "LOGGED TRAINING HISTORY: none on record. This athlete has no logged sessions in this app.\n" +
+      "Everything about their current level must come from what they tell you. Do NOT state or imply any logged fact.\n\n";
+  }
+
+  var head = "LOGGED TRAINING HISTORY (computed from the athlete's own log — the ONLY source of these facts):\n";
+  var foot = "These numbers are computed. Do not restate a number that is not above, and never contradict them.\n\n";
+  var lines = [];
+
+  lines.push("- " + summary.distinct_days + " training days logged, " + summary.first_session_date +
+    " to " + summary.last_session_date + " (" + Math.max(1, Math.round(summary.span_days / 7)) + " weeks).");
+  lines.push("- Frequency: " + summary.sessions_per_week_4w + "/wk last 4 weeks, " +
+    summary.sessions_per_week_8w + "/wk last 8 weeks, " + summary.sessions_per_week_all_time + "/wk overall.");
+  lines.push("- Longest break: " + summary.longest_gap_days + " days" +
+    (summary.longest_gap_from ? " (" + summary.longest_gap_from + " to " + summary.longest_gap_to + ")" : "") +
+    ". Days since last session: " + summary.current_gap_days + ".");
+  var cats = Object.keys(summary.category_totals).sort(function(a, b) {
+    return summary.category_totals[b] - summary.category_totals[a];
+  });
+  if (cats.length) {
+    lines.push("- Mix all-time: " + cats.map(function(c) { return c + " " + summary.category_totals[c]; }).join(", ") + ".");
+  }
+  var ms = Object.keys(summary.per_month).sort().slice(-HX_MAX_MONTHS);
+  if (ms.length) {
+    lines.push("- By month: " + ms.map(function(m) {
+      var mm = summary.per_month[m];
+      var top = Object.keys(mm.cats).sort(function(a, b) { return mm.cats[b] - mm.cats[a]; }).slice(0, 3);
+      return m + " " + mm.total + " (" + top.map(function(c) { return c + ":" + mm.cats[c]; }).join(" ") + ")";
+    }).join(" | ") + ".");
+  }
+
+  var gr = summary.goal_relevant;
+  if (gr && (gr.tokens.length || gr.categories.length)) {
+    if (gr.confidence === "none" || !gr.sessions) {
+      lines.push("- FOR THIS GOAL specifically: NO logged sessions match. The log shows no evidence of training for this goal.");
+    } else {
+      var src = gr.confidence === "exercise"
+        ? "matched on named exercises they actually logged"
+        : "matched only at the activity-category level, NOT on a named exercise — weaker evidence";
+      lines.push("- FOR THIS GOAL specifically (" + src + "): " + gr.sessions + " sessions, " +
+        gr.first_date + " to " + gr.last_date + ", " + gr.per_week_8w + "/wk over the last 8 weeks.");
+      // The honest negative: trained in the area, never the specific thing.
+      if (gr.specific_terms.length && gr.specific_term_hits === 0) {
+        // Name at most 3 terms. The token set legitimately carries compounds
+        // ("halfmarathon") that are useful for MATCHING but read as noise in a
+        // sentence a coach is meant to act on.
+        var named = gr.specific_terms.slice()
+          .sort(function(a, b) { return a.length - b.length; })
+          .slice(0, 3);
+        lines.push("  · NONE of those sessions mentions " + named.join(" or ") +
+          " specifically. There is NO direct evidence of this exact activity.");
+      }
+      gr.matched_exercises.slice(0, HX_MAX_EXERCISE_LINES).forEach(function(x) {
+        var best = [];
+        if (x.best_weight_lbs != null) best.push(x.best_weight_lbs + " lb");
+        if (x.best_reps != null) best.push(x.best_reps + " reps");
+        // `duration_minutes` is OVERLOADED — hold duration AND session length,
+        // with nothing in the schema distinguishing them (ROADMAP §6, still
+        // unfixed in v1). Disambiguate by CATEGORY for the label only, the same
+        // rule Engine v2 used: cardio / martial_arts / sports / mind_body are
+        // session length; everything else is a hold. Calling a 28-minute run a
+        // "28:00 hold" would put a false fact into the prompt.
+        if (x.best_duration_seconds != null) {
+          best.push(hxFmtSecs(x.best_duration_seconds) + (HX_SESSION_LENGTH_CATEGORIES[x.category] ? " session" : " hold"));
+        }
+        if (x.best_distance_miles != null) best.push(x.best_distance_miles + " mi");
+        lines.push("  · " + x.name + ": " + x.sessions + "x, first " + x.first_date +
+          ", last " + x.last_date + (best.length ? ", best " + best.join(" / ") : ""));
+      });
+    }
+  }
+
+  if (summary.endurance) {
+    lines.push("- Distance work: " + summary.endurance.sessions_with_distance + " logged rows, longest single " +
+      summary.endurance.longest_single_distance_miles + " mi, " + summary.endurance.distance_miles_last_8w +
+      " mi across " + summary.endurance.distance_days_last_8w + " days in the last 8 weeks.");
+  }
+
+  // Self-cap: drop whole lines from the END (least goal-specific first is not
+  // possible without reordering, so drop the tail) until the block fits.
+  while (lines.length > 3 && (head + lines.join("\n") + "\n" + foot).length > HX_BLOCK_CHAR_CAP) {
+    lines.pop();
+  }
+  return head + lines.join("\n") + "\n" + foot;
+}
+
 // ── ROADMAP PHASE HELPERS ────────────────────────────────────────────────────
 
 // Assign sequential start/end dates to near-term phases (in order) when the AI
@@ -8483,10 +8964,45 @@ app.get("/api/profiles/:id/goals/:goalId/intake", async function(req, res) {
     }
 
     var ctx = (loaded.profileData.ai_prompt_context || "").substring(0, 800);
-    var sys = "You are a fitness coach generating intake questions to build a personalized roadmap for a specific goal. Return ONLY a JSON array of question objects with shape { question: string, key: string } where key is a short camelCase identifier. Generate 4-6 questions that are targeted to THIS goal — do not ask about things already in the athlete profile. Focus on specifics: current baseline, obstacles, time availability for this goal, what success looks like to them.";
+
+    // HISTORY-INFORMED INTAKE (CC session #48). Code aggregates the athlete's
+    // FULL logged history; the model only reads the rendered rollup and uses it
+    // to ask better questions. It never receives a row, and no number from here
+    // reaches demand / estimate / frequency / phase length — this endpoint
+    // returns TEXT ONLY. Non-fatal: a null summary emits no block at all.
+    var hxTokens = hxGoalTokens(goal.title, goal.description);
+    var hxCats = hxAllCategories(String(goal.title || "") + " " + String(goal.description || ""));
+    var hxSummary = await getTrainingHistorySummary(req.params.id, {
+      today: localToday(loaded.profile),
+      goalTokens: hxTokens,
+      goalCategories: hxCats,
+    });
+    var hxBlock = renderTrainingHistoryBlock(hxSummary);
+    if (hxSummary) {
+      console.log("[HistoryIntake] profile " + req.params.id + " goal '" + (goal.title || "?") + "': " +
+        "has_history=" + hxSummary.has_history +
+        " days=" + hxSummary.distinct_days +
+        " matched=" + hxSummary.goal_relevant.sessions +
+        " confidence=" + hxSummary.goal_relevant.confidence +
+        " by_source=" + JSON.stringify(hxSummary.goal_relevant.by_source) +
+        " specific_hits=" + hxSummary.goal_relevant.specific_term_hits +
+        " block_chars=" + hxBlock.length);
+    }
+
+    var sys = "You are a fitness coach generating intake questions to build a personalized roadmap for a specific goal. Return ONLY a JSON array of question objects with shape { question: string, key: string } where key is a short camelCase identifier. Generate 4-6 questions that are targeted to THIS goal — do not ask about things already in the athlete profile. Focus on specifics: current baseline, obstacles, time availability for this goal, what success looks like to them." +
+      (hxBlock
+        ? "\n\nA LOGGED TRAINING HISTORY block is supplied below. It was COMPUTED IN CODE from the athlete's own log and is the only source of those facts. Use it to ask BETTER questions:\n" +
+          "- Do NOT ask what the log already answers. If it tells you their training frequency, their recent volume, or that they already do this activity, do not ask again — build on it instead.\n" +
+          "- DO ask about what the log contradicts or leaves ambiguous: an unexplained break, a gap between what they say they do and what is logged, or an activity the log shows no evidence of at all.\n" +
+          "- If the block says there is NO evidence of this specific activity, ask about their real starting point from scratch rather than assuming a baseline.\n" +
+          "- You may REFERENCE a fact from the block in a question so the athlete sees you have read their log.\n" +
+          "- NEVER restate a number that is not in the block, and never contradict one. If the block says there is no logged history, do NOT state or imply any logged fact."
+        : "");
     var userMsg = "Goal: " + (goal.title || "Untitled") + " (" + (goal.type || "general") + ")\n" +
       "Description: " + (goal.description || "none") + "\n" +
-      "Athlete profile summary: " + ctx + "\n\nGenerate intake questions for this specific goal.";
+      "Athlete profile summary: " + ctx + "\n\n" +
+      hxBlock +
+      "Generate intake questions for this specific goal.";
     var text = await callAISystem(sys, userMsg, 800, MODEL_HAIKU);
     var questions = parseAIJson(text);
     if (!Array.isArray(questions)) throw new Error("AI did not return a question array");
