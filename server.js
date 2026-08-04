@@ -4716,6 +4716,14 @@ function weeksSinceYmd(dateStr) {
 
 // Stop words stripped from goal titles before keyword matching against exercise
 // names. Keeps the meaningful nouns ("bench", "muscle", "belt", "hike").
+//
+// ⚠ LEGACY as of session #49. `extractGoalKeywords` now has exactly ONE live
+// consumer, `targetServesGoal` (Layer 3 coexistence, which decides schedule
+// LINKS, not evidence). Every evidence path — the arc's Tier 2 and
+// getGoalExerciseContext — moved to hxGoalTokens/hxExerciseMatch, because this
+// one keeps any token >= 3 chars and matches with a raw `indexOf`, so `run`
+// substring-matches "C-run-ches". Do NOT wire anything new to it; see
+// ROADMAP §7 ledger row 54 for the remaining targetServesGoal follow-up.
 var GOAL_STOP_WORDS = {
   the:1, a:1, an:1, and:1, or:1, to:1, of:1, for:1, in:1, on:1, at:1, by:1, with:1,
   my:1, your:1, his:1, her:1, get:1, getting:1, gain:1, build:1, building:1,
@@ -4731,10 +4739,31 @@ function extractGoalKeywords(title) {
     .filter(function(w) { return w.length >= 3 && !GOAL_STOP_WORDS[w]; });
 }
 
-// Per-goal exercise summary over the last N days, filtered to exercises whose
-// name partial-matches any goalKeyword (case-insensitive). Returns a compact
-// object fed straight into roadmap prompts.
-async function getGoalExerciseContext(profileId, goalKeywords, days) {
+// Per-goal exercise summary over the last N days, fed straight into roadmap
+// prompts (macro generate, per-goal generate/regenerate, weekly adapt, check-in
+// adapt) and into legacy phase-progress display.
+//
+// ⚠ SIGNATURE CHANGED session #49: `goalTokens` is now the TOKEN OBJECT ARRAY
+// from `hxGoalTokens(goal.title, "")`, not the plain string array from
+// `extractGoalKeywords(goal.title)`. Matching runs through the shared
+// hxExerciseMatch() predicate — the call sites were adapted, not the logic
+// forked. TITLE ONLY, same as before the port: see arcKeywordDates for the
+// measured reason a freeform description must not be tokenised into evidence.
+// What that fixes, measured on profile 1's real 332 rows:
+//   - `run` is a substring of "C-run-ches", so a half-marathon goal's grounding
+//     was 2 crunch sessions with a "best set" of 5 lb x 25 and ZERO runs;
+//   - `press` reached "Overhead Press" for a bench goal, grounding a bench
+//     roadmap in a 12.5 lb dumbbell press;
+//   - goal keywords were hyphen-stripped ("pullups") while stored names are not
+//     ("Pull-Up"), so real pull-up history was invisible.
+//
+// EXERCISE LAYER ONLY, deliberately (session #49 decision D2). Every field this
+// returns — best_set, recent_volume, trend — is per-exercise-ROW arithmetic. A
+// category-level match has no rows behind it, so admitting one could only ever
+// produce a null-filled object that READS as evidence. When nothing matches at
+// the exercise level the honest answer is the zero shape below, and the caller
+// prompt sees `insufficient_data`.
+async function getGoalExerciseContext(profileId, goalTokens, days) {
   days = days || 90;
   var since = ymdNDaysAgo(days);
   var r = await fetch(SUPABASE_URL + "/rest/v1/exercises?profile_id=eq." + profileId +
@@ -4743,10 +4772,10 @@ async function getGoalExerciseContext(profileId, goalKeywords, days) {
     { headers: sbHeaders() });
   var rows = await r.json();
   if (!Array.isArray(rows)) rows = [];
-  var kws = (goalKeywords || []).map(function(k) { return String(k).toLowerCase(); }).filter(Boolean);
-  var matched = kws.length ? rows.filter(function(ex) {
-    var n = String(ex.name || "").toLowerCase();
-    return kws.some(function(k) { return n.indexOf(k) >= 0; });
+  var toks = (goalTokens || []).filter(function(t) { return t && t.token; });
+  var matched = toks.length ? rows.filter(function(ex) {
+    var m = hxExerciseMatch(ex.name, toks);
+    return m.hit && m.specific;   // generic-only overlap is not evidence
   }) : [];
   if (!matched.length) {
     return { total_sessions: 0, last_session_date: null, best_set: null, recent_volume: [], trend: "insufficient_data", weeks_since_last: null };
@@ -4888,12 +4917,22 @@ async function getFullExerciseContext(profileId, days) {
 // The model NEVER sees a row. This is the same split Layer 2 uses for
 // arc_state: code computes, the model narrates and asks.
 //
-// ⚠ THIS IS A SEPARATE MATCHER FROM THE ARC'S TIER-2 PATH, ON PURPOSE.
-// `extractGoalKeywords` / `getGoalSessionDates` (the arc's keyword tier) are
-// deliberately NOT modified and NOT called from here — changing them in place
-// would silently move arc evidence for every unlinked goal, which is all three
-// of profile 1's migrated goals. Improving the arc's matching is its own scope
-// (ROADMAP §7). Asserted byte-identical by test.
+// ⚠ UPDATED session #49 — THIS IS NOW THE ONLY MATCHER.
+// Session #48 built this for intake ONLY and deliberately left the arc's Tier-2
+// path (`getGoalSessionDates`) forked, because changing it in place would have
+// moved arc evidence for every unlinked goal without a before/after comparison.
+// Session #49 did that comparison and ported it: `getGoalSessionDates` is GONE,
+// and the arc (`arcKeywordDates`) plus roadmap grounding
+// (`getGoalExerciseContext`) both call the shared `hxMatchGoalDays()` /
+// `hxExerciseMatch()` below. `extractGoalKeywords` survives for exactly one
+// non-evidence consumer, `targetServesGoal` (ROADMAP §7 ledger row 54).
+//
+// The paths differ ONLY in their evidence RULE, never in their matching:
+//   intake  — reads matched_dates (both layers). It asks questions, so a
+//             category-level match is useful context.
+//   arc     — reads specific_dates ONLY. It drives numbers, so "any cardio"
+//             must never earn progress toward a running goal.
+//   roadmap — reads the exercise layer only (see getGoalExerciseContext).
 
 var HX_WORKOUT_LIMIT = 5000;
 var HX_EXERCISE_LIMIT = 10000;
@@ -5024,6 +5063,17 @@ function hxAllCategories(text) {
 // a display label only, never to a stored value.
 var HX_SESSION_LENGTH_CATEGORIES = { cardio: 1, martial_arts: 1, sports: 1, mind_body: 1 };
 
+// Categories that can never IDENTIFY a goal (session #49). `other` is
+// hxAllCategories()'s FALLBACK for a string that names no category at all, so
+// accepting it on the goal side makes every uncategorised goal match every
+// uncategorised workout. Measured on profile 1: "Fix Posture", "Fix Pubic
+// Osteitis" and "Build Muscle" all derive ["other"] and would each have matched
+// the 4 uncategorised junk sessions (Test Workout / Workout / Meditation /
+// Walking) — phantom evidence CREATED by the matcher, on exactly the three
+// goals that matter. `rest` is excluded for the same reason: a rest day is the
+// absence of training, never evidence for a goal.
+var HX_UNMATCHABLE_CATEGORIES = { other: 1, rest: 1 };
+
 function hxNum(v) { if (v === null || v === undefined || v === "") return null; var n = Number(v); return isFinite(n) ? n : null; }
 function hxDayMs(d) { return Date.parse(String(d).slice(0, 10) + "T12:00:00"); }
 function hxShiftYmd(ymd, deltaDays) {
@@ -5035,6 +5085,103 @@ function hxFmtSecs(s) {
   if (s == null) return null;
   var m = Math.floor(s / 60), r = Math.round(s % 60);
   return m ? (m + ":" + String(r).padStart(2, "0")) : (s + "s");
+}
+
+// ── THE SHARED MATCHING PREDICATE (session #49) ──────────────────────────────
+// ONE implementation, THREE consumers: buildTrainingHistorySummary (intake),
+// arcKeywordDates (the arc's Tier-2 evidence) and getGoalExerciseContext
+// (roadmap grounding). Session #48 built this matching correctly for intake and
+// deliberately left the arc alone; #49 makes the arc CALL it rather than fork it.
+//
+// Does this stored exercise name match the goal? A hit made ONLY of generic
+// tokens is not an identity — that is what stops a "Bench Press" goal claiming
+// "Overhead Press" through `press` alone.
+function hxExerciseMatch(name, goalTokens) {
+  var forms = hxNameForms(name);
+  var hit = false, specific = false;
+  for (var i = 0; i < (goalTokens || []).length; i++) {
+    var t = goalTokens[i];
+    if (!t || !forms[t.token]) continue;
+    hit = true;
+    if (!t.generic) specific = true;
+  }
+  return { hit: hit, specific: specific };
+}
+
+// The layered day-matcher. Returns DATE SETS, so a caller that needs evidence
+// (the arc) gets the same days the caller that needs prose (intake) counted.
+//
+//   exercise_dates — PRIMARY. A named exercise the athlete actually logged.
+//   category_dates — SECONDARY. Activity-category agreement on the session
+//                    text. Mandatory, not optional: 3 of profile 1's 25 cardio
+//                    sessions carry ZERO exercise rows and distance_miles is
+//                    NULL on all 332 rows, so an exercise-only matcher reports
+//                    "no evidence" for real cardio work.
+//   specific_dates — exercise_dates PLUS the category days whose own text or
+//                    exercises actually NAME a specific goal term. This is the
+//                    set the arc counts: it recovers a real runner's runs while
+//                    refusing to credit "any cardio" to a running goal
+//                    (measured on profile 1: 25 cardio sessions, 0 runs).
+function hxMatchGoalDays(done, validEx, goalTokens, goalCategories) {
+  goalTokens = goalTokens || [];
+  var cats = (goalCategories || []).filter(function(c) { return !HX_UNMATCHABLE_CATEGORIES[c]; });
+  var specificTokens = goalTokens.filter(function(t) { return !t.generic; }).map(function(t) { return t.token; });
+
+  var doneByDate = {}, exByDate = {};
+  (done || []).forEach(function(w) { (doneByDate[w.date] = doneByDate[w.date] || []).push(w); });
+  (validEx || []).forEach(function(e) { (exByDate[e.date] = exByDate[e.date] || []).push(e); });
+
+  var exerciseDays = {}, categoryDays = {}, specificDays = {}, exNames = {}, types = {};
+
+  if (goalTokens.length) {
+    (validEx || []).forEach(function(e) {
+      var m = hxExerciseMatch(e.name, goalTokens);
+      if (!m.hit || !m.specific) return;   // generic-only overlap is not evidence
+      if (!doneByDate[e.date]) return;     // must sit on a completed session
+      exerciseDays[e.date] = true;
+      specificDays[e.date] = true;
+      exNames[e.name] = true;
+    });
+  }
+
+  if (cats.length) {
+    (done || []).forEach(function(w) {
+      var text = String(w.type || "") + " " + String(w.notes || "");
+      var wc = hxAllCategories(text);
+      if (!wc.some(function(c) { return cats.indexOf(c) >= 0; })) return;
+      categoryDays[w.date] = true;
+      types[String(w.type || "Workout")] = true;
+      // Does this session mention a SPECIFIC goal term anywhere? This is what
+      // separates "25 cardio sessions" from "25 RUNNING sessions".
+      var exNamesTxt = (exByDate[w.date] || []).map(function(e) { return String(e.name || "").toLowerCase(); }).join(" ");
+      var hay = hxNameForms(text.toLowerCase() + " " + exNamesTxt);
+      if (specificTokens.some(function(t) { return hay[t]; })) specificDays[w.date] = true;
+    });
+  }
+
+  var all = {};
+  Object.keys(exerciseDays).forEach(function(d) { all[d] = true; });
+  Object.keys(categoryDays).forEach(function(d) { all[d] = true; });
+  var matchedDates = Object.keys(all).sort();
+
+  return {
+    exercise_dates: Object.keys(exerciseDays).sort(),
+    category_dates: Object.keys(categoryDays).sort(),
+    specific_dates: Object.keys(specificDays).sort(),
+    matched_dates: matchedDates,
+    matched_exercise_names: Object.keys(exNames),
+    matched_session_types: Object.keys(types).sort(),
+    specific_tokens: specificTokens,
+    categories_used: cats,
+    confidence: Object.keys(exerciseDays).length ? "exercise"
+      : (Object.keys(categoryDays).length ? "category" : "none"),
+    by_source: {
+      exercise: Object.keys(exerciseDays).length,
+      category: Object.keys(categoryDays).length,
+      both: matchedDates.filter(function(d) { return exerciseDays[d] && categoryDays[d]; }).length,
+      category_only: matchedDates.filter(function(d) { return !exerciseDays[d] && categoryDays[d]; }).length,
+    },
+  };
 }
 
 // THE AGGREGATE. Pure over its inputs — the fetch is the caller's job, so this
@@ -5054,18 +5201,18 @@ function buildTrainingHistorySummary(workouts, exercises, todayYmd, opts) {
   if (!done.length) {
     return {
       has_history: false, total_sessions: 0, distinct_days: 0,
-      goal_relevant: { tokens: goalTokens.map(function(t) { return t.token; }), categories: goalCategories,
+      goal_relevant: { tokens: goalTokens.map(function(t) { return t.token; }),
+        categories: goalCategories.filter(function(c) { return !HX_UNMATCHABLE_CATEGORIES[c]; }),
         sessions: 0, confidence: "none", by_source: { exercise: 0, category: 0 },
         matched_exercises: [], matched_session_types: [],
-        specific_terms: [], specific_term_hits: 0 },
+        specific_terms: [], specific_term_hits: 0,
+        exercise_dates: [], category_dates: [], specific_dates: [], matched_dates: [] },
     };
   }
 
   var doneByDate = {};
-  var doneById = {};
   done.forEach(function(w) {
     (doneByDate[w.date] = doneByDate[w.date] || []).push(w);
-    if (w.id != null) doneById[w.id] = w;
   });
   var dates = Object.keys(doneByDate).sort();
 
@@ -5124,82 +5271,40 @@ function buildTrainingHistorySummary(workouts, exercises, todayYmd, opts) {
     .sort(function(a, b) { return b.sessions - a.sessions; });
 
   // ── THE LAYERED MATCHER ──────────────────────────────────────────────────
-  // PRIMARY   — per-day exercise rows. A matched named exercise is the
-  //             strongest evidence and requires at least one NON-GENERIC token.
-  // SECONDARY — workout title + notes via the all-categories parse, as
-  //             supplement AND as fallback where exercise rows are absent.
-  //             Mandatory, not optional: cardio sessions frequently log zero
-  //             exercise rows and distance_miles is NULL across profile 1.
-  // NONE      — neither fired.
-  var specificTokens = goalTokens.filter(function(t) { return !t.generic; }).map(function(t) { return t.token; });
-  var exerciseDays = {}, categoryDays = {}, matchedExNames = {}, matchedTypes = {}, specificDays = {};
-
-  if (goalTokens.length) {
-    validEx.forEach(function(e) {
-      var forms = hxNameForms(e.name);
-      var anySpecific = false, anyHit = false;
-      goalTokens.forEach(function(t) {
-        if (!forms[t.token]) return;
-        anyHit = true;
-        if (!t.generic) anySpecific = true;
-      });
-      if (!anyHit || !anySpecific) return;   // generic-only overlap is not evidence
-      if (!doneByDate[e.date]) return;       // must sit on a completed session
-      exerciseDays[e.date] = true;
-      specificDays[e.date] = true;
-      matchedExNames[e.name] = true;
-    });
-  }
-
-  if (goalCategories.length) {
-    done.forEach(function(w) {
-      var text = String(w.type || "") + " " + String(w.notes || "");
-      var cats = hxAllCategories(text);
-      var overlap = cats.some(function(c) { return goalCategories.indexOf(c) >= 0; });
-      if (!overlap) return;
-      categoryDays[w.date] = true;
-      matchedTypes[String(w.type || "Workout")] = true;
-      // Does this session mention a SPECIFIC goal term anywhere? This is what
-      // separates "25 cardio sessions" from "25 RUNNING sessions".
-      var lower = text.toLowerCase();
-      var exNames = (validEx.filter(function(e) { return e.date === w.date; })
-        .map(function(e) { return String(e.name || "").toLowerCase(); }).join(" "));
-      var hay = hxNameForms(lower + " " + exNames);
-      if (specificTokens.some(function(t) { return hay[t]; })) specificDays[w.date] = true;
-    });
-  }
-
-  var allDays = {};
-  Object.keys(exerciseDays).forEach(function(d) { allDays[d] = true; });
-  Object.keys(categoryDays).forEach(function(d) { allDays[d] = true; });
-  var matchedDates = Object.keys(allDays).sort();
-  var confidence = Object.keys(exerciseDays).length ? "exercise"
-    : (Object.keys(categoryDays).length ? "category" : "none");
+  // Delegated to the SHARED hxMatchGoalDays() (session #49) so the arc and the
+  // roadmap-grounding paths run the identical predicate rather than a copy.
+  // The loops that used to live here are that function's body verbatim; the
+  // only behaviour change is HX_UNMATCHABLE_CATEGORIES, which stops an
+  // `other`-category goal matching every uncategorised workout.
+  var match = hxMatchGoalDays(done, validEx, goalTokens, goalCategories);
+  var matchedDates = match.matched_dates;
 
   var since8 = hxShiftYmd(todayYmd, -56);
   var goalRelevant = {
     tokens: goalTokens.map(function(t) { return t.token; }),
-    specific_terms: specificTokens,
-    categories: goalCategories,
+    specific_terms: match.specific_tokens,
+    categories: match.categories_used,
     sessions: matchedDates.length,
     first_date: matchedDates.length ? matchedDates[0] : null,
     last_date: matchedDates.length ? matchedDates[matchedDates.length - 1] : null,
     per_week_8w: since8 ? Math.round((matchedDates.filter(function(d) { return d >= since8; }).length / 8) * 10) / 10 : null,
-    confidence: confidence,
+    confidence: match.confidence,
     // PER-SOURCE COVERAGE — how often each layer actually fires.
-    by_source: {
-      exercise: Object.keys(exerciseDays).length,
-      category: Object.keys(categoryDays).length,
-      both: matchedDates.filter(function(d) { return exerciseDays[d] && categoryDays[d]; }).length,
-      category_only: matchedDates.filter(function(d) { return !exerciseDays[d] && categoryDays[d]; }).length,
-    },
+    by_source: match.by_source,
     // Days whose text or exercises actually name a specific goal term. A large
     // `sessions` with `specific_term_hits: 0` means "trained in this general
     // area, but never this specific thing" — the honest negative.
-    specific_term_hits: Object.keys(specificDays).length,
-    matched_exercises: Object.keys(matchedExNames).map(function(n) { return shapeExercise(byName[n]); })
+    specific_term_hits: match.specific_dates.length,
+    // ADDITIVE (session #49) — the DATE SETS, not just their counts. The arc
+    // needs the days themselves to replay earned position; intake ignores these
+    // fields entirely, which is what keeps this one implementation and not a fork.
+    exercise_dates: match.exercise_dates,
+    category_dates: match.category_dates,
+    specific_dates: match.specific_dates,
+    matched_dates: matchedDates,
+    matched_exercises: match.matched_exercise_names.map(function(n) { return shapeExercise(byName[n]); })
       .sort(function(a, b) { return b.sessions - a.sessions; }),
-    matched_session_types: Object.keys(matchedTypes).sort(),
+    matched_session_types: match.matched_session_types,
   };
 
   // Endurance view — null when there is no distance data at all, which is
@@ -5595,7 +5700,7 @@ app.post("/api/profiles/:id/roadmap-data", async function(req, res) {
     // Per-goal exercise context (keyed off each goal's title keywords).
     var perGoalCtx = "";
     for (var gi = 0; gi < goals.length; gi++) {
-      var gx = await getGoalExerciseContext(pid, extractGoalKeywords(goals[gi].title), 90);
+      var gx = await getGoalExerciseContext(pid, hxGoalTokens(goals[gi].title, ""), 90);
       perGoalCtx += (goals[gi].title || "Untitled") + ": " + JSON.stringify(gx) + "\n";
     }
 
@@ -7238,12 +7343,16 @@ function arcQualifyingDates(opts) {
     return { dates: Object.keys(dates).sort(), confidence: worst, matched_via: via, tier: 1 };
   }
 
-  // TIER 2 — no linked schedule item. Keyword matching over exercise dates,
-  // INTERSECTED with done workouts. Genuinely lower confidence and labelled so.
+  // TIER 2 — no linked schedule item. Dates come from arcKeywordDates(), which
+  // runs the shared layered matcher and returns the SPECIFIC-TERM day set. Still
+  // INTERSECTED with done workouts here (arcKeywordDates already only considers
+  // done sessions, so this is a belt-and-braces invariant, not a correction).
+  // `tier: 2` / `confidence: "keyword"` are deliberately UNCHANGED so no UI or
+  // downstream consumer moves; `matched_via` is now populated (was always []).
   var doneDates = {};
   workouts.forEach(function(w) { if (w && w.done === true && w.date) doneDates[w.date] = true; });
   var kwDates = (opts.keywordDates || []).filter(function(d) { return doneDates[d]; });
-  return { dates: kwDates.slice().sort(), confidence: "keyword", matched_via: [], tier: 2 };
+  return { dates: kwDates.slice().sort(), confidence: "keyword", matched_via: (opts.keywordVia || []), tier: 2 };
 }
 
 // THE REPLAY. Pure, deterministic, idempotent. Returns the arc_state object.
@@ -7450,32 +7559,70 @@ function applyTimelineFlex(goal, arc, todayYmd) {
   };
 }
 
-// TIER 2 fallback source. A lean sibling of getGoalExerciseContext that returns
-// the DISTINCT DATE LIST that function already computes internally and throws
-// away, with two corrections that matter for arc accuracy:
-//   1. INTERSECTED with done workouts — getGoalExerciseContext reads `exercises`
-//      directly and would count an orphaned row.
-//   2. Numeric and weak tokens dropped. extractGoalKeywords("Bench press 175 lbs
-//      for a single") yields "single", which substring-matches "Single-Arm Lat
-//      Pulldown" — a real false positive, not a hypothetical.
-// Still genuinely lower confidence, and labelled "keyword" wherever it is used.
+// Weak goal-title tokens. Retained because `targetServesGoal` (Layer 3
+// coexistence) still uses it; the arc no longer does — see arcKeywordDates.
 var ARC_WEAK_KEYWORDS = { single: 1, lbs: 1, reps: 1, week: 1, day: 1, days: 1, time: 1, goal: 1, get: 1, one: 1 };
-async function getGoalSessionDates(profileId, title, sinceYmd) {
-  var kws = extractGoalKeywords(title).filter(function(k) {
-    return !/^\d+$/.test(k) && !ARC_WEAK_KEYWORDS[k];
+
+// TIER 2 — the arc's evidence when a goal is linked to NO schedule item.
+//
+// ⚠ REWRITTEN session #49. The old `getGoalSessionDates` did a raw
+// `name.indexOf(keyword)` over `extractGoalKeywords(title)` and did its own
+// exercises fetch. Measured against profile 1's real 332 rows, that matcher gave
+// a half-marathon goal FOUR qualifying sessions — Crunches x3 and Standing
+// Oblique Crunch x1, because `run` is a substring of "C-run-ches" — and ZERO
+// real runs; and it gave a bench goal three Overhead Press sessions at 22.5 lb
+// dumbbells. Those numbers fed `position_week`, `drift`, `status` and the
+// timeline flex, so the arc was deciding earned progress on wrong evidence.
+//
+// ONE IMPLEMENTATION: the matching is hxMatchGoalDays(), shared verbatim with
+// the intake aggregate. What is arc-SPECIFIC is the evidence RULE, not the
+// matcher — the arc drives numbers, not questions, so it counts the
+// SPECIFIC-TERM day set (`specific_dates`), never the raw category set. On
+// profile 1 the raw category set would have credited a bench goal 45 strength
+// sessions and a running goal 25 cardio sessions with zero actual runs.
+//
+// Takes the rows the caller has ALREADY fetched — no second round-trip, and the
+// category layer needs the workouts anyway.
+function arcKeywordDates(goal, workouts, exercises) {
+  var title = String((goal && goal.title) || "");
+  // ⚠ TITLE ONLY — the goal DESCRIPTION is deliberately excluded, and this was
+  // found by measurement during session #49's verification, not by inspection.
+  // A title is short and identity-bearing; a description in this app is freeform
+  // coaching prose of arbitrary length (profile 1's pinky goal carries ~2,000
+  // words). Tokenising it injects ordinary English, and every evidence path is
+  // then matched on it. Measured on the real log:
+  //   pinky goal   -> "Reverse Lunge" via `reverse`, "Thoracic Extension Over
+  //                   Foam Roller" via the PREPOSITION `over`, "Band Pull-Apart"
+  //                   via `band`   (4 real matches -> 12)
+  //   "Stamina"    -> 5 sessions via `full` ("Full MMA rounds" reaching
+  //                   "Strength (Full Body)") and `without`   (0 -> 5)
+  // Both pre-port paths (getGoalSessionDates / extractGoalKeywords(goal.title))
+  // read the title only, so this also keeps the input contract unchanged and the
+  // port a pure matching-semantics change. Using a description safely needs its
+  // own rule — see ROADMAP §7 ledger row 54.
+  var tokens = hxGoalTokens(title, "");
+  if (!tokens.length) return { dates: [], matched_via: [] };
+  var cats = hxAllCategories(title);
+
+  var done = (workouts || []).filter(function(w) {
+    return w && w.done === true && HX_YMD_RE.test(String(w.date || ""));
   });
-  if (!kws.length) return [];
-  var r = await fetch(SUPABASE_URL + "/rest/v1/exercises?profile_id=eq." + profileId +
-    "&date=gte." + sinceYmd + "&select=name,date&order=date.asc&limit=5000", { headers: sbHeaders() });
-  var rows = await r.json();
-  if (!Array.isArray(rows)) return [];
-  var seen = {};
-  rows.forEach(function(ex) {
-    var n = String(ex.name || "").toLowerCase();
-    if (!ex.date) return;
-    if (kws.some(function(k) { return n.indexOf(k) >= 0; })) seen[ex.date] = true;
+  var vex = (exercises || []).filter(function(e) {
+    return e && e.name && HX_YMD_RE.test(String(e.date || ""));
   });
-  return Object.keys(seen).sort();
+
+  var m = hxMatchGoalDays(done, vex, tokens, cats);
+
+  // matched_via was ALWAYS [] on tier 2, so the athlete could never see why a
+  // session counted. Populating it is purely additive — no consumer branches on
+  // its contents, and the `tier`/`confidence` labels stay byte-compatible.
+  var via = [];
+  m.matched_exercise_names.slice(0, 4).forEach(function(n) { via.push("exercise:" + n); });
+  var textOnly = m.specific_dates.filter(function(d) { return m.exercise_dates.indexOf(d) < 0; });
+  if (textOnly.length) {
+    via.push("session-text:" + m.specific_tokens.slice(0, 2).join("/") + " x" + textOnly.length);
+  }
+  return { dates: m.specific_dates, matched_via: via };
 }
 
 // Evaluate every arc-eligible goal on a profile. ZERO AI CALLS — pure code, so
@@ -7517,7 +7664,9 @@ async function evaluateArcsForProfile(profileId, opts) {
   });
 
   var wRes = await fetch(SUPABASE_URL + "/rest/v1/workouts?profile_id=eq." + profileId +
-    "&date=gte." + earliest + "&select=id,date,done,type&order=date.asc&limit=2000", { headers: sbHeaders() });
+    // `notes` added session #49 — the Tier-2 category layer reads type + notes,
+    // the same text the intake matcher parses. Tier 1 ignores it, unchanged.
+    "&date=gte." + earliest + "&select=id,date,done,type,notes&order=date.asc&limit=2000", { headers: sbHeaders() });
   var workouts = await wRes.json();
   if (!Array.isArray(workouts)) workouts = [];
   // Drop malformed date rows rather than text-sorting them (ROADMAP §6).
@@ -7536,11 +7685,16 @@ async function evaluateArcsForProfile(profileId, opts) {
     var g = arcGoals[i];
     try {
       var linked = arcLinkedItems(schedule, g.id);
-      var kwDates = [];
+      var kwDates = [], kwVia = [];
       if (!linked.length) {
-        try { kwDates = await getGoalSessionDates(profileId, g.title, earliest); } catch (e) { kwDates = []; }
+        // Tier 2 — no linked schedule item. Runs the shared session-#48 matcher
+        // over the rows already fetched above (session #49); no extra fetch.
+        try {
+          var km = arcKeywordDates(g, workouts, exercises);
+          kwDates = km.dates; kwVia = km.matched_via;
+        } catch (e) { kwDates = []; kwVia = []; }
       }
-      var qualifying = arcQualifyingDates({ linkedItems: linked, workouts: workouts, matcher: matcher, keywordDates: kwDates });
+      var qualifying = arcQualifyingDates({ linkedItems: linked, workouts: workouts, matcher: matcher, keywordDates: kwDates, keywordVia: kwVia });
       // Pin the immutable arc origin once, before anything can resequence the
       // phase calendar out from under it.
       if (!g.roadmap.arc_origin) {
@@ -8095,7 +8249,7 @@ async function maybeAdaptAllRoadmaps(profileId) {
     var g = dueGoals[i]; // same object reference as in profileData.goals
     try {
       var gx = null;
-      try { gx = await getGoalExerciseContext(profileId, extractGoalKeywords(g.title), 90); } catch (e) { /* non-fatal */ }
+      try { gx = await getGoalExerciseContext(profileId, hxGoalTokens(g.title, ""), 90); } catch (e) { /* non-fatal */ }
       g.roadmap = await adaptGoalRoadmap(g, "", workouts, "weekly", gx);
       g.last_adapted_at = new Date().toISOString();
       goalsChanged = true;
@@ -9087,7 +9241,7 @@ async function generateGoalRoadmapForGoal(profileId, goalId, mode) {
 
   // Ground the roadmap in actual logged training: this goal's exercise history
   // + the overall training picture.
-  var goalExCtx = await getGoalExerciseContext(profileId, extractGoalKeywords(goal.title), 90);
+  var goalExCtx = await getGoalExerciseContext(profileId, hxGoalTokens(goal.title, ""), 90);
   var fullEx = await getFullExerciseContext(profileId, 60);
 
   // PT Brain Layer 1 (session #35): the phase COUNT and each phase's week budget
@@ -9222,7 +9376,7 @@ app.post("/api/profiles/:id/goals/:goalId/checkin", async function(req, res) {
     if (!Array.isArray(workouts)) workouts = [];
 
     var goalExCtx = null;
-    try { goalExCtx = await getGoalExerciseContext(req.params.id, extractGoalKeywords(goal.title), 90); } catch (e) { /* non-fatal */ }
+    try { goalExCtx = await getGoalExerciseContext(req.params.id, hxGoalTokens(goal.title, ""), 90); } catch (e) { /* non-fatal */ }
     goal.roadmap = await adaptGoalRoadmap(goal, notes, workouts, "checkin", goalExCtx);
     goal.last_adapted_at = new Date().toISOString();
     await saveGoalToProfile(req.params.id, loaded.profileData, found.index, goal);
@@ -9243,7 +9397,7 @@ app.get("/api/profiles/:id/goals/:goalId", async function(req, res) {
     var goal = found.goal;
     if (goal && goal.roadmap) {
       try {
-        var gx = await getGoalExerciseContext(req.params.id, extractGoalKeywords(goal.title), 90);
+        var gx = await getGoalExerciseContext(req.params.id, hxGoalTokens(goal.title, ""), 90);
         recomputeRoadmapProgress(goal.roadmap, gx);
       } catch (e) { recomputeRoadmapProgress(goal.roadmap, null); }
     }

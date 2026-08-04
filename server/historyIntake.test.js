@@ -133,7 +133,14 @@ function loadHistoryIntake(src) {
     grabVar(src, "HX_STOP"),
     grabVar(src, "HX_CATEGORY_RES"),
     grabVar(src, "HX_SESSION_LENGTH_CATEGORIES"),
+    // Session #49: buildTrainingHistorySummary's matching loop was factored out
+    // into the SHARED hxMatchGoalDays()/hxExerciseMatch(), so the arc and the
+    // roadmap-grounding paths run the identical predicate instead of a copy.
+    // The slice list has to follow, or this sandbox silently loses the matcher.
+    grabVar(src, "HX_UNMATCHABLE_CATEGORIES"),
     grabDecl(src, "function ymdLocal("),
+    grabDecl(src, "function hxExerciseMatch("),
+    grabDecl(src, "function hxMatchGoalDays("),
     grabDecl(src, "function hxTokenForms("),
     grabDecl(src, "function hxNameForms("),
     grabDecl(src, "function hxGoalTokens("),
@@ -426,15 +433,36 @@ test("per-source coverage is exposed and auditable", function() {
 
 // ─────────────────────────────── DECISION 4 — the arc path is UNTOUCHED
 
-test("decision 4 — the arc's Tier-2 keyword path is BYTE-IDENTICAL to the pinned pre-change commit", function(t) {
+// ⚠ SUPERSEDED BY SESSION #49 — kept, rewritten, NOT deleted.
+//
+// #48's decision 4 was "leave the arc's Tier-2 path byte-identical", and this
+// test proved it. Session #49 REVERSED that decision with explicit approval,
+// after measuring the before/after the earlier session deliberately deferred:
+// the arc now calls the same matcher, `getGoalSessionDates` is gone, and
+// `extractGoalKeywords` survives for one non-evidence consumer.
+//
+// The original assertion is replaced rather than removed, so this file records
+// WHY the guarantee it used to enforce no longer applies. The port's own
+// before/after evidence lives in server/arcMatcherPort.test.js.
+test("decision 4 — SUPERSEDED by session #49: the arc's Tier-2 path was deliberately ported", function(t) {
   var pre = preChangeSrc();
   if (!pre) { t.skip("pinned commit " + PRE_CHANGE_COMMIT + " unreachable — cannot verify"); return; }
   assert.ok(pre.indexOf("getTrainingHistorySummary") < 0,
     "pinned commit must NOT already contain session #48's work (bad pin)");
-  var before = loadArcKeywordPath(pre);
-  var after = loadArcKeywordPath(CURRENT_SRC);
-  assert.strictEqual(after, before,
-    "extractGoalKeywords / GOAL_STOP_WORDS / ARC_WEAK_KEYWORDS / getGoalSessionDates must be untouched");
+  // The pinned commit still has the forked arc matcher #48 chose not to touch...
+  assert.ok(pre.indexOf("async function getGoalSessionDates(") >= 0,
+    "pinned commit should still carry the pre-port arc matcher");
+  // ...and the tree no longer does, because #49 ported it.
+  assert.ok(stripToCode(CURRENT_SRC).indexOf("function getGoalSessionDates(") < 0,
+    "session #49 removed the forked arc matcher — see server/arcMatcherPort.test.js");
+  // NOTE: this file's pin is PRE-session-#48, so the HX_* token vocabularies do
+  // not exist in it and cannot be diffed here. The port's own before/after is
+  // pinned to the #48 close-out commit in server/arcMatcherPort.test.js, which
+  // proves the rendered intake block is byte-identical across the change.
+  // What IS checkable here: the port moved CALLERS, so intake still reads the
+  // goal description while the ported evidence paths deliberately do not.
+  assert.ok(/hxGoalTokens\(goal\.title,\s*goal\.description\)/.test(CURRENT_SRC),
+    "the intake path must still read title + description (session #48 behaviour)");
 });
 
 test("decision 4 — the new matcher does not call the arc's keyword helpers", function() {

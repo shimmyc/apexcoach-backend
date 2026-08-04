@@ -69,7 +69,11 @@ function buildSandbox(src, label) {
     slice(src, label, "function ymdLocal(x) {", "function numOrNull(v) {"),
     slice(src, label, "function numOrNull(v) {", "\n}\n") + "\n}\n",
     slice(src, label, "function resequenceNearTermDates(phases, todayStr) {", "\nfunction assignNearTermDates("),
-    slice(src, label, "function applyTimelineFlex(goal, arc, todayYmd) {", "\n// TIER 2 fallback source."),
+    // End marker is the next DECLARATION, not the comment that used to follow
+    // this function: session #49 rewrote that comment when it ported the arc's
+    // Tier-2 matcher, which broke the slice. `var ARC_WEAK_KEYWORDS` exists in
+    // both the pinned pre-fix commit and the tree, so it is stable across both.
+    slice(src, label, "function applyTimelineFlex(goal, arc, todayYmd) {", "\nvar ARC_WEAK_KEYWORDS"),
   ];
   const SRC = parts.join("\n");
 
